@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="340" height="210" viewBox="0 0 340 210" xmlns="http://www.w3.org/2000/svg"><style>text{font-family:"Segoe UI",system-ui,-apple-system,sans-serif}text.halo{paint-order:stroke;stroke:#fff;stroke-width:4px;stroke-linejoin:round}</style>
+      <g transform="translate(40,15)">
+        <rect width="280" height="150" fill="#fafbfc" stroke="#d9dee4"/>
+        <g stroke="#e3e7eb"><line y1="75" x2="280" y2="75"/><line x1="140" x2="140" y2="150"/></g>
+        <line x1="0" y1="0" x2="280" y2="150" stroke="#e08a2c" stroke-width="3"/>
+        <line x1="0" y1="150" x2="280" y2="0" stroke="#4f8fd6" stroke-width="3"/>
+        <line x1="0" y1="0" x2="280" y2="0" stroke="#1d2126" stroke-width="2" stroke-dasharray="6 4"/>
+        <text x="210" y="-4" font-size="9" fill="#1d2126">total = 100 %</text>
+        <text x="10" y="30" font-size="10" fill="#e08a2c" font-weight="600">WW</text>
+        <text x="250" y="30" font-size="10" fill="#4f8fd6" font-weight="600">CW</text>
+        <g font-size="9" fill="#7a838e">
+          <text x="-4" y="4" text-anchor="end">100 %</text><text x="-4" y="79" text-anchor="end">50 %</text><text x="-4" y="153" text-anchor="end">0</text>
+          <text x="0" y="165">2700 K</text><text x="120" y="165">≈ 4000 K</text><text x="250" y="165">6500 K</text>
+        </g>
+        <text x="60" y="185" font-size="9" fill="#4a525c">channel duty at full brightness</text>
+      </g>
+    </svg>

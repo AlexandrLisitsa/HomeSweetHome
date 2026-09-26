@@ -1,0 +1,4 @@
+# Host-side only: LedLamp/tools/build_pdf.py renders the Markdown to HTML.
+#
+#   python -m pip install -r LedLamp/tools/requirements.txt
+markdown>=3.5

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="330" height="250" viewBox="0 0 330 250" xmlns="http://www.w3.org/2000/svg"><style>text{font-family:"Segoe UI",system-ui,-apple-system,sans-serif}text.halo{paint-order:stroke;stroke:#fff;stroke-width:4px;stroke-linejoin:round}</style>
+      <text x="0" y="12" font-size="10" font-weight="700">Front</text>
+      <rect x="40" y="25" width="200" height="200" rx="14" fill="#f7f8fa" stroke="#aab2bb" stroke-width="2"/>
+      <rect x="60" y="45" width="160" height="160" rx="10" fill="#ffffff" stroke="#c3cad2" stroke-width="2"/>
+      <rect x="78" y="60" width="60" height="130" rx="7" fill="#ffffff" stroke="#8e97a1" stroke-width="2.5"/>
+      <rect x="142" y="60" width="60" height="130" rx="7" fill="#ffffff" stroke="#8e97a1" stroke-width="2.5"/>
+      <line x1="83" y1="125" x2="133" y2="125" stroke="#e3e7eb" stroke-width="2"/>
+      <line x1="147" y1="125" x2="197" y2="125" stroke="#e3e7eb" stroke-width="2"/>
+      <circle cx="140" cy="198" r="3" fill="#7fc3a0"/>
+      <text x="140" y="240" text-anchor="middle" font-size="9" fill="#4a525c">Aqara E1 two rockers (86 mm) on the Asfora blank (83 mm)</text>
+      <text x="246" y="122" font-size="9" fill="#4a525c">either rocker</text>
+      <text x="246" y="134" font-size="9" fill="#4a525c">toggles the lamp</text>
+      <line x1="244" y1="126" x2="204" y2="120" stroke="#7a838e"/>
+    </svg>

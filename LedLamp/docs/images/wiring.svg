@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="700" height="420" viewBox="0 0 700 420" xmlns="http://www.w3.org/2000/svg"><style>text{font-family:"Segoe UI",system-ui,-apple-system,sans-serif}text.halo{paint-order:stroke;stroke:#fff;stroke-width:4px;stroke-linejoin:round}</style>
+    <rect x="8" y="30" width="130" height="330" rx="8" fill="#f7f1ea" stroke="#e6d9c7"/>
+    <text x="20" y="50" font-size="10" fill="#8b5a2b" font-weight="600">CEILING BOX</text>
+    <text x="20" y="64" font-size="9" fill="#8b5a2b">230 V</text>
+    <rect x="150" y="30" width="542" height="330" rx="8" fill="#f5f7f9" stroke="#dde2e7"/>
+    <text x="162" y="50" font-size="10" fill="#4a525c" font-weight="600">INSIDE THE METAL CASE</text>
+
+    <g font-size="11" font-weight="600">
+      <rect x="30" y="110" width="44" height="22" rx="3" fill="#fff" stroke="#8b5a2b"/><text x="46" y="125" fill="#8b5a2b">L</text>
+      <rect x="30" y="150" width="44" height="22" rx="3" fill="#fff" stroke="#2f6fd0"/><text x="46" y="165" fill="#2f6fd0">N</text>
+      <rect x="30" y="190" width="44" height="22" rx="3" fill="#fff" stroke="#3f9b3f"/><text x="42" y="205" fill="#3f9b3f">PE</text>
+    </g>
+
+    <rect x="200" y="95" width="130" height="130" rx="8" fill="#e4e8ec" stroke="#8e97a1"/>
+    <text x="214" y="118" font-size="12" font-weight="700">Power supply</text>
+    <text x="214" y="134" font-size="9.5" fill="#4a525c">BIOM BPBLS-60-24</text>
+    <text x="214" y="148" font-size="9.5" fill="#4a525c">230 V AC → 24 V DC</text>
+    <text x="214" y="162" font-size="9.5" fill="#4a525c">60 W · 2.5 A · IP20</text>
+    <g font-size="9" fill="#4a525c">
+      <text x="204" y="189">AC L</text><text x="204" y="205">AC N</text>
+      <text x="290" y="189">+V</text><text x="290" y="205">−V</text>
+    </g>
+
+    <path d="M74 121 H160 V185 H200" fill="none" stroke="#8b5a2b" stroke-width="3"/>
+    <path d="M74 161 H150 V201 H200" fill="none" stroke="#2f6fd0" stroke-width="3"/>
+    <path d="M74 201 H100 V300 H240" fill="none" stroke="#3f9b3f" stroke-width="3" stroke-dasharray="7 3"/>
+    <circle cx="252" cy="300" r="12" fill="#fff" stroke="#3f9b3f" stroke-width="2"/>
+    <path d="M246 296 H258 M248 300 H256 M250 304 H254" stroke="#3f9b3f" stroke-width="2"/>
+    <text x="270" y="297" font-size="10" fill="#3f9b3f" font-weight="600">Earth screw on the case</text>
+    <text x="270" y="311" font-size="9" fill="#4a525c">metal case must be earthed (PE)</text>
+
+    <path d="M330 185 H395" stroke="#d23b3b" stroke-width="3.5"/>
+    <path d="M330 201 H395" stroke="#2b2b2b" stroke-width="3.5"/>
+    <text x="340" y="178" font-size="9" fill="#d23b3b">+24 V</text>
+    <text x="345" y="216" font-size="9" fill="#2b2b2b">0 V</text>
+
+    <rect x="395" y="110" width="120" height="130" rx="8" fill="#34495c" stroke="#23303b"/>
+    <text x="408" y="133" font-size="12" font-weight="700" fill="#fff">Zigbee controller</text>
+    <text x="408" y="149" font-size="9.5" fill="#cfd8e0">MiBoxer E2-ZR</text>
+    <text x="408" y="163" font-size="9.5" fill="#cfd8e0">CCT mode · 16 kHz PWM</text>
+    <g font-size="8.5" fill="#cfd8e0">
+      <text x="400" y="189">V+ in</text><text x="400" y="205">V− in</text>
+      <text x="478" y="178">V+ out</text><text x="486" y="198">WW</text><text x="488" y="218">CW</text>
+    </g>
+    <g stroke="#4f8fd6" fill="none" stroke-width="2">
+      <path d="M470 100 a 14 14 0 0 1 20 0"/><path d="M464 92 a 24 24 0 0 1 32 0"/><path d="M458 84 a 34 34 0 0 1 44 0"/>
+    </g>
+    <text x="512" y="84" font-size="9.5" fill="#2f6f8f">Zigbee 3.0 → Zigbee2MQTT → HA</text>
+
+    <path d="M515 175 H560" stroke="#d23b3b" stroke-width="3.5"/>
+    <path d="M515 195 H572" stroke="#e08a2c" stroke-width="3.5"/>
+    <path d="M515 215 H584" stroke="#4f8fd6" stroke-width="3.5"/>
+    <path d="M560 175 V340" stroke="#d23b3b" stroke-width="3"/>
+    <path d="M572 195 V340" stroke="#e08a2c" stroke-width="3"/>
+    <path d="M584 215 V340" stroke="#4f8fd6" stroke-width="3"/>
+    <g>
+      <g transform="translate(600,250)"><rect x="0" y="-7" width="80" height="14" rx="3" fill="#f6d9a6" stroke="#d9a454"/><text x="8" y="4" font-size="8">stripes 1–5</text></g>
+      <g transform="translate(600,285)"><rect x="0" y="-7" width="80" height="14" rx="3" fill="#f6d9a6" stroke="#d9a454"/><text x="8" y="4" font-size="8">stripes 6–11</text></g>
+      <g transform="translate(600,320)"><rect x="0" y="-7" width="80" height="14" rx="3" fill="#f6d9a6" stroke="#d9a454"/><text x="8" y="4" font-size="8">stripes 12–16</text></g>
+    </g>
+    <g stroke-width="1.6">
+      <path d="M560 246 H600" stroke="#d23b3b"/><path d="M572 250 H600" stroke="#e08a2c"/><path d="M584 254 H600" stroke="#4f8fd6"/>
+      <path d="M560 281 H600" stroke="#d23b3b"/><path d="M572 285 H600" stroke="#e08a2c"/><path d="M584 289 H600" stroke="#4f8fd6"/>
+      <path d="M560 316 H600" stroke="#d23b3b"/><path d="M572 320 H600" stroke="#e08a2c"/><path d="M584 324 H600" stroke="#4f8fd6"/>
+    </g>
+    <g fill="#1d2126">
+      <circle cx="560" cy="246" r="2.5"/><circle cx="572" cy="250" r="2.5"/><circle cx="584" cy="254" r="2.5"/>
+      <circle cx="560" cy="281" r="2.5"/><circle cx="572" cy="285" r="2.5"/><circle cx="584" cy="289" r="2.5"/>
+      <circle cx="560" cy="316" r="2.5"/><circle cx="572" cy="320" r="2.5"/><circle cx="584" cy="324" r="2.5"/>
+    </g>
+    <text x="545" y="266" font-size="9" fill="#4a525c" text-anchor="end">every stripe tapped</text>
+    <text x="545" y="278" font-size="9" fill="#4a525c" text-anchor="end">in parallel</text>
+
+    <g font-size="9" transform="translate(20,385)">
+      <rect width="16" height="4" y="-4" fill="#8b5a2b"/><text x="22">L (brown)</text>
+      <rect x="90" width="16" height="4" y="-4" fill="#2f6fd0"/><text x="112">N (blue)</text>
+      <rect x="175" width="16" height="4" y="-4" fill="#3f9b3f"/><text x="197">PE (green-yellow)</text>
+      <rect x="300" width="16" height="4" y="-4" fill="#d23b3b"/><text x="322">+24 V common</text>
+      <rect x="410" width="16" height="4" y="-4" fill="#e08a2c"/><text x="432">WW − (warm)</text>
+      <rect x="510" width="16" height="4" y="-4" fill="#4f8fd6"/><text x="532">CW − (cool)</text>
+      <rect x="610" width="16" height="4" y="-4" fill="#2b2b2b"/><text x="632">0 V</text>
+    </g>
+  </svg>

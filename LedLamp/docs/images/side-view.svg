@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="330" height="150" viewBox="0 0 330 150" xmlns="http://www.w3.org/2000/svg"><style>text{font-family:"Segoe UI",system-ui,-apple-system,sans-serif}text.halo{paint-order:stroke;stroke:#fff;stroke-width:4px;stroke-linejoin:round}</style>
+        <rect x="0" y="0" width="330" height="12" fill="#eceff2"/>
+        <text x="4" y="10" font-size="8" fill="#7a838e">ceiling</text>
+        <path d="M10 14 H320 V22 H10 Z" fill="#aab2bb"/>
+        <path d="M10 14 V60 M320 14 V60" stroke="#aab2bb" stroke-width="5"/>
+        <g fill="#f0b35e"><rect x="40" y="22" width="8" height="4"/><rect x="53" y="22" width="8" height="4"/><rect x="66" y="22" width="8" height="4"/><rect x="79" y="22" width="8" height="4"/><rect x="92" y="22" width="8" height="4"/><rect x="105" y="22" width="8" height="4"/><rect x="118" y="22" width="8" height="4"/><rect x="131" y="22" width="8" height="4"/><rect x="144" y="22" width="8" height="4"/><rect x="157" y="22" width="8" height="4"/><rect x="170" y="22" width="8" height="4"/><rect x="183" y="22" width="8" height="4"/><rect x="196" y="22" width="8" height="4"/><rect x="209" y="22" width="8" height="4"/><rect x="222" y="22" width="8" height="4"/><rect x="248" y="22" width="8" height="4"/><rect x="261" y="22" width="8" height="4"/><rect x="274" y="22" width="8" height="4"/><rect x="287" y="22" width="8" height="4"/></g>
+        <rect x="230" y="22" width="12" height="11" fill="#8f9aa5"/>
+        <rect x="14" y="22" width="18" height="14" fill="#34495c"/>
+        <path d="M10 60 Q165 110 320 60" fill="#f7f9fb" stroke="#c3cad2" stroke-width="2"/>
+        <path d="M 326 14 V 86" stroke="#4a525c"/><text x="322" y="100" font-size="9" fill="#4a525c" text-anchor="end">≈ 50 mm</text>
+        <text x="236" y="44" font-size="7.5" fill="#4a525c" text-anchor="middle">PSU 18 mm</text>
+        <text x="36" y="50" font-size="7.5" fill="#34495c">controller 24 mm</text>
+        <text x="30" y="130" font-size="9" fill="#4a525c">Strip faces down onto the diffuser. COB needs only</text>
+        <text x="30" y="142" font-size="9" fill="#4a525c">15–20 mm of distance to look dot-free. Height not to scale.</text>
+      </svg>
