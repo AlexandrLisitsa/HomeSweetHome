@@ -1,0 +1,25 @@
+services:
+  esphome:
+    image: ghcr.io/esphome/esphome:stable
+    container_name: powerstation-esphome
+    entrypoint: ["esphome"]
+    working_dir: /config
+    volumes:
+      - ./:/config
+      # PlatformIO's toolchain cache. `run --rm` throws the container away, so
+      # without this every build starts with an empty /root/.platformio and
+      # re-downloads the whole ESP32 toolchain before compiling anything.
+      - esphome-platformio:/root/.platformio
+    # On Linux, host networking lets OTA/mDNS auto-discovery work.
+    # On Docker Desktop (Windows/macOS) this flag is ignored; pass --device <ip>
+    # to `esphome run` instead and OTA still works.
+    network_mode: host
+    # USB serial passthrough is only needed for the very first flash.
+    # After that, OTA over WiFi is used and these can stay commented out.
+    # On Windows, attach the device first with: usbipd bind --busid <x-y>; usbipd attach --wsl --busid <x-y>
+    # privileged: true
+    # devices:
+    #   - "/dev/ttyUSB0:/dev/ttyUSB0"
+
+volumes:
+  esphome-platformio:

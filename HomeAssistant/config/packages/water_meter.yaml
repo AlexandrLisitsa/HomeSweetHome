@@ -1,0 +1,217 @@
+# ---------------------------------------------------------------------------
+# Cold water — consumption from a reading typed off the dial
+#
+# The same three parts as the gas package: a helper holding the number printed
+# on the meter face, a template sensor publishing it in the shape the Energy
+# dashboard accepts, and two utility meters cutting it into a daily and a
+# monthly figure.
+#
+# ---------------------------------------------------------------------------
+# Why bother, if it is only a number in a box
+#
+# Because the Energy dashboard's water section is the one place in the house
+# where consumption and tariff meet, and a figure that exists only on a paper
+# bill cannot be trended, cannot be compared against last winter, and cannot be
+# noticed when it doubles. Typing it in once a month is not measurement, but it
+# is a series, and a series is the thing that makes a leak or a bill obvious.
+#
+# There is no water metering hardware here and none on order. Unlike gas, there
+# is not even a trial. If a pulse source ever does appear it feeds the sensor
+# below and nothing else changes — which is the whole reason the dashboard is
+# pointed at a template sensor rather than at the helper directly. Long-term
+# statistics are keyed by statistic id and the Energy dashboard stores that id,
+# so the source can change underneath this name without orphaning a single m³.
+#
+# What this deliberately is NOT: a fabricated daily figure. Everything typed
+# lands in the hour it was typed, so the monthly total is correct and the daily
+# bars are fiction. The two meters below exist for that monthly total, and to be
+# already in place if the typing is ever replaced — not because "Cold water
+# today" will mean much.
+#
+# ---------------------------------------------------------------------------
+# Cold, spelled out
+#
+# Only the cold meter is metered and only the cold meter is planned. The keys
+# still say `cold` because a hot water meter is a realistic future addition, and
+# renaming an entity id after the fact is .storage surgery behind
+# `ha core stop` — HomeAssistant/README.md documents that procedure and it is
+# not fun. A hot meter is then this file's blocks copied with a
+# `water_meter_hot_` prefix.
+#
+# ---------------------------------------------------------------------------
+# Why the reading is gated on `> 0` and not on `| is_number`
+#
+# A helper in the input_number domain with no `initial:` and nothing to restore
+# comes up at its `min:`, not at `unknown` — the integration falls back to the
+# configured minimum when there is no stored state. So the first boot after this
+# lands publishes a hard 0.0.
+#
+# A `total_increasing` sensor whose first observed value is 0 has its statistics
+# zero point set to 0, and the next value — the real reading — is then recorded
+# as consumption, because the compiler differences consecutive states: 1234.5
+# minus 0 is 1234.5 m³ of water in a single hour, permanently, as a row in the
+# statistics table.
+#
+# Whereas a sensor whose FIRST-EVER value is 1234.5 contributes exactly zero.
+# The compiler takes its initial-sum branch, logs "zero point set to 1234.5",
+# stores sum=0, and only differences from there.
+#
+# So `min:` is deliberately 0 below, and NOT the useful default that
+# irbridge_ac_energy.yaml argues for. Any other minimum would fabricate a
+# baseline out of that restore fallback. Do not "fix" it.
+#
+# ---------------------------------------------------------------------------
+# Order of operations, once, at deploy
+#
+#   1. Land this file and restart. Nothing in the utility meter domain registers
+#      a reload service, so Reload YAML will not create the two meters below —
+#      it takes `ha core restart`.
+#   2. THEN type the reading. This order matters: a utility meter never seeds
+#      from its source's current state, only from a change to it, so the first
+#      entry after the restart is what initialises both meters — and it
+#      initialises them with no adjustment, because the state it replaces was
+#      unavailable rather than a number.
+#   3. Set the tariff.
+#   4. Settings -> Dashboards -> Energy -> Water -> Add water source. Pick
+#      "Cold water meter reading", then "Use an entity with current price" and
+#      pick "Cold water tariff".
+#
+# Until step 2 the Energy configuration page flags this sensor as unavailable,
+# and until the first hourly statistics run it also says no statistics are
+# defined. Both are expected and both clear themselves.
+#
+# A correction typed downward by more than 10% is read as a meter reset, so the
+# over-reported total is not undone by retyping — Developer tools -> Statistics
+# -> Adjust sum is the fix. Under 10% it produces one negative hour and heals
+# itself on the next entry.
+#
+# ---------------------------------------------------------------------------
+# The collision rule
+#
+# `utility_meter:` and `input_number:` are dict domains, so packages merge them
+# BY KEY and duplicate keys collide (list domains like `template:` merge by
+# appending and cannot). Every key below is `water_meter_`-prefixed for that
+# reason — the same discipline the gas and irbridge_* packages follow.
+# ---------------------------------------------------------------------------
+
+utility_meter:
+  # The same two flags as the gas package, for the same reasons.
+  # periodically_resetting: false so the meter differences against the last
+  # value it actually saw rather than reading a gap as a reset — which is what
+  # makes a source that sits unavailable between readings harmless here.
+  # always_available: true so the card shows the last figure instead of blanking
+  # between readings.
+  water_meter_cold_daily:
+    name: "Cold water today"
+    unique_id: water_meter_cold_daily
+    source: sensor.cold_water_meter_reading
+    cycle: daily
+    periodically_resetting: false
+    always_available: true
+
+  water_meter_cold_monthly:
+    name: "Cold water this month"
+    unique_id: water_meter_cold_monthly
+    source: sensor.cold_water_meter_reading
+    cycle: monthly
+    periodically_resetting: false
+    always_available: true
+
+template:
+  - sensor:
+      # The single entity the Energy dashboard is pointed at, and the one that
+      # would keep its statistics if a pulse source ever replaced the typing.
+      #
+      # device_class: water + m³ + total_increasing is not three lines of
+      # boilerplate — it is exactly the combination the Energy dashboard's water
+      # picker filters on, deriving a "volume" unit class from the device class
+      # and the unit. Drop the device class and this entity is silently never
+      # offered, with no error anywhere. All three attributes survive
+      # unavailability, so it appears in the picker before it has ever reported
+      # a number.
+      #
+      # `none` rather than a plausible-looking zero when there is nothing to
+      # report. Unknown and unavailable states are skipped both by the
+      # statistics compiler and by the utility meters above. A zero would not be
+      # skipped. It would be a reading.
+      - name: "Cold water meter reading"
+        unique_id: water_meter_cold_reading
+        device_class: water
+        state_class: total_increasing
+        unit_of_measurement: "m³"
+        icon: mdi:counter
+        availability: >-
+          {{ states('input_number.water_meter_cold_manual_reading') | float(0) > 0 }}
+        state: >-
+          {% set manual = states('input_number.water_meter_cold_manual_reading') | float(0) %}
+          {{ manual | round(3) if manual > 0 else none }}
+
+input_number:
+  # The dial reading, typed in from the meter face. A domestic cold meter reads
+  # five whole m³ and three decimals, so `max` and `step` cover the face exactly;
+  # mode: box because a slider for an eight-digit number is a joke at the user's
+  # expense.
+  #
+  # `min: 0` is load-bearing — see the banner. No `initial:`, and do not raise
+  # the minimum to something plausible-looking.
+  water_meter_cold_manual_reading:
+    name: "Cold water meter manual reading"
+    icon: mdi:pencil
+    min: 0
+    max: 99999
+    step: 0.001
+    unit_of_measurement: "m³"
+    mode: box
+
+  # Wired into .storage/energy as the water source's price entity, so the Energy
+  # dashboard's cost column is real money. An entity rather than a fixed number
+  # so the tariff lives in this file and therefore in git, and so a tariff change
+  # is a UI edit instead of a .storage edit behind `ha core stop`.
+  #
+  # The unit MUST carry the slash. The energy integration checks a price
+  # entity's unit against a set of plain VOLUME units and, not finding "UAH/m³"
+  # among them, falls back to its metric default of per m³ — which is what is
+  # wanted. Write a bare "m³" or "L" here and that fallback is skipped and a real
+  # unit conversion gets applied to the money instead. The ³ is U+00B3; "m3" is
+  # a different string.
+  #
+  # min: 0 is the right default here: a zero tariff under-reports visibly and
+  # corrects itself the moment it is set, where a guessed one mis-reports
+  # invisibly forever.
+  #
+  # Set to 81.92 in September 2026, from Dniprovodokanal's tariff decision of
+  # 30 June 2026 effective 1 July: 47.10 for supply plus 34.82 for wastewater,
+  # both including VAT.
+  #
+  # The two are summed rather than tracked apart because wastewater is billed
+  # per cubic metre of METERED water, not measured on its own: every cubic metre
+  # through this meter is charged both ways, so their sum is the real price of
+  # the thing this meter counts. Watering the garden is charged wastewater too,
+  # absent a second meter for irrigation.
+  #
+  # Before 1 July 2026 the pair was 18.16 and 13.20, so 31.36, and had been for
+  # four and a half years. That figure is recorded here because the backfilled
+  # cost history spans the change and needs both, and because the utility
+  # publishes only the current one — the numbers near 31 still dominating search
+  # results are the OLD tariff being reported as though it were current, which
+  # is a more confusing failure than a plain error.
+  #
+  # It was derived from the account history rather than taken from those
+  # results: the supply/wastewater charge ratio is 1.3758 for every month to
+  # June and 1.3527 from July, matching 18.16/13.20 and 47.10/34.82 exactly; and
+  # May 2026 carries a correction of precisely -18.16 and -13.20, one cubic
+  # metre at the old rate, which pins the absolute values and not merely the
+  # ratio. Dividing each month's supply charge by 18.16 then gives volumes that
+  # agree with the meter's own readings.
+  #
+  # Do not expect the cost column to match a single invoice. The utility bills a
+  # flat estimate each month and trues it up with a recalculation when a reading
+  # arrives, so any one month disagrees while the running total does not.
+  water_meter_cold_price:
+    name: "Cold water tariff"
+    icon: mdi:cash
+    min: 0
+    max: 1000
+    step: 0.01
+    unit_of_measurement: "UAH/m³"
+    mode: box

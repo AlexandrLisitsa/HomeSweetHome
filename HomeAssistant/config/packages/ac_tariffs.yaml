@@ -1,0 +1,423 @@
+# ---------------------------------------------------------------------------
+# Electricity tariff for both air conditioners: day, night, and battery
+#
+# Requires irbridge_ac_energy.yaml (the hall plug) and bedroom_ac_energy.yaml
+# (the bedroom plug). Needs `ha core restart` to take effect: utility_meter
+# registers no reload service, so the meters below do not exist until one.
+#
+# ---------------------------------------------------------------------------
+# Why this file exists
+#
+# The A/C cost sensors used to multiply a day's kWh by one flat
+# input_number. That is wrong on this supply by roughly a factor of two for
+# everything that ran overnight, and the A/C is exactly the load that runs
+# overnight. A unit cooling a bedroom from 23:00 to 07:00 was being billed at
+# the day rate for all eight hours.
+#
+# The inverter already models this properly -- `select.grid_real_tariff` and
+# the two `sensor.powmr_inverter_grid_real_tariff_*` meters -- so this is the
+# same shape applied to the two plugs, and it switches on the same boundaries.
+#
+# ---------------------------------------------------------------------------
+# THE THIRD ZONE: BATTERY
+#
+# A kilowatt-hour that came out of the pack was not bought at the rate the
+# clock says. The charger only fills the battery inside the 23:00-07:00 window
+# -- `night_charging_only` in the firmware -- so everything the inverter gives
+# back was bought at the NIGHT price, whatever time it is when the A/C uses
+# it. Booking it to `day`, which is what happened before, charged twice the
+# real figure for every daytime outage, and this grid drops eight to thirteen
+# times a day.
+#
+# So `battery` is a third bucket on the same meters, priced at the night rate.
+# It is a separate bucket rather than simply forcing the night one because the
+# two answer different questions: night says when the A/C ran, battery says
+# the house was off-grid while it did. The card shows all three.
+#
+# The rule for being on battery is not invented here. `Grid Real Power
+# (Calculated)` in power-station.yaml returns exactly 0 W when the grid is
+# contributing nothing -- mains under 150 V, or no charge current with the
+# pack pushing out more than 2 W -- and load + 30 W otherwise, so a zero IS
+# the firmware's own verdict. Same principle as the boundaries below: the
+# inverter decides, this file agrees.
+#
+# ---------------------------------------------------------------------------
+# THE BOUNDARIES ARE NOT DEFINED HERE
+#
+# 23:00 and 07:00 come from `PowerStation/power-station.yaml`, which declares
+# them once as substitutions (`night_tariff_start` / `night_tariff_end`) and
+# uses them to gate the battery charger. The automation at the bottom of this
+# file has to agree with that firmware or the house will be charging the
+# battery at one rate and costing it at another. If the tariff window ever
+# moves, it moves in the ESPHome file first and here second.
+#
+# The existing automation `Tariff: Auto Switch Day/Night` in automations.yaml
+# switches the inverter's own select on those same two times. This file adds
+# its own automation rather than extending that one, because that one is
+# UI-owned and would be rewritten by the next edit in the automation editor.
+#
+# ---------------------------------------------------------------------------
+# WHY THE SPLIT METERS SIT BESIDE THE TOTALS INSTEAD OF REPLACING THEM
+#
+# Adding `tariffs:` to an existing utility_meter does not extend it -- it
+# replaces its entity with one per tariff, suffixed `_day` and `_night`. So
+# `sensor.a_c_energy_today` would simply stop existing, and that id is wired into
+# three things this repo cannot restore: the Energy dashboard's individual
+# device (a config flow, invisible to git -- see README), the
+# `json_attributes_topic` payload the climate entity publishes, and the
+# statistics table, which is keyed by statistic id and would start a new
+# series with no history.
+#
+# So the totals stay exactly as they were and these are additional meters over
+# the same two sources. The day and night halves always sum to the total,
+# which is worth asserting when something looks wrong:
+#
+#     sensor.irbridge_ac_tariff_daily_day
+#       + sensor.irbridge_ac_tariff_daily_night
+#       + sensor.irbridge_ac_tariff_daily_battery
+#       == sensor.a_c_energy_today
+#
+# The cost of the extra meters is four `select.*` entities that all have to be
+# switched together. That is what the automation does, and why it lists them
+# explicitly rather than pattern-matching: a select that silently stops being
+# switched books every kWh to whichever zone it was left in, and nothing about
+# that looks broken.
+#
+# ---------------------------------------------------------------------------
+# A TARIFF METER IS NOT NAMED THE WAY EVERY OTHER METER IS
+#
+# `utility_meter` without tariffs takes its entity id from `name:` --
+# `name: "A/C energy today"` is `sensor.a_c_energy_today`, which is how every
+# other meter in this repo reads. Add `tariffs:` and that stops being true:
+# the id comes from the CONFIG KEY with the tariff appended, and `name:`
+# survives only as the friendly name. So the four meters below are
+#
+#     key   irbridge_ac_tariff_daily
+#     name  "A/C tariff today"
+#     ->    sensor.irbridge_ac_tariff_daily_day
+#           sensor.irbridge_ac_tariff_daily_night
+#           select.irbridge_ac_tariff_daily
+#
+# and NOT the name-derived ids ending `a_c_tariff_today_day` and friends, which
+# is what this file assumed on
+# its first deploy. Nothing failed loudly: the four selects were "missing or
+# not currently available" in one automation-trace warning, the cost sensors
+# sat `unavailable` because their availability template guards on meters that
+# do not exist, and the card drew em dashes. Which is the exact failure mode
+# tools/check_climate_card.py exists to catch -- and it did not, because the
+# entity ids it checks come from the card, and the card was equally wrong.
+#
+# If these keys are ever renamed, the entity ids move with them and the
+# registry keeps the old ones as orphans. Rename the unique_id in the same
+# commit or the old id wins.
+# ---------------------------------------------------------------------------
+
+input_number:
+  # Ukraine's household two-zone tariff: the night rate is half the day rate,
+  # and the day rate is the same 4.32 UAH/kWh the single-rate tariff charges.
+  #
+  # min: 0 on both, against this repo's "each min: IS the default" convention
+  # and for the same reason gas_meter.yaml breaks it -- a tariff that cannot
+  # be lowered to zero cannot be switched off while it is being worked out,
+  # and a wrong non-zero rate is harder to notice than an obvious zero. Set
+  # them from the UI once; they restore across restarts.
+  electricity_tariff_day:
+    name: "Electricity tariff (day)"
+    icon: mdi:white-balance-sunny
+    min: 0
+    max: 100
+    step: 0.01
+    mode: box
+    unit_of_measurement: "UAH/kWh"
+
+  electricity_tariff_night:
+    name: "Electricity tariff (night)"
+    icon: mdi:weather-night
+    min: 0
+    max: 100
+    step: 0.01
+    mode: box
+    unit_of_measurement: "UAH/kWh"
+
+template:
+  - sensor:
+      # --- which zone is in force, and what it costs ----------------------
+      #
+      # Derived from the clock rather than read off a select, on purpose: this
+      # is what the tariff OUGHT to be, so it is also the thing to compare a
+      # stuck select against. The card shows it next to the cost so a select
+      # that failed to switch is visible as a disagreement rather than as a
+      # bill that is quietly wrong.
+      # THREE ZONES, NOT TWO. `battery` is what the A/C costs while the
+      # inverter is running the house off the pack, and it is priced at the
+      # NIGHT rate -- because that is what those kilowatt-hours cost: the
+      # charger only fills the pack in the 23:00-07:00 window
+      # (`night_charging_only` in the firmware), so everything that comes back
+      # out of it was bought at the night price. Billing it at the day rate,
+      # which is what happened before, charged twice the real figure for every
+      # daytime outage -- and this grid drops eight to thirteen times a day.
+      #
+      # WHAT COUNTS AS ON-BATTERY IS THE FIRMWARE'S OWN ANSWER, not a second
+      # opinion derived here. `Grid Real Power (Calculated)` returns exactly
+      # 0 W in the two cases where the grid is contributing nothing -- mains
+      # below 150 V, or no charge current with the pack pushing out more than
+      # 2 W -- and load + 30 W otherwise. So a zero IS the firmware saying
+      # "this load is on the battery", and the threshold below only has to
+      # separate 0 from a number that is never less than 30.
+      #
+      # An inverter that has stopped answering leaves this `unknown`, and the
+      # zone falls back to the clock rather than guessing. That is the safe
+      # direction: it books to the grid tariff the house would have paid if
+      # the battery were not there.
+      - name: "Electricity tariff zone"
+        unique_id: electricity_tariff_zone
+        icon: >-
+          {% if states('sensor.powmr_inverter_grid_real_power_calculated') | is_number
+                and states('sensor.powmr_inverter_grid_real_power_calculated') | float(999) <= 0.5 %}
+          mdi:battery-charging-medium
+          {% elif now().hour >= 23 or now().hour < 7 %}
+          mdi:weather-night
+          {% else %}
+          mdi:white-balance-sunny
+          {% endif %}
+        state: >-
+          {% if states('sensor.powmr_inverter_grid_real_power_calculated') | is_number
+                and states('sensor.powmr_inverter_grid_real_power_calculated') | float(999) <= 0.5 %}
+          battery
+          {% elif now().hour >= 23 or now().hour < 7 %}
+          night
+          {% else %}
+          day
+          {% endif %}
+
+      # No device_class and no state_class, and both omissions are deliberate.
+      # `monetary` demands state_class: total and HA logs a warning and drops
+      # the statistic otherwise -- but this is a RATE, not an amount of money,
+      # so it is neither a total nor something worth accumulating. It exists to
+      # be read next to the cost, and a unit is all it needs.
+      - name: "Electricity tariff now"
+        unique_id: electricity_tariff_now
+        unit_of_measurement: "UAH/kWh"
+        icon: mdi:cash-clock
+        state: >-
+          {% if states('sensor.electricity_tariff_zone') in ['night', 'battery'] %}
+          {{ states('input_number.electricity_tariff_night') | float(0) }}
+          {% else %}
+          {{ states('input_number.electricity_tariff_day') | float(0) }}
+          {% endif %}
+
+      # --- the money ------------------------------------------------------
+      #
+      # state_class: total is not optional with device_class: monetary -- HA
+      # rejects anything else, and without both the value never reaches the
+      # statistics tables the energy dashboard reads.
+      #
+      # Each of these is (day kWh x day rate) + (night kWh x night rate),
+      # which is the actual arithmetic on the invoice. `is_number` on both
+      # halves rather than float(0) with no guard: a meter that has not been
+      # created yet reads `unknown`, and treating that as zero would publish a
+      # confident 0.00 UAH for a unit that ran all night.
+      - name: "A/C cost today"
+        unique_id: irbridge_ac_cost_today
+        device_class: monetary
+        state_class: total
+        unit_of_measurement: "UAH"
+        icon: mdi:cash-clock
+        availability: >-
+          {{ states('sensor.irbridge_ac_tariff_daily_day') | is_number
+             and states('sensor.irbridge_ac_tariff_daily_night') | is_number
+             and states('sensor.irbridge_ac_tariff_daily_battery') | is_number }}
+        state: >-
+          {{ ((states('sensor.irbridge_ac_tariff_daily_day') | float(0)
+               * (states('input_number.electricity_tariff_day') | float(0)))
+            + ((states('sensor.irbridge_ac_tariff_daily_night') | float(0)
+                + states('sensor.irbridge_ac_tariff_daily_battery') | float(0))
+               * (states('input_number.electricity_tariff_night') | float(0))))
+             | round(2) }}
+        attributes:
+          day_kwh: "{{ states('sensor.irbridge_ac_tariff_daily_day') | float(0) | round(3) }}"
+          night_kwh: "{{ states('sensor.irbridge_ac_tariff_daily_night') | float(0) | round(3) }}"
+          battery_kwh: "{{ states('sensor.irbridge_ac_tariff_daily_battery') | float(0) | round(3) }}"
+
+      - name: "A/C cost this month"
+        unique_id: irbridge_ac_cost_this_month
+        device_class: monetary
+        state_class: total
+        unit_of_measurement: "UAH"
+        icon: mdi:cash-multiple
+        availability: >-
+          {{ states('sensor.irbridge_ac_tariff_monthly_day') | is_number
+             and states('sensor.irbridge_ac_tariff_monthly_night') | is_number
+             and states('sensor.irbridge_ac_tariff_monthly_battery') | is_number }}
+        state: >-
+          {{ ((states('sensor.irbridge_ac_tariff_monthly_day') | float(0)
+               * (states('input_number.electricity_tariff_day') | float(0)))
+            + ((states('sensor.irbridge_ac_tariff_monthly_night') | float(0)
+                + states('sensor.irbridge_ac_tariff_monthly_battery') | float(0))
+               * (states('input_number.electricity_tariff_night') | float(0))))
+             | round(2) }}
+        attributes:
+          day_kwh: "{{ states('sensor.irbridge_ac_tariff_monthly_day') | float(0) | round(3) }}"
+          night_kwh: "{{ states('sensor.irbridge_ac_tariff_monthly_night') | float(0) | round(3) }}"
+          battery_kwh: "{{ states('sensor.irbridge_ac_tariff_monthly_battery') | float(0) | round(3) }}"
+
+      - name: "Bedroom A/C cost today"
+        unique_id: bedroom_ac_cost_today
+        device_class: monetary
+        state_class: total
+        unit_of_measurement: "UAH"
+        icon: mdi:cash-clock
+        availability: >-
+          {{ states('sensor.bedroom_ac_tariff_daily_day') | is_number
+             and states('sensor.bedroom_ac_tariff_daily_night') | is_number
+             and states('sensor.bedroom_ac_tariff_daily_battery') | is_number }}
+        state: >-
+          {{ ((states('sensor.bedroom_ac_tariff_daily_day') | float(0)
+               * (states('input_number.electricity_tariff_day') | float(0)))
+            + ((states('sensor.bedroom_ac_tariff_daily_night') | float(0)
+                + states('sensor.bedroom_ac_tariff_daily_battery') | float(0))
+               * (states('input_number.electricity_tariff_night') | float(0))))
+             | round(2) }}
+        attributes:
+          day_kwh: "{{ states('sensor.bedroom_ac_tariff_daily_day') | float(0) | round(3) }}"
+          night_kwh: "{{ states('sensor.bedroom_ac_tariff_daily_night') | float(0) | round(3) }}"
+          battery_kwh: "{{ states('sensor.bedroom_ac_tariff_daily_battery') | float(0) | round(3) }}"
+
+      - name: "Bedroom A/C cost this month"
+        unique_id: bedroom_ac_cost_month
+        device_class: monetary
+        state_class: total
+        unit_of_measurement: "UAH"
+        icon: mdi:cash-multiple
+        availability: >-
+          {{ states('sensor.bedroom_ac_tariff_monthly_day') | is_number
+             and states('sensor.bedroom_ac_tariff_monthly_night') | is_number
+             and states('sensor.bedroom_ac_tariff_monthly_battery') | is_number }}
+        state: >-
+          {{ ((states('sensor.bedroom_ac_tariff_monthly_day') | float(0)
+               * (states('input_number.electricity_tariff_day') | float(0)))
+            + ((states('sensor.bedroom_ac_tariff_monthly_night') | float(0)
+                + states('sensor.bedroom_ac_tariff_monthly_battery') | float(0))
+               * (states('input_number.electricity_tariff_night') | float(0))))
+             | round(2) }}
+        attributes:
+          day_kwh: "{{ states('sensor.bedroom_ac_tariff_monthly_day') | float(0) | round(3) }}"
+          night_kwh: "{{ states('sensor.bedroom_ac_tariff_monthly_night') | float(0) | round(3) }}"
+          battery_kwh: "{{ states('sensor.bedroom_ac_tariff_monthly_battery') | float(0) | round(3) }}"
+
+# --- the split meters ------------------------------------------------------
+#
+# Same two sources as the existing total meters, same flags and for the same
+# reasons: periodically_resetting: false because these plug counters only ever
+# climb and the default would read a Zigbee dropout as a reset, and
+# always_available: true so a dropout leaves the last figure standing instead
+# of blanking the cost sensors that depend on it.
+utility_meter:
+  irbridge_ac_tariff_daily:
+    name: "A/C tariff today"
+    unique_id: irbridge_ac_tariff_daily
+    source: sensor.0x70b3d52b600fddcb_energy
+    cycle: daily
+    periodically_resetting: false
+    always_available: true
+    tariffs:
+      - day
+      - night
+      - battery
+
+  irbridge_ac_tariff_monthly:
+    name: "A/C tariff month"
+    unique_id: irbridge_ac_tariff_monthly
+    source: sensor.0x70b3d52b600fddcb_energy
+    cycle: monthly
+    periodically_resetting: false
+    always_available: true
+    tariffs:
+      - day
+      - night
+      - battery
+
+  bedroom_ac_tariff_daily:
+    name: "Bedroom A/C tariff today"
+    unique_id: bedroom_ac_tariff_daily
+    source: sensor.0xa4c13820fe9ec412_energy
+    cycle: daily
+    periodically_resetting: false
+    always_available: true
+    tariffs:
+      - day
+      - night
+      - battery
+
+  bedroom_ac_tariff_monthly:
+    name: "Bedroom A/C tariff month"
+    unique_id: bedroom_ac_tariff_monthly
+    source: sensor.0xa4c13820fe9ec412_energy
+    cycle: monthly
+    periodically_resetting: false
+    always_available: true
+    tariffs:
+      - day
+      - night
+      - battery
+
+automation:
+  # --- keep every meter in the same zone ------------------------------------
+  #
+  # One automation, all four selects, both boundaries. Splitting it per meter
+  # would make a partial failure look like a working system with one strange
+  # number in it.
+  #
+  # `homeassistant.start` is a trigger here and not a nicety: the selects
+  # restore whatever zone they were left in, so a box that reboots at 02:00
+  # after being shut down at 18:00 would keep booking night consumption to the
+  # day meter until 07:00. Re-deriving the zone on every start closes that.
+  #
+  # THE ZONE IS NO LONGER RECOMPUTED HERE. It was the same clock expression as
+  # `sensor.electricity_tariff_zone`, written twice, and the moment the
+  # battery became a third zone that duplication would have had to learn about
+  # the inverter as well. The sensor decides; this only mirrors it onto the
+  # four selects.
+  #
+  # The `for: 30s` on the state trigger is the one thing standing between this
+  # and thrash. The grid here drops eight to thirteen times a day and some of
+  # those are seconds long, and each flap would otherwise switch four selects
+  # twice. Thirty seconds of an outage stays booked to the grid zone, which is
+  # a rounding error against a meter that reads in kWh, and a short blip
+  # switches nothing at all.
+  #
+  # mode: single with no queue -- the triggers can only coincide at a restart
+  # that lands exactly on a boundary, and they all read the same sensor.
+  - id: ac_tariff_auto_switch
+    alias: "A/C: switch the tariff meters day/night/battery"
+    mode: single
+    trigger:
+      - platform: time
+        at: "07:00:00"
+      - platform: time
+        at: "23:00:00"
+      - platform: homeassistant
+        event: start
+      # The inverter dropping to the pack, or coming back off it.
+      - platform: state
+        entity_id: sensor.electricity_tariff_zone
+        for: "00:00:30"
+    condition:
+      # A zone of `unknown` or `unavailable` is not a zone. Leaving the selects
+      # where they are books to the last known one, which beats booking to a
+      # word that is not a tariff.
+      - condition: template
+        value_template: >-
+          {{ states('sensor.electricity_tariff_zone') in ['day', 'night', 'battery'] }}
+    action:
+      - variables:
+          zone: "{{ states('sensor.electricity_tariff_zone') }}"
+      - service: select.select_option
+        target:
+          entity_id:
+            - select.irbridge_ac_tariff_daily
+            - select.irbridge_ac_tariff_monthly
+            - select.bedroom_ac_tariff_daily
+            - select.bedroom_ac_tariff_monthly
+        data:
+          option: "{{ zone }}"

@@ -1,0 +1,4 @@
+# Copy to local.properties. IntelliJ IDEA / Android Studio normally writes this
+# for you the first time you open the project; this is here for CI or a
+# headless build.
+sdk.dir=/home/you/Android/Sdk

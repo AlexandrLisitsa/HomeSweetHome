@@ -1,0 +1,303 @@
+# Loads default set of integrations. Do not remove.
+default_config:
+
+# ==========================================================
+# 1. RECORDER: KEEP THE DATABASE SMALL
+# ==========================================================
+recorder:
+  # Raw states are kept for 2 days. Long-term statistics (5-minute and hourly
+  # aggregates) are never purged and don't depend on this setting, so every
+  # numeric trend, the Energy dashboard and the costs stay complete.
+  #
+  # The price: 163 entities without a numeric state (switches, lights,
+  # binary_sensors including the leak sensor, automations, device_trackers)
+  # have no aggregates at all -- raw states are their only history. After 2 days
+  # "when did the leak sensor fire" has no answer.
+  #
+  # history_stats in irbridge_ac_energy.yaml only look back one day
+  # (start: today_at()), so 2 days doesn't break them.
+  purge_keep_days: 2
+  exclude:
+    # Leave every Google Home shim sensor out by name, so they don't fill the
+    # database or wear the disk.
+    entity_globs:
+      - sensor.google_*
+
+# Load frontend themes from the themes folder
+frontend:
+  themes: !include_dir_merge_named themes
+
+automation: !include automations.yaml
+script: !include scripts.yaml
+scene: !include scenes.yaml
+
+# ==========================================================
+# 2. GOOGLE ASSISTANT (GOOGLE HOME)
+# ==========================================================
+# The real block lives in google_assistant.yaml next to this file: its names and
+# aliases are in the language Google Home is spoken to in, so it is git-ignored.
+# HomeAssistant/examples/google_assistant.example.yaml is an English copy.
+google_assistant: !include google_assistant.yaml
+
+# ==========================================
+# 3. TEMPLATES (SHIMS FOR GOOGLE HOME)
+# ==========================================
+template:
+  # Updated on a timer, not on every change of the source: these sensors mirror
+  # the fastest sensors on the system (~1000 updates an hour each) and exist
+  # only for voice queries, where a 30-second delay goes unnoticed. The recorder
+  # excludes them (sensor.google_*), so nothing is written to the database --
+  # but every update still costs a state-machine write and a push to Google.
+  #
+  # device_class temperature needs a number, so BOTH mechanisms are needed:
+  #   float(0) -- so the template never hands "unavailable" to the validator.
+  #     availability alone isn't enough: it's applied later, and the string
+  #     reaches the validator first (verified: 15 errors on every restart).
+  #   availability -- so the outside world sees "unavailable", not an invented
+  #     zero. float(0) only works inside; availability overrides it outside.
+  - trigger:
+      - platform: homeassistant
+        event: start
+      - platform: time_pattern
+        seconds: "/30"
+    sensor:
+      - name: "Google BMS Capacity Remaining"
+        unique_id: google_shim_bms_capacity_remaining
+        state: "{{ states('sensor.jkbms_gateway_bms_capacity_remaining') | float(0) }}"
+        availability: >-
+          {{ states('sensor.jkbms_gateway_bms_capacity_remaining')
+             not in ['unknown', 'unavailable', 'none', ''] }}
+        device_class: temperature
+        unit_of_measurement: "°C"
+
+      - name: "Google Cell 1"
+        unique_id: google_shim_cell_1
+        state: "{{ (states('sensor.jkbms_gateway_bms_cell_1') | float(0) * 1000) | int }}"
+        availability: >-
+          {{ states('sensor.jkbms_gateway_bms_cell_1')
+             not in ['unknown', 'unavailable', 'none', ''] }}
+        device_class: temperature
+        unit_of_measurement: "°C"
+
+      - name: "Google Cell 2"
+        unique_id: google_shim_cell_2
+        state: "{{ (states('sensor.jkbms_gateway_bms_cell_2') | float(0) * 1000) | int }}"
+        availability: >-
+          {{ states('sensor.jkbms_gateway_bms_cell_2')
+             not in ['unknown', 'unavailable', 'none', ''] }}
+        device_class: temperature
+        unit_of_measurement: "°C"
+
+      - name: "Google Cell 3"
+        unique_id: google_shim_cell_3
+        state: "{{ (states('sensor.jkbms_gateway_bms_cell_3') | float(0) * 1000) | int }}"
+        availability: >-
+          {{ states('sensor.jkbms_gateway_bms_cell_3')
+             not in ['unknown', 'unavailable', 'none', ''] }}
+        device_class: temperature
+        unit_of_measurement: "°C"
+
+      - name: "Google Cell 4"
+        unique_id: google_shim_cell_4
+        state: "{{ (states('sensor.jkbms_gateway_bms_cell_4') | float(0) * 1000) | int }}"
+        availability: >-
+          {{ states('sensor.jkbms_gateway_bms_cell_4')
+             not in ['unknown', 'unavailable', 'none', ''] }}
+        device_class: temperature
+        unit_of_measurement: "°C"
+
+      - name: "Google Cell 5"
+        unique_id: google_shim_cell_5
+        state: "{{ (states('sensor.jkbms_gateway_bms_cell_5') | float(0) * 1000) | int }}"
+        availability: >-
+          {{ states('sensor.jkbms_gateway_bms_cell_5')
+             not in ['unknown', 'unavailable', 'none', ''] }}
+        device_class: temperature
+        unit_of_measurement: "°C"
+
+      - name: "Google Cell 6"
+        unique_id: google_shim_cell_6
+        state: "{{ (states('sensor.jkbms_gateway_bms_cell_6') | float(0) * 1000) | int }}"
+        availability: >-
+          {{ states('sensor.jkbms_gateway_bms_cell_6')
+             not in ['unknown', 'unavailable', 'none', ''] }}
+        device_class: temperature
+        unit_of_measurement: "°C"
+
+      - name: "Google Cell 7"
+        unique_id: google_shim_cell_7
+        state: "{{ (states('sensor.jkbms_gateway_bms_cell_7') | float(0) * 1000) | int }}"
+        availability: >-
+          {{ states('sensor.jkbms_gateway_bms_cell_7')
+             not in ['unknown', 'unavailable', 'none', ''] }}
+        device_class: temperature
+        unit_of_measurement: "°C"
+
+      - name: "Google Cell 8"
+        unique_id: google_shim_cell_8
+        state: "{{ (states('sensor.jkbms_gateway_bms_cell_8') | float(0) * 1000) | int }}"
+        availability: >-
+          {{ states('sensor.jkbms_gateway_bms_cell_8')
+             not in ['unknown', 'unavailable', 'none', ''] }}
+        device_class: temperature
+        unit_of_measurement: "°C"
+
+      - name: "Google BMS Delta"
+        unique_id: google_shim_bms_delta
+        state: "{{ (states('sensor.jkbms_gateway_bms_delta_cell_voltage') | float(0) * 1000) | int }}"
+        availability: >-
+          {{ states('sensor.jkbms_gateway_bms_delta_cell_voltage')
+             not in ['unknown', 'unavailable', 'none', ''] }}
+        device_class: temperature
+        unit_of_measurement: "°C"
+
+      - name: "Google BMS Max Cell"
+        unique_id: google_shim_bms_max_cell
+        state: "{{ (states('sensor.jkbms_gateway_bms_max_cell_voltage') | float(0) * 1000) | int }}"
+        availability: >-
+          {{ states('sensor.jkbms_gateway_bms_max_cell_voltage')
+             not in ['unknown', 'unavailable', 'none', ''] }}
+        device_class: temperature
+        unit_of_measurement: "°C"
+
+      - name: "Google BMS Min Cell"
+        unique_id: google_shim_bms_min_cell
+        state: "{{ (states('sensor.jkbms_gateway_bms_min_cell_voltage') | float(0) * 1000) | int }}"
+        availability: >-
+          {{ states('sensor.jkbms_gateway_bms_min_cell_voltage')
+             not in ['unknown', 'unavailable', 'none', ''] }}
+        device_class: temperature
+        unit_of_measurement: "°C"
+
+      - name: "Google BMS Current"
+        unique_id: google_shim_bms_current
+        state: "{{ states('sensor.jkbms_gateway_bms_current') | float(0) }}"
+        availability: >-
+          {{ states('sensor.jkbms_gateway_bms_current')
+             not in ['unknown', 'unavailable', 'none', ''] }}
+        device_class: temperature
+        unit_of_measurement: "°C"
+
+      - name: "Google BMS Power"
+        unique_id: google_shim_bms_power
+        state: "{{ states('sensor.jkbms_gateway_bms_power') | float(0) }}"
+        availability: >-
+          {{ states('sensor.jkbms_gateway_bms_power')
+             not in ['unknown', 'unavailable', 'none', ''] }}
+        device_class: temperature
+        unit_of_measurement: "°C"
+
+      - name: "Google BMS SOC"
+        unique_id: google_shim_bms_soc
+        state: "{{ states('sensor.jkbms_gateway_bms_state_of_charge') | float(0) }}"
+        availability: >-
+          {{ states('sensor.jkbms_gateway_bms_state_of_charge')
+             not in ['unknown', 'unavailable', 'none', ''] }}
+        device_class: temperature
+        unit_of_measurement: "°C"
+
+      - name: "Google BMS Total Voltage"
+        unique_id: google_shim_bms_total_voltage
+        state: "{{ states('sensor.jkbms_gateway_bms_total_voltage') | float(0) }}"
+        availability: >-
+          {{ states('sensor.jkbms_gateway_bms_total_voltage')
+             not in ['unknown', 'unavailable', 'none', ''] }}
+        device_class: temperature
+        unit_of_measurement: "°C"
+
+      - name: "Google AC Output Power"
+        unique_id: google_shim_ac_output_power
+        state: "{{ states('sensor.powmr_inverter_ac_output_power') | float(0) }}"
+        availability: >-
+          {{ states('sensor.powmr_inverter_ac_output_power')
+             not in ['unknown', 'unavailable', 'none', ''] }}
+        device_class: temperature
+        unit_of_measurement: "°C"
+
+      - name: "Google AC Output Voltage"
+        unique_id: google_shim_ac_output_voltage
+        state: "{{ states('sensor.powmr_inverter_ac_output_voltage') | float(0) }}"
+        availability: >-
+          {{ states('sensor.powmr_inverter_ac_output_voltage')
+             not in ['unknown', 'unavailable', 'none', ''] }}
+        device_class: temperature
+        unit_of_measurement: "°C"
+
+      - name: "Google Battery Charge Current"
+        unique_id: google_shim_battery_charge_current
+        state: "{{ states('sensor.powmr_inverter_battery_charge_current') | float(0) }}"
+        availability: >-
+          {{ states('sensor.powmr_inverter_battery_charge_current')
+             not in ['unknown', 'unavailable', 'none', ''] }}
+        device_class: temperature
+        unit_of_measurement: "°C"
+
+      - name: "Google Battery Discharge Current"
+        unique_id: google_shim_battery_discharge_current
+        state: "{{ states('sensor.powmr_inverter_battery_discharge_current') | float(0) }}"
+        availability: >-
+          {{ states('sensor.powmr_inverter_battery_discharge_current')
+             not in ['unknown', 'unavailable', 'none', ''] }}
+        device_class: temperature
+        unit_of_measurement: "°C"
+
+      - name: "Google Battery Voltage Inverter"
+        unique_id: google_shim_battery_voltage_inverter
+        state: "{{ states('sensor.powmr_inverter_battery_voltage_inverter') | float(0) }}"
+        availability: >-
+          {{ states('sensor.powmr_inverter_battery_voltage_inverter')
+             not in ['unknown', 'unavailable', 'none', ''] }}
+        device_class: temperature
+        unit_of_measurement: "°C"
+
+      - name: "Google ESP Uptime"
+        unique_id: google_shim_esp_uptime
+        state: "{{ states('sensor.powmr_inverter_esp_uptime') | float(0) }}"
+        availability: >-
+          {{ states('sensor.powmr_inverter_esp_uptime')
+             not in ['unknown', 'unavailable', 'none', ''] }}
+        device_class: temperature
+        unit_of_measurement: "°C"
+
+      - name: "Google Grid Frequency"
+        unique_id: google_shim_grid_frequency
+        state: "{{ states('sensor.powmr_inverter_grid_frequency') | float(0) }}"
+        availability: >-
+          {{ states('sensor.powmr_inverter_grid_frequency')
+             not in ['unknown', 'unavailable', 'none', ''] }}
+        device_class: temperature
+        unit_of_measurement: "°C"
+
+      - name: "Google Grid Voltage"
+        unique_id: google_shim_grid_voltage
+        state: "{{ states('sensor.powmr_inverter_grid_voltage') | float(0) }}"
+        availability: >-
+          {{ states('sensor.powmr_inverter_grid_voltage')
+             not in ['unknown', 'unavailable', 'none', ''] }}
+        device_class: temperature
+        unit_of_measurement: "°C"
+
+      - name: "Google Load Percentage"
+        unique_id: google_shim_load_percentage
+        state: "{{ states('sensor.powmr_inverter_load_percentage') | float(0) }}"
+        availability: >-
+          {{ states('sensor.powmr_inverter_load_percentage')
+             not in ['unknown', 'unavailable', 'none', ''] }}
+        device_class: temperature
+        unit_of_measurement: "°C"
+
+      - name: "Google Total Energy Consumption"
+        unique_id: google_shim_total_energy_consumption
+        state: "{{ states('sensor.powmr_inverter_total_energy_consumption') | float(0) }}"
+        availability: >-
+          {{ states('sensor.powmr_inverter_total_energy_consumption')
+             not in ['unknown', 'unavailable', 'none', ''] }}
+        device_class: temperature
+        unit_of_measurement: "°C"
+
+# --- IR Bridge -----------------------------------------------------------
+# Added by tools/ha_deploy.sh on 20260823-132417
+homeassistant:
+  packages: !include_dir_named packages
+
+rest_command: !include irbridge/rest_commands.yaml

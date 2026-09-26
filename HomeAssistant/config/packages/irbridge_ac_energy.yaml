@@ -1,0 +1,564 @@
+# ---------------------------------------------------------------------------
+# IR Bridge — energy, runtime and the one honest state signal
+#
+# Drop this in  config/packages/irbridge_ac_energy.yaml  alongside
+# irbridge_ac.yaml. Requires irbridge_ac.yaml to be loaded (it reads
+# climate.daewoo_a_c and sensor.a_c_assumed_state), and requires the Zigbee
+# energy meter on the A/C circuit.
+#
+# ---------------------------------------------------------------------------
+# Why this file matters more than it looks
+#
+# Everything in irbridge_ac.yaml is a *belief*. IR is write-only, so mode,
+# setpoint, fan and swing are records of what was transmitted, not readings of
+# what the unit is doing. Someone picks up the physical remote and the card
+# lies until the next resend.
+#
+# A power meter breaks that. Watts are a measurement, and they answer the one
+# question IR cannot: is the thing actually running right now. So this file is
+# not only a set of consumption sensors — it closes the loop:
+#
+#   sensor.a_c_hvac_action   measured, published back into the climate entity,
+#                            so the thermostat card shows Cooling / Idle / Off
+#                            from the meter rather than from an assumption
+#   binary_sensor.a_c_drift  the belief and the measurement disagree — i.e.
+#                            somebody used the remote, or the unit ignored us
+#
+# The consumption sensors are the easy half. That pair is the reason to bother.
+#
+# ---------------------------------------------------------------------------
+# Two things to set before deploying
+#
+# 1. The meter entity ids, if yours differ. They appear once each, in
+#    `template:` and in `utility_meter:` below:
+#        sensor.0x70b3d52b600fddcb_power    (W,   instantaneous)
+#        sensor.0x70b3d52b600fddcb_energy   (kWh, cumulative)
+#
+# 2. The currency, if you are not billed in UAH. It appears twice, as
+#    `unit_of_measurement` on the two cost sensors, plus once on the tariff
+#    input_number. `device_class: monetary` needs a real currency code or the
+#    sensor will not join the statistics tables.
+#
+# The two power thresholds are deliberately NOT constants in this file — they
+# are input_numbers, tunable from the UI, because the only way to find the
+# right values is to watch your own unit for an evening.
+# ---------------------------------------------------------------------------
+
+# --- the thresholds --------------------------------------------------------
+#
+# Three numbers you will want to adjust once, from the UI, with real readings
+# in front of you. None of them have an `initial:` — that would overwrite your
+# tuning on every restart. Instead each `min:` IS the default, because an
+# input_number with nothing to restore falls back to its minimum. If you need
+# to go below one of these, lower the `min:` here and redeploy.
+#
+# To tune: turn the A/C off at the remote and read the plug — that is standby.
+# Then run fan_only on high: that is the fan band. Then cool at 18 with the
+# room warm: that is the compressor. Put the two thresholds in the gaps.
+input_number:
+  # The tariff helper that used to live here is now the day/night pair in
+  # config/packages/ac_tariffs.yaml -- `electricity_tariff_day` and
+  # `electricity_tariff_night`, shared by both air conditioners. The old
+  # `irbridge_ac_tariff` was never set on this box (it sat at its minimum of
+  # 0.0, which is why every cost sensor read 0.00 until the split landed).
+
+  # Anything at or below this counts as "the unit is off". A plug's own idle
+  # draw lives here — a few watts of Zigbee radio and relay coil.
+  irbridge_ac_standby_watts:
+    name: "A/C standby ceiling"
+    icon: mdi:power-sleep
+    # Deliberately wide. A threshold whose slider stops before the reading it
+    # has to sit next to is a threshold you cannot set: the useful value is
+    # found by watching the plug, and the plug is the thing that decides what
+    # number that is. 0-5000 W spans anything this circuit can draw.
+    min: 0
+    max: 5000
+    step: 1
+    mode: box
+    unit_of_measurement: "W"
+
+  # At or above this the compressor is working. Below it but above standby,
+  # only the indoor fan is turning. On a 9k BTU split the fan alone is roughly
+  # 25-60 W and an inverter compressor floors out around 150 W, so 100 W is a
+  # reasonable first guess at the boundary.
+  irbridge_ac_compressor_watts:
+    name: "A/C compressor floor"
+    icon: mdi:snowflake
+    # Deliberately wide. A threshold whose slider stops before the reading it
+    # has to sit next to is a threshold you cannot set: the useful value is
+    # found by watching the plug, and the plug is the thing that decides what
+    # number that is. 0-5000 W spans anything this circuit can draw.
+    min: 0
+    max: 5000
+    step: 1
+    mode: box
+    unit_of_measurement: "W"
+
+template:
+  - binary_sensor:
+      # --- is it on at all -------------------------------------------------
+      #
+      # Deliberately instantaneous, with no delay_on/delay_off. This is what
+      # runtime accounting is built on, and smoothing it would mean billing
+      # for minutes the unit was not drawing. Tolerance for inverter
+      # modulation lives downstream, in the drift sensor and the cycle
+      # counter, where it belongs.
+      - name: "A/C running"
+        unique_id: irbridge_ac_running
+        device_class: running
+        icon: mdi:air-conditioner
+        availability: >-
+          {{ states('sensor.0x70b3d52b600fddcb_power') | is_number }}
+        state: >-
+          {{ (states('sensor.0x70b3d52b600fddcb_power') | float(0))
+             > (states('input_number.irbridge_ac_standby_watts') | float(5)) }}
+
+      # --- is the compressor working ---------------------------------------
+      #
+      # The distinction that matters for a bill: the fan costs pennies, the
+      # compressor is essentially the whole consumption. Also what makes
+      # "idle" a meaningful thermostat action — setpoint reached, fan still
+      # turning, nothing being spent on cooling.
+      - name: "A/C compressor"
+        unique_id: irbridge_ac_compressor
+        device_class: running
+        icon: mdi:snowflake
+        availability: >-
+          {{ states('sensor.0x70b3d52b600fddcb_power') | is_number }}
+        state: >-
+          {{ (states('sensor.0x70b3d52b600fddcb_power') | float(0))
+             >= (states('input_number.irbridge_ac_compressor_watts') | float(100)) }}
+
+      # --- the belief and the measurement disagree -------------------------
+      #
+      # The whole point of having a meter. Compares what the bridge believes
+      # it last transmitted against what the circuit is actually drawing.
+      #
+      # It reads sensor.a_c_assumed_state — the bridge's own persisted belief,
+      # polled over HTTP — rather than climate.daewoo_a_c, on purpose: the MQTT
+      # climate entity is optimistic and does not survive a Home Assistant
+      # restart, so it would report a spurious disagreement every time HA came
+      # back up while the A/C was running. The bridge keeps its state in
+      # SharedPreferences and outlives both.
+      #
+      # delay_on is 15 minutes, not seconds. A unit that has reached setpoint
+      # can sit below the standby ceiling for a long while and still be "on"
+      # in every sense that matters; a genuine desync, by contrast, persists.
+      # Fifteen minutes is long enough that no thermostat cycle can trip it,
+      # short enough to notice within one evening. delay_off is short because
+      # agreement needs no confirmation.
+      - name: "A/C drift"
+        unique_id: irbridge_ac_drift
+        device_class: problem
+        icon: mdi:sync-alert
+        delay_on: "00:15:00"
+        delay_off: "00:01:00"
+        availability: >-
+          {{ states('binary_sensor.a_c_running') in ['on', 'off']
+             and states('sensor.a_c_assumed_state')
+                 not in ['unknown', 'unavailable', 'none', ''] }}
+        state: >-
+          {{ (states('binary_sensor.a_c_running') == 'on')
+             != (states('sensor.a_c_assumed_state') != 'off') }}
+        attributes:
+          detail: >-
+            {% set running = states('binary_sensor.a_c_running') == 'on' %}
+            {% set believed = states('sensor.a_c_assumed_state') != 'off' %}
+            {% if running and not believed %}
+            Drawing power, but the bridge believes it is off. Someone used the
+            remote, or an off frame was missed.
+            {% elif believed and not running %}
+            The bridge believes it is {{ states('sensor.a_c_assumed_state') }},
+            but the circuit is idle. Either the remote turned it off, or the
+            unit never received the frame.
+            {% else %}
+            Belief and meter agree.
+            {% endif %}
+
+  - sensor:
+      # --- what the unit is doing, measured --------------------------------
+      #
+      # This becomes the climate entity's hvac_action, via the automation at
+      # the bottom of this file — what turns the thermostat card's status line
+      # from a guess into a reading.
+      #
+      # Every value it can return is decided by the meter; the assumed mode
+      # only supplies the label. Watts say whether work is being done, mode
+      # says whether to call that work cooling or heating. Nothing here can
+      # claim activity the circuit does not show.
+      #
+      # The mode hint prefers climate.daewoo_a_c because it responds the
+      # instant the card is touched, and falls back to the bridge's polled
+      # belief when the climate entity is off or not yet restored — which is
+      # exactly the post-restart case where the bridge is the better source.
+      #
+      # Only the six values MQTT climate accepts are ever emitted:
+      # off, heating, cooling, drying, idle, fan.
+      - name: "A/C hvac action"
+        unique_id: irbridge_ac_hvac_action
+        icon: mdi:hvac
+        availability: >-
+          {{ states('sensor.0x70b3d52b600fddcb_power') | is_number }}
+        state: >-
+          {% set w = states('sensor.0x70b3d52b600fddcb_power') | float(0) %}
+          {% set standby = states('input_number.irbridge_ac_standby_watts') | float(5) %}
+          {% set floor = states('input_number.irbridge_ac_compressor_watts') | float(100) %}
+          {% set real_modes = ['cool', 'heat', 'dry', 'fan_only', 'heat_cool'] %}
+          {% set live = states('climate.daewoo_a_c') %}
+          {% set assumed = states('sensor.a_c_assumed_state') %}
+          {% set mode = live if live in real_modes
+                        else (assumed if assumed in real_modes else 'cool') %}
+          {% set amb = state_attr('climate.daewoo_a_c', 'current_temperature') %}
+          {% set tgt = state_attr('climate.daewoo_a_c', 'temperature') %}
+          {# heat_cool does not say which way it is working, so the room does.
+             Falls to cooling when the ambient reading is missing, which is the
+             right guess for a unit that spends the year cooling. #}
+          {% set hc = 'heating' if (amb is number and tgt is number and amb < tgt)
+                      else 'cooling' %}
+          {% set working = {'cool': 'cooling', 'heat': 'heating',
+                            'dry': 'drying', 'fan_only': 'fan'} %}
+          {{ 'off' if w <= standby
+             else (('fan' if mode == 'fan_only' else 'idle') if w < floor
+                   else working.get(mode, hc)) }}
+
+      # --- the same thing, in words, for a tile ----------------------------
+      #
+      # hvac_action is written for the thermostat card and reads oddly on its
+      # own ("fan", "idle"). This is the version meant to be looked at.
+      - name: "A/C activity"
+        unique_id: irbridge_ac_activity
+        icon: >-
+          {% set a = states('sensor.a_c_hvac_action') %}
+          {{ {'off': 'mdi:power-off', 'idle': 'mdi:pause-circle',
+              'fan': 'mdi:fan', 'cooling': 'mdi:snowflake',
+              'heating': 'mdi:fire', 'drying': 'mdi:water-percent'}
+             .get(a, 'mdi:help-circle-outline') }}
+        availability: >-
+          {{ states('sensor.a_c_hvac_action') not in ['unknown', 'unavailable'] }}
+        state: >-
+          {% set a = states('sensor.a_c_hvac_action') %}
+          {{ {'off': 'Off', 'idle': 'Idle — at setpoint',
+              'fan': 'Fan only', 'cooling': 'Cooling',
+              'heating': 'Heating', 'drying': 'Drying'}.get(a, a) }}
+
+      # --- money lives in ac_tariffs.yaml now -------------------------------
+      #
+      # `sensor.a_c_cost_today` and `sensor.a_c_cost_this_month` were defined
+      # here as energy x one flat input_number. They are now in
+      # config/packages/ac_tariffs.yaml, split across the day and night rates,
+      # because this supply is billed on a two-zone tariff and the A/C is
+      # exactly the load that runs through the cheap half of it.
+      #
+      # They keep their unique_ids, and therefore their entity ids and their
+      # statistics history, which is why moving them is a move and not a
+      # rename. Do not re-add them here: two template sensors claiming one
+      # name get an entity and an entity_2, and the dashboard would be left
+      # pointing at whichever won.
+
+      # --- how hard it is working ------------------------------------------
+      #
+      # Energy today divided by time-on today. Reads much lower than the
+      # plug's instantaneous number, and that gap is the useful part: it is
+      # the whole duty cycle in one figure, which is what actually drives the
+      # bill. A unit averaging 250 W over six hours costs the same as one
+      # averaging 750 W over two, and the card cannot tell you that any other
+      # way.
+      #
+      # Guarded on runtime rather than on energy: the first minutes after
+      # midnight divide by something very close to zero.
+      - name: "A/C average draw today"
+        unique_id: irbridge_ac_average_draw_today
+        device_class: power
+        state_class: measurement
+        unit_of_measurement: "W"
+        icon: mdi:speedometer
+        availability: >-
+          {{ states('sensor.a_c_energy_today') | is_number
+             and states('sensor.a_c_runtime_today') | is_number
+             and (states('sensor.a_c_runtime_today') | float(0)) > 0.05 }}
+        state: >-
+          {{ ((states('sensor.a_c_energy_today') | float(0)) * 1000
+              / (states('sensor.a_c_runtime_today') | float(1))) | round(0) }}
+
+      # --- how far the room is from what was asked for ---------------------
+      #
+      # Ambient minus setpoint, from the room sensor and the card. Positive
+      # means the room is still above target. The one number that says whether
+      # the thing is winning, and it needs no meter at all.
+      - name: "A/C setpoint delta"
+        unique_id: irbridge_ac_setpoint_delta
+        device_class: temperature
+        state_class: measurement
+        unit_of_measurement: "°C"
+        icon: mdi:thermometer-lines
+        availability: >-
+          {{ state_attr('climate.daewoo_a_c', 'current_temperature') is number
+             and state_attr('climate.daewoo_a_c', 'temperature') is number }}
+        state: >-
+          {{ ((state_attr('climate.daewoo_a_c', 'current_temperature') | float(0))
+              - (state_attr('climate.daewoo_a_c', 'temperature') | float(0))) | round(1) }}
+
+# --- consumption -----------------------------------------------------------
+#
+# Built on the plug's own cumulative kWh counter rather than on a Riemann sum
+# of the watts: the counter is the meter's own integration, done at the
+# hardware's sampling rate instead of at whatever rate Zigbee happened to
+# report. Integrating the W sensor here would be strictly worse — it would
+# miss every spike between reports.
+#
+# periodically_resetting: false is the flag that matters. The default (true)
+# suits a source that zeroes itself; this counter only ever climbs, and with
+# the default a Zigbee dropout is read as a reset and loses everything
+# accumulated since the last report. False makes the meter difference against
+# the last value it actually saw.
+#
+# always_available: true so a brief dropout leaves the last figure on the card
+# instead of blanking it — and, more to the point, instead of blanking the two
+# cost sensors that depend on it.
+utility_meter:
+  irbridge_ac_energy_daily:
+    name: "A/C energy today"
+    unique_id: irbridge_ac_energy_daily
+    source: sensor.0x70b3d52b600fddcb_energy
+    cycle: daily
+    periodically_resetting: false
+    always_available: true
+
+  irbridge_ac_energy_monthly:
+    name: "A/C energy this month"
+    unique_id: irbridge_ac_energy_monthly
+    source: sensor.0x70b3d52b600fddcb_energy
+    cycle: monthly
+    periodically_resetting: false
+    always_available: true
+
+# --- runtime ---------------------------------------------------------------
+sensor:
+  # Hours the unit drew more than standby today. The honest version of "how
+  # long was the A/C on" — measured, not inferred from what we transmitted.
+  - platform: history_stats
+    name: "A/C runtime today"
+    unique_id: irbridge_ac_runtime_today
+    entity_id: binary_sensor.a_c_running
+    state: "on"
+    type: time
+    start: "{{ today_at() }}"
+    end: "{{ now() }}"
+
+  # Compressor hours today. Pairs with the runtime above: the ratio between
+  # the two is the duty cycle.
+  - platform: history_stats
+    name: "A/C compressor hours today"
+    unique_id: irbridge_ac_compressor_hours_today
+    entity_id: binary_sensor.a_c_compressor
+    state: "on"
+    type: time
+    start: "{{ today_at() }}"
+    end: "{{ now() }}"
+
+  # Compressor starts today. Worth watching for its own sake: a unit
+  # short-cycling twenty times an hour is being asked for a setpoint it cannot
+  # hold, which is both expensive and hard on the compressor.
+  #
+  # min_state_duration discards anything shorter than three minutes, so an
+  # inverter modulating across the threshold does not read as a cycle.
+  # Without it this counter inflates into meaninglessness on any modern unit.
+  - platform: history_stats
+    name: "A/C compressor cycles today"
+    unique_id: irbridge_ac_cycles_today
+    entity_id: binary_sensor.a_c_compressor
+    state: "on"
+    type: count
+    min_state_duration: "00:03:00"
+    start: "{{ today_at() }}"
+    end: "{{ now() }}"
+
+automation:
+  # --- the one automation that makes the card tell the truth ---------------
+  #
+  # Publishes the measured action into the topic irbridge_ac.yaml subscribes
+  # to, which is what turns the thermostat card's status line from a guess
+  # into a reading.
+  #
+  # Triggered off the template sensor rather than off the power sensor
+  # directly, and that is the whole design: sensor.a_c_hvac_action changes
+  # state only when the conclusion changes, so a plug reporting watts every
+  # ten seconds produces one MQTT publish per actual transition instead of
+  # 8,640 a day. The logic also stays inspectable in Developer Tools →
+  # Template, which it would not be if it lived inside this automation.
+  #
+  # No feedback loop, despite the entity reading its own climate entity: the
+  # action arriving back changes only hvac_action, the template re-renders to
+  # the same string, and a template sensor that renders unchanged fires no
+  # state trigger.
+  #
+  # Retained, so the card shows an action immediately after a restart instead
+  # of a blank line until the next transition.
+  - id: irbridge_ac_publish_action
+    alias: "IR Bridge: publish measured hvac action"
+    mode: queued
+    max: 5
+    trigger:
+      - platform: state
+        entity_id: sensor.a_c_hvac_action
+      - platform: homeassistant
+        event: start
+    condition:
+      - condition: template
+        value_template: >-
+          {{ states('sensor.a_c_hvac_action')
+             in ['off', 'heating', 'cooling', 'drying', 'idle', 'fan'] }}
+    action:
+      - service: mqtt.publish
+        data:
+          topic: "irbridge/ac/action"
+          payload: "{{ states('sensor.a_c_hvac_action') }}"
+          retain: true
+
+  # --- put the consumption where the A/C is --------------------------------
+  #
+  # The sensors above are correct and invisible: Home Assistant does not show
+  # one entity's value inside another's more-info dialog, and a climate entity
+  # has a fixed attribute set. So opening the A/C shows the dial, the modes,
+  # and nothing about what it costs to run.
+  #
+  # This publishes the derived figures as a JSON dictionary to the
+  # json_attributes_topic the climate entity subscribes to, which makes them
+  # attributes of the thermostat itself — visible under "Attributes" at the
+  # bottom of the dialog, without a dashboard, a card, or a custom component.
+  #
+  # Every value is a pre-formatted string with its unit. That is not laziness:
+  # attributes carry no statistics and no history, so anything numeric here
+  # would be a worse copy of a sensor that already exists. Formatting them for
+  # reading makes the division of labour obvious.
+  #
+  # On a timer rather than on the power sensor's own updates. A Zigbee plug
+  # reports every few seconds, and every attribute change rewrites the climate
+  # entity's state and adds a recorder row — thousands a day for a dialog
+  # somebody opens twice a week. Once a minute is bounded, predictable and far
+  # fresher than the question needs. The hvac_action trigger is there so the
+  # figures snap immediately when the unit actually changes what it is doing,
+  # which is the one moment someone is likely to be looking.
+  - id: irbridge_ac_publish_attributes
+    alias: "IR Bridge: publish consumption onto the A/C entity"
+    mode: single
+    trigger:
+      - platform: time_pattern
+        minutes: "/1"
+      - platform: state
+        entity_id: sensor.a_c_hvac_action
+      - platform: homeassistant
+        event: start
+    variables:
+      # Each one falls back to an em dash rather than showing 'unknown' or a
+      # misleading zero. A dash reads as "no reading", which is the truth when
+      # the meter has dropped off the mesh.
+      dash: "—"
+      w: >-
+        {% set v = states('sensor.0x70b3d52b600fddcb_power') %}
+        {{ (v | float | round(0) | int | string) ~ ' W' if v | is_number else dash }}
+      kwh_today: >-
+        {% set v = states('sensor.a_c_energy_today') %}
+        {{ (v | float | round(2) | string) ~ ' kWh' if v | is_number else dash }}
+      kwh_month: >-
+        {% set v = states('sensor.a_c_energy_this_month') %}
+        {{ (v | float | round(1) | string) ~ ' kWh' if v | is_number else dash }}
+      cost_today: >-
+        {% set v = states('sensor.a_c_cost_today') %}
+        {{ (v | float | round(2) | string) ~ ' UAH' if v | is_number else dash }}
+      cost_month: >-
+        {% set v = states('sensor.a_c_cost_this_month') %}
+        {{ (v | float | round(2) | string) ~ ' UAH' if v | is_number else dash }}
+      runtime: >-
+        {% set v = states('sensor.a_c_runtime_today') %}
+        {{ (v | float | round(1) | string) ~ ' h' if v | is_number else dash }}
+      compressor: >-
+        {% set v = states('sensor.a_c_compressor_hours_today') %}
+        {{ (v | float | round(1) | string) ~ ' h' if v | is_number else dash }}
+      cycles: >-
+        {% set v = states('sensor.a_c_compressor_cycles_today') %}
+        {{ v if v | is_number else dash }}
+      avg: >-
+        {% set v = states('sensor.a_c_average_draw_today') %}
+        {{ (v | float | round(0) | int | string) ~ ' W' if v | is_number else dash }}
+      activity: >-
+        {% set v = states('sensor.a_c_activity') %}
+        {{ v if v not in ['unknown', 'unavailable'] else dash }}
+    action:
+      # Built as a dict and passed through to_json rather than assembled by
+      # hand: one unescaped quote in a value would produce a payload the MQTT
+      # attributes parser rejects silently, leaving the dialog stale with no
+      # error anywhere. Keys are spelled the way they should read, because Home
+      # Assistant displays them close to verbatim.
+      - service: mqtt.publish
+        data:
+          topic: "irbridge/ac/attributes"
+          retain: true
+          payload: >-
+            {{ {
+                 'Doing now': activity,
+                 'Power now': w,
+                 'Average draw today': avg,
+                 'Energy today': kwh_today,
+                 'Cost today': cost_today,
+                 'Running today': runtime,
+                 'Compressor today': compressor,
+                 'Compressor starts today': cycles,
+                 'Energy this month': kwh_month,
+                 'Cost this month': cost_month,
+               } | to_json }}
+
+  # --- tell someone the belief has gone stale ------------------------------
+  #
+  # Fires once per transition into drift, not repeatedly — the binary sensor
+  # already sat on it for fifteen minutes before turning on.
+  #
+  # Deliberately does NOT auto-correct by firing a resend. When the bridge
+  # thinks the unit is cooling and the circuit is idle, the two possible
+  # causes want opposite responses: somebody turned it off with the remote
+  # (leave it alone) or a frame was missed (resend). Guessing wrong means an
+  # A/C that turns itself back on at night. The notification carries the
+  # instruction instead, so the choice stays with a human.
+  #
+  # Delete this automation if you would rather just watch the card.
+  - id: irbridge_ac_drift_notify
+    alias: "IR Bridge: A/C belief and meter disagree"
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.a_c_drift
+        to: "on"
+    action:
+      - service: persistent_notification.create
+        data:
+          notification_id: irbridge_ac_drift
+          title: "A/C state has drifted"
+          message: >-
+            {{ state_attr('binary_sensor.a_c_drift', 'detail') }}
+
+            Meter: {{ states('sensor.0x70b3d52b600fddcb_power') }} W.
+            Bridge believes: {{ states('sensor.a_c_assumed_state') }}.
+
+            Run "A/C: resend current state" to re-assert the belief, or change
+            the mode on the card to overwrite it.
+
+  # Clear the notification once they agree again, so a stale warning does not
+  # sit there for a week.
+  - id: irbridge_ac_drift_clear
+    alias: "IR Bridge: A/C drift resolved"
+    mode: single
+    trigger:
+      # `from: "on"` is not decoration. Without it, `to: "off"` also matches
+      # unavailable -> off and unknown -> off, which is what happens on every
+      # restart as the sensor initialises - so this fired on each restart while
+      # the notify automation above had never fired once. Worse than noise: with
+      # drift genuinely active, a restart dismissed the live warning and the
+      # binary sensor needs another 15 minutes before it re-asserts.
+      - platform: state
+        entity_id: binary_sensor.a_c_drift
+        from: "on"
+        to: "off"
+    action:
+      - service: persistent_notification.dismiss
+        data:
+          notification_id: irbridge_ac_drift

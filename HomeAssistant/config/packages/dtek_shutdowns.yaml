@@ -1,0 +1,431 @@
+# ---------------------------------------------------------------------------
+# DTEK Dnipro shutdowns — what the distributor says about this address
+#
+# Fed by /config/dtek/dtek_poll.py, which drives the AJAX endpoint behind the
+# address form on https://www.dtek-dnem.com.ua/ua/shutdowns. That script's
+# docstring is the manual for the protocol; this file only shapes what it
+# returns into entities.
+#
+# Everything here is DTEK's *claim*. The measurement lives elsewhere:
+#
+#     binary_sensor.powmr_inverter_grid_condition_safe   (ESPHome, grid volts)
+#
+# ---------------------------------------------------------------------------
+# Why this file exists
+#
+# The house already knows when the grid is down — the inverter notices within
+# five seconds. What it cannot tell is whether the lights just went out for
+# eight minutes or for four hours, and those are different decisions. The grid
+# here fails around ten times a day, so "the power is off" carries almost no
+# information on its own.
+#
+# DTEK publishes, per address, the queue the building sits in and an hourly
+# schedule for today and tomorrow. That is the missing half: with it, an outage
+# that was on the schedule and an outage that was not stop looking identical,
+# and there is warning before a planned window instead of a notification after
+# it.
+#
+# ---------------------------------------------------------------------------
+# Kept separate from the measured grid state, on purpose
+#
+# The tempting move is to fold this into the existing grid sensor and have one
+# authoritative "is there power" entity. It would be wrong. During emergency
+# switching DTEK's own site lags reality by up to fifteen minutes — its JS says
+# so in as many words — and the whole value of this package is in the
+# disagreement between the two sources, which merging them would destroy.
+#
+# So: DTEK's view is dtek_*, the inverter's view stays where it was, and
+# binary_sensor.grid_outage_unscheduled below is the one place they meet.
+#
+# ---------------------------------------------------------------------------
+# Rejected: a rest: sensor
+#
+# The obvious HA-native approach, and it cannot work. The endpoint needs a
+# session cookie and a CSRF token that are only obtainable by first GETting the
+# HTML page and scraping a meta tag, then POSTing form-encoded data whose
+# bracket parameter names must be percent-encoded. That is three coupled
+# requests with state carried between them; rest: does one stateless request.
+#
+# Rejected: the HACS integration (groove-max/ha-dtek-monitor)
+#
+# It exists and it is good, but it targets the Odesa site, and custom_components/
+# is deliberately excluded from the repo mirror by tools/ha_pull.sh — so it
+# would live outside version control, which is the opposite of what this repo
+# is for. Its reverse-engineering of the protocol did save a lot of time.
+#
+# ---------------------------------------------------------------------------
+# Setup
+#
+# secrets.yaml needs three keys, spelled exactly the way DTEK spells them:
+#
+#     dtek_city:   "<city, exactly as DTEK spells it>"
+#     dtek_street: "<street, exactly as DTEK spells it>"
+#     dtek_house:  "<house number>"
+#
+# Do not guess the spelling. DTEK can list the same street twice, with the
+# words in a different order, as separate streets in different queues. Look it
+# up instead:
+#
+#     python3 /config/dtek/dtek_poll.py --find "<city>" --street "<first letters>"
+# ---------------------------------------------------------------------------
+
+command_line:
+  - sensor:
+      name: "DTEK shutdowns"
+      unique_id: dtek_shutdowns
+      icon: mdi:transmission-tower
+      command: "python3 /config/dtek/dtek_poll.py"
+
+      # Five minutes is what the site's own JS uses to re-check itself
+      # (discon-schedule.js, limitUpdateCheck). Matching its cadence keeps this
+      # unremarkable to the CDN in front of it. Steady state is two POSTs and
+      # about 600 bytes; the 190 KB page is only fetched when the session dies.
+      scan_interval: 300
+
+      # A cold start — first run, or after the container is rebuilt — does have
+      # to fetch that page, and the default 15 s timeout is not enough for it.
+      command_timeout: 60
+
+      # The script prints one JSON object and always exits 0, so a failed poll
+      # arrives here as status "stale" with the previous values intact rather
+      # than as an empty line that would blank every entity below at once.
+      value_template: "{{ value_json.status }}"
+      json_attributes:
+        - queue
+        - queue_code
+        - queue_label
+        - queues
+        - multi_line
+        - cek
+        - voluntarily
+        - outage_active
+        - outage_type
+        - outage_reason
+        - outage_start
+        - outage_end
+        - schedule_in_effect
+        - schedule_update
+        - now_state
+        - today
+        - tomorrow
+        # DTEK's recurring weekly table for this queue: seven 24-character
+        # strings, Monday first. Comes from `preset`, so unlike today/tomorrow
+        # it has data even while stabilisation schedules are suspended.
+        - week
+        # ...but having data is not the same as applying. DTEK's own site draws
+        # that table only when it says so, per address, in the same answer the
+        # queue comes from, and right now it says not to. `week` above stays
+        # populated regardless so the last published pattern survives in
+        # history; this is the flag that says whether it means anything today.
+        # See visibility() in dtek_poll.py for the transcribed rules.
+        - week_in_effect
+        # The same question for the today/tomorrow tables, which DTEK gates
+        # separately. schedule_in_effect says the data exists; this says DTEK
+        # is willing to show it.
+        - schedule_visible
+        # Which rule hid it: plan_off, table_off, empty_preset, no_queue,
+        # unknown_queue, cek, voluntarily, emergency_no_schedule, or null.
+        # plan_off comes back when the schedules do; cek never does.
+        - hidden_reason
+        # DTEK's own "information updated" date — minutes old, as against
+        # schedule_update, which stamps the last published schedule and has
+        # read 24.07.2026 since the day they were suspended.
+        - updated_at
+        # The six booleans verbatim, so a renamed field shows up on the
+        # dashboard as a changed flag rather than as a grid that quietly
+        # stopped drawing.
+        - dtek_flags
+        # street + house as DTEK spells it, out of secrets.yaml via
+        # dtek_poll.py. The dashboard names the building with it; it is not in
+        # the card config because dashboards/ is committed and this is not.
+        - address
+        - next_outage_start
+        - next_outage_end
+        - fetched_at
+        - stale
+        - error
+
+template:
+  - binary_sensor:
+      # DTEK has an outage recorded against this address right now. Note that
+      # this is not "the power is off" — see the header. It is often false
+      # during a real outage, because DTEK has not caught up yet.
+      - name: "DTEK outage now"
+        unique_id: dtek_outage_now
+        device_class: problem
+        icon: mdi:transmission-tower-off
+        availability: >-
+          {{ states('sensor.dtek_shutdowns') not in ['unknown', 'unavailable'] }}
+        state: "{{ state_attr('sensor.dtek_shutdowns', 'outage_active') | bool(false) }}"
+        attributes:
+          reason: "{{ state_attr('sensor.dtek_shutdowns', 'outage_reason') }}"
+          started: "{{ state_attr('sensor.dtek_shutdowns', 'outage_start') }}"
+
+      # Whether stabilisation schedules are being applied at all. False since
+      # 24.07.2026 and false at the time of writing — a normal state of the
+      # world, not a fault, and everything schedule-shaped below is correctly
+      # unknown while it holds.
+      - name: "DTEK schedule in effect"
+        unique_id: dtek_schedule_in_effect
+        icon: mdi:calendar-clock
+        availability: >-
+          {{ states('sensor.dtek_shutdowns') not in ['unknown', 'unavailable'] }}
+        state: >-
+          {{ state_attr('sensor.dtek_shutdowns', 'schedule_in_effect') | bool(false) }}
+        attributes:
+          published: "{{ state_attr('sensor.dtek_shutdowns', 'schedule_update') }}"
+          # Whether the recurring weekly table applies. A separate question
+          # from this sensor's own state: `week_published` can be false while
+          # a stabilisation schedule runs, and has been false the other way
+          # round — no schedule, pattern still drawn — for the last six weeks.
+          week_published: >-
+            {{ state_attr('sensor.dtek_shutdowns', 'week_in_effect') | bool(false) }}
+          hidden_reason: "{{ state_attr('sensor.dtek_shutdowns', 'hidden_reason') }}"
+          information_updated: "{{ state_attr('sensor.dtek_shutdowns', 'updated_at') }}"
+
+      # The poll has stopped working. Worth surfacing separately, because every
+      # other entity here keeps showing plausible last-known values when it
+      # does — which is the right behaviour, and also exactly how a broken
+      # scraper goes unnoticed for a fortnight.
+      - name: "DTEK data stale"
+        unique_id: dtek_data_stale
+        device_class: problem
+        icon: mdi:cloud-alert
+        state: >-
+          {{ states('sensor.dtek_shutdowns') in ['unknown', 'unavailable', 'error', 'stale']
+             or state_attr('sensor.dtek_shutdowns', 'stale') | bool(false) }}
+        attributes:
+          error: "{{ state_attr('sensor.dtek_shutdowns', 'error') }}"
+          last_poll: "{{ state_attr('sensor.dtek_shutdowns', 'fetched_at') }}"
+
+      # Is the schedule saying the power should be off during THIS half hour.
+      #
+      # Half hours, not hours: DTEK's states distinguish "dark for the first
+      # 30 minutes" from "dark for the second 30", and rounding that to whole
+      # hours would either invent half an hour of blackout or miss one.
+      #
+      # maybe counts as dark. It is DTEK hedging, not DTEK saying no, and a
+      # sensor that read "power expected" through a possible outage would be
+      # wrong in the only direction that costs anything.
+      #
+      # now() makes HA re-render this every minute, which is how the :30
+      # boundary lands without a separate trigger.
+      - name: "DTEK scheduled dark"
+        unique_id: dtek_scheduled_dark
+        icon: mdi:lightbulb-off-outline
+        availability: >-
+          {{ state_attr('sensor.dtek_shutdowns', 'schedule_in_effect') | bool(false) }}
+        state: >-
+          {% set s = state_attr('sensor.dtek_shutdowns', 'now_state') %}
+          {% set second_half = now().minute >= 30 %}
+          {{ s in ['no', 'maybe']
+             or (s in ['first', 'mfirst'] and not second_half)
+             or (s in ['second', 'msecond'] and second_half) }}
+        attributes:
+          certain: >-
+            {{ state_attr('sensor.dtek_shutdowns', 'now_state')
+               in ['no', 'first', 'second'] }}
+
+      # The grid is down and nobody said it would be.
+      #
+      # POLARITY WARNING, and this is not a typo: the ESPHome sensor is called
+      # "Grid Condition Safe" but it reports on for UNSAFE. Its lambda in
+      # PowerStation/power-station.yaml returns true when the voltage is OUT of
+      # the 185-250 V band. Anything that touches that entity needs this note.
+      #
+      # With schedules suspended this is true for every outage, which is
+      # correct — right now every outage genuinely is unscheduled.
+      - name: "Grid outage unscheduled"
+        unique_id: grid_outage_unscheduled
+        device_class: problem
+        icon: mdi:flash-alert
+        state: >-
+          {{ is_state('binary_sensor.powmr_inverter_grid_condition_safe', 'on')
+             and not is_state('binary_sensor.dtek_scheduled_dark', 'on')
+             and not is_state('binary_sensor.dtek_outage_now', 'on') }}
+
+  - sensor:
+      # "3.2", or "3.1 / 3.2" for a building fed by two lines.
+      - name: "DTEK queue"
+        unique_id: dtek_queue
+        icon: mdi:format-list-numbered
+        state: >-
+          {% set qs = state_attr('sensor.dtek_shutdowns', 'queues') %}
+          {{ qs | map('replace', 'GPV', '') | join(' / ') if qs else none }}
+        attributes:
+          label: "{{ state_attr('sensor.dtek_shutdowns', 'queue_label') }}"
+          # Two lines feed the building and DTEK will not say which one this
+          # flat is on. The schedule strings below are the pessimistic merge of
+          # both, so they never promise power that may not arrive.
+          multi_line: "{{ state_attr('sensor.dtek_shutdowns', 'multi_line') | bool(false) }}"
+          # Switched by the building's own housing association (OSBB/ZhEK), or fed by PrAT PEEM TsEK (a private utility)
+          # rather than by DTEK. Either way the schedule is not the whole story.
+          voluntarily: "{{ state_attr('sensor.dtek_shutdowns', 'voluntarily') | bool(false) }}"
+          cek: "{{ state_attr('sensor.dtek_shutdowns', 'cek') | bool(false) }}"
+
+      - name: "DTEK outage reason"
+        unique_id: dtek_outage_reason
+        icon: mdi:comment-alert-outline
+        state: >-
+          {% set r = state_attr('sensor.dtek_shutdowns', 'outage_reason') %}
+          {{ r[:250] if r else none }}
+
+      # DTEK's estimate, not a promise, and routinely revised upward.
+      - name: "DTEK outage ends at"
+        unique_id: dtek_outage_ends_at
+        device_class: timestamp
+        icon: mdi:clock-end
+        state: >-
+          {% set t = state_attr('sensor.dtek_shutdowns', 'outage_end') %}
+          {{ t if t else none }}
+
+      # DTEK's own vocabulary, kept raw rather than translated, because these
+      # seven values are the schedule's actual alphabet and anything friendlier
+      # would lose the first/second half distinction:
+      #   yes              power on
+      #   no               dark the whole hour
+      #   maybe            possibly dark the whole hour
+      #   first / second   dark for that half of the hour
+      #   mfirst / msecond possibly dark for that half of the hour
+      - name: "DTEK schedule state now"
+        unique_id: dtek_schedule_state_now
+        icon: mdi:calendar-clock-outline
+        state: "{{ state_attr('sensor.dtek_shutdowns', 'now_state') or none }}"
+        attributes:
+          # 24 characters, one per hour, y/n/m/f/s/F/S. Deliberately a string
+          # and not a list of 24 objects: this is rewritten on every state
+          # change and the recorder keeps two days of raw states.
+          today: "{{ state_attr('sensor.dtek_shutdowns', 'today') }}"
+          tomorrow: "{{ state_attr('sensor.dtek_shutdowns', 'tomorrow') }}"
+
+      # These two bracket one window. With the power on they are the start and
+      # end of the next scheduled outage; during one, "end" is when it lifts
+      # and "start" is the following window.
+      - name: "DTEK next outage start"
+        unique_id: dtek_next_outage_start
+        device_class: timestamp
+        icon: mdi:clock-start
+        state: >-
+          {% set t = state_attr('sensor.dtek_shutdowns', 'next_outage_start') %}
+          {{ t if t else none }}
+
+      - name: "DTEK next outage end"
+        unique_id: dtek_next_outage_end
+        device_class: timestamp
+        icon: mdi:clock-end
+        state: >-
+          {% set t = state_attr('sensor.dtek_shutdowns', 'next_outage_end') %}
+          {{ t if t else none }}
+
+automation:
+  # Two alerts, one per edge of a scheduled window, fifteen minutes ahead of
+  # each. They sit on their own Android channels rather than on `Emergency`,
+  # which the grid-outage and battery-low alerts share: a scheduled window is
+  # a diary entry, not a fault, and one that wakes you the way a real outage
+  # does teaches you to swipe both away. The channel is also the only knob
+  # Android gives you here -- importance is fixed per channel at the moment it
+  # is first created on the phone, so the two can be silenced independently
+  # without touching the alerts that matter.
+  #
+  # Both are dormant while DTEK publishes no stabilisation schedule:
+  # next_outage_start/_end derive from `fact`, which has been empty since
+  # 24.07.2026, so the sensors read unknown and the triggers stay false. They
+  # start working by themselves on the day the schedules return.
+
+  # Fifteen minutes of warning before a scheduled window.
+  #
+  # A template trigger rather than a time trigger, because the target moves:
+  # DTEK republishes the schedule during the day and the sensor follows it.
+  # now() re-renders this every minute, and the false->true edge means it fires
+  # once per window rather than once a minute for fifteen minutes.
+  - id: dtek_outage_starting_soon
+    alias: '❌ Alert: Scheduled outage in 15 min'
+    mode: single
+    trigger:
+      - platform: template
+        value_template: >-
+          {% set t = states('sensor.dtek_next_outage_start') %}
+          {% set d = as_datetime(t) if t not in ['unknown', 'unavailable', 'none', ''] else none %}
+          {{ d is not none and 0 < (d - now()).total_seconds() <= 900 }}
+    action:
+      - variables:
+          # Same shape as the '❌ Alert: Grid Outage!' automation in
+          # automations.yaml, so the two read alike at 3am.
+          battery_line: >-
+            {% set r = states('sensor.battery_runtime_remaining') %}
+            {% set s = states('sensor.jkbms_gateway_bms_state_of_charge') %}
+            {% if r | is_number and s | is_number %}Battery {{ s | float | round(0) }}%, about {{ r | float | round(1) }} h left at the current draw.{% elif s | is_number %}Battery {{ s | float | round(0) }}%.{% endif %}
+          window_line: >-
+            {% set a = as_datetime(states('sensor.dtek_next_outage_start')) %}
+            {% set b = as_datetime(states('sensor.dtek_next_outage_end')) %}
+            {% if b %}{{ a | as_local | as_timestamp | timestamp_custom('%H:%M') }} to {{ b | as_local | as_timestamp | timestamp_custom('%H:%M') }} ({{ ((b - a).total_seconds() / 3600) | round(1) }} h){% else %}starting {{ a | as_local | as_timestamp | timestamp_custom('%H:%M') }}{% endif %}
+          message: >-
+            DTEK queue {{ states('sensor.dtek_queue') }} is scheduled off {{ window_line }}. {{ battery_line }}
+      - service: notify.household
+        data:
+          title: '❌ Alert: Scheduled outage in 15 min'
+          message: "{{ message }}"
+          data:
+            ttl: 0
+            priority: high
+            channel: DTEK emergency starts
+      - service: notify.persistent_notification
+        data:
+          title: '❌ Alert: Scheduled outage in 15 min'
+          message: "{{ message }}"
+
+  # Fifteen minutes of warning before the power comes back.
+  #
+  # The same shape as the one above, read against the other end of the window
+  # -- but next_outage_end needs a guard that next_outage_start does not. The
+  # two sensors bracket ONE window and swap roles across its start: with the
+  # power still on, `end` is the end of a window that has not begun, and a bare
+  # countdown against it would announce the return of power that never left.
+  # Once a window is running, `start` has already moved on to the NEXT one, so
+  # `end < start` -- and that inversion is what says we are inside one. With no
+  # further window published `start` is unknown, which is the second branch.
+  - id: dtek_outage_ending_soon
+    alias: '✅ Alert: Scheduled outage ends in 15 min'
+    mode: single
+    trigger:
+      - platform: template
+        value_template: >-
+          {% set e = states('sensor.dtek_next_outage_end') %}
+          {% set s = states('sensor.dtek_next_outage_start') %}
+          {% set de = as_datetime(e) if e not in ['unknown', 'unavailable', 'none', ''] else none %}
+          {% set ds = as_datetime(s) if s not in ['unknown', 'unavailable', 'none', ''] else none %}
+          {{ de is not none and (ds is none or de < ds)
+             and 0 < (de - now()).total_seconds() <= 900 }}
+    action:
+      - variables:
+          battery_line: >-
+            {% set r = states('sensor.battery_runtime_remaining') %}
+            {% set s = states('sensor.jkbms_gateway_bms_state_of_charge') %}
+            {% if r | is_number and s | is_number %}Battery {{ s | float | round(0) }}%, about {{ r | float | round(1) }} h left at the current draw.{% elif s | is_number %}Battery {{ s | float | round(0) }}%.{% endif %}
+          # The window that is ending, not the one that is coming.
+          back_line: >-
+            {% set b = as_datetime(states('sensor.dtek_next_outage_end')) %}
+            {{ b | as_local | as_timestamp | timestamp_custom('%H:%M') }}
+          # Only if DTEK has actually published one. A silent gap here is
+          # better than "the next window starts at None" at half past five.
+          #
+          # No leading space: `>-` folds the two lines together and the render
+          # is stripped, so a space carried inside the variable does not
+          # survive to the message. The spacing is the message's job.
+          next_line: >-
+            {% set a = as_datetime(states('sensor.dtek_next_outage_start')) %}
+            {% if a %}Next window at {{ a | as_local | as_timestamp | timestamp_custom('%H:%M') }}.{% endif %}
+          message: >-
+            DTEK queue {{ states('sensor.dtek_queue') }} is scheduled back on at {{ back_line }}. {% if next_line %}{{ next_line }} {% endif %}{{ battery_line }}
+      - service: notify.household
+        data:
+          title: '✅ Alert: Scheduled outage ends in 15 min'
+          message: "{{ message }}"
+          data:
+            ttl: 0
+            priority: high
+            channel: DTEK emergency ends
+      - service: notify.persistent_notification
+        data:
+          title: '✅ Alert: Scheduled outage ends in 15 min'
+          message: "{{ message }}"

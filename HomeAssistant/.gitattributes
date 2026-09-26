@@ -1,0 +1,19 @@
+# HAOS runs BusyBox ash, which does not tolerate CRLF: a blank line becomes the
+# command `\r`, and `do\r` stops being the `do` keyword. Git Bash strips the CR
+# and runs a CRLF script quite happily, so this only shows up after transfer.
+*.sh    text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.json  text eol=lf
+# config/dtek/dtek_poll.py runs inside the HA container, and the tools that
+# import it are read on Linux too. Nothing here is executed by ash, so a CR
+# would not break it outright - it would just diff badly forever.
+*.py    text eol=lf
+# config/www/dtek-shutdowns-card.js is served to a browser, which does not care
+# about a CR -- but it is edited here, pushed by tools/ha_www_push.sh and pulled
+# back by ha_pull.sh, and a CRLF copy would diff against itself forever.
+*.js    text eol=lf
+# secrets.env.example becomes secrets.env, which tools/_ha_env.sh sources.
+# It tolerates CR, but a token with a trailing CR is not a bug worth having.
+*.env   text eol=lf
+*.env.example text eol=lf

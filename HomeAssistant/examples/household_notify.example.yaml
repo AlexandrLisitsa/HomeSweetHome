@@ -1,0 +1,15 @@
+# Household notify group -- EXAMPLE.
+#
+# Copy to /config/packages/household_notify.yaml on the Home Assistant box and
+# list your own phones. Every alert in this repo calls notify.household once,
+# and this group fans it out; the real file is git-ignored because it names the
+# household's devices.
+#
+# A phone's service is notify.mobile_app_<device name>, as the Companion app
+# registered it (Developer Tools -> Actions lists them).
+notify:
+  - platform: group
+    name: household
+    services:
+      - action: mobile_app_phone_one
+      - action: mobile_app_phone_two

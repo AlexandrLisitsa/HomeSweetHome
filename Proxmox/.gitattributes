@@ -1,0 +1,7 @@
+# Proxmox VE runs Debian, so CRLF is less catastrophic here than on HAOS's
+# BusyBox ash - but tools/*.sh may still be scp'd to the host, and secrets.env
+# is sourced with `.`, where a stray CR ends up inside the token.
+*.sh    text eol=lf
+*.env   text eol=lf
+*.env.example text eol=lf
+*.json  text eol=lf

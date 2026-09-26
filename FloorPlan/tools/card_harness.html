@@ -1,0 +1,119 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>floorplan-card harness</title>
+<!--
+  Test page for HomeAssistant/config/www/floorplan-card.js with a fake `hass`, fed the
+  real card config from HomeAssistant/dashboards/lovelace.dashboard_home.json.
+  From the repo root:  python -m http.server 8799 --bind 127.0.0.1
+  then open  http://127.0.0.1:8799/FloorPlan/tools/card_harness.html
+  Query: w=390      card width in px (headless Chrome will not make a window that narrow)
+         on=all|none|<entity,entity>   which lamps and switches are on (default all)
+         bri=0-255  brightness of dimmable lights (default 115)
+         room=<id>  the phone layout's chosen room (default all)
+         hvac=<mode>[,<mode>]  what the A/Cs that are on do, in config order (default cool)
+         selftest=1 taps, holds, drags and switches rooms, and prints what came out.
+  Every entity the config names gets a plausible state: an A/C cooling to 22,
+  plugs drawing power, sensors with readings.
+-->
+<style>
+  html, body { margin: 0; background: #111; color: #eee; font-family: sans-serif; }
+  :root { --header-height: 56px; --primary-text-color: #e1e1e1; --secondary-text-color: #9e9e9e; }
+  .toolbar { height: 56px; background: #1f1f1f; }
+  ha-card { display: block; }
+  /* ha-icon stand-in: a dot, so the layout can be checked without the icon font. */
+  ha-icon { display: block; width: var(--mdc-icon-size, 24px); height: var(--mdc-icon-size, 24px);
+            border-radius: 30%; background: currentColor; opacity: 0.85; }
+</style>
+</head>
+<body>
+<div class="toolbar"></div>
+<div id="host"></div>
+<script>{ const w = new URLSearchParams(location.search).get("w"); if (w) document.getElementById("host").style.width = w + "px"; }</script>
+<script type="module">
+  customElements.define("ha-card", class extends HTMLElement {});
+  customElements.define("ha-icon", class extends HTMLElement {});
+  await import("/HomeAssistant/config/www/floorplan-card.js");
+
+  const q = new URLSearchParams(location.search);
+  const onParam = q.get("on") || "all";
+  const isOn = (id) => onParam === "all" || (onParam !== "none" && onParam.split(",").includes(id));
+  const bri = Number(q.get("bri") || 115);
+  const hvac = (q.get("hvac") || "cool").split(",");
+  let acs = 0;
+  localStorage.setItem("floorplan-card:room", q.get("room") || "all");
+
+  const cfg = await (await fetch("/HomeAssistant/dashboards/lovelace.dashboard_home.json")).json();
+  const card = cfg.data.config.views[0].cards.find((c) => c.type === "custom:floorplan-card");
+  const local = (u) => u.replace("/local/", "/HomeAssistant/config/www/");
+  card.image = local(card.image);
+  card.lights.forEach((l) => { l.overlay = local(l.overlay); });
+
+  const states = {};
+  const put = (id, state, attributes) => { states[id] = { entity_id: id, state, attributes: attributes || {} }; };
+  for (const l of card.lights) {
+    const dim = l.entity === "light.0xa4c1385443844c1e";
+    put(l.entity, isOn(l.entity) ? "on" : "off", {
+      supported_color_modes: dim ? ["brightness"] : ["onoff"],
+      brightness: dim && isOn(l.entity) ? bri : null });
+  }
+  for (const d of card.devices || []) {
+    const dom = d.entity.split(".")[0];
+    if (dom === "climate") {
+      const mode = hvac[Math.min(acs++, hvac.length - 1)];
+      put(d.entity, isOn(d.entity) ? mode : "off", { temperature: 22 });
+    }
+    else if (dom === "switch") put(d.entity, isOn(d.entity) ? "on" : "off");
+    else if (dom === "media_player") put(d.entity, isOn(d.entity) ? "on" : "off");
+    else if (d.entity.includes("download")) put(d.entity, "182.27", { unit_of_measurement: "Mbit/s" });
+    else if (d.entity.includes("state_of_charge")) put(d.entity, "64.0", { unit_of_measurement: "%" });
+    else put(d.entity, "143.0", { unit_of_measurement: "W" });
+    if (d.value) put(d.value, isOn(d.entity) ? "612" : "0", { unit_of_measurement: "W" });
+  }
+  for (const b of card.badges || []) {
+    put(b.entities[0], "24.26", { unit_of_measurement: "°C" });
+    if (b.entities[1]) put(b.entities[1], "48.32", { unit_of_measurement: "%" });
+  }
+
+  const log = [];
+  const el = document.createElement("floorplan-card");
+  el.setConfig(card);
+  document.getElementById("host").appendChild(el);
+  el.hass = { states, callService: (d, s, data) => log.push(`${d}.${s} ${JSON.stringify(data)}`) };
+
+  if (q.get("selftest")) {
+    const out = document.createElement("pre"); out.id = "log"; document.body.appendChild(out);
+    el.addEventListener("hass-more-info", (e) => log.push("more-info " + e.detail.entityId));
+    const R = el.shadowRoot;
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const press = async (node, ms) => {
+      node.dispatchEvent(new PointerEvent("pointerdown", { button: 0, bubbles: true }));
+      await wait(ms);
+      node.dispatchEvent(new PointerEvent("pointerup", { button: 0, bubbles: true }));
+    };
+    await wait(300);
+    const spots = [...R.querySelectorAll(".plane .spot")];
+    const byTitle = (t) => spots.find((s) => (s.querySelector(".lamp").title || "").startsWith(t));
+    log.push("--- tap each thing on the plan once");
+    for (const s of spots) await press(s.querySelector(".lamp"), 30);
+    log.push("--- hold the first lamp"); await press(spots[0].querySelector(".lamp"), 700);
+    const dim = R.querySelector(".row.dimmable .row-slider");
+    if (dim) {
+      log.push("--- drag the dimmable row slider to 70");
+      dim.value = "70"; dim.dispatchEvent(new Event("input")); dim.dispatchEvent(new Event("change"));
+    }
+    const chip = [...R.querySelectorAll(".chip")].find((c) => c.textContent === "Bedroom");
+    if (chip) {
+      chip.click();
+      const shown = [...R.querySelectorAll(".group")].filter((g) => !g.hidden).map((g) => g.dataset.room);
+      log.push("--- chip Bedroom: zoomed=" + R.querySelector("ha-card").classList.contains("zoomed")
+        + " groups shown=" + shown.join(",") + " stored=" + localStorage.getItem("floorplan-card:room"));
+    }
+    log.push("--- values shown: " + [...R.querySelectorAll(".row .value")].map((v) => v.textContent).join(" | "));
+    out.textContent = log.join(String.fromCharCode(10));
+  }
+</script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">IR Bridge</string>
+    <string name="port_label">Port</string>
+    <string name="start">Start</string>
+    <string name="stop">Stop</string>
+    <string name="autostart">Start automatically after reboot</string>
+    <string name="token_label">Auth token (X-Auth-Token)</string>
+    <string name="copy_token">Copy token</string>
+    <string name="regenerate">New token</string>
+    <string name="copy_curl">Copy health URL</string>
+    <string name="battery">Battery settings</string>
+    <string name="log_label">Log</string>
+</resources>

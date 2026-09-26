@@ -1,0 +1,78 @@
+# ---------------------------------------------------------------------------
+# Secrets and private data -- never commit. Every one of these has a committed
+# *.example counterpart; see "Secrets" in the root README.
+# ---------------------------------------------------------------------------
+**/secrets.yaml
+**/secrets.env
+**/*.env
+!**/*.env.example
+**/google_key.json
+HomeAssistant/config/google_assistant.yaml
+HomeAssistant/config/packages/household_notify.yaml
+**/config.h
+*.jks
+*.keystore
+*.pem
+*.key
+local.properties
+
+# Home Assistant state that only ever lives on the box. ha_pull.sh already
+# skips these; this is the second line of defence.
+**/.storage/
+**/zigbee2mqtt/
+HomeAssistant/config/*-backup-*/
+
+# Registry snapshots pulled for auditing (entity/device layout, person names).
+HomeAssistant/.state/
+
+# dtek_poll.py writes its session cookie and last good payload here.
+HomeAssistant/config/dtek/.cache.json
+
+# Point-in-time audit notes: internal addresses, entity ids and tariffs.
+HomeAssistant/docs/audit.md
+
+# The apartment model and its full-size renders show the home's layout. The
+# small dashboard images in HomeAssistant/config/www/floorplan/ are enough.
+FloorPlan/model/*.sh3d
+FloorPlan/renders/
+
+# Sweet Home 3D 7.5 portable (767 MB), unpacked by hand; see FloorPlan/README.md.
+FloorPlan/SweetHome3D/
+
+# MeterCam (developed on its own branch): device config, photos and models.
+MeterCam/config.json
+MeterCam/data/
+MeterCam/corpus/
+MeterCam/models/*.tflite
+# Its Home Assistant package is deployed to the box, so ha_pull.sh brings it
+# down; it is tracked on the metercam branch only.
+HomeAssistant/config/packages/metercam_gas.yaml
+
+# ---------------------------------------------------------------------------
+# Build output
+# ---------------------------------------------------------------------------
+**/.esphome/
+**/.pio/
+**/.pioenvs/
+**/.piolibdeps/
+**/build/
+*.bin
+*.apk
+*.aab
+.gradle/
+out/
+node_modules/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# ---------------------------------------------------------------------------
+# IDE / OS / local tooling
+# ---------------------------------------------------------------------------
+.idea/
+*.iml
+.claude/settings.local.json
+.DS_Store
+Thumbs.db

@@ -1,0 +1,220 @@
+# ---------------------------------------------------------------------------
+# Battery time remaining, in both directions
+#
+#     sensor.battery_runtime_remaining  — hours until flat, at the current draw
+#     sensor.battery_time_to_full       — hours until full, at the current charge
+#
+# Reads the JK BMS over the PowerStation ESP32. Requires nothing else; both
+# source entities come from the `jk_bms_ble` platform in
+# PowerStation/power-station.yaml:
+#
+#     sensor.jkbms_gateway_bms_capacity_remaining   (Ah, already scaled by SoC)
+#     sensor.jkbms_gateway_bms_current              (A,  signed)
+#
+# ---------------------------------------------------------------------------
+# Why this file exists
+#
+# The grid here fails around ten times a day — 13 outages on 31 Aug for a total
+# of 5.6 h on battery, 8 more before 08:00 the next morning. The Battery page
+# already shows state of charge, current flow and remaining capacity, but it
+# leaves the division to the reader, and that division is the whole answer.
+# 92% means nothing on its own: at the median 6.5 A idle draw the pack lasts
+# a day and a half, and with an air conditioner running it lasts seven hours.
+# Same 92%.
+#
+# The charge direction is the same question asked from the other side, and it
+# is the one that decides whether the next outage is survivable. Coming back
+# from a deep discharge the pack has to take on more than a hundred amp-hours
+# at single-digit amps, so "how long until it is full" is measured in hours,
+# not minutes — and with the grid returning for eight minutes at a time, the
+# honest answer is often "not before the next outage".
+#
+# ---------------------------------------------------------------------------
+# Ah ÷ A, not Wh ÷ W
+#
+# Both operands are read from the same BMS at the same instant, so working in
+# amp-hours cancels the pack voltage exactly. Going via watts would reintroduce
+# a voltage that sags under load — more arithmetic, strictly more error.
+#
+# Because there is no reserve floor (this counts down to a flat pack, not to a
+# safe floor), `capacity_remaining` already encodes the state of charge and the
+# whole calculation is one division.
+#
+# ---------------------------------------------------------------------------
+# The pack is 280.0 Ah, and that number is written here rather than derived
+#
+# `capacity_remaining` is hard-clamped at the BMS's own total-capacity setting.
+# Over 24 h and 18,114 samples it reached exactly 280.000 Ah and never passed
+# it, approaching smoothly through 279.997 / .998 / .999 — a ceiling, not a
+# coincidence of rounding.
+#
+# The tempting alternative is to derive it, `capacity_remaining / (SoC/100)`,
+# and so never hold a hardware constant in the config at all. Measured over
+# the same 24 h that is the worse of the two: the BMS publishes SoC at 1%
+# resolution — 39 changes against 18,114 for `capacity_remaining` — so the
+# quotient carries the quantisation of the coarser sensor. Its median is
+# exactly 280.0, which is what independently confirms the constant, but it
+# ranges 277.8 – 282.3 Ah, and the error grows as SoC shrinks, which is
+# precisely when the charge estimate is being read. SoC is therefore not a
+# source entity of this file at all.
+#
+# If the pack is ever re-specified, this line is the one to change. The
+# failure mode if it is forgotten is quiet rather than wrong: a larger pack
+# reports `capacity_remaining` above 280, the deficit goes negative, and
+# `battery_time_to_full` publishes `unknown` — "already full" — instead of a
+# plausible bad number. Re-check it by watching the maximum of
+# `sensor.jkbms_gateway_bms_capacity_remaining` across one full charge.
+#
+# ---------------------------------------------------------------------------
+# Sign convention
+#
+# Negative current is discharge, positive is charge. This is not a guess: the
+# firmware's own grid-power lambda tests `bms_power < -2.0` to detect that the
+# inverter has dropped to battery (power-station.yaml, "Grid Real Power"). Two
+# days of history agree — discharge sits around -6.5 A, charging around +19 A.
+#
+# Re-checked directly against `capacity_remaining` over 24 h, which is the
+# measurement that settles it without reference to any other sensor: while
+# remaining capacity was rising the current was positive in 98.7% of samples
+# (median +9.28 A), and while it was falling it was negative in 100% of them
+# (median -9.32 A).
+#
+# ---------------------------------------------------------------------------
+# Instantaneous, deliberately — not a rolling average
+#
+# The obvious refinement is to divide by a smoothed draw instead of the live
+# one. It is the wrong call here, for three reasons that are specific to this
+# house rather than to the idea:
+#
+#   1. A window over a *signed* current averages across charge and discharge.
+#      With the grid flapping eight to thirteen times a day, any window wide
+#      enough to be useful straddles both, and the mean lands near zero or
+#      positive. That does not read as broken — it reads as a reassuring
+#      number, produced at the exact moment an outage starts. Wrong in the
+#      one direction that matters.
+#   2. The median outage is about eight minutes. A fifteen-minute window never
+#      fills, so for most of any given outage it would be describing the
+#      previous one.
+#   3. There is no noise to remove. Consecutive samples differ by 5 W at the
+#      median and 11 W at p90, against a 164 W median draw, and 6,395 samples
+#      over two days contained not one dropout. The large jumps are real — the
+#      worst single step measured was 895 W, which is a compressor starting.
+#      Averaging that away would display "31 h" while pulling a kilowatt.
+#
+# What the average would genuinely have bought is a calm number, and that is
+# cheaper to get by rounding the output and recomputing every 30 s rather than
+# chasing a sensor that updates every 5 s. The `/30` trigger below is the same
+# throttle the Google shim templates in configuration.yaml use, and it keeps
+# this off the recorder's hot path.
+#
+# If it ever does prove too jumpy in practice, the fix is a `filter` sensor
+# with time_simple_moving_average in front of a discharge-only derived
+# current — not `statistics` over the raw signed value, for reason 1 above.
+#
+# One consequence specific to the charge direction, worth expecting rather
+# than debugging: LiFePO4 charging tapers. Through absorption the current
+# falls while the pack is still filling, so a figure computed from the live
+# current *lengthens* as it approaches full — an hour to go at 9 A becomes two
+# hours to go at 1 A. The tile appears to move backwards near the top. That is
+# the taper being reported honestly, and it is the same instantaneous contract
+# as the discharge sensor: what this rate would mean if it held.
+# ---------------------------------------------------------------------------
+
+template:
+  - trigger:
+      # The steady heartbeat. 30 s is a throttle, not a sampling rate — the
+      # BMS underneath updates every 5 s.
+      - platform: time_pattern
+        seconds: "/30"
+
+      # ...and an immediate recompute the moment the pack starts discharging.
+      #
+      # Without this the heartbeat alone makes the sensor useless in the one
+      # situation it exists for. The grid drops, the Grid Outage automation
+      # fires within milliseconds, and it reads a figure calculated up to 30 s
+      # earlier — while the grid was still up, so `unknown`. The alert would
+      # go out without a number almost every time.
+      #
+      # A template trigger fires on the false->true edge only, so this costs
+      # one extra render per outage (~10/day), not one per sample.
+      - platform: template
+        value_template: >-
+          {{ states('sensor.jkbms_gateway_bms_current') | float(0) < -0.2 }}
+
+      # ...and the same on the charge edge, for the mirror-image reason.
+      #
+      # The discharge trigger above used to carry a note that the return to
+      # charging could be left to the heartbeat, because nothing consumed the
+      # number once the power was on. That stopped being true when the Battery
+      # page grew a "Time to fully charged" tile: the moment the grid comes
+      # back is exactly when that tile is looked at, and the heartbeat alone
+      # would leave it `unknown` for up to 30 s at precisely that moment.
+      #
+      # Costs one extra render per charge episode, the same order as the
+      # discharge edge. Both sensors re-render on all three triggers, which is
+      # deliberate — they are two views of the same pair of BMS readings, and
+      # one shared heartbeat is cheaper than two.
+      - platform: template
+        value_template: >-
+          {{ states('sensor.jkbms_gateway_bms_current') | float(0) > 0.2 }}
+
+    sensor:
+      # Hours until the pack is flat at whatever it is drawing right now.
+      #
+      # `unknown` rather than a number in three cases, all of which mean the
+      # question has no answer rather than an answer of zero:
+      #   - charging or idle: runtime is undefined, and both 0 and a huge
+      #     number would be read as fact
+      #   - drawing under 0.2 A (~5 W): the quotient runs past 1000 h and is
+      #     entirely quantisation noise
+      # Clamped at 99 h so one very quiet night cannot flatten the history
+      # graph for everything else.
+      - name: "Battery runtime remaining"
+        unique_id: battery_runtime_remaining
+        icon: mdi:battery-clock
+        device_class: duration
+        unit_of_measurement: h
+        state_class: measurement
+        availability: >-
+          {{ states('sensor.jkbms_gateway_bms_capacity_remaining') | is_number
+             and states('sensor.jkbms_gateway_bms_current') | is_number }}
+        state: >-
+          {% set cap  = states('sensor.jkbms_gateway_bms_capacity_remaining') | float(0) %}
+          {% set draw = -(states('sensor.jkbms_gateway_bms_current') | float(0)) %}
+          {% if draw < 0.2 or cap <= 0 %}
+            {{ none }}
+          {% else %}
+            {{ [cap / draw, 99] | min | round(1) }}
+          {% endif %}
+
+      # Hours until the pack is full at whatever it is taking right now.
+      #
+      # Same shape as the sensor above, same availability, same 99 h clamp, and
+      # `unknown` in the cases where the question has no answer:
+      #   - discharging or idle: there is no charge to finish
+      #   - taking under 0.2 A: either float at the top of a finished charge or
+      #     quantisation noise, and in both the quotient is meaningless
+      #   - already at 280 Ah: full, which is not a duration of zero
+      #
+      # Note this is a deficit, not a capacity, so it does not share the
+      # `cap <= 0` guard above: a flat pack is the case with the *most* to do,
+      # not a missing reading. The guard it needs instead is `deficit <= 0`.
+      - name: "Battery time to full"
+        unique_id: battery_time_to_full
+        icon: mdi:battery-charging
+        device_class: duration
+        unit_of_measurement: h
+        state_class: measurement
+        availability: >-
+          {{ states('sensor.jkbms_gateway_bms_capacity_remaining') | is_number
+             and states('sensor.jkbms_gateway_bms_current') | is_number }}
+        state: >-
+          {% set full = 280.0 %}
+          {% set cap  = states('sensor.jkbms_gateway_bms_capacity_remaining') | float(0) %}
+          {% set chg  = states('sensor.jkbms_gateway_bms_current') | float(0) %}
+          {% set deficit = full - cap %}
+          {% if chg < 0.2 or deficit <= 0 %}
+            {{ none }}
+          {% else %}
+            {{ [deficit / chg, 99] | min | round(1) }}
+          {% endif %}

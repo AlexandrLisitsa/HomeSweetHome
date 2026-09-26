@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "minor_version": 1,
+  "key": "lovelace.dashboard_climate",
+  "data": {
+    "config": {
+      "views": [
+        {
+          "type": "sections",
+          "sections": [
+            {
+              "type": "grid",
+              "column_span": 5,
+              "cards": [
+                {
+                  "type": "custom:climate-console-card",
+                  "tab": "rooms"
+                }
+              ]
+            }
+          ],
+          "footer": {
+            "max_width": 640
+          },
+          "badges": [],
+          "max_columns": 5,
+          "title": "Rooms",
+          "path": "rooms",
+          "cards": [],
+          "icon": "mdi:home-thermometer-outline"
+        },
+        {
+          "type": "sections",
+          "sections": [
+            {
+              "type": "grid",
+              "column_span": 5,
+              "cards": [
+                {
+                  "type": "custom:climate-console-card",
+                  "tab": "hall"
+                }
+              ]
+            }
+          ],
+          "footer": {
+            "max_width": 640
+          },
+          "badges": [],
+          "max_columns": 5,
+          "title": "Living room A/C",
+          "path": "living-room",
+          "cards": [],
+          "icon": "mdi:sofa-outline"
+        },
+        {
+          "type": "sections",
+          "sections": [
+            {
+              "type": "grid",
+              "column_span": 5,
+              "cards": [
+                {
+                  "type": "custom:climate-console-card",
+                  "tab": "bedroom"
+                }
+              ]
+            }
+          ],
+          "footer": {
+            "max_width": 640
+          },
+          "badges": [],
+          "max_columns": 5,
+          "title": "Bedroom A/C",
+          "path": "bedroom",
+          "cards": [],
+          "icon": "mdi:bed-outline"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,805 @@
+# --- TARIFF WINDOW ---
+# Single source of truth for the two-zone tariff boundaries. Referenced by the
+# on_time triggers and by both logic scripts, so the window can never drift.
+substitutions:
+  night_tariff_start: "23"
+  night_tariff_end: "7"
+
+esphome:
+  name: powmr-inverter
+  friendly_name: "PowMr Inverter"
+  on_boot:
+    priority: -10
+    then:
+      # Every switch replays its restored state through on_turn_on/on_turn_off
+      # during component setup, which all happens before this priority -10 hook.
+      # Handlers that must not act on that replay gate on this flag.
+      - lambda: 'id(restore_replay_done) = true;'
+      - logger.log: "🚀 System booted. Waiting for UART data from inverter..."
+      # Wait indefinitely for the first clean QPIGS reply — no safe decisions without it.
+      - wait_until:
+          condition:
+            lambda: 'return id(sns_grid_v).has_state();'
+      - logger.log: "✅ UART ready. Waiting up to 2 minutes for NTP sync..."
+      # NTP gets a 2-minute window. If the internet is down, we proceed anyway.
+      # evaluate_power_mode handles missing time via rule 2 (falls back to Utility First).
+      # Grid protection (rule 1) never needed time — it activates regardless.
+      - wait_until:
+          condition:
+            lambda: 'return id(sntp_time).now().is_valid();'
+          timeout: 2min
+      - logger.log: "✅ Boot complete. Triggering initial state evaluation."
+      - script.execute: evaluate_power_mode
+      - script.execute: evaluate_charge_window
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+# --- EXTERNAL COMPONENTS ---
+external_components:
+  # Fetch the required component for JKBMS via Bluetooth
+  - source: github://syssi/esphome-jk-bms@main
+
+# --- WIFI & SYSTEM ---
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  power_save_mode: none
+  output_power: 15dB
+  # Disable reboot on WiFi loss to ensure 100% autonomous operation
+  reboot_timeout: 0s
+
+api:
+  # Disable reboot on Home Assistant connection loss
+  reboot_timeout: 0s
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+logger:
+  baud_rate: 0
+  level: DEBUG
+
+time:
+  - platform: sntp
+    id: sntp_time
+    servers:
+      - 0.pool.ntp.org
+      - 1.pool.ntp.org
+    # Kyiv time zone (handles daylight saving time automatically)
+    timezone: "EET-2EEST,M3.5.0/3,M10.5.0/4"
+    on_time:
+      # Trigger at the start of the Day Tariff
+      - seconds: 0
+        minutes: 0
+        hours: ${night_tariff_end}
+        then:
+          - logger.log: "⏰ TIME TRIGGER: ${night_tariff_end}:00 (Day Tariff). Evaluating state..."
+          - script.execute: evaluate_power_mode
+          - script.execute: evaluate_charge_window
+      # Trigger at the start of the Night Tariff
+      - seconds: 0
+        minutes: 0
+        hours: ${night_tariff_start}
+        then:
+          - logger.log: "⏰ TIME TRIGGER: ${night_tariff_start}:00 (Night Tariff). Evaluating state..."
+          - script.execute: evaluate_power_mode
+          - script.execute: evaluate_charge_window
+
+# --- BLUETOOTH & UART SETUP ---
+# Activate Bluetooth scanner
+esp32_ble_tracker:
+  scan_parameters:
+    interval: 1100ms
+    window: 1100ms
+
+# Connect to the BMS
+ble_client:
+  - mac_address: !secret bms_mac_address
+    id: jk_bms_client
+
+# Use protocol for newer hardware revisions (V11+)
+jk_bms_ble:
+  - id: jk_bms_system
+    ble_client_id: jk_bms_client
+    protocol_version: JK02_32S
+    update_interval: 5s
+
+# Hardware UART for Inverter
+uart:
+  id: uart_0
+  tx_pin: GPIO17
+  rx_pin: GPIO16
+  baud_rate: 2400
+  rx_buffer_size: 1024
+
+# --- GLOBAL QUEUE ---
+globals:
+  # Using std::vector as a FIFO command queue
+  - id: command_queue
+    type: std::vector<std::string>
+  - id: command_retries
+    type: int
+    initial_value: '0'
+  # False until on_boot starts, which is after every component - and therefore
+  # every switch's restored-state replay - has been set up. See on_boot.
+  - id: restore_replay_done
+    type: bool
+    initial_value: 'false'
+  # Cumulative seconds the ESP has run, across reboots and OTA updates.
+  # RestoringGlobalsComponent only writes NVS when the value actually changed, and
+  # update_interval caps how often that check runs - so this costs one small NVS
+  # write per 5 min, not one per accumulation tick. It also saves in on_shutdown(),
+  # so a clean reboot or an OTA update keeps the total; only a hard power cut
+  # loses anything, and at most 5 minutes of it.
+  - id: total_uptime_sec
+    type: uint32_t
+    restore_value: true
+    initial_value: '0'
+    update_interval: 5min
+
+# --- CENTRAL LOGIC BRAIN ---
+script:
+  - id: evaluate_power_mode
+    mode: restart
+    then:
+      - lambda: |-
+          // 1. INVERTER DATA GUARD (Wait for clean data on boot)
+          if (!id(sns_grid_v).has_state()) {
+            return;
+          }
+          
+          bool grid_protection_enabled = id(switch_auto_protection).state;
+          bool grid_is_bad = id(grid_safe).state; 
+          bool tariff_enabled = id(switch_auto_tariff).state;
+          auto time = id(sntp_time).now();
+          std::string target_priority = id(select_power_priority).current_option();
+
+          // 2. EMERGENCY GRID PROTECTION (Always first! Bypasses NTP checks)
+          if (grid_protection_enabled && grid_is_bad) {
+            ESP_LOGW("logic", "🚨 EMERGENCY: Grid is BAD. Forcing Battery Mode.");
+            target_priority = "SBU Battery";
+            id(command_queue).push_back("POP02");
+            if (id(command_retries) == 0) id(command_retries) = 20;
+          } 
+          
+          // 3. IF GRID IS SAFE, CHECK TARIFFS AND TIME
+          else if (tariff_enabled) {
+            if (!time.is_valid()) {
+              // NTP Failed (No Internet). Fallback to Utility to be safe.
+              ESP_LOGW("logic", "🛑 No Internet Time! Tariffs paused. Falling back to UTILITY.");
+              target_priority = "Utility First";
+            } else {
+              bool is_night = (time.hour >= ${night_tariff_start} || time.hour < ${night_tariff_end});
+              if (is_night) {
+                ESP_LOGI("logic", "🌙 NIGHT TARIFF: Grid OK. UTILITY Mode.");
+                target_priority = "Utility First";
+              } else {
+                ESP_LOGI("logic", "☀️ DAY TARIFF: Grid OK. BATTERY Mode.");
+                target_priority = "SBU Battery";
+              }
+            }
+          } 
+          
+          // 4. STANDARD MODE (Tariff OFF)
+          else if (grid_protection_enabled && !grid_is_bad) {
+            ESP_LOGI("logic", "🛡️ STANDARD MODE: Grid OK. UTILITY Mode.");
+            target_priority = "Utility First";
+          }
+
+          // 5. EXECUTE COMMAND
+          if (id(select_power_priority).current_option() != target_priority) {
+            id(select_power_priority).make_call().set_option(target_priority).perform();
+          }
+
+  # Gates the battery charger to the night tariff window. Owns the BMS charge
+  # MOSFET only while "Night Charging Only" is engaged. Never touches the power
+  # priority - that is the job of evaluate_power_mode. See docs/architecture.md §10.
+  - id: evaluate_charge_window
+    mode: restart
+    then:
+      - lambda: |-
+          // Only this mode manages the charger. While it is off, the BMS charging
+          // switch belongs to the user and we never touch it.
+          if (!id(switch_night_charging).state) {
+            return;
+          }
+
+          auto time = id(sntp_time).now();
+          if (!time.is_valid()) {
+            // No trustworthy time - fail OPEN. Blocking the charger on an unknown
+            // clock could strand the pack empty; paying day rates is only money.
+            ESP_LOGW("charge", "🛑 No Internet Time! Charge window unknown. Allowing charging.");
+            if (!id(switch_bms_charging).state) {
+              id(switch_bms_charging).turn_on();
+            }
+            return;
+          }
+
+          bool is_night = (time.hour >= ${night_tariff_start} || time.hour < ${night_tariff_end});
+          if (is_night == id(switch_bms_charging).state) {
+            return;  // Already correct - do not re-write the BMS register over BLE.
+          }
+
+          if (is_night) {
+            ESP_LOGI("charge", "🌙 NIGHT TARIFF: Allowing battery charging.");
+            id(switch_bms_charging).turn_on();
+          } else {
+            ESP_LOGI("charge", "☀️ DAY TARIFF: Blocking battery charging.");
+            id(switch_bms_charging).turn_off();
+          }
+
+# --- SENSORS ---
+sensor:
+  # ==============================
+  # INVERTER SENSORS
+  # ==============================
+  - platform: template
+    name: "Grid Voltage"
+    id: sns_grid_v
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+  - platform: template
+    name: "Grid Frequency"
+    id: sns_grid_f
+    unit_of_measurement: "Hz"
+    state_class: measurement
+  - platform: template
+    name: "AC Output Voltage"
+    id: sns_out_v
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+  - platform: template
+    name: "AC Output Power"
+    id: sns_watt
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+  - platform: template
+    name: "Battery Voltage (Inverter)"
+    id: sns_batt_v
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+  - platform: template
+    name: "Load Percentage"
+    id: sns_load_pct
+    unit_of_measurement: "%"
+    icon: "mdi:gauge"
+    state_class: measurement
+  - platform: template
+    name: "Battery Charge Current"
+    id: sns_batt_charge_a
+    unit_of_measurement: "A"
+    icon: "mdi:battery-charging"
+    state_class: measurement
+  - platform: template
+    name: "Battery Discharge Current"
+    id: sns_batt_discharge_a
+    unit_of_measurement: "A"
+    icon: "mdi:battery-minus"
+    state_class: measurement
+  - platform: integration
+    name: "Total Energy Consumption"
+    sensor: sns_watt
+    time_unit: h
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    integration_method: left
+    accuracy_decimals: 3
+    filters:
+      - multiply: 0.001
+  - platform: uptime
+    name: "ESP Uptime"
+    id: sys_uptime
+  - platform: template
+    name: "Total Uptime"
+    id: sns_total_uptime
+    unit_of_measurement: "d"
+    device_class: duration
+    state_class: total_increasing
+    entity_category: diagnostic
+    icon: "mdi:timer-sand"
+    accuracy_decimals: 2
+    update_interval: 60s
+    lambda: 'return id(total_uptime_sec) / 86400.0;'
+
+  # ==============================
+  # CALCULATED GRID SENSORS
+  # ==============================
+  - platform: template
+    name: "Grid Real Power (Calculated)"
+    id: sns_grid_real_power
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    update_interval: 3s
+    lambda: |-
+      // Safety check: Ensure all required sensors have valid states before calculating
+      if (!id(sns_watt).has_state() || !id(sns_bms_power).has_state() || !id(sns_batt_charge_a).has_state() || !id(sns_grid_v).has_state()) {
+        return NAN;
+      }
+      
+      float load = id(sns_watt).state;
+      float bms_power = id(sns_bms_power).state; 
+      float charge_current = id(sns_batt_charge_a).state;
+      float grid_v = id(sns_grid_v).state;
+
+      // FACT 1: If grid voltage is missing or too low, physical consumption is 0W
+      if (grid_v < 150.0) {
+        return 0.0;
+      }
+
+      // FACT 2: If charge current is 0A AND battery is discharging (even slightly, < -2W), 
+      // the inverter is in SBU/Battery mode. The grid relay is open. Grid consumption is 0W.
+      if (charge_current == 0.0 && bms_power < -2.0) {
+        return 0.0;
+      }
+
+      // FACT 3: Bypass/Utility mode. Grid supplies the load + inverter board self-consumption (~30W).
+      float grid_power = load + 30.0;
+      
+      // If the battery is actively charging, add the charging power to the grid total
+      if (bms_power > 0.0) {
+        grid_power += bms_power;
+      }
+      
+      return grid_power;
+
+  - platform: integration
+    name: "Grid Real Energy Consumption"
+    sensor: sns_grid_real_power
+    time_unit: h
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    integration_method: left
+    accuracy_decimals: 3
+    filters:
+      - multiply: 0.001
+
+  # ==============================
+  # JKBMS SENSORS
+  # ==============================
+  - platform: jk_bms_ble
+    jk_bms_ble_id: jk_bms_system
+
+    # Main indicators
+    total_voltage:
+      name: "BMS Total Voltage"
+    current:
+      name: "BMS Current"
+    power:
+      name: "BMS Power"
+      id: sns_bms_power    # ADDED ID FOR LAMBDA ACCESS
+    state_of_charge:
+      name: "BMS State of Charge"
+    capacity_remaining:
+      name: "BMS Capacity Remaining"
+
+    # Temperatures
+    temperature_sensor_1:
+      name: "BMS Temp 1 (Battery)"
+    temperature_sensor_2:
+      name: "BMS Temp 2 (Battery)"
+
+    # Cells and balancer
+    min_cell_voltage:
+      name: "BMS Min Cell Voltage"
+    max_cell_voltage:
+      name: "BMS Max Cell Voltage"
+    delta_cell_voltage:
+      name: "BMS Delta Cell Voltage"
+
+    # --- Individual voltage for each of the 16 cells ---
+    cell_voltage_1:
+      name: "BMS Cell 1"
+    cell_voltage_2:
+      name: "BMS Cell 2"
+    cell_voltage_3:
+      name: "BMS Cell 3"
+    cell_voltage_4:
+      name: "BMS Cell 4"
+    cell_voltage_5:
+      name: "BMS Cell 5"
+    cell_voltage_6:
+      name: "BMS Cell 6"
+    cell_voltage_7:
+      name: "BMS Cell 7"
+    cell_voltage_8:
+      name: "BMS Cell 8"
+
+# --- VIRTUAL SWITCHES ---
+switch:
+  # ==============================
+  # INVERTER SWITCHES
+  # ==============================
+  - platform: template
+    name: "Auto Grid Protection"
+    id: switch_auto_protection
+    icon: "mdi:shield-home"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    on_turn_on:
+      - logger.log: "🛡️ AUTO PROTECTION ENABLED"
+      - script.execute: evaluate_power_mode
+    on_turn_off:
+      - logger.log: "⚠️ AUTO PROTECTION DISABLED"
+      - script.execute: evaluate_power_mode
+
+  - platform: template
+    name: "Auto Tariff Mode"
+    id: switch_auto_tariff
+    icon: "mdi:clock-check-outline"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    on_turn_on:
+      - logger.log: "🕒 TARIFF MODE ENABLED"
+      # Only one time-of-day mode at a time.
+      - if:
+          condition:
+            switch.is_on: switch_night_charging
+          then:
+            - logger.log: "↔️ Night Charging Only is mutually exclusive. Turning it OFF."
+            - switch.turn_off: switch_night_charging
+      - script.execute: evaluate_power_mode
+    on_turn_off:
+      - logger.log: "🕒 TARIFF MODE DISABLED"
+      - script.execute: evaluate_power_mode
+
+  - platform: template
+    name: "Night Charging Only"
+    id: switch_night_charging
+    icon: "mdi:weather-night"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    on_turn_on:
+      - logger.log: "🌙 NIGHT CHARGING ONLY ENABLED"
+      # Only one time-of-day mode at a time.
+      - if:
+          condition:
+            switch.is_on: switch_auto_tariff
+          then:
+            - logger.log: "↔️ Auto Tariff Mode is mutually exclusive. Turning it OFF."
+            - switch.turn_off: switch_auto_tariff
+      # Nothing here re-evaluates the power priority: if the exclusion fired, Auto
+      # Tariff's own on_turn_off does that; if it did not, the priority is
+      # deliberately left untouched.
+      - script.execute: evaluate_charge_window
+    on_turn_off:
+      - logger.log: "🌙 NIGHT CHARGING ONLY DISABLED"
+      # Hand the charger back on the way out, otherwise a mode switched off during
+      # the day would leave charging silently blocked. Skipped for the boot-time
+      # restore replay, which must not override a deliberate manual charging OFF.
+      - if:
+          condition:
+            lambda: 'return id(restore_replay_done);'
+          then:
+            - logger.log: "🔌 Releasing the charger back to ON."
+            - switch.turn_on: switch_bms_charging
+
+  # ==============================
+  # JKBMS SWITCHES
+  # ==============================
+  - platform: jk_bms_ble
+    jk_bms_ble_id: jk_bms_system
+    charging:
+      name: "AC Charging Enabled"
+      id: switch_bms_charging
+      restore_mode: RESTORE_DEFAULT_ON
+    discharging:
+      name: "BMS Discharging Switch"
+    balancer:
+      name: "BMS Balancer Switch"
+
+# --- CONTROLS (SINGLE SOURCE OF TRUTH) ---
+select:
+  - platform: template
+    name: "Max AC Charge Current"
+    id: select_max_charge
+    icon: "mdi:current-ac"
+    optimistic: true
+    restore_value: true
+    options: ["02", "10", "20", "30", "40", "50", "60"]
+    initial_option: "10"
+    on_value:
+      - lambda: |-
+          std::string val = x;
+          while(val.length() < 3) val = "0" + val;
+          id(command_queue).push_back("MUCHGC" + val);
+          if (id(command_retries) == 0) id(command_retries) = 20;
+          ESP_LOGI("dispatcher", "New Charge Limit Queued: %s", x.c_str());
+
+  - platform: template
+    name: "Power Priority"
+    id: select_power_priority
+    icon: "mdi:home-lightning-bolt-outline"
+    optimistic: true
+    restore_value: true
+    options: ["Utility First", "Solar First", "SBU Battery"]
+    initial_option: "Utility First"
+    on_value:
+      - lambda: |-
+          std::string cmd = "POP00";
+          if (x == "Solar First") cmd = "POP01";
+          else if (x == "SBU Battery") cmd = "POP02";
+          id(command_queue).push_back(cmd);
+          if (id(command_retries) == 0) id(command_retries) = 20;
+          ESP_LOGI("dispatcher", "New Priority Queued: %s", x.c_str());
+
+  - platform: template
+    name: "Inverter AC Input Mode"
+    id: select_inverter_mode
+    icon: "mdi:transmission-tower"
+    optimistic: true
+    restore_value: true
+    options: ["APL", "UPS"]
+    initial_option: "APL"
+    on_value:
+      - lambda: |-
+          std::string cmd = (x == "UPS") ? "PGR01" : "PGR00";
+          id(command_queue).push_back(cmd);
+          if (id(command_retries) == 0) id(command_retries) = 20;
+          ESP_LOGI("dispatcher", "New AC Input Mode Queued: %s", x.c_str());
+
+# --- CHARGE VOLTAGE CONTROLS ---
+number:
+  - platform: template
+    name: "Bulk Charge Voltage"
+    id: num_bulk_voltage
+    icon: "mdi:battery-charging-high"
+    unit_of_measurement: "V"
+    min_value: 24.0
+    max_value: 29.0
+    step: 0.1
+    restore_value: true
+    initial_value: 28.0
+    optimistic: true
+    on_value:
+      - lambda: |-
+          char buf[12];
+          snprintf(buf, sizeof(buf), "PCVV%.2f", x);
+          id(command_queue).push_back(std::string(buf));
+          if (id(command_retries) == 0) id(command_retries) = 20;
+
+  - platform: template
+    name: "Float Charge Voltage"
+    id: num_float_voltage
+    icon: "mdi:battery-charging-medium"
+    unit_of_measurement: "V"
+    min_value: 24.0
+    max_value: 28.5
+    step: 0.1
+    restore_value: true
+    initial_value: 27.2
+    optimistic: true
+    on_value:
+      - lambda: |-
+          char buf[12];
+          snprintf(buf, sizeof(buf), "PBFT%.2f", x);
+          id(command_queue).push_back(std::string(buf));
+          if (id(command_retries) == 0) id(command_retries) = 20;
+
+# --- BINARY SENSORS ---
+binary_sensor:
+  - platform: template
+    name: "Grid Condition Safe"
+    id: grid_safe
+    device_class: safety
+    # Without this, on_press/on_release are suppressed for the FIRST published
+    # state (entity_base.h: callbacks need trigger_on_initial_state or a prior
+    # state). Combined with the delayed_on/delayed_off filters, that means the
+    # first grid transition after every reboot is silently swallowed and rule 1
+    # never runs - grid protection stays dormant on a bad grid.
+    trigger_on_initial_state: true
+    lambda: |-
+      if (!id(sns_grid_v).has_state()) {
+        return {}; 
+      }
+      // Return TRUE (Unsafe) if voltage is OUT of strict bounds (185V - 250V)
+      return (id(sns_grid_v).state <= 185.0 || id(sns_grid_v).state >= 250.0);
+    filters:
+      - delayed_on: 5s     # Wait approx 2 polls (5 seconds) to ignore single packet drops
+      - delayed_off: 300s  # Wait 5 minutes of stable grid before switching back to Safe
+
+    on_press:
+      then:
+        - logger.log: "⚡ GRID FAULT DETECTED! Calling logic brain..."
+        - script.execute: evaluate_power_mode
+
+    on_release:
+      then:
+        - logger.log: "✅ GRID NORMALIZED! Calling logic brain..."
+        - script.execute: evaluate_power_mode
+
+  # The same bounds as grid_safe, inverted and with no filters: ON the moment
+  # the voltage is back inside 185-250 V. It exists for the dashboard only --
+  # while this is ON and grid_safe is still ON (unsafe), grid_safe's 300 s
+  # delayed_off is running, and this sensor's last_changed is when it started.
+  # Nothing in the power logic reads it. Keep the bounds in step with grid_safe.
+  - platform: template
+    name: "Grid Voltage In Range"
+    id: grid_in_range
+    device_class: power
+    lambda: |-
+      if (!id(sns_grid_v).has_state()) {
+        return {};
+      }
+      return (id(sns_grid_v).state > 185.0 && id(sns_grid_v).state < 250.0);
+
+# --- TIMERS: CHARGE GATE, UPTIME, UART DRIVER ---
+interval:
+  # Accumulate lifetime uptime. Deltas are taken in raw milliseconds because
+  # millis() wraps at exactly 2^32, which makes unsigned subtraction correct
+  # across the ~49.7 day rollover; millis()/1000 would NOT wrap cleanly. The
+  # sub-second remainder is carried so the total doesn't drift low over months.
+  - interval: 60s
+    then:
+      - lambda: |-
+          static uint32_t last_ms = 0;
+          static uint32_t carry_ms = 0;
+          uint32_t now_ms = millis();
+          uint32_t delta_ms = (uint32_t) (now_ms - last_ms) + carry_ms;
+          last_ms = now_ms;
+          id(total_uptime_sec) += delta_ms / 1000;
+          carry_ms = delta_ms % 1000;
+
+  # Re-assert the night-charging gate. It is written to the BMS over BLE, which
+  # drops, and the tariff boundaries only fire twice a day - so a failed write
+  # would otherwise persist for hours. A no-op unless the charger disagrees with
+  # the current window.
+  - interval: 5min
+    then:
+      - script.execute: evaluate_charge_window
+
+  - interval: 3s
+    then:
+      - lambda: |-
+          // Check if there are commands in the queue
+          if (!id(command_queue).empty()) {
+            if (id(command_retries) > 0) {
+              // Take the first command from the queue
+              std::string cmd = id(command_queue).front();
+          
+              uint16_t crc = 0;
+              uint16_t crc_ta[16] = {
+                0x0000, 0x1021, 0x2042, 0x3063, 0x4084, 0x50a5, 0x60c6, 0x70e7,
+                0x8108, 0x9129, 0xa14a, 0xb16b, 0xc18c, 0xd1ad, 0xe1ce, 0xf1ef
+              };
+              for (int i = 0; i < cmd.length(); i++) {
+                uint8_t ch = cmd[i];
+                uint8_t da = ((uint8_t)(crc >> 8)) >> 4;
+                crc <<= 4;
+                crc ^= crc_ta[da ^ (ch >> 4)];
+                da = ((uint8_t)(crc >> 8)) >> 4;
+                crc <<= 4;
+                crc ^= crc_ta[da ^ (ch & 0x0f)];
+              }
+              uint8_t crc_high = (uint8_t)(crc >> 8);
+              uint8_t crc_low = (uint8_t)crc;
+              if (crc_high == 0x28 || crc_high == 0x0D || crc_high == 0x0A) crc_high++;
+              if (crc_low == 0x28 || crc_low == 0x0D || crc_low == 0x0A) crc_low++;
+          
+              std::vector<uint8_t> packet;
+              for(char c : cmd) packet.push_back(c);
+              packet.push_back(crc_high);
+              packet.push_back(crc_low);
+              packet.push_back(0x0D);
+          
+              id(uart_0).write_array(packet.data(), packet.size());
+          
+              ESP_LOGI("uart_tx", "-> Sent: %s (Retries left: %d | Queue size: %d)", cmd.c_str(), id(command_retries) - 1, id(command_queue).size());
+              id(command_retries) -= 1; 
+            } else {
+              ESP_LOGE("uart_tx", "❌ COMMAND FAILED AFTER 20 RETRIES: %s", id(command_queue).front().c_str());
+              // Give up on this command and remove it from the queue
+              id(command_queue).erase(id(command_queue).begin());
+          
+              // If there are more commands waiting, reset the retries counter for the next one
+              if (!id(command_queue).empty()) {
+                id(command_retries) = 20;
+              }
+            }
+          } else {
+            // Regular data polling (QPIGS) if the queue is empty
+            std::vector<uint8_t> qpigs = {0x51, 0x50, 0x49, 0x47, 0x53, 0xB7, 0xA9, 0x0D};
+            id(uart_0).write_array(qpigs.data(), qpigs.size());
+          }
+
+  - interval: 50ms
+    then:
+      - lambda: |-
+          static std::string buffer;
+          
+          if (buffer.capacity() < 250) {
+            buffer.reserve(250);
+          }
+          
+          uint8_t c_byte;
+          while (id(uart_0).available()) {
+            id(uart_0).read_byte(&c_byte);
+            char c = (char)c_byte;
+          
+            if (c == '\r') {
+              // 1. CHECK FOR ACK / NAK
+              if (buffer.find("(ACK") != std::string::npos) {
+                ESP_LOGI("uart_rx", "✅ INVERTER ACCEPTED COMMAND (ACK)!");
+          
+                // Success! Pop the finished command from the front of the queue
+                if (!id(command_queue).empty()) {
+                  id(command_queue).erase(id(command_queue).begin());
+                }
+          
+                // Prime the retry counter for the next command in line (if any)
+                if (!id(command_queue).empty()) {
+                  id(command_retries) = 20;
+                } else {
+                  id(command_retries) = 0;
+                }
+          
+                buffer.clear();
+                return;
+              }
+          
+              if (buffer.find("(NAK") != std::string::npos) {
+                ESP_LOGW("uart_rx", "⚠️ INVERTER REJECTED COMMAND (NAK)! Will retry...");
+                buffer.clear();
+                return;
+              }
+
+              // 2. PARSE NORMAL DATA (QPIGS)
+              if (buffer.length() > 0 && buffer[0] == '(' && buffer.length() > 50) {
+                int len = buffer.length() - 2;
+                std::string payload = buffer.substr(1, len - 1);
+                std::vector<std::string> parts;
+                size_t start = 0, end = payload.find(' ');
+                while (end != std::string::npos) {
+                  parts.push_back(payload.substr(start, end - start));
+                  start = end + 1;
+                  end = payload.find(' ', start);
+                }
+                parts.push_back(payload.substr(start));
+          
+                // SILENT DROP: Only parse if we have exactly the right amount of data parts
+                if (parts.size() >= 16) {
+                  float grid_v = atof(parts[0].c_str());
+                  float out_v  = atof(parts[2].c_str());
+                  float watt   = atof(parts[5].c_str());
+                  float batt_v = atof(parts[8].c_str());
+
+                  // SILENT DROP: Sanity Check - If data is impossible, just clear buffer and wait for next packet
+                  if (batt_v < 10.0 || watt > 15000.0 || grid_v > 300.0 || out_v > 300.0) {
+                    ESP_LOGW("uart_rx", "Ignored corrupted frame (EMI spike detected).");
+                    buffer.clear(); 
+                    return;
+                  }
+
+                  // IF DATA IS CLEAN, PUBLISH TO HOME ASSISTANT
+                  id(sns_grid_v).publish_state(grid_v);
+                  id(sns_grid_f).publish_state(atof(parts[1].c_str()));
+                  id(sns_out_v).publish_state(out_v);
+                  id(sns_watt).publish_state(watt);
+                  id(sns_batt_v).publish_state(batt_v);
+                  id(sns_load_pct).publish_state(atof(parts[6].c_str()));
+                  id(sns_batt_charge_a).publish_state(atof(parts[9].c_str()));
+                  id(sns_batt_discharge_a).publish_state(atof(parts[15].c_str()));
+                }
+              }
+              buffer.clear(); 
+            } 
+            else if (buffer.length() < 200) {
+              buffer += c;
+            } 
+            else {
+              ESP_LOGW("uart_rx", "Buffer overflow. Dropping corrupted frame.");
+              buffer.clear();
+            }
+          }

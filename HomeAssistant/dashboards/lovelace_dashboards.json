@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "minor_version": 1,
+  "key": "lovelace_dashboards",
+  "data": {
+    "items": [
+      {
+        "id": "dashboard_climate",
+        "show_in_sidebar": true,
+        "icon": "mdi:home-thermometer",
+        "title": "Climate ",
+        "require_admin": false,
+        "mode": "storage",
+        "url_path": "dashboard-climate"
+      },
+      {
+        "id": "dashboard_dtek",
+        "url_path": "dashboard-dtek",
+        "title": "Shutdowns",
+        "mode": "storage",
+        "show_in_sidebar": true,
+        "require_admin": false,
+        "icon": "mdi:transmission-tower-off"
+      },
+      {
+        "id": "dashboard_home",
+        "url_path": "dashboard-home",
+        "title": "Home",
+        "mode": "storage",
+        "show_in_sidebar": true,
+        "require_admin": false,
+        "icon": "mdi:floor-plan"
+      },
+      {
+        "id": "dashboard_inverter",
+        "url_path": "dashboard-inverter",
+        "title": "Power station",
+        "mode": "storage",
+        "show_in_sidebar": true,
+        "require_admin": false,
+        "icon": "mdi:home-battery"
+      }
+    ]
+  }
+}

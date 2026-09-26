@@ -1,0 +1,4 @@
+# Binary: a .sh3d is a zip, the renders are PNG.
+*.sh3d binary
+*.png  binary
+*.py   text eol=lf

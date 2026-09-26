@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "minor_version": 1,
+  "key": "lovelace.dashboard_inverter",
+  "data": {
+    "config": {
+      "views": [
+        {
+          "type": "sections",
+          "sections": [
+            {
+              "type": "grid",
+              "column_span": 5,
+              "cards": [
+                {
+                  "type": "custom:powmr-inverter-console-card"
+                }
+              ]
+            }
+          ],
+          "footer": {
+            "max_width": 640
+          },
+          "badges": [],
+          "max_columns": 5,
+          "title": "Inverter",
+          "cards": [],
+          "icon": "mdi:generator-stationary"
+        },
+        {
+          "type": "sections",
+          "sections": [
+            {
+              "type": "grid",
+              "column_span": 5,
+              "cards": [
+                {
+                  "type": "custom:jkbms-battery-console-card"
+                }
+              ]
+            }
+          ],
+          "footer": {
+            "max_width": 640
+          },
+          "badges": [],
+          "max_columns": 5,
+          "title": "Battery",
+          "path": "battery",
+          "cards": [],
+          "icon": "mdi:car-battery"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,207 @@
+# ---------------------------------------------------------------------------
+# IR Bridge — rest_command definitions
+#
+# Install:
+#   1. Give the phone a static DHCP lease on your router. If its address moves,
+#      everything here breaks silently.
+#   2. Put the token from the app's main screen into secrets.yaml:
+#        irbridge_token: 0123456789abcdef0123456789abcdef
+#   3. Put the phone's URLs into secrets.yaml too, one irbridge_url_* key per
+#      endpoint (see HomeAssistant/examples/secrets.yaml.example). If the phone
+#      moves, only secrets.yaml changes.
+#   4. In configuration.yaml:
+#        rest_command: !include irbridge/rest_commands.yaml
+#   5. Reload: Developer Tools → YAML → "REST commands".
+#
+# Every command returns JSON. Set `response_variable` in a script to read it —
+# that is how the sweep workflow finds out which candidate index just fired.
+# ---------------------------------------------------------------------------
+
+# --- arbitrary raw frame ---------------------------------------------------
+# Alternating mark/space durations in microseconds.
+#   action: rest_command.irbridge_raw
+#   data:
+#     pattern: "[4400,4400,560,1680,560,560]"
+#     repeat: 2
+irbridge_raw:
+  url: !secret irbridge_url_ir_raw
+  method: POST
+  timeout: 20
+  headers:
+    X-Auth-Token: !secret irbridge_token
+  content_type: "application/json"
+  payload: >-
+    {"pattern": {{ pattern }},
+     "carrierHz": {{ carrier_hz | default(38000) }},
+     "repeat": {{ repeat | default(1) }},
+     "gapMs": {{ gap_ms | default(40) }}}
+
+# --- a Pronto hex code ----------------------------------------------------
+irbridge_pronto:
+  url: !secret irbridge_url_ir_pronto
+  method: POST
+  timeout: 20
+  headers:
+    X-Auth-Token: !secret irbridge_token
+  content_type: "application/json"
+  payload: >-
+    {"hex": "{{ hex }}", "repeat": {{ repeat | default(1) }}}
+
+# --- a Broadlink base64 code ----------------------------------------------
+# Lets you paste anything out of SmartIR or a Broadlink export directly,
+# without converting it first.
+irbridge_broadlink:
+  url: !secret irbridge_url_ir_broadlink
+  method: POST
+  timeout: 20
+  headers:
+    X-Auth-Token: !secret irbridge_token
+  content_type: "application/json"
+  payload: >-
+    {"base64": "{{ code }}", "repeat": {{ repeat | default(1) }}}
+
+# --- send one candidate from the bundled table ----------------------------
+#   action: rest_command.irbridge_send_candidate
+#   data: {idx: 47, command: "on"}
+irbridge_send_candidate:
+  url: !secret irbridge_url_codes_send
+  method: POST
+  timeout: 20
+  headers:
+    X-Auth-Token: !secret irbridge_token
+  content_type: "application/json"
+  payload: >-
+    {"command": "{{ command | default('on') }}", "repeat": {{ repeat | default(1) }}}
+
+# --- brute-force sweep ----------------------------------------------------
+irbridge_sweep_start:
+  url: !secret irbridge_url_sweep_start
+  method: POST
+  timeout: 20
+  headers:
+    X-Auth-Token: !secret irbridge_token
+  content_type: "application/json"
+  payload: >-
+    {"from": {{ from_idx | default(0) }},
+     "to": {{ to_idx | default(400) }},
+     "delayMs": {{ delay_ms | default(4000) }},
+     "command": "{{ command | default('on') }}"}
+
+irbridge_sweep_step:
+  url: !secret irbridge_url_sweep_step
+  method: POST
+  timeout: 20
+  headers:
+    X-Auth-Token: !secret irbridge_token
+  content_type: "application/json"
+  payload: >-
+    {"command": "{{ command | default('on') }}"}
+
+irbridge_sweep_stop:
+  url: !secret irbridge_url_sweep_stop
+  method: POST
+  timeout: 20
+  headers:
+    X-Auth-Token: !secret irbridge_token
+  content_type: "application/json"
+  payload: "{}"
+
+# "That one did something." Returns the frames sent inside the reaction
+# window, newest first — read it with response_variable.
+irbridge_sweep_mark:
+  url: !secret irbridge_url_sweep_mark
+  method: POST
+  timeout: 20
+  headers:
+    X-Auth-Token: !secret irbridge_token
+  content_type: "application/json"
+  payload: >-
+    {"windowMs": {{ window_ms | default(12000) }}}
+
+# --- stateful A/C control -------------------------------------------------
+# These deliberately send ONE field each. The bridge merges a partial update
+# onto its current assumed state and transmits the resulting whole frame,
+# which is the only thing the hardware understands — an A/C remote has no
+# "temperature up" code, every press carries the entire state.
+irbridge_ac_mode:
+  url: !secret irbridge_url_ac_set
+  method: POST
+  timeout: 20
+  headers:
+    X-Auth-Token: !secret irbridge_token
+  content_type: "application/json"
+  payload: '{"mode": "{{ mode }}"}'
+
+irbridge_ac_temp:
+  url: !secret irbridge_url_ac_set
+  method: POST
+  timeout: 20
+  headers:
+    X-Auth-Token: !secret irbridge_token
+  content_type: "application/json"
+  payload: '{"temp": {{ temp | int }}}'
+
+irbridge_ac_fan:
+  url: !secret irbridge_url_ac_set
+  method: POST
+  timeout: 20
+  headers:
+    X-Auth-Token: !secret irbridge_token
+  content_type: "application/json"
+  payload: '{"fan": "{{ fan }}"}'
+
+# Re-assert whatever the bridge currently believes. The mitigation for someone
+# having used the physical remote.
+#
+# Note what it does NOT re-assert: swing. That is a toggle, so resending it
+# would reverse it — the one thing a "fix the drift" button must not do.
+irbridge_ac_resend:
+  url: !secret irbridge_url_ac_resend
+  method: POST
+  timeout: 20
+  headers:
+    X-Auth-Token: !secret irbridge_token
+  content_type: "application/json"
+  payload: "{}"
+
+# --- swing ----------------------------------------------------------------
+# Separate from the commands above because swing is not part of the state
+# frame: this protocol carries it as its own standalone message.
+#
+# Sending `on` asks the bridge to *reach* that state rather than commanding it,
+# and the bridge skips the press when it already believes the vane is swinging.
+# Without that, any card that re-sends its current state would flip the vane
+# back off every time.
+#
+# The variable is `swing_on`, not `on`, on purpose: YAML 1.1 reads a bare `on`
+# key as the boolean true, so `data: {on: false}` would silently become
+# `{True: false}` and never reach the template. Same trap as the quoted "off"
+# in the modes list.
+#
+# `| string | lower` because a template comparison renders as a native bool in
+# current Home Assistant but as the string "True" in older versions, and JSON
+# wants lowercase either way.
+#
+#   action: rest_command.irbridge_ac_swing
+#   data: {swing_on: true}
+irbridge_ac_swing:
+  url: !secret irbridge_url_ac_swing
+  method: POST
+  timeout: 20
+  headers:
+    X-Auth-Token: !secret irbridge_token
+  content_type: "application/json"
+  payload: >-
+    {"on": {{ swing_on | string | lower }},
+     "force": {{ force | default(false) | string | lower }}}
+
+# Nudge the vane one position instead of sweeping it. Stateless — the unit
+# reports nothing back and the step wraps around, so there is no flag to keep.
+irbridge_ac_swing_step:
+  url: !secret irbridge_url_ac_swing_step
+  method: POST
+  timeout: 20
+  headers:
+    X-Auth-Token: !secret irbridge_token
+  content_type: "application/json"
+  payload: "{}"

@@ -1,0 +1,188 @@
+# Google Assistant (Google Home) -- EXAMPLE, English.
+#
+# Copy to HomeAssistant/config/google_assistant.yaml on the Home Assistant box and
+# put your own project_id, names and aliases in it (in the language you speak to
+# Google Home). configuration.yaml pulls it in with:
+#
+#   google_assistant: !include google_assistant.yaml
+#
+# The real file is git-ignored. google_key.json is the Google Cloud service
+# account key and never leaves the box either.
+project_id: your-google-cloud-project-id
+service_account: !include google_key.json
+report_state: true
+exposed_domains:
+  - switch
+  - sensor
+  - select
+  - binary_sensor
+  - light
+  - input_boolean
+entity_config:
+
+  # ==========================================
+  # AIR CONDITIONER (IR BRIDGE -> DAEWOO / MIDEA)
+  # ==========================================
+  # climate is not in exposed_domains above, and it doesn't need to be:
+  # Home Assistant checks `is_default_exposed or explicit_expose`, so
+  # expose: true here is enough (google_assistant/http.py).
+  #
+  # A Google Home thermostat needs a current temperature. It arrives from
+  # sensor.0xa4c13858c97f07f8_temperature over MQTT -- see the
+  # irbridge_ac_ambient automation in packages/irbridge_ac.yaml. Without it the
+  # device syncs but shows as offline.
+  climate.daewoo_a_c:
+    name: "Air conditioner"
+    aliases: ["AC", "Split", "Climate", "Cooling", "Heating", "Daewoo AC"]
+    expose: true
+
+  # ==========================================
+  # KITCHEN WORKTOP LIGHT (ZIGBEE STRIP)
+  # ==========================================
+  light.0xa4c1385443844c1e:
+    name: "Kitchen worktop light"
+    aliases: ["Kitchen light", "Kitchen strip", "Worktop light", "LED strip"]
+    expose: true
+
+  media_player.samsung_7_series_43_ue43nu7090:
+    name: "TV"
+    aliases: ["Samsung", "Television", "Living room TV"]
+    expose: true
+
+  # --- BINARY SENSORS AND SELECTS ---
+  binary_sensor.powmr_inverter_grid_condition_safe:
+    name: "Grid status"
+    aliases: ["Is there power", "Mains power", "City power"]
+    expose: true
+
+  select.powmr_inverter_max_ac_charge_current:
+    name: "Max charge current"
+    aliases: ["Grid charge limit", "Charge current limit"]
+    expose: true
+
+  select.powmr_inverter_power_priority:
+    name: "Power priority"
+    aliases: ["Inverter mode", "Power source priority"]
+    expose: true
+
+  # --- SWITCHES ---
+  switch.powmr_inverter_ac_charging_enabled:
+    name: "Grid charging"
+    aliases: ["Charge from the grid"]
+    expose: true
+
+  switch.powmr_inverter_auto_grid_protection:
+    name: "Grid protection"
+    aliases: ["Voltage protection"]
+    expose: true
+
+  switch.powmr_inverter_auto_tariff_mode:
+    name: "Auto tariff"
+    aliases: ["Night charging", "Smart tariff"]
+    expose: true
+
+  switch.powmr_inverter_bms_balancer_switch:
+    name: "Balancer"
+    aliases: ["Cell balancer"]
+    expose: true
+
+  switch.powmr_inverter_bms_discharging_switch:
+    name: "BMS discharge"
+    aliases: ["Battery discharge"]
+    expose: true
+
+  # --- NATIVE BMS TEMPERATURE SENSORS ---
+  sensor.jkbms_gateway_bms_temp_1_battery:
+    name: "Battery temperature 1"
+    aliases: ["BMS temperature 1"]
+    expose: true
+
+  sensor.jkbms_gateway_bms_temp_2_battery:
+    name: "Battery temperature 2"
+    aliases: ["BMS temperature 2"]
+    expose: true
+
+  # --- BMS AND INVERTER SHIM SENSORS (see template: in configuration.yaml) ---
+  sensor.google_bms_capacity_remaining:
+    name: "Remaining capacity"
+    expose: true
+  sensor.google_bms_current:
+    name: "BMS current"
+    expose: true
+  sensor.google_bms_delta:
+    name: "Cell imbalance"
+    expose: true
+  sensor.google_bms_max_cell:
+    name: "Highest cell"
+    expose: true
+  sensor.google_bms_min_cell:
+    name: "Lowest cell"
+    expose: true
+  sensor.google_bms_power:
+    name: "BMS power"
+    expose: true
+  sensor.google_bms_soc:
+    name: "State of charge"
+    expose: true
+  sensor.google_bms_total_voltage:
+    name: "BMS total voltage"
+    expose: true
+  sensor.google_cell_1:
+    name: "Cell 1"
+    expose: true
+  sensor.google_cell_2:
+    name: "Cell 2"
+    expose: true
+  sensor.google_cell_3:
+    name: "Cell 3"
+    expose: true
+  sensor.google_cell_4:
+    name: "Cell 4"
+    expose: true
+  sensor.google_cell_5:
+    name: "Cell 5"
+    expose: true
+  sensor.google_cell_6:
+    name: "Cell 6"
+    expose: true
+  sensor.google_cell_7:
+    name: "Cell 7"
+    expose: true
+  sensor.google_cell_8:
+    name: "Cell 8"
+    expose: true
+  sensor.google_ac_output_power:
+    name: "Load power"
+    expose: true
+  sensor.google_ac_output_voltage:
+    name: "Output voltage"
+    expose: true
+  sensor.google_battery_charge_current:
+    name: "Inverter charge current"
+    expose: true
+  sensor.google_battery_discharge_current:
+    name: "Inverter discharge current"
+    expose: true
+  sensor.google_battery_voltage_inverter:
+    name: "Inverter battery voltage"
+    expose: true
+  sensor.google_esp_uptime:
+    name: "Inverter uptime"
+    expose: true
+  sensor.google_grid_frequency:
+    name: "Grid frequency"
+    expose: true
+  sensor.google_grid_voltage:
+    name: "Grid voltage"
+    expose: true
+  sensor.google_load_percentage:
+    name: "Inverter load"
+    expose: true
+  sensor.google_total_energy_consumption:
+    name: "Total energy use"
+    expose: true
+
+  # --- VIRTUAL TOGGLE FOR THE HALLWAY LIGHT SENSOR ---
+  input_boolean.hallway_light_sensor:
+    name: "Hallway light sensor"
+    expose: true

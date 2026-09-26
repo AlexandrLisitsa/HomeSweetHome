@@ -1,0 +1,267 @@
+# ---------------------------------------------------------------------------
+# IR Bridge — the A/C as a real climate entity
+#
+# Drop this in  config/packages/irbridge_ac.yaml  alongside
+# irbridge_package.yaml. Requires rest_commands.yaml to be loaded, and the
+# MQTT integration to be configured (broker on the Home Assistant host, port 1883).
+#
+# Protocol: SmartIR set 1380, Midea — candidate index 0 in the sweep table.
+# Confirmed on a Daewoo split that is remote-compatible with a Midea Oasis
+# Plus 09: verified at 4 m in bright light.
+#
+# Why MQTT for a device that speaks HTTP: Home Assistant has no template
+# platform for `climate`, so MQTT is the only way to get a thermostat card
+# without a custom component. Mode, setpoint, fan and swing have no state
+# topics, which puts those in optimistic mode — correct here, because the
+# bridge genuinely cannot read the unit's state and pretending otherwise would
+# be a lie with a nicer UI. Only three values are real: the two ambient
+# readings, which come from a room sensor rather than from the A/C, and
+# hvac_action, which comes from the energy meter on the A/C's circuit — see
+# irbridge_ac_energy.yaml. The automations below turn card interactions into bridge calls;
+# the bridge merges each single-field update onto its own state and transmits
+# the whole frame.
+#
+# Two of the controls here are not in SmartIR set 1380 at all. Dry mode and
+# swing are encoded by the bridge from the Coolix protocol the unit actually
+# speaks — see Codecs.Coolix. Everything else replays a frame that shipped
+# with SmartIR. Swing in particular is a toggle rather than a value, which is
+# why it gets its own command instead of riding along in the state frame.
+# ---------------------------------------------------------------------------
+
+mqtt:
+  climate:
+    - name: "Daewoo A/C"
+      unique_id: irbridge_daewoo_ac
+      icon: mdi:air-conditioner
+      # 'off' is a mode, not a separate power switch — that is how climate
+      # entities model it, and the bridge accepts mode:"off" to match.
+      modes:
+        - "off"
+        - cool
+        - heat
+        - heat_cool
+        - fan_only
+        # Not in SmartIR set 1380 — the bridge encodes this one itself. Dry is
+        # a plain mode bit on the wire; SmartIR's tables just never carried it.
+        - dry
+      fan_modes:
+        - low
+        - mid
+        - high
+      # Swing is a toggle in this protocol, not a value, so two positions is
+      # all it can honestly offer. The bridge tracks which one it believes it
+      # is on and skips a redundant press rather than reversing the vane.
+      swing_modes:
+        - "off"
+        - "on"
+      min_temp: 18
+      max_temp: 30
+      temp_step: 1
+      precision: 1.0
+      mode_command_topic: "irbridge/ac/mode/set"
+      temperature_command_topic: "irbridge/ac/temperature/set"
+      fan_mode_command_topic: "irbridge/ac/fan_mode/set"
+      swing_mode_command_topic: "irbridge/ac/swing_mode/set"
+
+      # The only *measured* values in this entity. Everything else is a belief
+      # about what was transmitted; these two come from the Aqara sensor in the
+      # room, republished by the automation at the bottom of this file.
+      #
+      # Not cosmetic: Google's TemperatureSetting trait treats ambient
+      # temperature as required in a QUERY response, and Home Assistant omits
+      # the field entirely when current_temperature is None (no fallback to the
+      # setpoint - see google_assistant/trait.py). Without this the device
+      # syncs into Google Home and then reads as offline.
+      current_temperature_topic: "irbridge/ac/current_temperature"
+      current_humidity_topic: "irbridge/ac/current_humidity"
+
+      # The third measured value, and the only one that says anything about
+      # the A/C itself rather than about the room: what the unit is *doing*,
+      # derived from the energy meter on its circuit and published by
+      # irbridge_ac_energy.yaml. Off / idle / cooling / heating / drying / fan.
+      #
+      # Note the asymmetry this creates, and that it is deliberate. `mode` is
+      # what we asked for; `action` is what the electricity meter says is
+      # happening. When someone uses the physical remote the two disagree, and
+      # the card shows "Cool" with an action of "Off" — which is not a bug but
+      # the closest this setup can come to telling the truth. The drift sensor
+      # in irbridge_ac_energy.yaml exists to name that state out loud.
+      #
+      # Harmless if that package is absent: with nothing published to the
+      # topic the entity simply has no action, exactly as before.
+      action_topic: "irbridge/ac/action"
+
+      # Consumption, on the thermostat itself.
+      #
+      # Home Assistant will not show one entity's value inside another's
+      # more-info dialog, and a climate entity has a fixed set of attributes —
+      # so `sensor.a_c_energy_today` can exist, be correct, and still be
+      # invisible from the A/C card. This topic is the way round that: whatever
+      # JSON dictionary arrives here becomes attributes of this entity, listed
+      # under "Attributes" at the bottom of the dialog.
+      #
+      # Display only, and deliberately so. The values arrive pre-formatted as
+      # strings with their units ("45 W", "1.24 kWh") because that is what
+      # reads well in a dialog, and because the real sensors already exist for
+      # anything that needs arithmetic, history or the energy dashboard.
+      # Attributes get no statistics of their own, so treating them as a data
+      # source would be a mistake this formatting discourages.
+      #
+      # Published by irbridge_ac_energy.yaml. Harmless if that package is
+      # absent — nothing arrives and the dialog looks as it did before.
+      json_attributes_topic: "irbridge/ac/attributes"
+
+# What the bridge believes it last sent. Not a measurement — there is no way
+# to read an A/C over IR. Useful for spotting drift after someone has used the
+# physical remote.
+rest:
+  - resource: !secret irbridge_url_ac_state
+    scan_interval: 120
+    timeout: 10
+    headers:
+      X-Auth-Token: !secret irbridge_token
+    sensor:
+      - name: "A/C assumed state"
+        unique_id: irbridge_ac_assumed
+        value_template: >-
+          {{ value_json.hvacMode }}
+        json_attributes:
+          - power
+          - hvacMode
+          - mode
+          - temp
+          - fan
+          # Weaker than the rest: a guess about which end of a toggle the vane
+          # is on, invertible by one press of the physical remote.
+          - swing
+
+automation:
+  # mode: queued, not single. Dragging the temperature slider emits several
+  # values in quick succession; `single` would drop all but the first and
+  # leave the unit on a stale setpoint.
+  - id: irbridge_ac_mode
+    alias: "IR Bridge: A/C mode changed"
+    mode: queued
+    max: 10
+    trigger:
+      - platform: mqtt
+        topic: "irbridge/ac/mode/set"
+    action:
+      - service: rest_command.irbridge_ac_mode
+        data:
+          mode: "{{ trigger.payload }}"
+
+  - id: irbridge_ac_temperature
+    alias: "IR Bridge: A/C temperature changed"
+    mode: queued
+    max: 10
+    trigger:
+      - platform: mqtt
+        topic: "irbridge/ac/temperature/set"
+    action:
+      - service: rest_command.irbridge_ac_temp
+        data:
+          temp: "{{ trigger.payload | float | round(0) | int }}"
+
+  - id: irbridge_ac_fan_mode
+    alias: "IR Bridge: A/C fan changed"
+    mode: queued
+    max: 10
+    trigger:
+      - platform: mqtt
+        topic: "irbridge/ac/fan_mode/set"
+    action:
+      - service: rest_command.irbridge_ac_fan
+        data:
+          fan: "{{ trigger.payload }}"
+
+  # mode: single here, unlike the three above. Swing is a toggle, and the
+  # thermostat card cannot emit a meaningful burst of swing changes the way a
+  # dragged temperature slider can — so queueing would only turn a double-click
+  # into two presses that cancel out.
+  - id: irbridge_ac_swing_mode
+    alias: "IR Bridge: A/C swing changed"
+    mode: single
+    trigger:
+      - platform: mqtt
+        topic: "irbridge/ac/swing_mode/set"
+    action:
+      - service: rest_command.irbridge_ac_swing
+        data:
+          swing_on: "{{ trigger.payload == 'on' }}"
+
+  # The one automation here that flows inward. Every other one turns a card
+  # interaction into a bridge call; this one feeds a real measurement back so
+  # the thermostat has an ambient reading - required by Google Home, and a
+  # genuine improvement to the HA card too.
+  #
+  # Published retained so a restart has a value before the sensor next reports,
+  # and guarded per reading rather than once for both: a missing temperature
+  # should not also suppress a perfectly good humidity.
+  - id: irbridge_ac_ambient
+    alias: "IR Bridge: publish ambient readings to the A/C"
+    mode: queued
+    max: 5
+    trigger:
+      - platform: state
+        entity_id:
+          - sensor.0xa4c13858c97f07f8_temperature
+          - sensor.0xa4c13858c97f07f8_humidity
+      - platform: homeassistant
+        event: start
+    action:
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ states('sensor.0xa4c13858c97f07f8_temperature')
+                     not in ['unknown', 'unavailable', 'none', ''] }}
+            sequence:
+              - service: mqtt.publish
+                data:
+                  topic: "irbridge/ac/current_temperature"
+                  payload: >-
+                    {{ states('sensor.0xa4c13858c97f07f8_temperature')
+                       | float(0) | round(1) }}
+                  retain: true
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ states('sensor.0xa4c13858c97f07f8_humidity')
+                     not in ['unknown', 'unavailable', 'none', ''] }}
+            sequence:
+              - service: mqtt.publish
+                data:
+                  topic: "irbridge/ac/current_humidity"
+                  payload: >-
+                    {{ states('sensor.0xa4c13858c97f07f8_humidity')
+                       | float(0) | round(0) | int }}
+                  retain: true
+
+script:
+  irbridge_ac_resend:
+    alias: "A/C: resend current state"
+    mode: single
+    sequence:
+      - service: rest_command.irbridge_ac_resend
+
+  # For parking the vane rather than sweeping it. Each run moves it one step
+  # and wraps around, so it is a "press until it looks right" control.
+  irbridge_ac_swing_step:
+    alias: "A/C: nudge vane one step"
+    mode: single
+    sequence:
+      - service: rest_command.irbridge_ac_swing_step
+
+  # The escape hatch for a stale swing belief: press regardless of what the
+  # bridge thinks. Use it when the vane is visibly out of step with the card.
+  irbridge_ac_swing_force_toggle:
+    alias: "A/C: force swing toggle"
+    mode: single
+    sequence:
+      - service: rest_command.irbridge_ac_swing
+        data:
+          swing_on: >-
+            {{ not (state_attr('sensor.a_c_assumed_state', 'swing') | default(false, true)) }}
+          force: true

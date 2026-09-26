@@ -1,0 +1,266 @@
+# ---------------------------------------------------------------------------
+# Bedroom A/C — energy, runtime and activity
+#
+# The bedroom half of what irbridge_ac_energy.yaml does for the hall. Needs
+# the Zigbee metering plug the unit is fed from, and `ha core restart` to
+# create the utility meters (utility_meter registers no reload service).
+#
+# Money is NOT here. Both units' cost sensors live together in
+# config/packages/ac_tariffs.yaml, because the two-zone tariff is a property
+# of the supply rather than of either appliance, and splitting it across two
+# files is how the two halves drift apart.
+#
+# ---------------------------------------------------------------------------
+# WHY THIS UNIT NEEDS A METER AT ALL, WHEN IT TALKS BACK
+#
+# The hall unit needs one because infrared is write-only and the meter is the
+# only measurement in the system. The bedroom unit reports its own compressor
+# frequency, its own fan rpm and eleven temperatures, so the argument looks
+# weaker — and it is not, for two reasons.
+#
+#   1. It reports NOTHING when it is off. midea_ac_lan goes `unavailable` the
+#      moment the plug is cut or the unit sleeps, and an appliance that stops
+#      answering is exactly when you want to know what it drew today. Every
+#      sensor in this file keeps working through that, because the plug is a
+#      different device on a different radio.
+#   2. Frequency is not power. A compressor at 42 Hz tells you the unit is
+#      working; it does not tell you what that costs, and the relationship
+#      between the two is not linear and not published.
+#
+# So this file is deliberately built the same way as the hall's: on watts,
+# from the plug, with thresholds. The unit's own readouts are a cross-check
+# shown beside these on the card, not the source for them.
+#
+# ---------------------------------------------------------------------------
+# THE THRESHOLDS ARE NOT THE HALL'S
+#
+# Different unit, different plug, different standby. They get their own
+# helpers rather than sharing `irbridge_ac_*_watts`, because tuning one to fit
+# the other is how you end up with a compressor that reads as running whenever
+# the fan is on. Tune the same way: turn the unit off at the remote and read
+# the plug for standby, run fan-only on full for the fan band, then cool hard
+# with the room warm for the compressor, and put the thresholds in the gaps.
+# ---------------------------------------------------------------------------
+
+input_number:
+  # The plug's own idle draw — Zigbee radio and relay coil — plus whatever the
+  # A/C's standby board takes while it waits for a remote. Measured at 0.1 A
+  # on this plug with the unit off, so a little over 20 W is the band to beat;
+  # 5 W is the floor and the starting guess, as on the hall.
+  bedroom_ac_standby_watts:
+    name: "Bedroom A/C standby ceiling"
+    icon: mdi:power-sleep
+    # Deliberately wide. A threshold whose slider stops before the reading it
+    # has to sit next to is a threshold you cannot set: the useful value is
+    # found by watching the plug, and the plug is the thing that decides what
+    # number that is. 0-5000 W spans anything this circuit can draw.
+    min: 0
+    max: 5000
+    step: 1
+    mode: box
+    unit_of_measurement: "W"
+
+  # At or above this the compressor is working; below it but above standby,
+  # only the indoor fan is turning. Cross-check it against
+  # sensor.153931629566331_compressor_frequency, which is the one advantage
+  # this unit has over the hall's: watch when the frequency leaves zero and
+  # read the plug at that moment.
+  bedroom_ac_compressor_watts:
+    name: "Bedroom A/C compressor floor"
+    icon: mdi:snowflake
+    # Deliberately wide. A threshold whose slider stops before the reading it
+    # has to sit next to is a threshold you cannot set: the useful value is
+    # found by watching the plug, and the plug is the thing that decides what
+    # number that is. 0-5000 W spans anything this circuit can draw.
+    min: 0
+    max: 5000
+    step: 1
+    mode: box
+    unit_of_measurement: "W"
+
+template:
+  - binary_sensor:
+      # --- is it drawing more than standby ---------------------------------
+      - name: "Bedroom A/C running"
+        unique_id: bedroom_ac_running
+        device_class: running
+        icon: mdi:air-conditioner
+        availability: >-
+          {{ states('sensor.0xa4c13820fe9ec412_power') | is_number }}
+        state: >-
+          {{ (states('sensor.0xa4c13820fe9ec412_power') | float(0))
+             > (states('input_number.bedroom_ac_standby_watts') | float(5)) }}
+
+      # --- is the compressor working ---------------------------------------
+      #
+      # Watts, not the unit's own frequency, and on purpose — see the header.
+      # The frequency is the better signal on the half of the day the unit is
+      # reachable, and no signal at all on the other half; a sensor that
+      # changes its definition depending on whether the wifi is up is worse
+      # than one that is merely approximate.
+      - name: "Bedroom A/C compressor"
+        unique_id: bedroom_ac_compressor
+        device_class: running
+        icon: mdi:snowflake
+        availability: >-
+          {{ states('sensor.0xa4c13820fe9ec412_power') | is_number }}
+        state: >-
+          {{ (states('sensor.0xa4c13820fe9ec412_power') | float(0))
+             >= (states('input_number.bedroom_ac_compressor_watts') | float(100)) }}
+
+  - sensor:
+      # --- what it is doing, measured --------------------------------------
+      #
+      # The same six values MQTT climate accepts, so the two tabs can share
+      # one vocabulary and one set of colours in the card. The mode hint comes
+      # from the climate entity when it is reachable; when it is not, watts
+      # can still say whether work is being done, just not what to call it —
+      # hence `cooling` as the fallback label for a compressor that is
+      # certainly running. This unit has never been used for heat on this
+      # installation; if that changes, this line is the one to revisit.
+      - name: "Bedroom A/C hvac action"
+        unique_id: bedroom_ac_hvac_action
+        icon: mdi:hvac
+        availability: >-
+          {{ states('sensor.0xa4c13820fe9ec412_power') | is_number }}
+        state: >-
+          {% set w = states('sensor.0xa4c13820fe9ec412_power') | float(0) %}
+          {% set standby = states('input_number.bedroom_ac_standby_watts') | float(5) %}
+          {% set floor = states('input_number.bedroom_ac_compressor_watts') | float(100) %}
+          {% set mode = states('climate.153931629566331_climate') %}
+          {% if w <= standby %}
+            off
+          {% elif w < floor %}
+            {{ 'drying' if mode == 'dry' else 'fan' }}
+          {% elif mode == 'heat' %}
+            heating
+          {% elif mode == 'dry' %}
+            drying
+          {% else %}
+            cooling
+          {% endif %}
+
+      # The same thing in words, for a tile. hvac_action reads oddly on its
+      # own ("fan", "idle"); this is the version meant to be looked at.
+      - name: "Bedroom A/C activity"
+        unique_id: bedroom_ac_activity
+        icon: >-
+          {% set a = states('sensor.bedroom_a_c_hvac_action') %}
+          {{ {'off': 'mdi:power-off', 'idle': 'mdi:pause-circle',
+              'fan': 'mdi:fan', 'cooling': 'mdi:snowflake',
+              'heating': 'mdi:fire', 'drying': 'mdi:water-percent'}
+             .get(a, 'mdi:help-circle-outline') }}
+        availability: >-
+          {{ states('sensor.bedroom_a_c_hvac_action') not in ['unknown', 'unavailable'] }}
+        state: >-
+          {% set a = states('sensor.bedroom_a_c_hvac_action') %}
+          {{ {'off': 'Off', 'idle': 'Idle — at setpoint',
+              'fan': 'Fan only', 'cooling': 'Cooling',
+              'heating': 'Heating', 'drying': 'Drying'}.get(a, a) }}
+
+      # --- how hard it is working ------------------------------------------
+      #
+      # Energy today over time-on today: the duty cycle in one number, which
+      # is what actually drives the bill. Guarded on runtime rather than on
+      # energy because the first minutes after midnight divide by ~zero.
+      - name: "Bedroom A/C average draw today"
+        unique_id: bedroom_ac_average_draw_today
+        device_class: power
+        state_class: measurement
+        unit_of_measurement: "W"
+        icon: mdi:speedometer
+        availability: >-
+          {{ states('sensor.bedroom_a_c_energy_today') | is_number
+             and states('sensor.bedroom_a_c_runtime_today') | is_number
+             and (states('sensor.bedroom_a_c_runtime_today') | float(0)) > 0.05 }}
+        state: >-
+          {{ ((states('sensor.bedroom_a_c_energy_today') | float(0)) * 1000
+              / (states('sensor.bedroom_a_c_runtime_today') | float(1))) | round(0) }}
+
+      # --- how far the room is from what was asked for ---------------------
+      #
+      # Indoor minus setpoint, both from the unit itself, so this one goes
+      # unavailable with it rather than quoting a room sensor a metre away at
+      # a setpoint nobody can currently read.
+      - name: "Bedroom A/C setpoint delta"
+        unique_id: bedroom_ac_setpoint_delta
+        device_class: temperature
+        state_class: measurement
+        unit_of_measurement: "°C"
+        icon: mdi:thermometer-lines
+        availability: >-
+          {{ state_attr('climate.153931629566331_climate', 'current_temperature') is number
+             and state_attr('climate.153931629566331_climate', 'temperature') is number }}
+        state: >-
+          {{ ((state_attr('climate.153931629566331_climate', 'current_temperature') | float(0))
+              - (state_attr('climate.153931629566331_climate', 'temperature') | float(0))) | round(1) }}
+
+# --- consumption -----------------------------------------------------------
+#
+# Built on the plug's own cumulative kWh counter rather than on a Riemann sum
+# of the watts: the counter is the meter's own integration, done at the
+# hardware's sampling rate instead of at whatever rate Zigbee happened to
+# report, so it catches the spikes between reports that integrating here would
+# miss.
+#
+# periodically_resetting: false — this counter only ever climbs, and the
+# default reads a Zigbee dropout as a reset and loses everything since the
+# last report. always_available: true so a dropout leaves the last figure on
+# the card instead of blanking it, and instead of blanking the cost sensors in
+# ac_tariffs.yaml that depend on it.
+utility_meter:
+  bedroom_ac_energy_daily:
+    name: "Bedroom A/C energy today"
+    unique_id: bedroom_ac_energy_daily
+    source: sensor.0xa4c13820fe9ec412_energy
+    cycle: daily
+    periodically_resetting: false
+    always_available: true
+
+  bedroom_ac_energy_monthly:
+    name: "Bedroom A/C energy this month"
+    unique_id: bedroom_ac_energy_monthly
+    source: sensor.0xa4c13820fe9ec412_energy
+    cycle: monthly
+    periodically_resetting: false
+    always_available: true
+
+# --- runtime ---------------------------------------------------------------
+sensor:
+  # Hours the unit drew more than standby today.
+  - platform: history_stats
+    name: "Bedroom A/C runtime today"
+    unique_id: bedroom_ac_runtime_today
+    entity_id: binary_sensor.bedroom_a_c_running
+    state: "on"
+    type: time
+    start: "{{ today_at() }}"
+    end: "{{ now() }}"
+
+  # Compressor hours today. The ratio against the runtime above is the duty
+  # cycle, and the pair is more informative than either alone.
+  - platform: history_stats
+    name: "Bedroom A/C compressor hours today"
+    unique_id: bedroom_ac_compressor_hours_today
+    entity_id: binary_sensor.bedroom_a_c_compressor
+    state: "on"
+    type: time
+    start: "{{ today_at() }}"
+    end: "{{ now() }}"
+
+  # Compressor starts today. Worth watching for its own sake: a unit
+  # short-cycling twenty times an hour is being asked for a setpoint it cannot
+  # hold, which is expensive and hard on the compressor.
+  #
+  # min_state_duration discards anything under three minutes, so an inverter
+  # compressor modulating across the threshold does not read as a cycle. This
+  # unit IS an inverter, so without it this counter would be noise.
+  - platform: history_stats
+    name: "Bedroom A/C compressor cycles today"
+    unique_id: bedroom_ac_cycles_today
+    entity_id: binary_sensor.bedroom_a_c_compressor
+    state: "on"
+    type: count
+    min_state_duration: "00:03:00"
+    start: "{{ today_at() }}"
+    end: "{{ now() }}"

@@ -1,0 +1,394 @@
+- id: '1774992861274'
+  alias: 'Tariff: Auto Switch Day/Night'
+  description: Switches the inverter counter at 07:00 and 23:00
+  triggers:
+  - at: 07:00:00
+    id: day_time
+    trigger: time
+  - at: '23:00:00'
+    id: night_time
+    trigger: time
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id: day_time
+      sequence:
+      - action: select.select_option
+        target:
+          entity_id: select.grid_real_tariff
+        data:
+          option: day
+    - conditions:
+      - condition: trigger
+        id: night_time
+      sequence:
+      - action: select.select_option
+        target:
+          entity_id: select.grid_real_tariff
+        data:
+          option: night
+  mode: single
+- id: '1775345704528'
+  alias: '❌ Alert: Grid Outage!'
+  triggers:
+  - type: unsafe
+    device_id: bb097b350c1e4d8c28718d5a3cb6f04a
+    entity_id: e097a8c993af7e3b47e7607bbd7aa9ef
+    domain: binary_sensor
+    trigger: device
+  actions:
+  - variables:
+      battery_line: "{% set r = states('sensor.battery_runtime_remaining') %}{% set s = states('sensor.jkbms_gateway_bms_state_of_charge') %}{% if r | is_number and s | is_number %}Battery {{ s | float | round(0) }}%, about {{ r | float | round(1) }} h left at the current draw.{% elif s | is_number %}Battery {{ s | float | round(0) }}%.{% endif %}"
+  - action: notify.household
+    data:
+      title: '❌ Alert: Grid Outage!'
+      message: 'Grid failure detected. The inverter is now running on battery power! {{ battery_line }}'
+      data:
+        ttl: 0
+        priority: high
+        channel: Emergency
+  - action: notify.persistent_notification
+    data:
+      title: '❌ Alert: Grid Outage!'
+      message: 'Grid failure detected. The inverter is now running on battery power! {{ battery_line }}'
+  mode: single
+- id: '1775345768954'
+  alias: ✅ Power Restored
+  triggers:
+  - entity_id:
+    - binary_sensor.powmr_inverter_grid_condition_safe
+    from:
+    - 'on'
+    to:
+    - 'off'
+    trigger: state
+  actions:
+  - action: notify.household
+    data:
+      title: ✅ Power Restored
+      message: Grid parameters are normal. The inverter has switched to grid power.
+      data:
+        ttl: 0
+        priority: high
+        channel: Emergency resolved
+  - action: notify.persistent_notification
+    data:
+      title: ✅ Power Restored
+      message: Grid parameters are normal. The inverter has switched to grid power.
+  mode: single
+- id: '1778275569737'
+  alias: "\U0001F4A7 Alert: Water Leak Detected!"
+  description: ''
+  triggers:
+  - entity_id: binary_sensor.0xa4c13898ee89fea1_water_leak
+    to: 'on'
+    trigger: state
+  actions:
+  - repeat:
+      while:
+      - condition: state
+        entity_id: binary_sensor.0xa4c13898ee89fea1_water_leak
+        state: 'on'
+      sequence:
+      - action: notify.household
+        data:
+          title: "\U0001F4A7 CRITICAL ALERT: WATER LEAK!"
+          message: Water detected! The sensor has registered a leak. Please check
+            immediately!
+          data:
+            ttl: 0
+            priority: high
+            channel: Water Leak
+      - action: notify.persistent_notification
+        data:
+          title: "\U0001F4A7 Warning: Water Leak Detected!"
+          message: A water leak has been detected. Notifications will be sent every
+            5 minutes until resolved.
+      - delay:
+          minutes: 1
+  mode: single
+- id: '1778275645292'
+  alias: '✅ Alert Cleared: Water Leak Resolved'
+  description: ''
+  triggers:
+  - trigger: state
+    entity_id:
+    - binary_sensor.0xa4c13898ee89fea1_water_leak
+    from: 'on'
+    to: 'off'
+  actions:
+  - action: notify.household
+    data:
+      title: ✅ Water Leak Resolved
+      message: The sensor is now dry. The water leak alert has been cleared.
+      data:
+        ttl: 0
+        priority: high
+        channel: Water Leak Resolved
+  - action: notify.persistent_notification
+    data:
+      title: ✅ Water Leak Resolved
+      message: The sensor is now dry. The water leak alert has been cleared.
+  mode: single
+- id: '1779645666848'
+  alias: '⚠️ Alert: Battery Low!'
+  description: ''
+  triggers:
+  - trigger: numeric_state
+    entity_id: sensor.jkbms_gateway_bms_state_of_charge
+    below: 21
+  actions:
+  - variables:
+      battery_line: "{% set r = states('sensor.battery_runtime_remaining') %}{% set s = states('sensor.jkbms_gateway_bms_state_of_charge') %}{% if r | is_number and s | is_number %}Battery {{ s | float | round(0) }}%, about {{ r | float | round(1) }} h left at the current draw.{% elif s | is_number %}Battery {{ s | float | round(0) }}%.{% endif %}"
+  - action: notify.household
+    data:
+      title: '⚠️ Alert: Battery Low!'
+      message: 'Battery level has dropped to 20% or below! Please conserve power. {{ battery_line }}'
+      data:
+        ttl: 0
+        priority: high
+        channel: Emergency
+  - action: notify.persistent_notification
+    data:
+      title: '⚠️ Alert: Battery Low!'
+      message: 'Battery level has dropped to 20% or below! Please conserve power. {{ battery_line }}'
+  mode: single
+- id: '1779645723464'
+  alias: "\U0001F50B Battery Recovered"
+  description: ''
+  triggers:
+  - trigger: numeric_state
+    entity_id: sensor.jkbms_gateway_bms_state_of_charge
+    above: 20
+  conditions:
+  - condition: template
+    value_template: '{{ trigger.from_state.state not in [''unavailable'', ''unknown'',
+      ''none''] }}'
+  actions:
+  - action: notify.household
+    data:
+      title: "\U0001F50B Battery Recovered"
+      message: Battery has charged above 20%. Emergency state cleared.
+      data:
+        ttl: 0
+        priority: high
+        channel: Emergency resolved
+  - action: notify.persistent_notification
+    data:
+      title: "\U0001F50B Battery Recovered"
+      message: Battery has charged above 20%. Emergency state cleared.
+  mode: single
+- id: '1782502124150'
+  alias: "\U0001F4A1Corridor: Motion Controlled Light"
+  description: 'Smart hallway light: handles the switch being turned off by voice, picks up presence, and does NOT interfere with manual control while the automation is disabled.'
+  triggers:
+  - entity_id: binary_sensor.0xa4c1386081a8a521_occupancy
+    to: 'on'
+    id: motion_start
+    trigger: state
+  - entity_id: binary_sensor.0xa4c1386081a8a521_occupancy
+    to: 'off'
+    for:
+      seconds: 30
+    id: motion_stop
+    trigger: state
+  - entity_id: light.hallway_relay
+    to: 'off'
+    id: light_turned_off
+    trigger: state
+  - entity_id: input_boolean.hallway_light_sensor
+    to: 'on'
+    id: automation_enabled
+    trigger: state
+  conditions: []
+  actions:
+  - choose:
+    - conditions:
+      - condition: or
+        conditions:
+        - condition: trigger
+          id: motion_start
+        - condition: trigger
+          id: automation_enabled
+      - condition: state
+        entity_id: input_boolean.hallway_light_sensor
+        state: 'on'
+      - condition: state
+        entity_id: binary_sensor.0xa4c1386081a8a521_occupancy
+        state: 'on'
+      sequence:
+      - action: light.turn_on
+        target:
+          entity_id: light.hallway_relay
+    - conditions:
+      - condition: trigger
+        id: motion_stop
+      - condition: state
+        entity_id: input_boolean.hallway_light_sensor
+        state: 'on'
+      sequence:
+      - action: light.turn_off
+        target:
+          entity_id: light.hallway_relay
+    - conditions:
+      - condition: trigger
+        id: light_turned_off
+      - condition: state
+        entity_id: input_boolean.hallway_light_sensor
+        state: 'on'
+      - condition: state
+        entity_id: binary_sensor.0xa4c1386081a8a521_occupancy
+        state: 'on'
+      sequence:
+      - action: light.turn_on
+        target:
+          entity_id: light.hallway_relay
+  mode: restart
+- id: '1783280997823'
+  alias: "\U0001F4A1Bathroom: Motion Controlled Light"
+  description: 'Smart bathroom light: handles the switch being turned off by voice, picks up presence, and does NOT interfere with manual control while the automation is disabled.'
+  triggers:
+  - entity_id: binary_sensor.0xa4c138bd02b6c32c_presence
+    to: 'on'
+    id: motion_start
+    trigger: state
+  - entity_id: binary_sensor.0xa4c138bd02b6c32c_presence
+    to: 'off'
+    for:
+      seconds: 90
+    id: motion_stop
+    trigger: state
+  - entity_id: switch.0xf044d3fffebb0b3f
+    to: 'off'
+    id: light_turned_off
+    trigger: state
+  - entity_id: input_boolean.bathroom_light_sensor
+    to: 'on'
+    id: automation_enabled
+    trigger: state
+  conditions: []
+  actions:
+  - choose:
+    - conditions:
+      - condition: or
+        conditions:
+        - condition: trigger
+          id: motion_start
+        - condition: trigger
+          id: automation_enabled
+      - condition: state
+        entity_id: input_boolean.bathroom_light_sensor
+        state: 'on'
+      - condition: state
+        entity_id: binary_sensor.0xa4c138bd02b6c32c_presence
+        state: 'on'
+      sequence:
+      - action: switch.turn_on
+        target:
+          entity_id: switch.0xf044d3fffebb0b3f
+    - conditions:
+      - condition: trigger
+        id: motion_stop
+      - condition: state
+        entity_id: input_boolean.bathroom_light_sensor
+        state: 'on'
+      sequence:
+      - action: switch.turn_off
+        target:
+          entity_id: switch.0xf044d3fffebb0b3f
+    - conditions:
+      - condition: trigger
+        id: light_turned_off
+      - condition: state
+        entity_id: input_boolean.bathroom_light_sensor
+        state: 'on'
+      - condition: state
+        entity_id: binary_sensor.0xa4c138bd02b6c32c_presence
+        state: 'on'
+      sequence:
+      - action: switch.turn_on
+        target:
+          entity_id: switch.0xf044d3fffebb0b3f
+  mode: restart
+- id: '1783284466403'
+  alias: "\U0001F4A1Kitchen: Force Light On"
+  description: 'Kitchen light-off block: while the helper is on, the kitchen light is switched back on whenever it is turned off. With the helper off, control is manual.'
+  triggers:
+  - entity_id: light.kitchen_relay
+    to: 'off'
+    trigger: state
+  - entity_id: input_boolean.kitchen_light_force_on
+    to: 'on'
+    trigger: state
+  conditions:
+  - condition: state
+    entity_id: input_boolean.kitchen_light_force_on
+    state: 'on'
+  actions:
+  - action: light.turn_on
+    target:
+      entity_id: light.kitchen_relay
+  mode: restart
+- id: '1783546168549'
+  alias: "\U0001F4A1Kitchen: Block Light On "
+  description: 'Kitchen light-on block: while the helper is on, the kitchen light is switched back off whenever it is turned on (by hand or at the switch). With the helper off, control is manual.'
+  triggers:
+  - entity_id: light.kitchen_relay
+    to: 'on'
+    trigger: state
+  - entity_id: input_boolean.kitchen_light_block
+    to: 'on'
+    trigger: state
+  conditions:
+  - condition: state
+    entity_id: input_boolean.kitchen_light_block
+    state: 'on'
+  actions:
+  - action: light.turn_off
+    target:
+      entity_id: light.kitchen_relay
+  mode: restart
+- id: '1787508286055'
+  alias: 'IR Blaster: Battery Safe Charge'
+  description: Keep the IR blaster phone's battery between 20 and 80%
+  triggers:
+  - entity_id: sensor.ir_blaster_battery_level
+    below: 21
+    id: start_charging
+    trigger: numeric_state
+  - entity_id: sensor.ir_blaster_battery_level
+    above: 79
+    id: stop_charging
+    trigger: numeric_state
+  - entity_id: switch.0xa4c138c211306160
+    to: 'off'
+    id: relay_accidentally_off
+    trigger: state
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id: start_charging
+      sequence:
+      - action: switch.turn_on
+        target:
+          entity_id: switch.0xa4c138c211306160
+    - conditions:
+      - condition: trigger
+        id: stop_charging
+      sequence:
+      - action: switch.turn_off
+        target:
+          entity_id: switch.0xa4c138c211306160
+    - conditions:
+      - condition: trigger
+        id: relay_accidentally_off
+      - condition: numeric_state
+        entity_id: sensor.ir_blaster_battery_level
+        below: 20
+      sequence:
+      - action: switch.turn_on
+        target:
+          entity_id: switch.0xa4c138c211306160
+  mode: single

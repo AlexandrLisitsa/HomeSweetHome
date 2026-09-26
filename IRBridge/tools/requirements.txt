@@ -1,0 +1,8 @@
+# Host-side tooling only — the Android app needs none of this.
+#
+#   python -m pip install -r tools/requirements.txt
+#
+# check_ha_entities.py / check_ha_templates.py need these; the extract_*.py and
+# verify_codecs.py scripts are stdlib-only.
+PyYAML>=6.0
+Jinja2>=3.1

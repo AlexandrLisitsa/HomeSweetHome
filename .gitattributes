@@ -1,0 +1,22 @@
+# Repository-wide defaults. Module .gitattributes files add the details (and the
+# reasons): most of this repo is copied to Linux hosts -- Home Assistant OS runs
+# BusyBox ash, which breaks on CRLF -- so text is LF everywhere except the one
+# file cmd.exe runs.
+* text=auto eol=lf
+
+*.bat    text eol=crlf
+
+# Binary, never normalised.
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.ico    binary
+*.pdf    binary
+*.woff   binary
+*.woff2  binary
+*.ttf    binary
+*.jar    binary
+*.apk    binary
+*.sh3d   binary
+*.tflite binary

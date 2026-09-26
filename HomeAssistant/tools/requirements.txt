@@ -1,0 +1,11 @@
+# Host-side tooling only. Nothing on the Home Assistant box needs this file --
+# the box already has PyYAML and Jinja2 inside its core container.
+#
+#   python -m pip install -r HomeAssistant/tools/requirements.txt
+#
+# check_dtek_templates.py renders the package's Jinja against fake states.
+# ha_dashboard.py talks to HA's WebSocket API.
+# test_dtek_schedule.py, ha_get.sh, ha_call.sh and ha_pull.sh need none of it.
+PyYAML>=6.0
+Jinja2>=3.1
+websocket-client>=1.7

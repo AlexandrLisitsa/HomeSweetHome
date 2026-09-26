@@ -1,0 +1,158 @@
+# ---------------------------------------------------------------------------
+# IR Bridge — Home Assistant package
+#
+# Drop this in  config/packages/irbridge_package.yaml  and make sure
+# configuration.yaml has:
+#
+#   homeassistant:
+#     packages: !include_dir_named packages
+#
+# It gives you a health sensor and the two scripts you need to find your A/C's
+# protocol: run the sweep, and mark the frame that made it beep.
+#
+# Addresses come from secrets.yaml (irbridge_url_health, irbridge_url_ac_state).
+# ---------------------------------------------------------------------------
+
+rest:
+  - resource: !secret irbridge_url_health
+    scan_interval: 60
+    timeout: 10
+    sensor:
+      - name: "IR Bridge status"
+        unique_id: irbridge_status
+        value_template: "{{ 'online' if value_json.ok else 'error' }}"
+        json_attributes:
+          - version
+          - hasIrEmitter
+          - carrierRanges
+          - candidateCount
+          - sweepRunning
+          - uptimeSeconds
+
+# The bridge's own reachability, as a connectivity sensor.
+#
+# This lives under `template:` and not under `binary_sensor: - platform:
+# template`. The legacy form is not merely deprecated — current Home Assistant
+# refuses it outright and raises a repair issue. The translation is:
+#   platform: template + sensors:  ->  template: - binary_sensor:
+#   friendly_name:                 ->  name:
+#   value_template:                ->  state:
+#
+# Note that `value_template:` elsewhere in this file is a different thing and
+# stays as it is: that one belongs to the REST integration, not the template
+# integration, and is still current.
+#
+# This extends the `template:` list already in configuration.yaml rather than
+# clashing with it — Home Assistant merges packages into list-shaped domains by
+# appending to them.
+template:
+  - binary_sensor:
+      - name: "IR Bridge online"
+        unique_id: irbridge_online
+        device_class: connectivity
+        state: >-
+          {{ states('sensor.ir_bridge_status') == 'online' }}
+
+input_number:
+  irbridge_candidate:
+    name: "IR candidate index"
+    min: 0
+    max: 400
+    step: 1
+    mode: box
+
+input_text:
+  irbridge_suspects:
+    name: "IR sweep suspects"
+    max: 255
+
+script:
+  # -------------------------------------------------------------------------
+  # Find the protocol.
+  #
+  # Point the phone at the A/C, make sure the unit is OFF, then run this and
+  # watch. The moment it beeps or the compressor kicks in, run
+  # `irbridge_mark_hit` — the bridge keeps a timestamped trail, so being a
+  # couple of seconds late costs you nothing.
+  # -------------------------------------------------------------------------
+  irbridge_find_protocol:
+    alias: "IR Bridge: sweep for the A/C protocol"
+    mode: single
+    fields:
+      from_idx:
+        description: "First candidate index"
+        example: 0
+        default: 0
+      to_idx:
+        description: "Last candidate index"
+        example: 60
+        default: 60
+      delay_ms:
+        description: "Milliseconds between frames"
+        example: 4000
+        default: 4000
+    sequence:
+      - action: rest_command.irbridge_sweep_start
+        data:
+          from_idx: "{{ from_idx }}"
+          to_idx: "{{ to_idx }}"
+          delay_ms: "{{ delay_ms }}"
+          command: "on"
+      - action: persistent_notification.create
+        data:
+          title: "IR sweep running"
+          message: >-
+            Sending candidates {{ from_idx }}–{{ to_idx }}, one every
+            {{ (delay_ms | int) / 1000 }}s. Watch the A/C. When it reacts,
+            run "IR Bridge: mark the hit".
+
+  irbridge_mark_hit:
+    alias: "IR Bridge: mark the hit"
+    mode: single
+    sequence:
+      - action: rest_command.irbridge_sweep_mark
+        data:
+          window_ms: 12000
+        response_variable: marked
+      - action: rest_command.irbridge_sweep_stop
+      - variables:
+          suspects: >-
+            {{ marked.content.suspects | map(attribute='idx') | list }}
+          labels: >-
+            {{ marked.content.suspects | map(attribute='label') | list }}
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.irbridge_suspects
+        data:
+          value: "{{ suspects | join(', ') }}"
+      - action: persistent_notification.create
+        data:
+          title: "IR sweep — candidates to try"
+          message: >-
+            {% if suspects | length == 0 %}
+            Nothing was sent in the last 12 seconds. Was the sweep still running?
+            {% else %}
+            Newest first. Re-send each one on its own to confirm which is real:
+            {% for i in range(suspects | length) %}
+            - index **{{ suspects[i] }}** — {{ labels[i] }}
+            {% endfor %}
+            Use the "IR Bridge: send candidate" script with each index.
+            {% endif %}
+
+  irbridge_send_candidate:
+    alias: "IR Bridge: send candidate"
+    mode: single
+    fields:
+      idx:
+        description: "Candidate index (leave empty to use the input_number)"
+        example: 47
+      command:
+        description: "on or off"
+        example: "on"
+        default: "on"
+    sequence:
+      - action: rest_command.irbridge_send_candidate
+        data:
+          idx: "{{ idx | default(states('input_number.irbridge_candidate') | int, true) }}"
+          command: "{{ command }}"
+          repeat: 2

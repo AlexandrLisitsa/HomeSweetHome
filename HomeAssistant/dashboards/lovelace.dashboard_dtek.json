@@ -1,0 +1,98 @@
+{
+  "version": 1,
+  "minor_version": 1,
+  "key": "lovelace.dashboard_dtek",
+  "data": {
+    "config": {
+      "views": [
+        {
+          "type": "sections",
+          "max_columns": 4,
+          "title": "Shutdowns",
+          "path": "shutdowns",
+          "icon": "mdi:transmission-tower-off",
+          "badges": [],
+          "cards": [],
+          "sections": [
+            {
+              "type": "grid",
+              "column_span": 4,
+              "cards": [
+                {
+                  "type": "custom:dtek-shutdowns-card",
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "blocks": [
+                    "hero",
+                    "week"
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 4,
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading_style": "subtitle",
+                  "heading": "DTEK's claim against the inverter's measurement",
+                  "icon": "mdi:chart-timeline-variant"
+                },
+                {
+                  "type": "markdown",
+                  "text_only": true,
+                  "content": "`Grid Condition Safe` reads **on for UNSAFE** — that is the firmware's polarity, not a mistake here. When it is on and the other two are off, the power is out and nobody said it would be.",
+                  "grid_options": {
+                    "columns": "full"
+                  }
+                },
+                {
+                  "type": "history-graph",
+                  "hours_to_show": 24,
+                  "entities": [
+                    {
+                      "entity": "binary_sensor.powmr_inverter_grid_condition_safe",
+                      "name": "Grid down (measured)"
+                    },
+                    {
+                      "entity": "binary_sensor.dtek_outage_now",
+                      "name": "DTEK says outage"
+                    },
+                    {
+                      "entity": "binary_sensor.dtek_scheduled_dark",
+                      "name": "On the schedule"
+                    },
+                    {
+                      "entity": "binary_sensor.grid_outage_unscheduled",
+                      "name": "Unscheduled"
+                    }
+                  ],
+                  "grid_options": {
+                    "columns": "full"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 4,
+              "cards": [
+                {
+                  "type": "custom:dtek-shutdowns-card",
+                  "blocks": [
+                    "source"
+                  ],
+                  "grid_options": {
+                    "columns": "full"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
