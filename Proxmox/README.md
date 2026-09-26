@@ -12,6 +12,7 @@ it, one doc each, and holds read-only tooling to measure them.
 | 101 · LXC | AdGuard Home: ad-blocking DNS for the LAN | [`docs/101-adguard.md`](docs/101-adguard.md) |
 | 102 · LXC | Tailscale subnet router: private remote access | [`docs/102-tailscale.md`](docs/102-tailscale.md) |
 | 103 · LXC | Cloudflare Tunnel: lets Google Home and Gemini reach Home Assistant, without an open port | [`docs/103-cloudflare.md`](docs/103-cloudflare.md) |
+| 104 · LXC | MeterCam: reads the gas meter's dial for Home Assistant | [`docs/104-metercam.md`](docs/104-metercam.md) |
 
 The tooling began as a way to measure the HA guest's resource history rather
 than eyeball it off a graph ([the CPU case study](docs/cpu-growth-case-study.md)).
@@ -20,17 +21,22 @@ than eyeball it off a graph ([the CPU case study](docs/cpu-growth-case-study.md)
 | --- | --- |
 | Host | your Proxmox host (`<proxmox-ip>`) — API and UI on `8006`, SSH on `22` |
 | Credentials | `secrets.env` — gitignored; see `secrets.env.example` |
+| Keys | `~/.ssh/pve_ed25519` for the host, alongside `~/.ssh/ha_ed25519` for the guest |
 
 ## Access
 
-A **read-only API token**, not SSH. `PVEAuditor` can see every node, VM, config
-and metric and change nothing, which is all this module needs. Setup steps and
-the privilege-separation trap are in `secrets.env.example`.
+Two credentials. A **read-only API token** (`PVEAuditor`) sees every node, guest,
+config and metric and changes nothing; everything that only measures uses it. A
+**root SSH key** is the one path that writes, used only to create and deploy
+MeterCam's container; see [`docs/ssh-write-path.md`](docs/ssh-write-path.md).
+Setup for both, including the privilege-separation trap that makes a fresh token
+return 403 to everything, is in `secrets.env.example`.
 
 Verify:
 
 ```sh
-sh tools/pve_get.sh /nodes
+sh tools/pve_get.sh /nodes         # read
+sh tools/pve_ssh.sh pveversion     # write
 ```
 
 ## Tools
@@ -39,7 +45,8 @@ sh tools/pve_get.sh /nodes
 | --- | --- | --- |
 | `tools/pve_get.sh` | GET against `/api2/json` — GET-only by construction | no |
 | `tools/cpu_trend.py` | the HA guest's CPU by week (or by hour: `... day`), against a recorded baseline | no |
-| `tools/_pve_env.sh` | not a command: sourced by `pve_get.sh` to load the token from `secrets.env` | — |
+| `tools/pve_ssh.sh` | run a command on the host as **root**, over SSH — the write path ([`docs/ssh-write-path.md`](docs/ssh-write-path.md)) | **yes** |
+| `tools/_pve_env.sh` | not a command: sourced by `pve_get.sh` and `pve_ssh.sh` to load `secrets.env` | — |
 
 ```sh
 python tools/cpu_trend.py        # weekly, the whole year
@@ -74,5 +81,7 @@ help".
 | [`docs/101-adguard.md`](docs/101-adguard.md) | LXC 101, AdGuard Home |
 | [`docs/102-tailscale.md`](docs/102-tailscale.md) | LXC 102, Tailscale subnet router |
 | [`docs/103-cloudflare.md`](docs/103-cloudflare.md) | LXC 103, Cloudflare Tunnel |
+| [`docs/104-metercam.md`](docs/104-metercam.md) | LXC 104, MeterCam |
+| [`docs/ssh-write-path.md`](docs/ssh-write-path.md) | the root SSH key that changes the host, and what the read/write split does and does not buy |
 | [`docs/security.md`](docs/security.md) | the certificate, the read-only token, and what a leak could and could not do |
 | [`docs/cpu-growth-case-study.md`](docs/cpu-growth-case-study.md) | the investigation into the Home Assistant guest's CPU growth, and the model that fits it |

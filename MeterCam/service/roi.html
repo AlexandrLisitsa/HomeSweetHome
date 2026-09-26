@@ -1,0 +1,246 @@
+<!doctype html>
+<!--
+  ROI editor. Aim the camera, draw one box over the whole row of drums, split it
+  into N, test, copy the JSON into config.json.
+
+  Deliberately dependency-free and served from the service itself: this is the
+  tool you reach for while lying on the floor next to a gas meter with a phone
+  in one hand, and it has to work off the LAN with no build step and no CDN.
+-->
+<meta charset="utf-8">
+<title>MeterCam ROI editor</title>
+<style>
+  :root { color-scheme: light dark; --line:#888; --sel:#0a84ff; --ok:#25a244; --bad:#d93025; }
+  body { margin:0; font:13px/1.45 system-ui,sans-serif; }
+  header { display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+           padding:8px 12px; border-bottom:1px solid var(--line); position:sticky; top:0;
+           background:Canvas; z-index:5; }
+  button, select, input { font:inherit; padding:4px 9px; }
+  button { cursor:pointer; }
+  #wrap { position:relative; display:inline-block; margin:12px; }
+  #shot { display:block; max-width:calc(100vw - 24px); height:auto; }
+  .roi { position:absolute; border:2px solid var(--line); box-sizing:border-box;
+         cursor:move; background:rgba(0,140,255,.06); }
+  .roi.sel { border-color:var(--sel); background:rgba(10,132,255,.16); }
+  .roi .idx { position:absolute; top:-17px; left:-2px; font-size:11px;
+              background:var(--sel); color:#fff; padding:0 4px; border-radius:2px; }
+  .roi .grip { position:absolute; right:-5px; bottom:-5px; width:11px; height:11px;
+               background:var(--sel); cursor:nwse-resize; border-radius:2px; }
+  #side { padding:0 12px 24px; }
+  #crops { display:flex; gap:10px; flex-wrap:wrap; margin:10px 0; }
+  #crops figure { margin:0; text-align:center; }
+  #crops img { height:72px; image-rendering:pixelated; border:1px solid var(--line); }
+  #crops figcaption { font-size:11px; white-space:pre; }
+  pre { background:rgba(128,128,128,.12); padding:10px; overflow-x:auto; border-radius:4px; }
+  .verdict { font-size:15px; font-weight:600; }
+  .ok { color:var(--ok); } .bad { color:var(--bad); }
+  .muted { opacity:.65; }
+</style>
+
+<header>
+  <label>meter <input id="meter" value="gas" size="6"></label>
+  <button id="cap">Capture</button>
+  <button id="reload">Load last</button>
+  <span class="muted">|</span>
+  <button id="autofit"><b>Auto-fit</b></button>
+  <button id="split">Split into</button>
+  <input id="n" type="number" value="8" min="1" max="16" style="width:4em">
+  <button id="del">Delete</button>
+  <button id="clear">Clear all</button>
+  <span class="muted">|</span>
+  <button id="test">Test</button>
+  <button id="ref">Set reference</button>
+  <span id="status" class="muted"></span>
+</header>
+
+<div id="wrap"><img id="shot" alt="no frame yet"></div>
+<div id="side">
+  <div id="verdict"></div>
+  <div id="crops"></div>
+  <p class="muted">Paste into <code>config.json</code> under this meter's <code>rois</code>:</p>
+  <pre id="json">[]</pre>
+</div>
+
+<script>
+const qs = new URLSearchParams(location.search);
+const TOKEN = qs.get('token') || '';
+const $ = s => document.querySelector(s);
+const wrap = $('#wrap'), shot = $('#shot');
+let rois = [], sel = -1, natural = [0, 0];
+
+const auth = u => u + (u.includes('?') ? '&' : '?') + (TOKEN ? 'token=' + encodeURIComponent(TOKEN) : '');
+const meter = () => $('#meter').value.trim() || 'gas';
+const say = (t, cls) => { const s = $('#status'); s.textContent = t; s.className = cls || 'muted'; };
+
+// Displayed size differs from sensor size, so every rectangle is stored in
+// IMAGE pixels and converted for display. Getting this backwards is the classic
+// way to produce ROIs that look right in the browser and miss on the server.
+const scale = () => natural[0] ? shot.clientWidth / natural[0] : 1;
+
+function loadImage(url) {
+  return new Promise((res, rej) => {
+    shot.onload = () => { natural = [shot.naturalWidth, shot.naturalHeight]; res(); };
+    shot.onerror = rej;
+    shot.src = url + (url.includes('?') ? '&' : '?') + 'cb=' + Date.now();
+  });
+}
+
+async function capture() {
+  say('capturing…');
+  try { await loadImage(auth('/capture?meter=' + meter())); say(natural.join('×')); }
+  catch { say('capture failed — is the camera reachable?', 'bad'); }
+  draw();
+}
+async function loadLast() {
+  say('loading…');
+  try { await loadImage(auth('/last.jpg?meter=' + meter())); say(natural.join('×')); }
+  catch { say('no frame stored yet — press Capture', 'bad'); }
+  draw();
+}
+
+function draw() {
+  [...wrap.querySelectorAll('.roi')].forEach(e => e.remove());
+  const k = scale();
+  rois.forEach((r, i) => {
+    const d = document.createElement('div');
+    d.className = 'roi' + (i === sel ? ' sel' : '');
+    d.style.left = (r.x * k) + 'px';  d.style.top = (r.y * k) + 'px';
+    d.style.width = (r.w * k) + 'px'; d.style.height = (r.h * k) + 'px';
+    d.innerHTML = '<span class="idx">' + i + '</span><span class="grip"></span>';
+    d.onpointerdown = e => startDrag(e, i, e.target.classList.contains('grip'));
+    wrap.appendChild(d);
+  });
+  $('#json').textContent = JSON.stringify(rois, null, 1);
+}
+
+function startDrag(e, i, resizing) {
+  e.preventDefault(); e.stopPropagation();
+  sel = i; draw();
+  const k = scale(), r0 = { ...rois[i] }, x0 = e.clientX, y0 = e.clientY;
+  const move = ev => {
+    const dx = (ev.clientX - x0) / k, dy = (ev.clientY - y0) / k;
+    const r = rois[i];
+    if (resizing) { r.w = Math.max(4, Math.round(r0.w + dx)); r.h = Math.max(4, Math.round(r0.h + dy)); }
+    else { r.x = Math.round(r0.x + dx); r.y = Math.round(r0.y + dy); }
+    draw();
+  };
+  const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); };
+  addEventListener('pointermove', move); addEventListener('pointerup', up);
+}
+
+// Drag on empty space creates a rectangle.
+wrap.onpointerdown = e => {
+  if (e.target !== shot) return;
+  e.preventDefault();
+  const k = scale(), b = shot.getBoundingClientRect();
+  const sx = (e.clientX - b.left) / k, sy = (e.clientY - b.top) / k;
+  const r = { x: Math.round(sx), y: Math.round(sy), w: 1, h: 1 };
+  rois.push(r); sel = rois.length - 1;
+  const move = ev => {
+    const cx = (ev.clientX - b.left) / k, cy = (ev.clientY - b.top) / k;
+    r.x = Math.round(Math.min(sx, cx)); r.y = Math.round(Math.min(sy, cy));
+    r.w = Math.round(Math.abs(cx - sx)); r.h = Math.round(Math.abs(cy - sy));
+    draw();
+  };
+  const up = () => {
+    removeEventListener('pointermove', move); removeEventListener('pointerup', up);
+    if (r.w < 4 || r.h < 4) { rois.pop(); sel = -1; }
+    draw();
+  };
+  addEventListener('pointermove', move); addEventListener('pointerup', up);
+};
+
+// The whole point of this editor: draw ONE box over the row of drums, then cut
+// it into N. Eight hand-drawn rectangles are eight chances to be a pixel out.
+$('#split').onclick = () => {
+  if (sel < 0) return say('select a box first', 'bad');
+  const n = Math.max(1, +$('#n').value), r = rois[sel];
+  const w = r.w / n;
+  const parts = Array.from({ length: n }, (_, i) => ({
+    x: Math.round(r.x + i * w), y: r.y, w: Math.round(w), h: r.h,
+  }));
+  rois.splice(sel, 1, ...parts);
+  sel = -1; draw();
+};
+// Draw ONE loose box round the whole row and let the model place the rest.
+// Eight rectangles placed by eye on a blurry, tilted strip is eight chances to
+// clip a digit, and a clipped digit fails quietly: confidence collapses and the
+// gate refuses the reading for what looks like a model problem.
+$('#autofit').onclick = async () => {
+  if (sel < 0) return say('drag one box around the whole row of drums first', 'bad');
+  const n = Math.max(1, +$('#n').value);
+  say('fitting ' + n + ' drums…');
+  const r = await fetch(auth('/autofit'), {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ meter: meter(), bbox: rois[sel], count: n }),
+  });
+  const d = await r.json();
+  if (d.error) return say(d.error, 'bad');
+  rois = d.rois; sel = -1; draw();
+  say(`pitch ${d.fit.pitch}px · tilt ${d.fit.tilt_px}px · box ${d.fit.box.join('×')}`
+      + ` · worst drum ${(d.fit.min_confidence * 100).toFixed(0)}%`,
+      d.fit.min_confidence >= 0.5 ? 'ok' : 'bad');
+};
+
+$('#del').onclick = () => { if (sel >= 0) { rois.splice(sel, 1); sel = -1; draw(); } };
+$('#clear').onclick = () => { rois = []; sel = -1; draw(); };
+addEventListener('keydown', e => {
+  if ((e.key === 'Delete' || e.key === 'Backspace') && sel >= 0
+      && e.target.tagName !== 'INPUT') { rois.splice(sel, 1); sel = -1; draw(); }
+});
+
+$('#cap').onclick = capture;
+$('#reload').onclick = loadLast;
+
+$('#test').onclick = async () => {
+  if (!rois.length) return say('draw some boxes first', 'bad');
+  say('reading…');
+  const r = await fetch(auth('/preview'), {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ meter: meter(), rois, use_last: true }),
+  });
+  const d = await r.json();
+  if (d.error) return say(d.error, 'bad');
+
+  const conf = (d.confidence && d.confidence.per_drum) || [];
+  $('#crops').innerHTML = (d.crops || []).map((src, i) => {
+    const v = d.digits ? d.digits[i] : '?';
+    const c = conf[i] == null ? '' : '\n' + Math.round(conf[i] * 100) + '%';
+    return src ? `<figure><img src="${src}"><figcaption>${i}: ${v}${c}</figcaption></figure>`
+               : `<figure class="bad">${i}: outside frame</figure>`;
+  }).join('');
+
+  // The trap this warning exists for: preview tolerates a missing reference so
+  // you can draw boxes before setting one, but that means fixed rectangles are
+  // being read out of a frame nothing has corrected. The camera WILL drift --
+  // ours moved 26px down between drawing the boxes and the next session, which
+  // turned a perfect 8/8 into gibberish that looked like a model failure.
+  const noRef = d.align && d.align.ok === false;
+  const warn = noRef
+    ? `<div class="bad"><b>No alignment reference set.</b> These boxes are being
+       read from raw pixel coordinates, so any camera movement silently breaks
+       them. Press <b>Set reference</b> once the boxes are right.</div>`
+    : '';
+
+  const cls = d.accepted ? 'ok' : 'bad';
+  $('#verdict').innerHTML =
+    `<div class="verdict ${cls}">${d.value == null ? '—' : d.value}</div>` +
+    `<div class="muted">raw ${d.raw || '—'} · ${d.reason || 'accepted'} · ${d.duration_ms}ms</div>` +
+    warn;
+  say('read in ' + d.duration_ms + 'ms');
+  await loadImage(auth('/last_annotated.jpg?meter=' + meter()));
+  draw();
+};
+
+$('#ref').onclick = async () => {
+  if (!confirm('Store the current frame as the alignment reference?\n\n'
+             + 'Every later photo is warped onto it, and the ROIs are '
+             + 'coordinates in it. Do this once the camera is final.')) return;
+  const r = await fetch(auth('/reference?meter=' + meter()), { method: 'POST' });
+  const d = await r.json();
+  say(d.error || ('reference saved: ' + d.reference), d.error ? 'bad' : 'ok');
+};
+
+addEventListener('resize', draw);
+loadLast();
+</script>

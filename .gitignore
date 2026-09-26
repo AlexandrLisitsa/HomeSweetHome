@@ -44,9 +44,6 @@ MeterCam/config.json
 MeterCam/data/
 MeterCam/corpus/
 MeterCam/models/*.tflite
-# Its Home Assistant package is deployed to the box, so ha_pull.sh brings it
-# down; it is tracked on the metercam branch only.
-HomeAssistant/config/packages/metercam_gas.yaml
 
 # ---------------------------------------------------------------------------
 # Build output

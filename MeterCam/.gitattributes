@@ -1,0 +1,11 @@
+# This module runs in a Debian container and is edited on Windows. models/fetch.sh
+# is executed by /bin/sh inside that container, where a CR is a syntax error, and
+# Git Bash hides the problem locally by stripping it -- the same trap
+# HomeAssistant/.gitattributes documents for HAOS.
+*.sh    text eol=lf
+*.py    text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.json  text eol=lf
+*.html  text eol=lf
+Dockerfile text eol=lf
