@@ -3,7 +3,8 @@
 The hypervisor that runs the home: one small Proxmox VE host with Home Assistant
 as a VM and the network services (ad-blocking DNS, remote access, a public
 tunnel) as LXC containers. This project documents the host and every guest on
-it, one doc each, and holds read-only tooling to measure them.
+it, one doc each, holds read-only tooling to measure them, and the hook that
+sends every backup off-site ([`docs/backups.md`](docs/backups.md)).
 
 | Guest | What it does | Doc |
 | --- | --- | --- |
@@ -20,12 +21,20 @@ than eyeball it off a graph ([the CPU case study](docs/cpu-growth-case-study.md)
 | --- | --- |
 | Host | your Proxmox host (`<proxmox-ip>`) — API and UI on `8006`, SSH on `22` |
 | Credentials | `secrets.env` — gitignored; see `secrets.env.example` |
+| Backups | weekly vzdump jobs, copied encrypted to Google Drive — [`docs/backups.md`](docs/backups.md) |
 
 ## Access
 
-A **read-only API token**, not SSH. `PVEAuditor` can see every node, VM, config
-and metric and change nothing, which is all this module needs. Setup steps and
-the privilege-separation trap are in `secrets.env.example`.
+Two ways in, for two jobs:
+
+- A **read-only API token** for measuring. `PVEAuditor` can see every node, VM,
+  config and metric and change nothing. Setup steps and the privilege-separation
+  trap are in `secrets.env.example`. The tools below use only this.
+- **SSH as root** with a dedicated key, for host administration: installing
+  packages, the backup hook, the backup jobs. Nothing in `tools/` uses it; the
+  hook is installed by hand (see [`docs/backups.md`](docs/backups.md)).
+  Changes made this way are written up in the docs, since there is no mirror of
+  the host's config in this repository.
 
 Verify:
 
@@ -40,14 +49,15 @@ sh tools/pve_get.sh /nodes
 | `tools/pve_get.sh` | GET against `/api2/json` — GET-only by construction | no |
 | `tools/cpu_trend.py` | the HA guest's CPU by week (or by hour: `... day`), against a recorded baseline | no |
 | `tools/_pve_env.sh` | not a command: sourced by `pve_get.sh` to load the token from `secrets.env` | — |
+| `tools/vzdump-offsite.sh` | **runs on the host**, as the vzdump hook of both backup jobs: uploads the dumps to Google Drive through rclone crypt and prunes the off-site copies | changes Drive, not the host |
 
 ```sh
 python tools/cpu_trend.py        # weekly, the whole year
 python tools/cpu_trend.py day    # per-hour, the last day
 ```
 
-There is deliberately no write helper. If the VM's RAM or core count ever needs
-changing, that is an SSH job and a separate decision.
+There is deliberately no write helper over the API. If the VM's RAM or core
+count ever needs changing, that is an SSH job and a separate decision.
 
 ## Endpoints worth knowing
 
@@ -74,5 +84,6 @@ help".
 | [`docs/101-adguard.md`](docs/101-adguard.md) | LXC 101, AdGuard Home |
 | [`docs/102-tailscale.md`](docs/102-tailscale.md) | LXC 102, Tailscale subnet router |
 | [`docs/103-cloudflare.md`](docs/103-cloudflare.md) | LXC 103, Cloudflare Tunnel |
+| [`docs/backups.md`](docs/backups.md) | what is backed up, where, the retention, and how to restore |
 | [`docs/security.md`](docs/security.md) | the certificate, the read-only token, and what a leak could and could not do |
 | [`docs/cpu-growth-case-study.md`](docs/cpu-growth-case-study.md) | the investigation into the Home Assistant guest's CPU growth, and the model that fits it |

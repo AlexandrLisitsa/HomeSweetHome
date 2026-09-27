@@ -10,6 +10,7 @@ Assistant as a VM, and the network services as LXC containers.
 | Boot | UEFI, Secure Boot off |
 | Proxmox VE | 9.2 |
 | Storage | `local` (directory: ISOs, templates, backups) and `local-lvm` (LVM-thin: guest disks) |
+| Backups | weekly vzdump to `local`, copied encrypted to Google Drive ([backups.md](backups.md)) |
 | Node name | `proxmox`, a single node, no cluster |
 
 ## Guests
@@ -37,5 +38,23 @@ memory on the host first.
 
 ## Access
 
-Read-only through the API token (`tools/pve_get.sh`), as described in the
-[README](../README.md#access). Nothing in this repository changes the host.
+Read-only through the API token (`tools/pve_get.sh`), and SSH as root for
+administration, as described in the [README](../README.md#access). The only
+thing from this repository installed on the host is the backup hook
+([backups.md](backups.md)).
+
+## Disk space
+
+The root filesystem (40 GB) holds `local`, so the local backups compete with the
+OS for it. **Proxmox never removes old kernels**: by 2026-09-27, 22 kernels had
+piled up and used 21 GB of it. Keep only the kernels `proxmox-boot-tool kernel
+list` selects (the running one, the previous one and the newest of the older
+series) and purge the rest:
+
+```sh
+proxmox-boot-tool kernel list
+dpkg -l 'proxmox-kernel-*-pve-signed' | awk '/^ii/{print $2}'   # installed
+apt-get -s purge <the unselected ones>   # check it removes only those, then without -s
+```
+
+After that cleanup the root filesystem had 31 GB free.
