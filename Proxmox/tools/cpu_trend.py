@@ -17,6 +17,7 @@ from collections import defaultdict
 from pathlib import Path
 
 VMID = 100          # haos17-1
+BASE_CORES = 4      # vCPUs when the baseline below was taken; see main()
 NODE = 'proxmox'
 
 # Weekly means measured 2026-08-28. Steps, not drift - flat plateaus between.
@@ -59,9 +60,15 @@ def main(timeframe='year'):
             key = t.strftime(fmt)
         else:                                    # week starting Monday
             key = (t - datetime.timedelta(days=t.weekday())).strftime(fmt)
-        buckets[key].append((r['cpu'] * 100, (r.get('diskwrite') or 0) / 1024))
+        # RRD `cpu` is a fraction of the VM's OWN vCPUs, so the same work reads
+        # twice as high after 4 -> 2 cores (2026-09-30). Scale by the row's
+        # maxcpu to "% of 4 cores", the unit every number below was taken in.
+        cores = r.get('maxcpu') or BASE_CORES
+        buckets[key].append((r['cpu'] * cores / BASE_CORES * 100,
+                             (r.get('diskwrite') or 0) / 1024))
 
-    print(f"  {'bucket':13s} {'cpu%':>6s} {'delta':>7s} {'write KB/s':>11s}")
+    print(f"  {'bucket':13s} {'cpu%':>6s} {'delta':>7s} {'write KB/s':>11s}"
+          f"   (cpu% of {BASE_CORES} cores, whatever the VM had)")
     prev = None
     for k in sorted(buckets):
         v = buckets[k]

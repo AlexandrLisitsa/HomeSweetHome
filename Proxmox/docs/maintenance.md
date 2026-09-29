@@ -13,7 +13,7 @@ from the host automatically: it was set over SSH, and this page is the record.
 | Host | `pve-ha-lrm`, `pve-ha-crm` disabled | single node, no HA resources: they only ran a watchdog and wrote state |
 | Host | `rpcbind`, `nfs-blkmap`, `zfs-zed` disabled | no NFS storage and no ZFS pool |
 | Host | `pct-fstrim.timer`, Sundays 05:30 ([`tools/pct-fstrim.service`](../tools/pct-fstrim.service), [`.timer`](../tools/pct-fstrim.timer)) | see *Thin pool* below |
-| VM 100 | `balloon: 1024` (memory 2048) | lets the host take back the half Home Assistant does not use when it runs short |
+| VM 100 | `balloon: 1536` (memory 2048), 2 vCPUs | lets the host take back some of what Home Assistant does not use; 1024 squeezed it into swap. 2 vCPUs, not 4: see the CPU case study |
 | Every LXC | `/etc/systemd/journald.conf.d/size.conf`: `SystemMaxUse=32M` | each 2 GB container had ~190 MB of journal from months of reboots |
 | HA · Zigbee2MQTT | `advanced.log_level: warning`, `log_directories_to_keep: 5` | 183 MB of info-level logs; **5 is the minimum Zigbee2MQTT accepts** — 3 makes it refuse to start |
 
