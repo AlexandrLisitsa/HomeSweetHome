@@ -73,7 +73,7 @@
  */
 
 const CARD = "powmr-inverter-console-card";
-const VERSION = "1.6.0";
+const VERSION = "1.7.0";
 
 /*
  * Brand colours stay literal: they identify a leg of the diagram (amber =

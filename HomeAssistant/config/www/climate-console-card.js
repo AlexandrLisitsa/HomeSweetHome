@@ -91,7 +91,7 @@
  */
 
 const CARD = "climate-console-card";
-const VERSION = "1.1.1";
+const VERSION = "1.2.0";
 
 const TABS = ["rooms", "hall", "bedroom"];
 

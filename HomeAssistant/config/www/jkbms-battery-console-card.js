@@ -87,7 +87,7 @@
  */
 
 const CARD = "jkbms-battery-console-card";
-const VERSION = "1.3.0";
+const VERSION = "1.4.0";
 
 /*
  * The design's palette, literal. Names are what the design calls them: two
