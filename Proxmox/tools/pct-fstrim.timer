@@ -1,0 +1,9 @@
+[Unit]
+Description=Weekly pct fstrim of running LXCs
+
+[Timer]
+OnCalendar=Sun 05:30
+Persistent=true
+
+[Install]
+WantedBy=timers.target

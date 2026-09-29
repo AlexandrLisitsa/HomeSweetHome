@@ -7,7 +7,7 @@ configuration is mirrored in [`HomeAssistant/`](../../HomeAssistant/README.md).
 | --- | --- |
 | Type | QEMU/KVM VM, machine `q35`, UEFI (OVMF) |
 | CPU | 4 vCPU, `host` CPU type |
-| RAM | 2 GB, balloon driver loaded |
+| RAM | 2 GB, balloons down to 1 GB when the host needs it (`balloon: 1024`) |
 | Disk | 64 GB on `local-lvm` (virtio-SCSI, discard and SSD emulation on) |
 | USB passthrough | a Silicon Labs CP210x USB-serial adapter (`10c4:ea60`): the Zigbee coordinator |
 | Guest agent | enabled |

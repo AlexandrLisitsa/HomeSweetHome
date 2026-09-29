@@ -21,6 +21,7 @@ Assistant as a VM, and the network services as LXC containers.
 | 101 | LXC | `adguard` | 1 | 512 MB | 2 GB | [AdGuard Home](101-adguard.md) |
 | 102 | LXC | `tailscale` | 1 | 512 MB | 2 GB | [Tailscale](102-tailscale.md) |
 | 103 | LXC | `cloudflare` | 1 | 512 MB | 2 GB | [Cloudflare Tunnel](103-cloudflare.md) |
+| 104 | LXC | `metercam` | 2 | 1 GB | 8 GB | MeterCam: the gas-meter camera service, in Docker (on the `metercam` branch) |
 
 All of them start with the host (`onboot=1`). Every guest runs Debian or, for the
 VM, Home Assistant OS; 100 and 101 were created with the
@@ -29,9 +30,12 @@ VM, Home Assistant OS; 100 and 101 were created with the
 
 ## Sizing
 
-RAM is the tight resource: the guests are given about 3.5 GB between them on a
-host with 3.6 GB, which works because Home Assistant's VM runs the
-`virtio_balloon` driver and the containers use well under their limits. CPU is
+RAM is the tight resource: the guests are given about 4.5 GB between them on a
+host with 3.6 GB, which works because the containers use well under their limits
+(20–120 MB each) and Home Assistant's VM can balloon down to 1 GB when the host
+runs short (`balloon: 1024`; it uses about 1 GB of its 2). Swappiness is 10 so
+the host drops page cache before it swaps a guest out
+([maintenance.md](maintenance.md)). CPU is
 not: the Home Assistant guest sits at a few percent (see
 [the CPU case study](cpu-growth-case-study.md)). A new guest should check free
 memory on the host first.
@@ -39,9 +43,9 @@ memory on the host first.
 ## Access
 
 Read-only through the API token (`tools/pve_get.sh`), and SSH as root for
-administration, as described in the [README](../README.md#access). The only
-thing from this repository installed on the host is the backup hook
-([backups.md](backups.md)).
+administration, as described in the [README](../README.md#access). Installed on
+the host from this repository: the backup hook ([backups.md](backups.md)) and
+the weekly `pct fstrim` timer ([maintenance.md](maintenance.md)).
 
 ## Disk space
 
@@ -57,4 +61,6 @@ dpkg -l 'proxmox-kernel-*-pve-signed' | awk '/^ii/{print $2}'   # installed
 apt-get -s purge <the unselected ones>   # check it removes only those, then without -s
 ```
 
-After that cleanup the root filesystem had 31 GB free.
+After that cleanup the root filesystem had 31 GB free. The journal is capped at
+100 MB and the apt cache is worth clearing on the same occasion; the routine is
+in [maintenance.md](maintenance.md).
