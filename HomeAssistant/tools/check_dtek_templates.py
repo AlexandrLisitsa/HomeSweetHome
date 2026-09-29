@@ -351,7 +351,10 @@ check("last window of the day", rendered["message"],
 print("\n5c. notification channels")
 PHONES = {"notify.household"}
 for aid, want_channel in [("dtek_outage_starting_soon", "DTEK emergency starts"),
-                          ("dtek_outage_ending_soon", "DTEK emergency ends")]:
+                          ("dtek_outage_ending_soon", "DTEK emergency ends"),
+                          ("dtek_outage_reported", "DTEK emergency starts"),
+                          ("dtek_outage_cleared", "DTEK emergency ends"),
+                          ("dtek_outage_overdue", "DTEK emergency starts")]:
     a = {x["id"]: x for x in pkg["automation"]}[aid]
     sends = [x for x in a["action"] if x.get("service", "").startswith("notify.")]
     push = [x for x in sends if x["service"] in PHONES]
@@ -371,6 +374,184 @@ allch = {x["data"]["data"]["channel"]
 check("the two channels are distinct", len(allch), 2)
 check("neither reuses the shared Emergency channel",
       sorted(allch & {"Emergency", "Emergency resolved"}), [])
+
+# --- 5d. DTEK's own outage record ------------------------------------------
+# Rendered against the attributes the poller published for the 29.09.2026
+# emergency (tools/fixtures/dtek_emergency_20260929.json), start and end
+# included -- they were null on the day, which is the bug this pair came with.
+print("\n5d. 'DTEK reports an outage' automation")
+autos = {a["id"]: a for a in pkg["automation"]}
+rep = autos["dtek_outage_reported"]
+GOLD = base_attrs(queue="1.1", outage_active=True, outage_type="2",
+                  outage_reason="Аварійні ремонтні роботи",
+                  outage_start="2026-09-29T11:05:00+03:00",
+                  outage_end="2026-09-29T15:25:00+03:00")
+AT = datetime(2026, 9, 29, 14, 17, tzinfo=KYIV)
+rstates = {"sensor.dtek_queue": "1.1", GRID: "off",
+           "sensor.battery_runtime_remaining": "9.4",
+           "sensor.jkbms_gateway_bms_state_of_charge": "87"}
+
+
+def fire(auto, states, attrs, trig):
+    env = make_env(states, attrs, AT)
+    out = {}
+    for name, tpl in auto["action"][0]["variables"].items():
+        out[name] = env.from_string(tpl).render(trigger=trig, **out).strip()
+    return out
+
+
+def gate(auto, trig):
+    tpl = [c for c in auto["condition"] if c["condition"] == "template"][0]
+    return make_env({}, GOLD, AT).from_string(
+        tpl["value_template"]).render(trigger=trig).strip()
+
+
+def st(state, **attrs):
+    return {"state": state, "attributes": attrs}
+
+
+def status(frm, to):
+    return {"id": "status", "from_state": frm, "to_state": to}
+
+
+EMERG = st("outage_emergency", outage_active=True, outage_type="2",
+           outage_end="2026-09-29T15:25:00+03:00")
+PLANNED = st("outage_planned", outage_active=True, outage_type="1")
+OK = st("ok", outage_active=False, outage_type=None)
+STARTED = status(OK, EMERG)
+
+out = fire(rep, rstates, GOLD, STARTED)
+check("title names the kind", out["title"], "⚠️ Alert: DTEK emergency outage")
+check("message, mains present", out["message"],
+      "Аварійні ремонтні роботи, queue 1.1: off since 11:05, expected back by "
+      "15:25. The inverter still sees mains. "
+      "Battery 87.0%, about 9.4 h left at the current draw.")
+out = fire(rep, dict(rstates, **{GRID: "on"}), GOLD, STARTED)
+check("grid line follows the UNSAFE polarity", out["grid_line"],
+      "The inverter sees no mains.")
+out = fire(rep, rstates, {**GOLD, (SENSOR, "outage_end"): None,
+                          (SENSOR, "outage_start"): None}, STARTED)
+check("no times published: no dangling colon", out["message"],
+      "Аварійні ремонтні роботи, queue 1.1. The inverter still sees mains. "
+      "Battery 87.0%, about 9.4 h left at the current draw.")
+check("planned title", fire(rep, rstates, GOLD, status(OK, PLANNED))["title"],
+      "⚠️ Alert: DTEK planned outage")
+
+# Which status changes are a message. The stale rows are the reason the
+# template rebuilds the previous status from attributes instead of reading it.
+STALE_OUT = st("stale", outage_active=True, outage_type="2")
+STALE_OK = st("stale", outage_active=False, outage_type=None)
+for label, trig, want in [
+        ("ok -> emergency", status(OK, EMERG), "True"),
+        ("ok -> planned", status(OK, PLANNED), "True"),
+        ("planned -> emergency (reclassified)", status(PLANNED, EMERG), "True"),
+        ("emergency -> emergency (attributes moved)", status(EMERG, EMERG), "False"),
+        ("emergency -> stale -> emergency: same outage", status(STALE_OUT, EMERG), "False"),
+        ("ok -> stale -> emergency: a new one", status(STALE_OK, EMERG), "True"),
+        ("restart: unavailable -> emergency", status(st("unavailable"), EMERG), "False"),
+        ("emergency -> ok is the other automation", status(EMERG, OK), "False"),
+        ("ok -> stale", status(OK, STALE_OK), "False"),
+        # command_line.reload recreates the entity: no from_state at all. The
+        # first version of this alert pushed "restore time revised" to both
+        # phones on exactly that, at 14:28 on 29.09.2026.
+        ("entity recreated: from_state None", status(None, EMERG), "False")]:
+    check("status gate: " + label, gate(rep, trig), want)
+
+REV = {"id": "revised",
+       "from_state": st("outage_emergency", outage_end="2026-09-29T15:25:00+03:00"),
+       "to_state": st("outage_emergency", outage_end="2026-09-29T17:00:00+03:00")}
+check("revision title", fire(rep, rstates, GOLD, REV)["title"],
+      "⚠️ DTEK: restore time revised")
+check("revision gate: estimate moved", gate(rep, REV), "True")
+check("revision gate: end appearing is the start, not a revision",
+      gate(rep, {"id": "revised",
+                 "from_state": st("outage_emergency", outage_end=None),
+                 "to_state": REV["to_state"]}), "False")
+check("revision gate: entity recreated, from_state None",
+      gate(rep, {"id": "revised", "from_state": None,
+                 "to_state": REV["to_state"]}), "False")
+check("revision gate: status changed too -> the status message covers it",
+      gate(rep, {"id": "revised", "from_state": st("outage_planned",
+                 outage_end="2026-09-29T15:25:00+03:00"),
+                 "to_state": REV["to_state"]}), "False")
+
+clr = autos["dtek_outage_cleared"]
+for label, frm, want in [("emergency -> ok", EMERG, "True"),
+                         ("planned -> ok", PLANNED, "True"),
+                         ("outage, stale, then ok", STALE_OUT, "True"),
+                         ("stale -> ok, no outage before", STALE_OK, "False"),
+                         ("restart: unavailable -> ok", st("unavailable"), "False"),
+                         ("entity recreated: from_state None", None, "False")]:
+    check("clear gate: " + label, gate(clr, status(frm, OK)), want)
+check("both edges share one tag, so the clear replaces the warning",
+      sorted({x["data"]["data"].get("tag")
+              for aid in ("dtek_outage_reported", "dtek_outage_cleared")
+              for x in autos[aid]["action"] if x.get("service") in PHONES}),
+      ["dtek_outage"])
+check("cleared message",
+      fire(autos["dtek_outage_cleared"], rstates, GOLD, {})["message"],
+      "DTEK no longer reports an outage for queue 1.1. The inverter sees mains.")
+
+# The street scope, straight off the golden answer: 1 of 288.
+for label, n, of, want in [("only this building", 1, 288, "Only this building on the street."),
+                           ("a dozen houses", 12, 288, "12 of 288 houses on the street."),
+                           ("no street data", None, None, "")]:
+    check("scope: " + label,
+          fire(rep, rstates, {**GOLD, (SENSOR, "street_outages"): n,
+                              (SENSOR, "street_houses"): of}, STARTED)["scope_line"], want)
+check("scope lands in the message",
+      fire(rep, rstates, {**GOLD, (SENSOR, "street_outages"): 1,
+                          (SENSOR, "street_houses"): 288}, STARTED)["message"],
+      "Аварійні ремонтні роботи, queue 1.1: off since 11:05, expected back by "
+      "15:25. Only this building on the street. The inverter still sees mains. "
+      "Battery 87.0%, about 9.4 h left at the current draw.")
+
+# --- 5e. the estimate passing ----------------------------------------------
+print("\n5e. 'DTEK estimate passed' automation")
+over = autos["dtek_outage_overdue"]
+otrig = over["trigger"][0]["value_template"]
+for label, active, end, at, want in [
+        ("before the estimate", True, "2026-09-29T15:25:00+03:00", AT, "False"),
+        ("a minute after", True, "2026-09-29T15:25:00+03:00",
+         AT.replace(hour=15, minute=26), "True"),
+        ("cleared by then", False, "2026-09-29T15:25:00+03:00",
+         AT.replace(hour=15, minute=26), "False"),
+        ("no estimate published", True, None, AT.replace(hour=15, minute=26), "False")]:
+    check(label, render(otrig, {}, {**GOLD, (SENSOR, "outage_active"): active,
+                                    (SENSOR, "outage_end"): end}, at), want)
+check("message", fire(over, rstates, GOLD, {})["message"],
+      "DTEK's 15:25 estimate has passed and the outage is still on record "
+      "(Аварійні ремонтні роботи, queue 1.1). The inverter still sees mains.")
+
+# --- 5f. the grid alerts in automations.yaml carry DTEK's side -------------
+print("\n5f. Grid Outage / Power Restored mention DTEK")
+AUTOS_YAML = yaml.load((PKG.parents[1] / "automations.yaml").read_text(encoding="utf-8"),
+                       HaLoader)
+grid_autos = {a["alias"]: a for a in AUTOS_YAML}
+
+
+def dtek_line(alias, states):
+    for step in grid_autos[alias]["actions"]:
+        if "variables" in step and "dtek_line" in step["variables"]:
+            return render(step["variables"]["dtek_line"], states, GOLD, AT)
+    return None
+
+
+check("outage alert, DTEK has it",
+      dtek_line("❌ Alert: Grid Outage!", {"binary_sensor.dtek_outage_now": "on"}),
+      "DTEK: Аварійні ремонтні роботи, expected back by 15:25.")
+check("outage alert, DTEK has nothing",
+      dtek_line("❌ Alert: Grid Outage!", {"binary_sensor.dtek_outage_now": "off"}),
+      "DTEK has nothing on record yet.")
+check("restored, DTEK still has it",
+      dtek_line("✅ Power Restored", {"binary_sensor.dtek_outage_now": "on"}),
+      "DTEK still reports an outage until 15:25.")
+check("restored, DTEK agrees", dtek_line("✅ Power Restored",
+      {"binary_sensor.dtek_outage_now": "off"}), "")
+check("every grid-alert message uses it",
+      all("{{ dtek_line }}" in step["data"]["message"]
+          for alias in ("❌ Alert: Grid Outage!", "✅ Power Restored")
+          for step in grid_autos[alias]["actions"] if "action" in step), True)
 
 # --- 6. every template renders to one clean token where it must ------------
 print("\n6. no template leaks whitespace or a stray token")
@@ -567,6 +748,11 @@ else:
               sorted(set(HIDDEN_REASONS) - keys), [])
     check("both week-derived tiles can blank",
           len(re.findall(r'tile\("(?:Next window|Off this week)"', js)), 2)
+    # green = all good, warn = DTEK has a notice but mains is present, red =
+    # the power is actually off. In that order of precedence.
+    check("hero accent: red, then warn for a DTEK notice, then green",
+          bool(re.search(r"accent:\s*gridDown\s*\?\s*RED\s*:\s*dtekOutage\s*\?"
+                         r"\s*ORANGE\s*:\s*GREEN", js)), True)
     check("weekOff is null rather than 0h when withheld",
           bool(re.search(r"weekOff:\s*weekLive\s*\?", js)), True)
 

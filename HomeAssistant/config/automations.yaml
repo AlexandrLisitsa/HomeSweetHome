@@ -40,10 +40,11 @@
   actions:
   - variables:
       battery_line: "{% set r = states('sensor.battery_runtime_remaining') %}{% set s = states('sensor.jkbms_gateway_bms_state_of_charge') %}{% if r | is_number and s | is_number %}Battery {{ s | float | round(0) }}%, about {{ r | float | round(1) }} h left at the current draw.{% elif s | is_number %}Battery {{ s | float | round(0) }}%.{% endif %}"
+      dtek_line: "{% if is_state('binary_sensor.dtek_outage_now', 'on') %}{% set e = state_attr('sensor.dtek_shutdowns', 'outage_end') %}DTEK: {{ state_attr('sensor.dtek_shutdowns', 'outage_reason') or 'outage on record' }}{% if e %}, expected back by {{ as_datetime(e) | as_local | as_timestamp | timestamp_custom('%H:%M') }}{% endif %}.{% else %}DTEK has nothing on record yet.{% endif %}"
   - action: notify.household
     data:
       title: '❌ Alert: Grid Outage!'
-      message: 'Grid failure detected. The inverter is now running on battery power! {{ battery_line }}'
+      message: 'Grid failure detected. The inverter is now running on battery power! {{ battery_line }} {{ dtek_line }}'
       data:
         ttl: 0
         priority: high
@@ -51,7 +52,7 @@
   - action: notify.persistent_notification
     data:
       title: '❌ Alert: Grid Outage!'
-      message: 'Grid failure detected. The inverter is now running on battery power! {{ battery_line }}'
+      message: 'Grid failure detected. The inverter is now running on battery power! {{ battery_line }} {{ dtek_line }}'
   mode: single
 - id: '1775345768954'
   alias: ✅ Power Restored
@@ -64,10 +65,12 @@
     - 'off'
     trigger: state
   actions:
+  - variables:
+      dtek_line: "{% if is_state('binary_sensor.dtek_outage_now', 'on') %}{% set e = state_attr('sensor.dtek_shutdowns', 'outage_end') %}DTEK still reports an outage{% if e %} until {{ as_datetime(e) | as_local | as_timestamp | timestamp_custom('%H:%M') }}{% endif %}.{% endif %}"
   - action: notify.household
     data:
       title: ✅ Power Restored
-      message: Grid parameters are normal. The inverter has switched to grid power.
+      message: 'Grid parameters are normal. The inverter has switched to grid power. {{ dtek_line }}'
       data:
         ttl: 0
         priority: high
@@ -75,7 +78,7 @@
   - action: notify.persistent_notification
     data:
       title: ✅ Power Restored
-      message: Grid parameters are normal. The inverter has switched to grid power.
+      message: 'Grid parameters are normal. The inverter has switched to grid power. {{ dtek_line }}'
   mode: single
 - id: '1778275569737'
   alias: "\U0001F4A7 Alert: Water Leak Detected!"

@@ -26,7 +26,7 @@
  */
 
 const CARD = "dtek-shutdowns-card";
-const VERSION = "1.1.1";
+const VERSION = "1.3.0";
 
 /*
  * The grid shows the NORMAL condition, not the exception: a cell is green when
@@ -127,7 +127,7 @@ const DEFAULTS = {
   unscheduled_entity: "binary_sensor.grid_outage_unscheduled",
   stale_entity: "binary_sensor.dtek_data_stale",
   poll_interval: 5, // minutes; matches scan_interval: 300 on the sensor
-  debug_state: null, // on | outage | unscheduled | stale -- render only
+  debug_state: null, // on | outage | dtek | unscheduled | stale -- render only
   // Which of the three blocks this instance draws, in the order given.
   //
   // It exists so the provenance block can sit BELOW the claim-against-
@@ -139,10 +139,11 @@ const DEFAULTS = {
 
 const BLOCKS = ["hero", "week", "source"];
 
-const DEBUG_STATES = ["on", "outage", "unscheduled", "stale"];
+const DEBUG_STATES = ["on", "outage", "dtek", "unscheduled", "stale"];
 
 const DASH = "–"; // en dash, for 07:00-10:00
 const MDASH = "—";
+const MIDDOT = "·";
 
 // --- small helpers ---------------------------------------------------------
 
@@ -172,6 +173,13 @@ function parseDate(value) {
 function fmtClock(value) {
   const d = parseDate(value);
   return d ? pad2(d.getHours()) + ":" + pad2(d.getMinutes()) : null;
+}
+
+/** "11:05 29.09.2026" -- DTEK's own notation, so the card reads like the site. */
+function fmtStamp(value) {
+  const d = parseDate(value);
+  return d ? fmtClock(value) + " " + pad2(d.getDate()) + "."
+    + pad2(d.getMonth() + 1) + "." + d.getFullYear() : null;
 }
 
 /** "in 2h 58m", "in 14m". The mockup's countdown, from whole minutes. */
@@ -373,6 +381,11 @@ class DtekShutdownsCard extends HTMLElement {
       reason = reason || "Scheduled outage";
       outageStart = outageStart || new Date(now.getTime() - 36e5).toISOString();
       outageEnd = outageEnd || new Date(now.getTime() + 108e5).toISOString();
+    } else if (dbg === "dtek") {
+      gridDown = false; dtekOutage = true; unscheduled = false; stale = false;
+      reason = reason || "Аварійні ремонтні роботи";
+      outageStart = outageStart || new Date(now.getTime() - 36e5).toISOString();
+      outageEnd = outageEnd || new Date(now.getTime() + 108e5).toISOString();
     } else if (dbg === "unscheduled") {
       gridDown = true; unscheduled = true; dtekOutage = false; stale = false;
     } else if (dbg === "stale") {
@@ -498,6 +511,18 @@ class DtekShutdownsCard extends HTMLElement {
           + "but the schedule has this hour dark, so it does not count as "
           + "unscheduled.";
       }
+    } else if (dtekOutage) {
+      // DTEK has an outage recorded against this address and the inverter
+      // still sees mains. Either DTEK is ahead of the switching or the notice
+      // covers a line this flat is not on -- both worth a warning, neither an
+      // alarm, and certainly not a green "the power is on".
+      headline = "DTEK reports an outage.";
+      const bits = [];
+      if (outageStart) bits.push("since " + fmtClock(outageStart));
+      if (outageEnd) bits.push("expected back by " + fmtClock(outageEnd));
+      lede = "DTEK says the power is off for " + queue
+        + (bits.length ? " " + bits.join(", ") : "")
+        + ". The inverter still sees mains.";
     } else {
       headline = "The power is on.";
       lede = win
@@ -517,6 +542,33 @@ class DtekShutdownsCard extends HTMLElement {
     // fault on the one screen anybody actually opens during a blackout.
     let reasonText = "Not reported";
     let reasonKnown = false;
+    // The rest of DTEK's notice, row for row as its own site prints it. Only
+    // while an outage is recorded: outside one these are all empty anyway.
+    //
+    // A time the poller could not parse still arrives verbatim in *_raw, and
+    // is shown as DTEK wrote it: on 29.09.2026 a format change turned both of
+    // these into nothing for three hours.
+    const notice = [];
+    if (dtekOutage) {
+      const startText = fmtStamp(outageStart) || a.outage_start_raw;
+      if (startText) notice.push(["Started", startText]);
+      const end = parseDate(outageEnd);
+      if (end) {
+        const mins = Math.round((end.getTime() - now.getTime()) / 60000);
+        notice.push(["Expected back", "by " + fmtStamp(outageEnd) + " " + MIDDOT
+          + " " + (mins >= 0 ? fmtIn(mins) : "overdue " + fmtIn(-mins).slice(3))]);
+      } else if (a.outage_end_raw) {
+        notice.push(["Expected back", "by " + a.outage_end_raw]);
+      }
+      // The answer lists every house on the street, so this separates a fault
+      // in this building from one on the line.
+      const n = a.street_outages;
+      if (typeof n === "number" && n > 0 && typeof a.street_houses === "number") {
+        notice.push(["Scope", n === 1 ? "Only this building on the street"
+          : n + " of " + a.street_houses + " houses on the street"]);
+      }
+      if (a.updated_at) notice.push(["Information updated", a.updated_at]);
+    }
     if (reason) {
       reasonText = reason + ", " + queue;
       reasonKnown = true;
@@ -525,6 +577,9 @@ class DtekShutdownsCard extends HTMLElement {
       reasonKnown = true;
     }
 
+    // Anything in DTEK's answer the poller could not read -- see
+    // drift_warnings() in dtek_poll.py. Never fatal, never silent.
+    const warnings = Array.isArray(a.warnings) ? a.warnings : [];
     const published = a.schedule_update || "an unknown date";
     const inEffect = a.schedule_in_effect === true;
     let note;
@@ -551,7 +606,8 @@ class DtekShutdownsCard extends HTMLElement {
     }
 
     return {
-      accent: gridDown ? RED : GREEN,
+      // Orange when only DTEK says it is off: a claim, not a measurement.
+      accent: gridDown ? RED : dtekOutage ? ORANGE : GREEN,
       identity,
       headline, lede, note, queue, week, days, win,
       weekLive, hiddenReason,
@@ -560,18 +616,23 @@ class DtekShutdownsCard extends HTMLElement {
       weekOff: weekLive ? fmtHours(weekOff) : null,
       weekShare: weekLive ? Math.round((weekOff / 168) * 100) + "%" : null,
       stale,
-      feedLabel: stale ? "Stale" : "Healthy",
-      feedColor: stale ? ORANGE : GREEN,
+      warnings,
+      feedLabel: stale ? "Stale" : warnings.length ? "Drift" : "Healthy",
+      feedColor: stale || warnings.length ? ORANGE : GREEN,
       feedSentence: stale
         ? "The poller has not returned fresh data"
           + (a.error ? " (" + a.error + ")" : "")
           + ", so the times below may be out of date."
-        : "The feed answered on the last poll, so the times below are current.",
+        : warnings.length
+          ? "The feed answered, but DTEK sent something the poller could not "
+            + "fully read, so some values below are shown as DTEK wrote them."
+          : "The feed answered on the last poll, so the times below are current.",
       lastPoll: fmtClock(a.fetched_at) || "never",
       published: a.schedule_update || "unknown",
       updatedAt: a.updated_at || null,
       reasonText,
       reasonKnown,
+      notice,
     };
   }
 
@@ -612,6 +673,8 @@ class DtekShutdownsCard extends HTMLElement {
       + '<div class="reason"><span class="k">Reason</span>'
       + '<span class="v' + (d.reasonKnown ? "" : " dim") + '">'
       + esc(d.reasonText) + "</span></div>"
+      + d.notice.map(([k, v]) => '<div class="reason sub"><span class="k">'
+        + esc(k) + '</span><span class="v">' + esc(v) + "</span></div>").join("")
       + "</div>"
       + '<div class="tiles">'
       // Both of these are read off the recurring pattern. When DTEK withdraws
@@ -699,6 +762,8 @@ class DtekShutdownsCard extends HTMLElement {
       // since the day they suspended them -- reading only that one makes a
       // live feed look six weeks dead.
       + kv("Information updated", d.updatedAt || "not reported")
+      + d.warnings.map((w) => '<div class="warn"><span class="k">Format drift</span>'
+        + '<span class="v">' + esc(w) + "</span></div>").join("")
       + kv("Schedule published", d.published)
       + kv("Schedule table", d.weekLive ? "shown"
              : "hidden" + (d.hiddenReason ? " " + MDASH + " " + d.hiddenReason : ""))
@@ -779,6 +844,9 @@ a:hover { text-decoration: underline; }
 }
 .reason .v { font-size: 13px; text-wrap: pretty; }
 .reason .v.dim { color: var(--disabled-text-color); }
+/* The notice rows under the reason: same row, no second rule above it. */
+.reason.sub { margin-top: 0; padding-top: 0; border-top: 0; }
+.reason.sub .v { font-family: var(--mono); }
 .tile .v.dim { color: var(--disabled-text-color); }
 .tiles { flex: 1 1 420px; display: flex; flex-wrap: wrap; gap: 12px; }
 .tile {
@@ -895,6 +963,7 @@ a:hover { text-decoration: underline; }
 .kv > div { display: flex; justify-content: space-between; gap: 12px; }
 .kv .k { color: var(--secondary-text-color); }
 .kv .v { font-family: var(--mono); }
+.kv .warn .k, .kv .warn .v { color: var(--warning-color, #ffa600); }
 .foot {
   border-top: 1px solid var(--divider-color); padding-top: 12px;
   font-size: 12px; color: var(--secondary-text-color); line-height: 1.6;
