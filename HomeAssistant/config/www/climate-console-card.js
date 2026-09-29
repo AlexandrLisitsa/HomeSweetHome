@@ -1583,10 +1583,29 @@ class ClimateConsoleCard extends HTMLElement {
           this._patch();
           return;
         }
-        case "power":
-          this._call("climate", this._state(ent) === "off" ? "turn_on" : "turn_off",
-            { entity_id: ent });
+        case "power": {
+          if (this._state(ent) !== "off") {
+            this._call("climate", "turn_off", { entity_id: ent });
+            return;
+          }
+          // The hall unit is an MQTT climate with no power topic, and for
+          // those climate.turn_on means the first of heat_cool / heat / cool
+          // it supports: Auto. On a hot evening that could start the unit
+          // heating. Resume the last real mode instead -- the bridge keeps it
+          // in the assumed-state sensor's `mode` while the unit is off -- and
+          // fall back to cool. The bedroom unit's integration resumes its own
+          // last mode, so it keeps turn_on.
+          if (ent === this._config.hall_climate) {
+            const modes = this._list(ent, "hvac_modes", []);
+            const last = this._attr(this._config.hall_assumed, "mode");
+            const known = !modes.length || modes.indexOf(last) >= 0;
+            const mode = last && last !== "off" && known ? last : "cool";
+            this._call("climate", "set_hvac_mode", { entity_id: ent, hvac_mode: mode });
+            return;
+          }
+          this._call("climate", "turn_on", { entity_id: ent });
           return;
+        }
         case "switch":
           this._call("switch", "toggle", { entity_id: ent });
           return;

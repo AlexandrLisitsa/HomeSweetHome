@@ -255,6 +255,12 @@ const MIN_SPAN = 60000;
 const MAX_SPAN = Math.max.apply(null, Object.keys(RANGES)
   .map((k) => RANGES[k].hours)) * 3600000;
 
+// How far back raw states reach: the recorder keeps two days
+// (configuration.yaml, purge_keep_days: 2). A window starting before this is
+// drawn from hourly long-term statistics instead. 36 h, not 48, so a window
+// that would lean on the last hours before a purge takes statistics too.
+const RAW_HORIZON = 36 * 3600000;
+
 const CH_W = 1000;
 const CH_H = 230;
 const CH_PAD = 10;
@@ -2180,19 +2186,44 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
     const p = (async () => {
       const rec = { at: now, start: start, end: end, pts: [], note: null };
       try {
-        const reply = await this._hass.callWS({
-          type: "history/history_during_period",
-          start_time: new Date(start).toISOString(),
-          end_time: new Date(end).toISOString(),
-          entity_ids: [entity],
-          minimal_response: true,
-          no_attributes: true,
-          significant_changes_only: false,
-        });
-        const raw = this._parse(reply, entity, spec);
+        // Raw states are kept two days (recorder purge_keep_days), so a window
+        // reaching further back than that drew a sliver at its right edge
+        // under a "last 14 days" label -- with min/max/mean worked out from
+        // that sliver. Past the horizon the hourly long-term statistics carry
+        // it instead, the same road the climate card takes. An entity with no
+        // state_class has none, and falls back to what raw history exists.
+        let raw = [];
+        let fromStats = false;
+        if (start < now - RAW_HORIZON) {
+          const stats = await this._hass.callWS({
+            type: "recorder/statistics_during_period",
+            start_time: new Date(start).toISOString(),
+            end_time: new Date(end).toISOString(),
+            statistic_ids: [entity],
+            period: "hour",
+            types: ["mean"],
+          });
+          raw = this._parseStats(stats, entity, spec);
+          fromStats = raw.length > 0;
+        }
+        if (!fromStats) {
+          const reply = await this._hass.callWS({
+            type: "history/history_during_period",
+            start_time: new Date(start).toISOString(),
+            end_time: new Date(end).toISOString(),
+            entity_ids: [entity],
+            minimal_response: true,
+            no_attributes: true,
+            significant_changes_only: false,
+          });
+          raw = this._parse(reply, entity, spec);
+        }
         rec.pts = this._decimate(raw, cap);
         if (!rec.pts.length) {
           rec.note = raw.length ? "no numeric history" : "no history recorded";
+        } else if (!fromStats && start < now - RAW_HORIZON
+                   && rec.pts[0][0] > start + RAW_HORIZON) {
+          rec.note = "only the last two days are kept for this sensor";
         }
       } catch (err) {
         rec.note = "history unavailable"
@@ -2221,6 +2252,26 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
     if (pinned.length <= 12) return;
     pinned.sort((a, b) => a[1] - b[1]);
     for (let i = 0; i < pinned.length - 12; i++) this._hist.delete(pinned[i][0]);
+  }
+
+  /**
+   * Hourly means from recorder/statistics_during_period, in the [ms, value]
+   * shape _parse() produces. Plotted at the start of each hour, as the History
+   * panel does; `start` is epoch ms on current releases, ISO on older ones.
+   */
+  _parseStats(reply, entity, spec) {
+    const rows = reply && reply[entity];
+    if (!Array.isArray(rows)) return [];
+    const out = [];
+    for (const r of rows) {
+      if (!r) continue;
+      const v = parseFloat(r.mean);
+      if (!Number.isFinite(v)) continue;
+      const t = typeof r.start === "number" ? r.start : Date.parse(r.start);
+      if (Number.isFinite(t)) out.push([t, this._scale(spec, v)]);
+    }
+    out.sort((a, b) => a[0] - b[0]);
+    return out;
   }
 
   /**

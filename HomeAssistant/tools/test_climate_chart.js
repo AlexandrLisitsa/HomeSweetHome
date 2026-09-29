@@ -1169,6 +1169,50 @@ const MIN = 60000, HOUR = 3600000, DAY = 24 * HOUR;
      new Set(byLabel.values()).size, byLabel.size);
 }
 
+/* --- power button: the hall unit resumes its last mode ------------------- */
+//
+// The bug this pins: the hall A/C is an MQTT climate with no power topic, and
+// climate.turn_on on those picks the first of heat_cool / heat / cool --
+// Auto. The button must resume the mode the bridge remembers instead.
+{
+  const HALL = "climate.daewoo_a_c", BED = "climate.bedroom_ac",
+        ASSUMED = "sensor.a_c_assumed_state";
+  const press = (ent, states) => {
+    const calls = [];
+    const c = bare({
+      _config: { hall_climate: HALL, hall_assumed: ASSUMED, bed_climate: BED },
+      _hass: { states, callService: (d, s, data) => calls.push([d, s, data]) },
+    });
+    const node = { getAttribute: (k) => ({ "data-act": "power", "data-ent": ent })[k] || null };
+    c._onClick({ composedPath: () => [node], stopPropagation() {}, preventDefault() {} });
+    return calls;
+  };
+  const hall = (state, mode, modes) => ({
+    [HALL]: { state, attributes: { hvac_modes: modes || ["off", "cool", "heat", "heat_cool", "fan_only", "dry"] } },
+    [ASSUMED]: { state: "off", attributes: { mode } },
+  });
+
+  eq("power: hall off -> resumes the remembered mode",
+     press(HALL, hall("off", "fan_only")),
+     [["climate", "set_hvac_mode", { entity_id: HALL, hvac_mode: "fan_only" }]]);
+  eq("power: hall off, nothing remembered -> cool, never Auto",
+     press(HALL, hall("off", undefined)),
+     [["climate", "set_hvac_mode", { entity_id: HALL, hvac_mode: "cool" }]]);
+  eq("power: a remembered mode the unit no longer offers -> cool",
+     press(HALL, hall("off", "auto_dry")),
+     [["climate", "set_hvac_mode", { entity_id: HALL, hvac_mode: "cool" }]]);
+  eq("power: no hvac_modes published yet -> trust the remembered mode",
+     press(HALL, { [HALL]: { state: "off", attributes: {} },
+                   [ASSUMED]: { state: "off", attributes: { mode: "heat" } } }),
+     [["climate", "set_hvac_mode", { entity_id: HALL, hvac_mode: "heat" }]]);
+  eq("power: hall on -> turn_off",
+     press(HALL, hall("cool", "cool")),
+     [["climate", "turn_off", { entity_id: HALL }]]);
+  eq("power: bedroom off -> turn_on (its integration resumes by itself)",
+     press(BED, { [BED]: { state: "off", attributes: {} } }),
+     [["climate", "turn_on", { entity_id: BED }]]);
+}
+
 /* --- report -------------------------------------------------------------- */
 
 if (failures.length) {
