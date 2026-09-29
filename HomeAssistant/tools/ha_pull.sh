@@ -3,6 +3,7 @@
 # later change is a reviewable git diff instead of a hand edit on the box.
 #
 #   sh HomeAssistant/tools/ha_pull.sh
+#   sh HomeAssistant/tools/ha_pull.sh --force   # overwrite local edits anyway
 #
 # Read-only against the box: it runs one `tar czf -` over the SSH pipe. Nothing
 # is written to /config.
@@ -11,11 +12,54 @@
 # not the one you want.
 set -eu
 
+force=0
+for arg in "$@"; do
+    case "$arg" in
+        --force) force=1 ;;
+        *) echo "unknown option: $arg" >&2; exit 1 ;;
+    esac
+done
+
 mod_dir=$(cd "$(dirname "$0")/.." && pwd)
 dest="$mod_dir/config"
 state="$mod_dir/.state"
 tmp="$state/pull-tmp"
 host=${HA_SSH:-ha}
+
+# The mirror is also where changes are MADE -- the cards in config/www, the
+# packages, dashboards/ written by FloorPlan's make_dashboard.py -- and both
+# swaps below replace the whole directory. So before a swap, list every file
+# git says is changed or new under it, and refuse if the incoming copy would
+# drop or differ from it: that is an edit made here and not yet on the box,
+# and the swap would delete it with no way back. A file the incoming copy
+# matches is fine, so pulling twice in a row still works.
+lost_edits() {  # lost_edits <subdir of HomeAssistant> <incoming dir>
+    command -v git >/dev/null 2>&1 || return 0
+    top=$(git -C "$mod_dir" rev-parse --show-toplevel 2>/dev/null) || return 0
+    prefix=$(git -C "$mod_dir" rev-parse --show-prefix)
+    git -C "$mod_dir" status --porcelain --untracked-files=all -- "$1" |
+    while IFS= read -r line; do
+        path=${line#???}
+        case "$path" in *" -> "*) path=${path##* -> } ;; esac
+        path=${path#\"}; path=${path%\"}
+        [ -f "$top/$path" ] || continue          # a local deletion: git still has it
+        incoming="$2/${path#"$prefix$1/"}"
+        if [ ! -f "$incoming" ] || ! cmp -s "$top/$path" "$incoming"; then
+            echo "$path"
+        fi
+    done
+}
+
+guard() {  # guard <subdir> <incoming dir>
+    [ "$force" = 1 ] && return 0
+    lost=$(lost_edits "$1" "$2")
+    [ -z "$lost" ] && return 0
+    echo "REFUSING: these local changes are not on the box and the pull would" >&2
+    echo "overwrite or delete them:" >&2
+    echo "$lost" | sed 's/^/  /' >&2
+    echo "Push or commit them first, or rerun with --force to discard them." >&2
+    return 1
+}
 
 mkdir -p "$state"
 rm -rf "$tmp"
@@ -72,6 +116,8 @@ for leaked in secrets.yaml google_key.json .storage zigbee2mqtt; do
     fi
 done
 
+guard config "$tmp" || { rm -rf "$tmp"; exit 1; }
+
 # Swap rather than extract-over, so files deleted on the box show up as
 # deletions in git instead of lingering in the mirror forever.
 rm -rf "$dest"
@@ -111,8 +157,22 @@ mkdir -p "$dash_tmp"
 # `.bak-` is filtered for the same reason the tar exclude list drops '*.bak-*':
 # a hand-made rollback copy is not a dashboard HA serves, and mirroring one
 # puts a stale layout in git looking exactly like a live one.
+#
+# The listing is taken on its own and checked. Inside `for f in $(ssh ...)` a
+# failed ssh is not an error under set -e: the loop just runs zero times,
+# dash_ok stays 1, and the "clean sweep" below swapped in an EMPTY directory.
 dash_ok=1
-for f in $(ssh -o BatchMode=yes "$host" "ls /config/.storage/ 2>/dev/null | grep '^lovelace' | grep -v '\.bak-'"); do
+if ! listing=$(ssh -o BatchMode=yes "$host" "ls /config/.storage/"); then
+    echo "  dashboards: could not list /config/.storage" >&2
+    dash_ok=0
+    listing=""
+fi
+dashboards=$(printf '%s\n' "$listing" | grep '^lovelace' | grep -v '\.bak-' || true)
+if [ "$dash_ok" = 1 ] && [ -z "$dashboards" ]; then
+    echo "  dashboards: none found on the box - not replacing the mirror with nothing" >&2
+    dash_ok=0
+fi
+for f in $dashboards; do
     if ssh -o BatchMode=yes "$host" "cat /config/.storage/$f" > "$dash_tmp/$f.json" 2>/dev/null; then
         echo "  dashboard: $f.json" >&2
     else
@@ -124,6 +184,9 @@ done
 # Swap only on a clean sweep. A half-failed pull must not silently delete a
 # dashboard from the mirror — that would read as "the user removed it" in the
 # diff, and the backup would be gone at the moment it was needed.
+if [ "$dash_ok" = 1 ] && ! guard dashboards "$dash_tmp"; then
+    dash_ok=0
+fi
 if [ "$dash_ok" = 1 ]; then
     rm -rf "$dash"
     mv "$dash_tmp" "$dash"
