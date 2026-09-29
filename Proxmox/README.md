@@ -4,7 +4,8 @@ The hypervisor that runs the home: one small Proxmox VE host with Home Assistant
 as a VM and the network services (ad-blocking DNS, remote access, a public
 tunnel) as LXC containers. This project documents the host and every guest on
 it, one doc each, holds read-only tooling to measure them, and the hook that
-sends every backup off-site ([`docs/backups.md`](docs/backups.md)).
+sends every backup off-site ([`docs/backups.md`](docs/backups.md)). What keeps
+it all from filling up is in [`docs/maintenance.md`](docs/maintenance.md).
 
 | Guest | What it does | Doc |
 | --- | --- | --- |
@@ -13,6 +14,7 @@ sends every backup off-site ([`docs/backups.md`](docs/backups.md)).
 | 101 · LXC | AdGuard Home: ad-blocking DNS for the LAN | [`docs/101-adguard.md`](docs/101-adguard.md) |
 | 102 · LXC | Tailscale subnet router: private remote access | [`docs/102-tailscale.md`](docs/102-tailscale.md) |
 | 103 · LXC | Cloudflare Tunnel: lets Google Home and Gemini reach Home Assistant, without an open port | [`docs/103-cloudflare.md`](docs/103-cloudflare.md) |
+| 104 · LXC | MeterCam: reads the gas meter from a camera, in Docker | on the `metercam` branch |
 
 The tooling began as a way to measure the HA guest's resource history rather
 than eyeball it off a graph ([the CPU case study](docs/cpu-growth-case-study.md)).
@@ -49,6 +51,7 @@ sh tools/pve_get.sh /nodes
 | `tools/pve_get.sh` | GET against `/api2/json` — GET-only by construction | no |
 | `tools/cpu_trend.py` | the HA guest's CPU by week (or by hour: `... day`), against a recorded baseline | no |
 | `tools/_pve_env.sh` | not a command: sourced by `pve_get.sh` to load the token from `secrets.env` | — |
+| `tools/pct-fstrim.service` + `.timer` | **installed on the host**: trims every running container weekly so freed space returns to the thin pool ([`docs/maintenance.md`](docs/maintenance.md)) | no |
 | `tools/vzdump-offsite.sh` | **runs on the host**, as the vzdump hook of both backup jobs: uploads the dumps to Google Drive through rclone crypt and prunes the off-site copies | changes Drive, not the host |
 
 ```sh
