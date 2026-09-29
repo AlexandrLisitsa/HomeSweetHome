@@ -123,6 +123,11 @@ globals:
   # Using std::vector as a FIFO command queue
   - id: command_queue
     type: std::vector<std::string>
+  # Whose turn the next 3 s tick is while commands are queued: a command, or
+  # a QPIGS poll. See the dispatcher interval.
+  - id: poll_turn
+    type: bool
+    initial_value: 'false'
   - id: command_retries
     type: int
     initial_value: '0'
@@ -565,8 +570,18 @@ number:
     optimistic: true
     on_value:
       - lambda: |-
-          char buf[12];
-          snprintf(buf, sizeof(buf), "PCVV%.2f", x);
+          // PI30 defines this as PCVV<nn.n>: ONE decimal. "%.2f" sent
+          // PCVV28.00, and the NAK loops docs/architecture.md blames on
+          // float > bulk are at least as likely to be this.
+          // Bulk below float is refused here rather than left to a NAK: the
+          // two sliders are independent and nothing else stops it.
+          float fl = id(num_float_voltage).state;
+          if (!std::isnan(fl) && x < fl) {
+            ESP_LOGW("dispatcher", "Bulk %.1f V below float %.1f V - not sent", x, fl);
+            return;
+          }
+          char buf[16];
+          snprintf(buf, sizeof(buf), "PCVV%.1f", x);
           id(command_queue).push_back(std::string(buf));
           if (id(command_retries) == 0) id(command_retries) = 20;
 
@@ -583,8 +598,15 @@ number:
     optimistic: true
     on_value:
       - lambda: |-
-          char buf[12];
-          snprintf(buf, sizeof(buf), "PBFT%.2f", x);
+          // PBFT<nn.n>: one decimal, see PCVV above. Float above bulk is
+          // refused here for the same reason.
+          float bulk = id(num_bulk_voltage).state;
+          if (!std::isnan(bulk) && x > bulk) {
+            ESP_LOGW("dispatcher", "Float %.1f V above bulk %.1f V - not sent", x, bulk);
+            return;
+          }
+          char buf[16];
+          snprintf(buf, sizeof(buf), "PBFT%.1f", x);
           id(command_queue).push_back(std::string(buf));
           if (id(command_retries) == 0) id(command_retries) = 20;
 
@@ -663,8 +685,15 @@ interval:
   - interval: 3s
     then:
       - lambda: |-
-          // Check if there are commands in the queue
-          if (!id(command_queue).empty()) {
+          // Commands and polls take turns while anything is queued. The
+          // queue used to own the wire until it drained: a command the
+          // inverter kept refusing was re-sent every 3 s for 20 tries, and
+          // for that minute no QPIGS went out -- so sns_grid_v, the input to
+          // grid_safe, froze. Every boot replays the restored selects and
+          // numbers into the queue, so that was every boot.
+          bool poll_now = id(poll_turn) || id(command_queue).empty();
+          id(poll_turn) = !poll_now;
+          if (!poll_now) {
             if (id(command_retries) > 0) {
               // Take the first command from the queue
               std::string cmd = id(command_queue).front();
@@ -699,7 +728,7 @@ interval:
               ESP_LOGI("uart_tx", "-> Sent: %s (Retries left: %d | Queue size: %d)", cmd.c_str(), id(command_retries) - 1, id(command_queue).size());
               id(command_retries) -= 1; 
             } else {
-              ESP_LOGE("uart_tx", "❌ COMMAND FAILED AFTER 20 RETRIES: %s", id(command_queue).front().c_str());
+              ESP_LOGE("uart_tx", "❌ COMMAND GAVE UP: %s", id(command_queue).front().c_str());
               // Give up on this command and remove it from the queue
               id(command_queue).erase(id(command_queue).begin());
           
@@ -709,7 +738,8 @@ interval:
               }
             }
           } else {
-            // Regular data polling (QPIGS) if the queue is empty
+            // Regular data polling (QPIGS): every tick with an empty queue,
+            // every other tick while commands are waiting.
             std::vector<uint8_t> qpigs = {0x51, 0x50, 0x49, 0x47, 0x53, 0xB7, 0xA9, 0x0D};
             id(uart_0).write_array(qpigs.data(), qpigs.size());
           }
@@ -750,7 +780,13 @@ interval:
               }
           
               if (buffer.find("(NAK") != std::string::npos) {
-                ESP_LOGW("uart_rx", "⚠️ INVERTER REJECTED COMMAND (NAK)! Will retry...");
+                // A NAK is an answer, not a lost frame: the inverter read the
+                // command and refused it, and saying it 17 more times does
+                // not change its mind. Two more tries, for a frame garbled on
+                // the way, then the dispatcher gives up. Silence still gets
+                // the full 20.
+                if (id(command_retries) > 2) id(command_retries) = 2;
+                ESP_LOGW("uart_rx", "⚠️ INVERTER REJECTED COMMAND (NAK)! %d tries left", id(command_retries));
                 buffer.clear();
                 return;
               }
