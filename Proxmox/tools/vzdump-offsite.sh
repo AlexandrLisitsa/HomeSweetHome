@@ -108,16 +108,28 @@ job-end)
     fi
 
     if [ -n "$vm_bases" ] && first_run_of_month; then
-        keep=""
+        # The excludes go through a file, not the command line: an unquoted
+        # "--exclude $b.*" is a shell glob, expanded against whatever the
+        # hook's working directory happens to hold.
+        keep=$(mktemp)
         for b in $vm_bases; do
             log "copy $b -> monthly-vm/"
             $RCLONE copy "$dumpdir" "${REMOTE}monthly-vm/" --include "$b.*"
-            keep="$keep --exclude $b.*"
+            # Proof, not rclone's exit status: `copy --include` that matches
+            # nothing transfers nothing and still exits 0. If this name is not
+            # on the remote now, deleting "everything else" would delete every
+            # off-site copy of the VM and put nothing in its place.
+            if ! $RCLONE lsf "${REMOTE}monthly-vm/" --include "$b.*" | grep -q "^$b\.vma"; then
+                rm -f "$keep"
+                log "ERROR: $b is not in monthly-vm/ after the copy; keeping the old copies"
+                exit 1
+            fi
+            printf '%s.*\n' "$b" >> "$keep"
         done
-        # Only now that the new copy is complete: drop the previous month's.
+        # Only now that every new copy is confirmed: drop the previous month's.
         log "drop older monthly-vm/ copies"
-        # shellcheck disable=SC2086
-        $RCLONE delete "${REMOTE}monthly-vm/" $keep
+        $RCLONE delete "${REMOTE}monthly-vm/" --exclude-from "$keep"
+        rm -f "$keep"
     fi
 
     $RCLONE rmdirs "$REMOTE" --leave-root
