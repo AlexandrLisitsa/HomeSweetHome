@@ -49,18 +49,26 @@ state-change rate is ~30,400/h, and 91% of it is the power station's ESPHome
 node (inverter 14.6k/h, JK BMS 13k/h, some BMS sensors every 2 s) -- up from
 the 21,900/h measured on 08-28.
 
-Changed the same day, measured in absolute cores so the vCPU change cannot
-flatter it (`cpu_trend.py` now reports "% of 4 cores" for the same reason):
+Tried the same day, all measured in absolute cores. Proxmox shows a VM's CPU
+as a share of ITS vCPUs, so the same work reads twice as high on 2 as on 4;
+`cpu_trend.py` now scales every row to "% of 4 cores" for that reason.
 
-| | VM process |
-| --- | --- |
-| 4 vCPUs, balloon floor 1 GB (guest squeezed to 1.15 GB, 475 MB swapped) | 0.169 cores |
-| 2 vCPUs, balloon floor 1.5 GB, five minutes after boot | 0.086 cores |
+| | VM process | graph |
+| --- | --- | --- |
+| quiet morning, 4 vCPUs, no balloon floor issue | 0.083 cores | 2.08% |
+| 4 vCPUs, balloon floor 1 GB (guest held at 1.15 GB, 475 MB swapped) | 0.169 cores | 4.2% |
+| 2 vCPUs, balloon floor 1.5 GB | 0.086 cores | 4.3% (of 2) |
+| 4 vCPUs again, balloon floor 1.5 GB, 8 min after boot | 0.095 cores | 2.4% |
 
-Most of that halving is the memory squeeze going away; a quiet day at 2 vCPUs
-against the ~0.084 cores of a quiet 4-vCPU day is the fair comparison for the
-core count on its own. The remaining lever is the ESPHome node's telemetry
-rate (throttle/delta filters), which cuts both the guest's work and the wakes.
+Two results. A 1 GB balloon floor is too low: the host sits above the 80%
+where auto-ballooning starts, the guest was squeezed into swap and its CPU
+doubled; 1.5 GB keeps it out of swap. And 2 vCPUs saved NOTHING against the
+4-vCPU baseline -- the idle-vCPU wake cost does not scale with the vCPU
+count the way the overhead reading suggested -- while it halved the headroom
+for backups and updates, so the VM went back to 4.
+
+The lever that remains is the ESPHome node's telemetry rate (throttle/delta
+filters), which cuts both the guest's work and the host-side wakes.
 
 **Measure quiet days only.** Every restart, log pull and API poll lands on this
 same graph. The week of 08-24 rose from 2.43% to 2.50% during the session that

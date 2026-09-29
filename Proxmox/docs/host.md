@@ -17,7 +17,7 @@ Assistant as a VM, and the network services as LXC containers.
 
 | ID | Type | Name | vCPU | RAM | Disk | Doc |
 | --- | --- | --- | --- | --- | --- | --- |
-| 100 | VM | `haos17-1` | 2 | 2 GB | 64 GB | [Home Assistant OS](100-home-assistant.md) |
+| 100 | VM | `haos17-1` | 4 | 2 GB | 64 GB | [Home Assistant OS](100-home-assistant.md) |
 | 101 | LXC | `adguard` | 1 | 512 MB | 2 GB | [AdGuard Home](101-adguard.md) |
 | 102 | LXC | `tailscale` | 1 | 512 MB | 2 GB | [Tailscale](102-tailscale.md) |
 | 103 | LXC | `cloudflare` | 1 | 512 MB | 2 GB | [Cloudflare Tunnel](103-cloudflare.md) |

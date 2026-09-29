@@ -6,7 +6,7 @@ configuration is mirrored in [`HomeAssistant/`](../../HomeAssistant/README.md).
 | | |
 | --- | --- |
 | Type | QEMU/KVM VM, machine `q35`, UEFI (OVMF) |
-| CPU | 2 vCPU, `host` CPU type (4 until 2026-09-30, see [the CPU case study](cpu-growth-case-study.md)) |
+| CPU | 4 vCPU, `host` CPU type (2 was tried on 2026-09-30 and saved nothing, see [the CPU case study](cpu-growth-case-study.md)) |
 | RAM | 2 GB, balloons down to 1.5 GB when the host needs it (`balloon: 1536`) |
 | Disk | 64 GB on `local-lvm` (virtio-SCSI, discard and SSD emulation on) |
 | USB passthrough | a Silicon Labs CP210x USB-serial adapter (`10c4:ea60`): the Zigbee coordinator |

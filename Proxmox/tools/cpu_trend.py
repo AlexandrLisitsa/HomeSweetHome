@@ -61,7 +61,7 @@ def main(timeframe='year'):
         else:                                    # week starting Monday
             key = (t - datetime.timedelta(days=t.weekday())).strftime(fmt)
         # RRD `cpu` is a fraction of the VM's OWN vCPUs, so the same work reads
-        # twice as high after 4 -> 2 cores (2026-09-30). Scale by the row's
+        # twice as high on 2 as on 4 (tried 2026-09-30). Scale by the row's
         # maxcpu to "% of 4 cores", the unit every number below was taken in.
         cores = r.get('maxcpu') or BASE_CORES
         buckets[key].append((r['cpu'] * cores / BASE_CORES * 100,
