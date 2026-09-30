@@ -13,8 +13,10 @@ The fixtures below are real: `preset` is the weekly table the site actually
 serves, which IS populated, reshaped into the `fact` layout. The handmade days
 cover the cases the real table happens not to contain.
 """
+import copy
 import json
 import sys
+import tempfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -166,6 +168,8 @@ check("status", p.status_for(r), "outage_emergency")
 e["type"] = "1"
 check("planned repairs", p.status_for(p.resolve(e, {}, fact, preset,
       datetime(2026, 6, 10, 9, 0, tzinfo=KYIV))), "outage_planned")
+check("time-first, as DTEK really sends it",
+      p.parse_dtek_datetime("11:05 29.09.2026"), "2026-09-29T11:05:00+03:00")
 check("unparseable date -> None", p.parse_dtek_datetime("garbage"), None)
 check("empty date -> None", p.parse_dtek_datetime(""), None)
 
@@ -314,6 +318,85 @@ check("payload hidden_reason", r["hidden_reason"], "plan_off")
 check("payload updated_at", r["updated_at"], "15:02 03.09.2026")
 check("payload keeps `week` regardless", len(r["week"] or []), 7)
 check("payload flags are the six", sorted(r["dtek_flags"]), sorted(p.FLAG_KEYS))
+
+# --- 10. golden: the emergency outage of 29.09.2026 ------------------------
+# Verbatim production answers, captured while DTEK's site showed an emergency
+# repair (reason "Аварійні ремонтні роботи"), 11:05 -> by 15:25. The poller published that outage with
+# start and end both null, because DTEK writes the time before the date. Every
+# assertion below is what the site itself displayed at the time.
+print("\n10. golden: emergency outage, 29.09.2026")
+GOLDEN = json.loads((Path(__file__).resolve().parent / "fixtures"
+                     / "dtek_emergency_20260929.json").read_text(encoding="utf-8"))
+ans = GOLDEN["getHomeNum"]
+ent = p.house_entry(ans["data"], GOLDEN["_meta"]["house"])
+r = p.resolve(ent, ans, GOLDEN["fact"], GOLDEN["preset"],
+              datetime(2026, 9, 29, 14, 17, tzinfo=KYIV))
+check("house found in the street's answer", ent is not None, True)
+check("outage_active", r["outage_active"], True)
+check("outage_reason", r["outage_reason"], "Аварійні ремонтні роботи")
+check("outage_start", r["outage_start"], "2026-09-29T11:05:00+03:00")
+check("outage_end", r["outage_end"], "2026-09-29T15:25:00+03:00")
+check("status", p.status_for(r), "outage_emergency")
+check("updated_at verbatim", r["updated_at"], "14:17 29.09.2026")
+check("queue", r["queue"], "1.1")
+check("weekly table withheld", (r["week_in_effect"], r["hidden_reason"]),
+      (False, "plan_off"))
+check("no stabilisation schedule", r["schedule_in_effect"], False)
+check("raw start kept verbatim", r["outage_start_raw"], "11:05 29.09.2026")
+check("nothing unreadable in the golden answer", r["warnings"], [])
+check("scope: only this building of 288", (r["street_outages"], r["street_houses"]),
+      (1, 288))
+check("the neighbours have no outage",
+      p.resolve(p.house_entry(ans["data"], "house-001"), ans, GOLDEN["fact"],
+                GOLDEN["preset"], datetime(2026, 9, 29, 14, 17,
+                                           tzinfo=KYIV))["outage_active"], False)
+
+# --- 11. drift: a format DTEK changes must be flagged, not nulled -----------
+# The golden answer with the dates rewritten into a third shape, a new outage
+# type, and a field nobody has seen. Every one of these is exactly how the
+# 29.09.2026 times went missing: parsed to None and published as if normal.
+print("\n11. drift warnings")
+drift = copy.deepcopy(ans)
+de = drift["data"]["1"]
+de.update(start_date="2026-09-29T11:05", type="3", new_thing="x")
+drift["showSomethingNew"] = True
+r = p.resolve(de, drift, GOLDEN["fact"], GOLDEN["preset"],
+              datetime(2026, 9, 29, 14, 17, tzinfo=KYIV))
+check("unreadable start -> null, raw still there",
+      (r["outage_start"], r["outage_start_raw"]), (None, "2026-09-29T11:05"))
+check("the end still parses", r["outage_end"], "2026-09-29T15:25:00+03:00")
+check("four warnings", len(r["warnings"]), 4)
+check("they name the problem", [w.split()[0] for w in r["warnings"]],
+      ["unreadable", "unknown", "new", "new"])
+check("the outage itself still reads as active", r["outage_active"], True)
+check("no street data -> scope unknown", p.street_scope({}), (None, None))
+
+# --- 12. captures ----------------------------------------------------------
+print("\n12. automatic captures")
+with tempfile.TemporaryDirectory() as tmp:
+    p.CAPTURE_DIR = Path(tmp) / "captures"
+
+    class _Session:
+        fact, preset = GOLDEN["fact"], GOLDEN["preset"]
+
+    payload = dict(r, status="outage_emergency")
+    for i in range(p.CAPTURE_KEEP + 3):
+        payload["fetched_at"] = "2026-09-29T14:%02d:00+03:00" % i
+        p.save_capture(ans, payload, _Session, "1")
+    files = sorted(p.CAPTURE_DIR.glob("*.json"))
+    check("keeps the last %d" % p.CAPTURE_KEEP, len(files), p.CAPTURE_KEEP)
+    got = json.loads(files[-1].read_text(encoding="utf-8"))
+    check("fixture-shaped", sorted(got), ["_meta", "fact", "getHomeNum", "preset"])
+    check("replays like the fixture",
+          p.resolve(p.house_entry(got["getHomeNum"]["data"], got["_meta"]["house"]),
+                    got["getHomeNum"], got["fact"], got["preset"],
+                    datetime(2026, 9, 29, 14, 17, tzinfo=KYIV))["outage_end"],
+          "2026-09-29T15:25:00+03:00")
+    check("named by time and status", files[-1].name,
+          "20260929T143200_outage_emergency.json")
+    check("no session secrets inside",
+          any(k in files[-1].read_text(encoding="utf-8").lower()
+              for k in ("csrf", "cookie")), False)
 
 
 print("\n%s" % ("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed"))
