@@ -32,8 +32,10 @@ VM, Home Assistant OS; 100 and 101 were created with the
 
 RAM is the tight resource: the guests are given about 4.5 GB between them on a
 host with 3.6 GB, which works because the containers use well under their limits
-(20–120 MB each) and Home Assistant's VM can balloon down to 1 GB when the host
-runs short (`balloon: 1024`; it uses about 1 GB of its 2). Swappiness is 10 so
+(20–120 MB each) and Home Assistant's VM can balloon down to 1.5 GB when the
+host runs short (`balloon: 1536`; it uses about 1 GB of its 2). Not lower: at
+1 GB the host, which sits above the 80% where auto-ballooning starts, held the
+guest at 1.15 GB and it swapped 475 MB and doubled its CPU. Swappiness is 10 so
 the host drops page cache before it swaps a guest out
 ([maintenance.md](maintenance.md)). CPU is
 not: the Home Assistant guest sits at a few percent (see
