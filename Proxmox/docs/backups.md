@@ -69,8 +69,10 @@ flowchart LR
      run (day 1–7) to `monthly/` as well; then deletes files older than 29 days
      from `weekly/` and older than 93 days from `monthly/`;
   2. for the VM run, only on the month's first run: copies the dump to
-     `monthly-vm/`, and **only after that upload succeeded** deletes the previous
-     month's copy, so there is always one complete copy.
+     `monthly-vm/`, then **lists the remote to confirm the new `.vma` is really
+     there**, and only then deletes the previous month's copy, so there is
+     always one complete copy. rclone's exit status alone is not proof: a
+     `copy --include` that matches nothing uploads nothing and still exits 0.
 - Any failed upload makes the hook exit non-zero, and **vzdump marks the whole
   job as failed**: it shows red in Datacenter → Backup and in the task log.
 - Retention on Drive is by file age, so a run that fails doesn't delete
