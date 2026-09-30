@@ -40,6 +40,8 @@ jobs:
           node-version: "20"
       - name: Climate card chart maths
         run: node HomeAssistant/tools/test_climate_chart.js
+      - name: Battery and inverter card history
+        run: node HomeAssistant/tools/test_console_history.js
 
   irbridge:
     name: IRBridge Android build
