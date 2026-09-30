@@ -33,6 +33,8 @@ jobs:
         run: python HomeAssistant/tools/test_dtek_schedule.py
       - name: DTEK package templates
         run: python HomeAssistant/tools/check_dtek_templates.py
+      - name: Automations and IR bridge scripts
+        run: python HomeAssistant/tools/check_automations.py
       - uses: actions/setup-node@v4
         with:
           node-version: "20"

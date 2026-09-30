@@ -1,43 +1,34 @@
 - id: '1774992861274'
   alias: 'Tariff: Auto Switch Day/Night'
-  description: Switches the inverter counter at 07:00 and 23:00
+  description: 'Switches the inverter counter at 07:00 and 23:00, and again on every Home Assistant start: a restart across a boundary otherwise leaves the whole night booked as day. The zone comes from the clock, not the trigger, so every trigger lands on the right one.'
   triggers:
   - at: 07:00:00
-    id: day_time
     trigger: time
   - at: '23:00:00'
-    id: night_time
     trigger: time
+  - trigger: homeassistant
+    event: start
   actions:
-  - choose:
-    - conditions:
-      - condition: trigger
-        id: day_time
-      sequence:
-      - action: select.select_option
-        target:
-          entity_id: select.grid_real_tariff
-        data:
-          option: day
-    - conditions:
-      - condition: trigger
-        id: night_time
-      sequence:
-      - action: select.select_option
-        target:
-          entity_id: select.grid_real_tariff
-        data:
-          option: night
+  - action: select.select_option
+    target:
+      entity_id: select.grid_real_tariff
+    data:
+      option: '{{ ''day'' if 7 <= now().hour < 23 else ''night'' }}'
   mode: single
 - id: '1775345704528'
   alias: '❌ Alert: Grid Outage!'
+  description: 'on = UNSAFE (the ESPHome sensor''s polarity). From ''off'' only, so an ESPHome reconnect during an outage does not page again, and held 20 s, so the few-second blips the grid has many times a day do not page at all.'
   triggers:
-  - type: unsafe
-    device_id: bb097b350c1e4d8c28718d5a3cb6f04a
-    entity_id: e097a8c993af7e3b47e7607bbd7aa9ef
-    domain: binary_sensor
-    trigger: device
+  - trigger: state
+    entity_id: binary_sensor.powmr_inverter_grid_condition_safe
+    from: 'off'
+    to: 'on'
+    for:
+      seconds: 20
   actions:
+  - wait_template: '{{ states(''sensor.battery_runtime_remaining'') | is_number }}'
+    timeout: '00:00:15'
+    continue_on_timeout: true
   - variables:
       battery_line: "{% set r = states('sensor.battery_runtime_remaining') %}{% set s = states('sensor.jkbms_gateway_bms_state_of_charge') %}{% if r | is_number and s | is_number %}Battery {{ s | float | round(0) }}%, about {{ r | float | round(1) }} h left at the current draw.{% elif s | is_number %}Battery {{ s | float | round(0) }}%.{% endif %}"
   - action: notify.household
@@ -55,6 +46,7 @@
   mode: single
 - id: '1775345768954'
   alias: ✅ Power Restored
+  description: Only after an outage long enough to have been announced (20 s, the Grid Outage alert's hold).
   triggers:
   - entity_id:
     - binary_sensor.powmr_inverter_grid_condition_safe
@@ -63,6 +55,9 @@
     to:
     - 'off'
     trigger: state
+  conditions:
+  - condition: template
+    value_template: '{{ (trigger.to_state.last_changed - trigger.from_state.last_changed).total_seconds() >= 20 }}'
   actions:
   - action: notify.household
     data:
@@ -79,11 +74,19 @@
   mode: single
 - id: '1778275569737'
   alias: "\U0001F4A7 Alert: Water Leak Detected!"
-  description: ''
+  description: 'Pages every minute while the sensor is wet. Also started by a Home Assistant restart and a 5-minute watchdog while wet: the to-on trigger never fires again for a sensor that was already wet when the loop died.'
   triggers:
   - entity_id: binary_sensor.0xa4c13898ee89fea1_water_leak
     to: 'on'
     trigger: state
+  - trigger: homeassistant
+    event: start
+  - trigger: time_pattern
+    minutes: /5
+  conditions:
+  - condition: state
+    entity_id: binary_sensor.0xa4c13898ee89fea1_water_leak
+    state: 'on'
   actions:
   - repeat:
       while:
@@ -100,14 +103,16 @@
             ttl: 0
             priority: high
             channel: Water Leak
-      - action: notify.persistent_notification
+      - action: persistent_notification.create
         data:
+          notification_id: water_leak
           title: "\U0001F4A7 Warning: Water Leak Detected!"
           message: A water leak has been detected. Notifications will be sent every
-            5 minutes until resolved.
+            minute until it is dry.
       - delay:
           minutes: 1
   mode: single
+  max_exceeded: silent
 - id: '1778275645292'
   alias: '✅ Alert Cleared: Water Leak Resolved'
   description: ''
@@ -126,18 +131,39 @@
         ttl: 0
         priority: high
         channel: Water Leak Resolved
-  - action: notify.persistent_notification
+  - action: persistent_notification.dismiss
     data:
-      title: ✅ Water Leak Resolved
-      message: The sensor is now dry. The water leak alert has been cleared.
+      notification_id: water_leak
+  mode: single
+- id: '1790700000001'
+  alias: "\U0001F4A7 Alert: Leak Sensor Offline"
+  description: A sensor that is unavailable cannot report a leak -- and a battery shorting in water looks exactly like this.
+  triggers:
+  - trigger: state
+    entity_id: binary_sensor.0xa4c13898ee89fea1_water_leak
+    to: unavailable
+    for:
+      minutes: 10
+  actions:
+  - action: notify.household
+    data:
+      title: "\U0001F4A7 Leak sensor offline"
+      message: The water leak sensor has been unavailable for 10 minutes and cannot report a leak. Check it and its battery.
+      data:
+        ttl: 0
+        priority: high
+        channel: Water Leak
   mode: single
 - id: '1779645666848'
   alias: '⚠️ Alert: Battery Low!'
-  description: ''
+  description: 'Ignores the BMS coming back from unavailable already low: that is a reconnect, not a new crossing.'
   triggers:
   - trigger: numeric_state
     entity_id: sensor.jkbms_gateway_bms_state_of_charge
     below: 21
+  conditions:
+  - condition: template
+    value_template: '{{ trigger.from_state.state not in [''unavailable'', ''unknown'', ''none''] }}'
   actions:
   - variables:
       battery_line: "{% set r = states('sensor.battery_runtime_remaining') %}{% set s = states('sensor.jkbms_gateway_bms_state_of_charge') %}{% if r | is_number and s | is_number %}Battery {{ s | float | round(0) }}%, about {{ r | float | round(1) }} h left at the current draw.{% elif s | is_number %}Battery {{ s | float | round(0) }}%.{% endif %}"
@@ -160,7 +186,7 @@
   triggers:
   - trigger: numeric_state
     entity_id: sensor.jkbms_gateway_bms_state_of_charge
-    above: 20
+    above: 25
   conditions:
   - condition: template
     value_template: '{{ trigger.from_state.state not in [''unavailable'', ''unknown'',
@@ -169,7 +195,7 @@
   - action: notify.household
     data:
       title: "\U0001F50B Battery Recovered"
-      message: Battery has charged above 20%. Emergency state cleared.
+      message: Battery has charged above 25%. Emergency state cleared.
       data:
         ttl: 0
         priority: high
@@ -177,7 +203,7 @@
   - action: notify.persistent_notification
     data:
       title: "\U0001F50B Battery Recovered"
-      message: Battery has charged above 20%. Emergency state cleared.
+      message: Battery has charged above 25%. Emergency state cleared.
   mode: single
 - id: '1782502124150'
   alias: "\U0001F4A1Corridor: Motion Controlled Light"
@@ -320,12 +346,23 @@
     trigger: state
   - entity_id: input_boolean.kitchen_light_force_on
     to: 'on'
+    id: helper_on
     trigger: state
   conditions:
   - condition: state
     entity_id: input_boolean.kitchen_light_force_on
     state: 'on'
   actions:
+  - if:
+    - condition: trigger
+      id: helper_on
+    then:
+    - action: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.kitchen_light_block
+  - condition: state
+    entity_id: input_boolean.kitchen_light_block
+    state: 'off'
   - action: light.turn_on
     target:
       entity_id: light.kitchen_relay
@@ -339,12 +376,23 @@
     trigger: state
   - entity_id: input_boolean.kitchen_light_block
     to: 'on'
+    id: helper_on
     trigger: state
   conditions:
   - condition: state
     entity_id: input_boolean.kitchen_light_block
     state: 'on'
   actions:
+  - if:
+    - condition: trigger
+      id: helper_on
+    then:
+    - action: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.kitchen_light_force_on
+  - condition: state
+    entity_id: input_boolean.kitchen_light_force_on
+    state: 'off'
   - action: light.turn_off
     target:
       entity_id: light.kitchen_relay
@@ -365,6 +413,12 @@
     to: 'off'
     id: relay_accidentally_off
     trigger: state
+  - trigger: homeassistant
+    event: start
+    id: recheck
+  - trigger: time_pattern
+    hours: /1
+    id: recheck
   actions:
   - choose:
     - conditions:
@@ -383,12 +437,30 @@
           entity_id: switch.0xa4c138c211306160
     - conditions:
       - condition: trigger
-        id: relay_accidentally_off
+        id:
+        - relay_accidentally_off
+        - recheck
       - condition: numeric_state
         entity_id: sensor.ir_blaster_battery_level
-        below: 20
+        below: 21
+      - condition: state
+        entity_id: switch.0xa4c138c211306160
+        state: 'off'
       sequence:
       - action: switch.turn_on
+        target:
+          entity_id: switch.0xa4c138c211306160
+    - conditions:
+      - condition: trigger
+        id: recheck
+      - condition: numeric_state
+        entity_id: sensor.ir_blaster_battery_level
+        above: 79
+      - condition: state
+        entity_id: switch.0xa4c138c211306160
+        state: 'on'
+      sequence:
+      - action: switch.turn_off
         target:
           entity_id: switch.0xa4c138c211306160
   mode: single
