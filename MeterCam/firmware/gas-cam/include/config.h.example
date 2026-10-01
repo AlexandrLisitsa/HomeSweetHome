@@ -6,145 +6,82 @@
 #define WIFI_SSID        "your-wifi-ssid"
 #define WIFI_PASSWORD    "your-wifi-password"
 
-// MeterCam, on the hypervisor. An IP rather than a name: this board wakes for
-// a few seconds and mDNS resolution is one more thing that can spend them.
+// MeterCam, in its LXC. An IP rather than a name: this board wakes for a few
+// seconds and mDNS resolution is one more thing that can spend them.
 #define METERCAM_HOST    "192.0.2.8"          // your MeterCam LXC's address
 #define METERCAM_PORT    8770
 #define METERCAM_METER   "gas"
-// Matches METERCAM_TOKEN in the service's environment. Empty means the service
-// is running with auth off, which is a bench arrangement, not a LAN one.
+// Matches METERCAM_TOKEN in the service's .env. Empty means the service runs
+// with auth off.
 #define METERCAM_TOKEN   ""
 
 // --- what a wake looks like ------------------------------------------------
-// How long to sleep between reads. Five minutes is what turns the Energy
-// dashboard's fictional daily bars into a real curve; it is not a limit the
-// meter imposes.
-#define SLEEP_SECONDS    300
+// Deep sleep between wakes: the sensor is powered down and held down, the
+// LEDs and the on-board flash are held LOW, the radio is off. Awake, this
+// board runs hot; asleep it draws almost nothing. 30 minutes gives the Energy
+// dashboard real hourly bars at this house's burn.
+#define SLEEP_SECONDS    1800
 
-// Frames per wake. Two, because MeterCam requires the frames of a burst to
+// Frames per wake. Two, because MeterCam requires the frames of a wake to
 // agree and one frame cannot be checked against anything -- a flicker or a
-// drum caught mid-tick would sail through. Two is also the point where the
-// extra frame stops buying much, and every frame is time with both LEDs lit
-// on a board that runs hot.
+// drum caught mid-tick would sail through. Every extra frame is time with
+// both LEDs lit on a board that runs hot.
 #define FRAMES_PER_WAKE  2
 
-// Thrown away before the first kept frame. The sensor's auto-exposure and
-// white balance need a moment after the lights come on, and the frames it
-// produces meanwhile are darker and greener than the scene. Discarding them
-// is cheaper than teaching the reader to forgive them.
-#define WARMUP_FRAMES    3
+// JPEG quality, 0-63, LOWER IS BETTER. 6 is about 270-300 KB a UXGA frame.
+// The alignment reference is one of these frames: change this and take a
+// new reference.
+#define JPEG_QUALITY     6
 
 // --- the lights ------------------------------------------------------------
-// Two LEDs, off to the sides, rather than the module's own flash on GPIO4.
-// The on-board LED sits beside the lens and fires straight down the optical
-// axis, so against a meter's glass it reflects back into the frame and hides
-// the drum it was meant to light. Two off-axis lights put the reflection
-// somewhere that is not the digits.
+// Two white LEDs on the lid rim, one each side of the slot's SHORT axis,
+// rather than the module's own flash. The on-board LED sits beside the lens
+// and fires straight down the optical axis, so against the meter's glass it
+// reflects back into the frame and hides the drum it was meant to light. A
+// light's hotspot on the glass lands about halfway between it and the lens,
+// so from the rim it falls on the tin's black mask rather than on the digits.
+// White, not red: under red light the red decimal drums wash out to the same
+// white as their digits.
 //
-// 14 and 13, and the choice is worth a sentence because 12 is the obvious
-// pick and the wrong one. With no SD card the free pins on this module are
-// GPIO2, 4, 12, 13, 14 and 15 -- not 16, which is PSRAM chip-select and the
-// camera needs PSRAM. Of those, 2, 12 and 15 are strapping pins read at
-// reset, and 4 is the on-axis flash above. GPIO12 (MTDI) is the nastiest:
-// held HIGH at reset it selects the wrong flash voltage and the board simply
-// does not boot, which presents as a dead module rather than as a wiring
-// mistake. It is perfectly usable with a 10k pulldown -- and 13 and 14 have
-// no strapping role at all, so there is nothing to remember and nothing to
-// solder to remember it.
+// GPIO14 and GPIO13. With no SD card the free pins on this module are 2, 4,
+// 12, 13, 14 and 15 -- not 16, which is PSRAM chip-select. 2, 12 and 15 are
+// strapping pins read at reset (12 held HIGH selects the wrong flash voltage
+// and the board simply does not boot), and 4 is the on-axis flash. 13 and 14
+// have no strapping role at all.
 //
-// Wire them SOURCING: pin -> resistor -> LED anode, cathode -> ground. A
-// white LED's forward voltage is 3.0-3.4 V against a 3.3 V pin, so driven
-// straight off the GPIO it is dim and its brightness is set by part-to-part
-// variation rather than by the resistor. A small N-MOSFET per channel with
-// the LEDs fed from 5 V is the version that behaves.
-// UNDER TEST: LEFT is the module's own flash on GPIO4, diffused with paper,
-// because it is already wired and costs nothing to try. The objection above
-// still stands and is the thing to watch for -- a diffuser softens the
-// reflection off the meter's glass, it does not move it out of the frame. If
-// the digits come back with a haze or a blob across them, the cheap fix is to
-// tilt the camera 10-20 degrees off perpendicular so the specular bounce goes
-// past the lens, and only then to go back to 14.
+// Wired straight off the pins, no resistors: pin -> LED anode, cathode ->
+// GND. A white LED drops 3.0-3.2 V against the pin's 3.3 V, so the pin's own
+// driver limits the current; they are lit about a second per wake. Do NOT
+// wire a red or yellow LED this way -- with ~1.2 V of headroom it draws as
+// much as the pin can give.
 //
-// GPIO4 IS A HIGH-POWER EMITTER, not an indicator. 255 on it is blinding and
-// will blow the white digits to paper-white; the useful range against a meter
-// at close range is more like 10-60. Do not carry LED_BRIGHTNESS over from an
-// indicator LED without looking at a frame first.
-#define LED_LEFT_PIN     4
-// Still 13, for an external indicator LED alongside or instead. Nothing wired
-// there simply does nothing.
+// The on-board flash on GPIO4 is never lit, and held LOW through the sleep
+// (FLASH_LED_GPIO_NUM in board.h): a floating GPIO4 glows.
+#define LED_LEFT_PIN     14
 #define LED_RIGHT_PIN    13
-// 0-255. Full brightness is usually wrong: it blows out the white digits and
-// bounces off the glass. Find this by looking at frames, not by reasoning.
-#define LED_BRIGHTNESS   160
-// Let the LED and its driver settle before any frame is worth looking at.
-// This one is about the light source, not the sensor.
+// 0-255, PWM.
+#define LED_BRIGHTNESS   255
+// Let the LEDs settle before any frame is worth looking at.
 #define LED_SETTLE_MS    250
 
-// How long to hold the lights on, throwing frames away, BEFORE the frame that
-// gets kept. This is about the sensor, and it is the longer of the two.
+// Frames thrown away, lights on, before the first kept one. The sensor is
+// powered down between wakes, so every wake starts from a cold AGC, and
+// against a close light the first frames come back dark and green.
 //
-// Auto-exposure and auto-white-balance converge per FRAME, not per
-// millisecond, so this is spent grabbing and discarding rather than sleeping
-// -- a bare delay leaves the AE loop with nothing to converge on. Two seconds
-// is roughly 20-30 frames at UXGA, which is comfortably past where the
-// exposure stops moving.
-//
-// It matters more here than it looks. The sensor is powered down between
-// photographs, so every shot starts from a cold AGC with no history at all,
-// and against a diffused close-range light the first frames come back dark
-// and green. WARMUP_FRAMES below is the floor; this is the real control.
+// Counted in FRAMES, not milliseconds: a dark scene exposes for longer, so a
+// time budget gives the darkest scenes the fewest frames to converge in --
+// measured here, the same wake came back after 3 frames and dark, or 27 and
+// converged, with nothing but luck between them. ADAPT_FRAMES is the control;
+// WARMUP_FRAMES a floor; ADAPT_MS (+6 s) only a ceiling, so a sensor that
+// produces nothing cannot hold the board awake.
+#define ADAPT_FRAMES     20
+#define WARMUP_FRAMES    3
 #define ADAPT_MS         2000
 
-// ...but FRAMES are the real control, and this is why.
-//
-// Exposure time is not constant: a dark scene exposes for longer, so fewer
-// frames fit in a fixed number of milliseconds -- which means the darker the
-// scene, the LESS adaptation it gets, when it is exactly the case that needs
-// more. Measured on this board: the same request came back either 3 frames
-// and a dark 285 KB image, or 27 frames and a converged one, with nothing but
-// luck between them. A time budget made the warm-up bistable.
-//
-// Counting frames removes the feedback entirely. 20 is comfortably past where
-// the OV2640's exposure stops moving from a cold start. ADAPT_MS stays as a
-// ceiling so a sensor producing nothing cannot wedge a request forever.
-#define ADAPT_FRAMES     20
-
 // --- firmware --------------------------------------------------------------
-// What this build calls itself. The node asks MeterCam for
-// /firmware/version.txt and updates when the answer differs from this -- not
-// "is greater than", so a deliberate rollback works the same way.
-#define FIRMWARE_VERSION "gas-cam-1"
-// The image to fetch when it does differ.
+// What this build calls itself, as gas-cam-<n>. Every /read answer names the
+// newest build on the server; the board updates when its number is HIGHER
+// than this one's, never otherwise.
+#define FIRMWARE_VERSION "gas-cam-6"
+// The image to fetch when it is.
 #define FIRMWARE_BINARY  "gas-cam.bin"
-
-// --- the bench build -------------------------------------------------------
-// Only the `focus` build reads any of this. It is the photo-on-demand
-// firmware: one full-resolution JPEG per request, no stream. See the note at
-// the top of src/focus.cpp for why there is no stream any more.
-
-// A fixed address on the house network. config.json holds this board's URL and
-// MeterCam fetches it on a schedule, so a DHCP lease that moves is a camera
-// that stops answering on a Tuesday for no visible reason. Leave empty for
-// DHCP -- the serial log prints whichever address it ends up with.
-#define BENCH_STATIC_IP   ""
-#define BENCH_GATEWAY     "192.0.2.1"
-#define BENCH_NETMASK     "255.255.255.0"
-
-// JPEG quality for /photo. 0-63 and LOWER IS BETTER, which is the opposite of
-// every slider you have ever used. 10 is what production shoots; 6 is visibly
-// better and about half as big again; below 4 the encoder runs out of room on
-// a UXGA frame. The page can override it per shot with ?q=.
-#define PHOTO_QUALITY     6
-
-// The board's own access point, used ONLY when it cannot join the house
-// network. MeterCam cannot reach a board that is its own AP, so this is a
-// rescue hatch for reading the serial log's complaint, not a way to run.
-#define FOCUS_AP_SSID     "metercam-focus"
-#define FOCUS_AP_PASSWORD "change-me-8-chars-min"
-
-// Minutes before the board gives up and deep-sleeps until power-cycled.
-// ZERO MEANS NEVER, which is the right setting now: the sensor is powered
-// down between photographs, so the board idles cool and MeterCam can ask it
-// for a frame whenever it likes. Set it to something nonzero only if you are
-// back to leaving the sensor running.
-#define FOCUS_MINUTES     0

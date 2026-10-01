@@ -1,8 +1,9 @@
 # ---------------------------------------------------------------------------
-# Gas meter — consumption from a reading typed off the dial
+# Gas meter — consumption from the dial, read by a camera or typed by hand
 #
-# One helper holds the number printed on the meter face, one template sensor
-# publishes it in the shape the Energy dashboard accepts, and two utility
+# Two helpers hold the number on the meter face: one written by MeterCam's
+# camera every 30 minutes, one typed by hand. One template sensor publishes the
+# higher of the two in the shape the Energy dashboard accepts, and two utility
 # meters cut it into a daily and a monthly figure.
 #
 # ---------------------------------------------------------------------------
@@ -15,24 +16,29 @@
 # series — and a series is what makes a bill checkable and a doubling
 # noticeable.
 #
-# Counting the index drum with a reed switch is the eventual plan and is being
-# tried on a branch. It is not here yet and may never be: that trial has so far
-# failed to find any magnet in the index at all. This file does not wait for it.
+# Since 2026-10-02 the dial is read by MeterCam (MeterCam/README.md): an
+# ESP32-CAM wakes every 30 minutes, MeterCam reads and gates the photo, and an
+# accepted reading lands in input_number.gas_meter_camera_reading. Typing still
+# works and still counts.
 #
 # ---------------------------------------------------------------------------
 # One entity, whatever the source turns out to be
 #
 # Long-term statistics are keyed by statistic id, and the Energy dashboard
 # stores that id rather than following a rename. So the sensor below is the only
-# gas entity the dashboard is ever pointed at. When counting hardware does start
-# reporting, it feeds this same name and this same unique_id, and every m³
-# recorded by hand before then stays in one continuous series. Pointing the
-# dashboard at a second, "real" sensor later would not move the old history — it
-# would simply stop being looked at.
+# gas entity the dashboard is ever pointed at. The camera feeds this same name
+# and this same unique_id, so every m³ recorded by hand before it stays in one
+# continuous series. Pointing the dashboard at a second, "real" sensor would not
+# move the old history — it would simply stop being looked at.
 #
-# Which is also why the hand-typed helper is worth keeping after hardware
-# arrives: it stays the reference a pulse count gets calibrated against,
-# including after a power loss wipes a counter held in RTC memory.
+# The higher of the two helpers, and why that is safe. The dial only ever
+# climbs, so whichever source is ahead is the more recent truth: the camera
+# after every accepted read, a typed value only if someone types the dial while
+# the camera is down. A stale typed value can never drag the reading back,
+# which matters because a decrease of more than 10% is a meter reset (below).
+# MeterCam never writes the hand-typed helper — it stays the household's own.
+# The camera's helper is written only with readings MeterCam's gate accepted,
+# and that gate refuses any decrease.
 #
 # ---------------------------------------------------------------------------
 # Why the reading is gated on `> 0` and not on `| is_number`
@@ -138,13 +144,30 @@ template:
         state_class: total_increasing
         unit_of_measurement: "m³"
         icon: mdi:counter
+        # Each helper counts only when > 0, for the reason in the banner: a
+        # helper with nothing to restore comes up at its min of 0.
         availability: >-
-          {{ states('input_number.gas_meter_manual_reading') | float(0) > 0 }}
+          {{ [states('input_number.gas_meter_manual_reading') | float(0),
+              states('input_number.gas_meter_camera_reading') | float(0)] | max > 0 }}
         state: >-
-          {% set manual = states('input_number.gas_meter_manual_reading') | float(0) %}
-          {{ manual | round(3) if manual > 0 else none }}
+          {% set best = [states('input_number.gas_meter_manual_reading') | float(0),
+                         states('input_number.gas_meter_camera_reading') | float(0)] | max %}
+          {{ best | round(3) if best > 0 else none }}
 
 input_number:
+  # The dial reading as MeterCam's camera last read it, to 0.01 m³ (the camera
+  # frames seven of the eight drums). Written only by MeterCam, only with a
+  # reading its gate accepted — see MeterCam/README.md. Same load-bearing
+  # `min: 0` and no `initial:` as the helper below, for the same reason.
+  gas_meter_camera_reading:
+    name: "Gas meter camera reading"
+    icon: mdi:camera-iris
+    min: 0
+    max: 999999
+    step: 0.001
+    unit_of_measurement: "m³"
+    mode: box
+
   # The dial reading, typed in by hand. The index has 8 drums with 3 decimals,
   # so it reads to 0.001 m³; mode: box because a slider for a six-digit number
   # would be an unkind joke.

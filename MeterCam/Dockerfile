@@ -21,13 +21,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY service/ ./service/
 
-# The suite's transform section needs OpenCV, which exists only in here, so a
+# The suite's vision sections need OpenCV, which exists only in here, so a
 # suite that cannot run in the image is one that never runs against what is
 # actually deployed:  docker compose exec metercam python tests/test_reader.py
-# grab.py ships for the same reason -- a corpus is collected on the box that
-# has the camera, not on a laptop. About 20 KB between them.
 COPY tests/ ./tests/
-COPY tools/ ./tools/
 
 ENV METERCAM_CONFIG=/config/config.json \
     METERCAM_IMAGES=/data/images \
@@ -41,7 +38,7 @@ HEALTHCHECK --interval=60s --timeout=5s --start-period=20s \
 
 # waitress rather than flask's dev server: it is a real WSGI server, it is pure
 # Python, and it does not print a warning on every start telling you not to use
-# it. Two threads because there is one camera and reader.py holds a lock around
-# it -- more would only queue deeper.
+# it. Two threads because app.py holds one lock around the reader -- more would
+# only queue deeper.
 CMD ["python", "-m", "waitress", "--host=0.0.0.0", "--port=8770", \
      "--threads=2", "--call", "service.app:create_app"]

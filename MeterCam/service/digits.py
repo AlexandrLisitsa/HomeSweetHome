@@ -62,10 +62,42 @@ def resolve(this_raw, right_digit):
     return this_int % 10
 
 
-def assemble(values, decimals, counter_type="continuous"):
+def _last_down(raw):
+    """The last drum of a jump counter, rounded DOWN rather than to nearest.
+
+    A drum caught mid-roll is labelled as the digit that is leaving, the lower
+    one: that is the gas already burned. Rounding publishes the arriving digit
+    from half-way through, 0.01 m3 early. On 2026-09-28 the drum sat at 1.6
+    for two hours overnight and every one of those reads came out .42 against
+    a dial showing .41.
+
+    Not a plain floor. The model reads a centred digit a little low when the
+    frame is off level (0.2-0.4 on the first real frame, see deskew in
+    config.example.json), and floor(6.8) would turn a clean 7 into a 6. So a
+    digit counts as arrived from 0.7 of the way through: LAST_DOWN_MARGIN.
+
+    And never across 9 -> 0. On a jump counter the drum to the left snaps
+    during exactly that roll, and it is rounded; flooring this one back to 9
+    while it already shows its next digit would publish .59 for a dial at .50
+    -- a reading too high by 0.09, and the next correct one a DECREASE. There
+    it rounds as before.
+    """
+    down = int(raw + LAST_DOWN_MARGIN) % 10
+    nearest = int(round(raw)) % 10
+    if down == 9 and nearest == 0:
+        return nearest
+    return down
+
+
+LAST_DOWN_MARGIN = 0.3
+
+
+def assemble(values, decimals, counter_type="continuous", last_down=False):
     """Turn per-drum readings into a number.
 
     `values` runs most-significant first. Returns (value, digits, raw_string).
+    `last_down` rounds a jump counter's last drum down instead -- `_last_down`
+    has why and where it must not.
 
     `counter_type` says how the drums are geared, and it is not a detail --
     getting it wrong corrupts digits that the model read correctly.
@@ -120,6 +152,8 @@ def assemble(values, decimals, counter_type="continuous"):
         # the network reads height as phase) is absorbed by rounding, which is
         # the other reason not to truncate.
         digits = [int(round(float(v))) % 10 for v in values]
+        if last_down:
+            digits[-1] = _last_down(float(values[-1]))
         value = sum(digits[i] * (10.0 ** (n - 1 - decimals - i))
                     for i in range(n))
         return round(value, decimals), digits, "".join(str(d) for d in digits)
@@ -291,8 +325,7 @@ def confirm_samples(values, decimals, cfg):
     sampling catches RANDOM error and is blind to SYSTEMATIC error. If the ROIs
     sit over the wrong drums, every sample agrees perfectly on the same wrong
     number, at high confidence. Five green ticks are not verification. That
-    case belongs to align_gate(), and the only thing that PROVES a reading is a
-    scored corpus -- see tools/score.py.
+    case belongs to align_gate().
 
     Comparison is on values rather than digit lists, which handles a carry for
     free: 2246.919 -> 2246.920 is one legitimate tick of the last drum, and
@@ -323,7 +356,7 @@ def confirm_samples(values, decimals, cfg):
     `max_last_digit_step` to 2 rather than reaching for the model.
 
     Set `max_last_digit_step: 0` to demand identical readings. That refuses a
-    real tick perhaps one burst in twenty, which costs a polling interval and
+    real tick perhaps one burst in twenty, which costs one 30-minute wake and
     is a defensible trade if you would rather be certain.
     """
     required = cfg.get("samples", 5)
@@ -377,7 +410,7 @@ def gate(value, prevalue, cfg, digit_count, expected_digits, confidences,
         is NOT undone by correcting the value afterwards -- the repair is
         Developer tools -> Statistics -> Adjust sum, by hand.
 
-    So the bias is to refuse. A rejected frame costs one polling interval; an
+    So the bias is to refuse. A rejected frame costs one 30-minute wake; an
     accepted wrong one costs a manual `recorder/clear_statistics`.
     """
     if digit_count != expected_digits:
@@ -392,16 +425,16 @@ def gate(value, prevalue, cfg, digit_count, expected_digits, confidences,
 
     min_conf = cfg.get("min_confidence")
     if min_conf is not None:
-        # The last drum turns continuously and is mid-transition most of the
-        # time, so it is held to a lower bar -- or none -- deliberately.
+        # The last drum turns while it is photographed and is mid-transition
+        # much of the time, so it is held to its own bar,
+        # min_confidence_last_digit, rather than this one.
         #
-        # That exemption and `report_decimals: 2` on an 8-drum dial happen to
-        # name the same drum: every drum that reaches the published value is
-        # held to min_confidence, and the one that does not is the one exempt
-        # from it. Convenient, and not derived -- the slice below is positional.
-        # Drop a SECOND drum from the value and the 0.01 drum would still be
-        # policed here despite no longer being published, which is a refusal
-        # for nothing. Revisit this line if report_decimals ever moves again.
+        # The slice is POSITIONAL. On an 8-drum dial with report_decimals 2
+        # the exempt drum was the unpublished 0.001 one, so leaving its floor
+        # at null cost nothing. The mounted camera reads 7 drums, which makes
+        # the exempt drum the published 0.01 one -- so on that config the
+        # last-digit floor must be set, or a published digit goes unpoliced.
+        # tests/test_reader.py section 2f pins exactly that.
         head = [c for c in confidences[:-1] if c is not None]
         if head:
             worst_i = min(range(len(head)), key=lambda i: head[i])
@@ -428,8 +461,9 @@ def gate(value, prevalue, cfg, digit_count, expected_digits, confidences,
         # wrong value sets a total_increasing sensor's statistics baseline,
         # permanently, and retyping does not undo it.
         #
-        # The cost is one refused poll per restart. input_number restores its
-        # last value, so prevalue is populated on every poll after that.
+        # The cost is one refused wake. input_number restores its last value,
+        # and app.py falls back to the last accepted reading, so prevalue is
+        # populated on every wake after that.
         if cfg.get("require_prevalue", True):
             return False, "no prevalue: refusing an unguarded first reading"
         return True, None
@@ -446,10 +480,42 @@ def gate(value, prevalue, cfg, digit_count, expected_digits, confidences,
         window = cfg.get("max_delta_window_s")
         allowed = max_delta
         if window and elapsed_s:
-            # Scale to the real gap, so a poll missed for an hour is not
+            # Scale to the real gap, so a wake missed for an hour is not
             # rejected for the gas that was legitimately burned meanwhile.
             allowed = max_delta * max(1.0, elapsed_s / float(window))
         if delta > allowed:
             return False, "rate: +%.3f exceeds %.3f" % (delta, allowed)
 
     return True, None
+
+
+def seconds_since(record, now):
+    """Seconds between a stored `last_accepted.json` record and `now` (epoch).
+
+    The rate limit in gate() scales max_delta by the time since the prevalue
+    was last TRUE, and that is the last accepted read -- not the last change:
+    an idle meter re-confirms the same number every wake. A camera on its own
+    clock never sends that gap, and without it gate() allowed a flat max_delta per read however long the camera
+    had slept. One busy winter half hour then became a refusal, and since the
+    prevalue only moves on an accept, every read after it was compared with the
+    same stale number and refused too: a lockout with no way out.
+
+    Accepts the `at_epoch` this service writes now and the older `at` text
+    ("%Y-%m-%dT%H:%M:%S%z"). None when there is nothing usable, which leaves
+    gate() on its old flat allowance rather than inventing a gap.
+    """
+    if not isinstance(record, dict):
+        return None
+    at = record.get("at_epoch")
+    if not isinstance(at, (int, float)):
+        text = record.get("at")
+        if not text:
+            return None
+        from datetime import datetime
+        try:
+            at = datetime.strptime(str(text), "%Y-%m-%dT%H:%M:%S%z").timestamp()
+        except ValueError:
+            return None
+    gap = now - float(at)
+    # A clock that stepped backwards is not a reason to widen the gate.
+    return gap if gap > 0 else None

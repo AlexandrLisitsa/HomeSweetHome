@@ -1,15 +1,16 @@
-# Config, models and images arrive as mounts at run time, so a ROI change or a
+# Config, models and frames arrive as mounts at run time, so a ROI change or a
 # new model needs no rebuild.
 #
-# tests/ and tools/ DO ship, at about 20 KB. The test suite's transform section
-# needs OpenCV, which only exists inside the image, so a suite that cannot run
-# there is a suite that never runs against the thing actually deployed. And
-# tools/grab.py is most useful on the box holding the camera, not on a laptop.
+# tests/ DOES ship. Its vision sections need OpenCV, which only exists inside
+# the image, so a suite that cannot run there never runs against the thing
+# actually deployed.
 config.json
 .env
 data/
-corpus/
 models/
+deploy/
+firmware/
+docs/
 README.md
 docker-compose.yml
 __pycache__/

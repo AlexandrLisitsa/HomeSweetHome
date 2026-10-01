@@ -1,7 +1,7 @@
 // The AI-Thinker ESP32-CAM's wiring to its OV2640.
 //
-// Fixed by the module, not chosen by anyone here, which is why it lives in a
-// header both firmwares include rather than in either of them. RESET is not
+// Fixed by the module, not chosen by anyone here, which is why it lives apart
+// from config.h's choices. RESET is not
 // brought out on this board and so is -1 rather than a pin.
 #pragma once
 
@@ -21,3 +21,9 @@
 #define VSYNC_GPIO_NUM 25
 #define HREF_GPIO_NUM 23
 #define PCLK_GPIO_NUM 22
+
+// The module's high-power flash, beside the lens. Not used as a light -- see
+// the lights section of config.h -- but it is on the board whether anyone
+// wants it or not, so the firmware holds it LOW: left floating, its
+// transistor's gate drifts and the LED glows.
+#define FLASH_LED_GPIO_NUM 4

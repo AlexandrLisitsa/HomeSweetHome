@@ -3,8 +3,8 @@
  *
  * One wake is the whole program, and it runs in setup(): bring up the radio
  * and the sensor, light the meter, keep a couple of frames, push them to
- * MeterCam, ask whether there is a newer build, sleep. loop() is never
- * reached.
+ * MeterCam, update itself if MeterCam's answer offers a newer build, sleep for
+ * SLEEP_SECONDS. loop() is never reached.
  *
  * WHY IT PUSHES
  *
@@ -27,14 +27,14 @@
  *
  * No SD card, no web server, no stream, no clock, no retry queue. A frame
  * that does not arrive is not worth a wake spent on it: the meter will still
- * be there in five minutes, and a board that retries in the dark is a board
- * whose battery -- or whose thermal budget -- goes somewhere nobody watched.
+ * be there in half an hour, and a board that retries in the dark is a board
+ * whose thermal budget goes somewhere nobody watched.
  */
 
 #include <Arduino.h>
-#include <HTTPClient.h>
 #include <HTTPUpdate.h>
 #include <WiFi.h>
+#include <driver/gpio.h>
 #include <esp_camera.h>
 #include <esp_sleep.h>
 
@@ -63,6 +63,18 @@ static void lightsBegin() {
 #endif
 }
 
+// Bind the lights again after the camera has touched the LEDC peripheral.
+// On the 3.x core attaching a pin that is already attached fails ("already
+// attached", "no free timers") and leaves whatever the camera init did to it,
+// so the pins are released first and attached fresh.
+static void lightsRebind() {
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  ledcDetach(LED_LEFT_PIN);
+  ledcDetach(LED_RIGHT_PIN);
+#endif
+  lightsBegin();
+}
+
 static void lights(uint8_t level) {
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
   ledcWrite(LED_LEFT_PIN, level);
@@ -77,17 +89,65 @@ static void lights(uint8_t level) {
 // Sleep
 // ---------------------------------------------------------------------------
 
+// A frame copied out of the driver, so the sensor can be off while it is sent.
+struct Shot {
+  uint8_t *buf;
+  size_t len;
+};
+
+static bool cameraOn = false;
+
+// Sensor off: driver down, then the power-down pin. Before the upload, not
+// after it. With the sensor up the driver keeps streaming into PSRAM for the
+// whole send, and on this board that starved the radio -- uploads stalled
+// part-way through the first frame, while copying the JPEG out and powering
+// down first delivered the same frame from the same spot in a few seconds.
+// It is also most of the heat.
+static void cameraOff() {
+  if (cameraOn) {
+    esp_camera_deinit();
+    cameraOn = false;
+  }
+  digitalWrite(PWDN_GPIO_NUM, HIGH);
+}
+
+// Driven LOW and latched. pinMode(INPUT) -- what this used to do -- lets the
+// pin FLOAT, and GPIO4 is the high-power flash transistor: a floating gate is
+// the known ESP32-CAM glow in deep sleep. An output level is also not kept
+// through deep sleep unless it is held, so hold it; the same goes for the
+// sensor's power-down line. Released again at the top of setup().
+static void holdLow(int pin) {
+  pinMode(pin, OUTPUT);
+  digitalWrite(pin, LOW);
+  gpio_hold_en((gpio_num_t)pin);
+}
+
+static void releaseHolds() {
+  gpio_hold_dis((gpio_num_t)FLASH_LED_GPIO_NUM);
+  gpio_hold_dis((gpio_num_t)LED_LEFT_PIN);
+  gpio_hold_dis((gpio_num_t)LED_RIGHT_PIN);
+  gpio_hold_dis((gpio_num_t)PWDN_GPIO_NUM);
+}
+
 static void sleepNow() {
   lights(0);
-  // Hold the lights off through sleep. Without this the pins float and a
-  // half-lit LED in a cupboard is the kind of thing nobody explains for weeks.
-  pinMode(LED_LEFT_PIN, INPUT);
-  pinMode(LED_RIGHT_PIN, INPUT);
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  ledcDetach(LED_LEFT_PIN);
+  ledcDetach(LED_RIGHT_PIN);
+#else
+  ledcDetachPin(LED_LEFT_PIN);
+  ledcDetachPin(LED_RIGHT_PIN);
+#endif
+  holdLow(LED_LEFT_PIN);
+  holdLow(LED_RIGHT_PIN);
+  holdLow(FLASH_LED_GPIO_NUM);
 
   // Power the sensor down explicitly rather than trusting sleep to do it: the
-  // OV2640 is most of the idle draw and most of the heat.
-  esp_camera_deinit();
-  digitalWrite(PWDN_GPIO_NUM, HIGH);
+  // OV2640 is most of the idle draw and most of the heat. Held HIGH, or it can
+  // wake on its own halfway through the sleep.
+  cameraOff();
+  gpio_hold_en((gpio_num_t)PWDN_GPIO_NUM);
+  gpio_deep_sleep_hold_en();
 
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
@@ -125,12 +185,13 @@ static bool cameraBegin() {
   cfg.xclk_freq_hz = 20000000;
   cfg.pixel_format = PIXFORMAT_JPEG;
 
-  // UXGA is the point of the exercise: eight drums, three of them white on
-  // red, have to survive being cropped to eight little rectangles. Anything
-  // smaller is a smaller number of pixels across the digits and no amount of
-  // preprocessing puts them back.
+  // UXGA is the point of the exercise: the drums, two of them white on red,
+  // have to survive being cropped to little rectangles. Anything smaller is
+  // fewer pixels across the digits, and nothing on the server puts them back.
   cfg.frame_size = FRAMESIZE_UXGA;
-  cfg.jpeg_quality = 10;               // 0-63, lower is better
+  // The alignment reference is one of these frames, and every later frame is
+  // judged against it: change this and take a new reference.
+  cfg.jpeg_quality = JPEG_QUALITY;     // 0-63, lower is better
   cfg.fb_count = 2;                    // one being sent while the next is grabbed
   cfg.fb_location = CAMERA_FB_IN_PSRAM;
   cfg.grab_mode = CAMERA_GRAB_LATEST;
@@ -155,6 +216,23 @@ static bool cameraBegin() {
   return true;
 }
 
+// "firmware":"gas-cam-7" out of a JSON answer, without a JSON library: the
+// key is unique ("firmware_running" does not match, its quote comes later),
+// and a version is never anything that needs unescaping. Empty when absent
+// or null.
+static String firmwareOffered(const String &response) {
+  int at = response.indexOf("\"firmware\"");
+  if (at < 0) return String("");
+  at = response.indexOf(':', at);
+  if (at < 0) return String("");
+  at++;
+  while (at < (int)response.length() && response[at] == ' ') at++;
+  if (at >= (int)response.length() || response[at] != '"') return String("");
+  int end = response.indexOf('"', at + 1);
+  if (end < 0 || end - at - 1 > 31) return String("");
+  return response.substring(at + 1, end);
+}
+
 // ---------------------------------------------------------------------------
 // The push
 // ---------------------------------------------------------------------------
@@ -163,7 +241,9 @@ static bool cameraBegin() {
 // not fit in a String -- the body is written straight from the frame buffers
 // with the length worked out first, so nothing is ever held twice.
 
-static bool pushFrames(camera_fb_t **frames, int count) {
+// Returns true on a 200. `offered` gets the newest firmware version MeterCam
+// named in its answer -- present on refusals and errors too -- or stays empty.
+static bool pushFrames(Shot *frames, int count, String &offered) {
   String head[8], tail = String("\r\n--") + BOUNDARY + "--\r\n";
   size_t total = tail.length();
   for (int i = 0; i < count; i++) {
@@ -171,17 +251,30 @@ static bool pushFrames(camera_fb_t **frames, int count) {
               "\r\nContent-Disposition: form-data; name=\"frame" + i +
               "\"; filename=\"f" + i +
               ".jpg\"\r\nContent-Type: image/jpeg\r\n\r\n";
-    total += head[i].length() + frames[i]->len + 2;  // + CRLF
+    total += head[i].length() + frames[i].len + 2;  // + CRLF
   }
 
+  // A few tries, not one. The first connect after joining can fail while the
+  // link is still settling, and a whole wake -- lights, warm-up, two frames --
+  // is too dear to throw away on one refused SYN. Not a retry queue: three
+  // attempts inside this wake, then sleep.
   WiFiClient client;
-  if (!client.connect(METERCAM_HOST, METERCAM_PORT)) {
+  bool up = false;
+  for (int attempt = 1; attempt <= 3 && !up; attempt++) {
+    up = client.connect(METERCAM_HOST, METERCAM_PORT, 5000);
+    if (!up) {
+      Serial.printf("push: connect %d/3 failed, rssi %d dBm\n", attempt, WiFi.RSSI());
+      delay(1000);
+    }
+  }
+  if (!up) {
     Serial.println("push: cannot reach MeterCam");
     return false;
   }
   client.setTimeout(20000);
 
-  String path = String("/read?meter=") + METERCAM_METER;
+  // fw: so the build running here is visible on the server without a cable.
+  String path = String("/read?meter=") + METERCAM_METER + "&fw=" + FIRMWARE_VERSION;
   client.printf("POST %s HTTP/1.1\r\n", path.c_str());
   client.printf("Host: %s:%d\r\n", METERCAM_HOST, METERCAM_PORT);
   if (strlen(METERCAM_TOKEN) > 0) {
@@ -195,26 +288,39 @@ static bool pushFrames(camera_fb_t **frames, int count) {
     client.print(head[i]);
     // In chunks: write() on a few hundred KB at once fights the TCP window and
     // the watchdog, and a stalled write here is a wake spent on nothing.
+    //
+    // A write of 0 is usually a full send buffer on a weak link, not a dead
+    // socket: WiFiClient gives up after a short internal retry. So a stall is
+    // waited out -- for as long as the socket stays connected and the stall
+    // stays under 10 s -- and only then called a failure.
     const size_t CHUNK = 4096;
     size_t sent = 0;
-    while (sent < frames[i]->len) {
-      size_t n = min(CHUNK, frames[i]->len - sent);
-      size_t wrote = client.write(frames[i]->buf + sent, n);
+    unsigned long stalledSince = 0;
+    while (sent < frames[i].len) {
+      size_t n = min(CHUNK, frames[i].len - sent);
+      size_t wrote = client.write(frames[i].buf + sent, n);
       if (wrote == 0) {
-        Serial.println("push: connection died mid-frame");
-        client.stop();
-        return false;
+        if (!stalledSince) stalledSince = millis();
+        if (!client.connected() || millis() - stalledSince > 10000) {
+          Serial.printf("push: connection died mid-frame (%u/%u bytes, rssi %d)\n",
+                        (unsigned)sent, (unsigned)frames[i].len, WiFi.RSSI());
+          client.stop();
+          return false;
+        }
+        delay(50);
+        continue;
       }
+      stalledSince = 0;
       sent += wrote;
     }
     client.print("\r\n");
   }
   client.print(tail);
 
-  // Read the verdict, for the log only. Nothing here acts on it: what the
-  // house does with a reading is MeterCam's business and Home Assistant's,
-  // and a board that started making that decision would be the second place
-  // it lived.
+  // Read the answer. The verdict is for the log only: what the house does with
+  // a reading is MeterCam's business and Home Assistant's, and a board that
+  // started making that decision would be the second place it lived. The one
+  // field acted on here is the firmware offer.
   unsigned long deadline = millis() + 20000;
   String response;
   while (client.connected() && millis() < deadline) {
@@ -228,43 +334,78 @@ static bool pushFrames(camera_fb_t **frames, int count) {
 
   int body = response.indexOf("\r\n\r\n");
   Serial.println(body >= 0 ? response.substring(body + 4) : response);
+  offered = firmwareOffered(response);
   return response.startsWith("HTTP/1.1 200");
 }
 
 // ---------------------------------------------------------------------------
-// Pull OTA
+// OTA
 // ---------------------------------------------------------------------------
 //
-// The one question this board asks. Nothing can reach it while it sleeps, so
-// it does the reaching, in the window where the radio is already up.
-//
-// It compares for DIFFERENCE, not for "newer". Version strings are whatever
-// somebody typed into version.txt, and a board that only ever moves forward
-// cannot be walked back when a build turns out to be wrong -- which is the
-// exact moment you need it to be.
+// Nothing can reach this board while it sleeps, so the offer rides on the
+// answer to the push: every /read reply carries "firmware":"<version>", the
+// contents of the server's version.txt. Newer means a higher number after
+// the last '-'; anything else is ignored. Only forward, because a board
+// flashed over USB ahead of the server would otherwise "update" itself
+// straight back to whatever version.txt still names -- which is how a
+// USB-flashed gas-cam-4 once became gas-cam-3. Rolling back is publishing
+// the old build under a higher number.
 
-static void checkForUpdate() {
-  String base = String("http://") + METERCAM_HOST + ":" + METERCAM_PORT;
-  String auth = strlen(METERCAM_TOKEN) > 0
-                    ? String("?token=") + METERCAM_TOKEN
-                    : String("");
+// One attempt per target version. If version.txt names a version the .bin
+// does not report -- a typo, a stale build -- the board would otherwise flash,
+// reboot, see the mismatch and flash again, every wake.
+// RTC_NOINIT survives the reboot an update causes (RTC_DATA_ATTR does not);
+// it is garbage after a power-on, hence the magic. Retried after
+// OTA_RETRY_WAKES wakes in case the attempt failed for a reason that has gone.
+#define OTA_MAGIC 0x4d434f54u  // "MCOT"
+#define OTA_RETRY_WAKES 12
+RTC_NOINIT_ATTR static struct {
+  uint32_t magic;
+  char tried[32];
+  uint16_t wakesSince;
+} ota;
 
-  WiFiClient client;
-  HTTPClient http;
-  if (!http.begin(client, base + "/firmware/version.txt" + auth)) return;
-  int code = http.GET();
-  String latest = code == 200 ? http.getString() : String("");
-  http.end();
-  latest.trim();
+static bool alreadyTried(const String &latest) {
+  if (ota.magic != OTA_MAGIC) {
+    ota.magic = OTA_MAGIC;
+    ota.tried[0] = 0;
+    ota.wakesSince = 0;
+  }
+  if (latest != String(ota.tried)) return false;
+  if (++ota.wakesSince >= OTA_RETRY_WAKES) {
+    ota.wakesSince = 0;
+    return false;  // time to try again
+  }
+  return true;
+}
 
+// The number after the last '-' of a version: gas-cam-4 -> 4, else -1.
+static long versionNumber(const String &v) {
+  int dash = v.lastIndexOf('-');
+  if (dash < 0 || dash + 1 >= (int)v.length()) return -1;
+  for (int i = dash + 1; i < (int)v.length(); i++)
+    if (!isDigit(v[i])) return -1;
+  return v.substring(dash + 1).toInt();
+}
+
+static void updateIfOffered(const String &latest) {
   if (latest.length() == 0) {
-    // 404 is the normal state: no build published. Nothing to say about it.
+    // No offer: nothing published, or no answer this wake.
     return;
   }
-  if (latest == FIRMWARE_VERSION) {
-    Serial.printf("firmware %s is current\n", FIRMWARE_VERSION);
+  if (versionNumber(latest) <= versionNumber(FIRMWARE_VERSION)) {
+    Serial.printf("firmware %s is current (server offers %s)\n",
+                  FIRMWARE_VERSION, latest.c_str());
     return;
   }
+  if (latest.length() >= sizeof(ota.tried) || alreadyTried(latest)) {
+    Serial.printf("firmware %s: %s already tried, not again yet\n",
+                  FIRMWARE_VERSION, latest.c_str());
+    return;
+  }
+  strncpy(ota.tried, latest.c_str(), sizeof(ota.tried) - 1);
+  ota.tried[sizeof(ota.tried) - 1] = 0;
+  ota.wakesSince = 0;
 
   Serial.printf("firmware %s -> %s, updating\n", FIRMWARE_VERSION,
                 latest.c_str());
@@ -272,9 +413,13 @@ static void checkForUpdate() {
   // to spend them heating the board and lighting a cupboard.
   lights(0);
 
+  String url = String("http://") + METERCAM_HOST + ":" + METERCAM_PORT +
+               "/firmware/" + FIRMWARE_BINARY;
+  if (strlen(METERCAM_TOKEN) > 0) url += String("?token=") + METERCAM_TOKEN;
+
+  WiFiClient client;
   httpUpdate.rebootOnUpdate(true);
-  t_httpUpdate_return result = httpUpdate.update(
-      client, base + "/firmware/" + FIRMWARE_BINARY + auth);
+  t_httpUpdate_return result = httpUpdate.update(client, url);
 
   // Only reached when it did NOT reboot.
   if (result == HTTP_UPDATE_FAILED) {
@@ -289,37 +434,65 @@ void setup() {
   Serial.begin(115200);
   Serial.printf("\n%s waking\n", FIRMWARE_VERSION);
 
+  // The pins were latched for the sleep; nothing below can drive them until
+  // the latch is let go.
+  releaseHolds();
+  gpio_deep_sleep_hold_dis();
   pinMode(PWDN_GPIO_NUM, OUTPUT);
   digitalWrite(PWDN_GPIO_NUM, LOW);   // sensor on
+  pinMode(FLASH_LED_GPIO_NUM, OUTPUT);
+  digitalWrite(FLASH_LED_GPIO_NUM, LOW);   // on-board flash stays dark
   lightsBegin();
   lights(0);
 
   WiFi.mode(WIFI_STA);
+  // No modem sleep for the few seconds this is awake: it saves nothing worth
+  // having here and makes the one TCP connection of the wake flakier.
+  WiFi.setSleep(false);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   unsigned long until = millis() + 20000;
   while (WiFi.status() != WL_CONNECTED && millis() < until) delay(100);
   if (WiFi.status() != WL_CONNECTED) {
     // No network is not worth staying awake for. The meter will still read
-    // the same number in five minutes.
+    // the same number in half an hour.
     Serial.println("no wifi; back to sleep");
     sleepNow();
   }
-  Serial.printf("wifi %s\n", WiFi.localIP().toString().c_str());
+  Serial.printf("wifi %s rssi %d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
 
   if (!cameraBegin()) sleepNow();
+  cameraOn = true;
 
+  // AFTER the camera, not before. esp_camera_init reaches into the LEDC
+  // peripheral around the XCLK channel, and a lights() call against a channel
+  // it has since reset writes a duty cycle into nothing: the frame still
+  // arrives, exposed for whatever ambient light there was, and looks exactly
+  // like an LED that is too dim.
+  lightsRebind();
   lights(LED_BRIGHTNESS);
   delay(LED_SETTLE_MS);
 
-  // Auto-exposure and white balance are still chasing the light that just
-  // came on. These frames are darker and greener than the scene and they are
-  // thrown away rather than sent.
-  for (int i = 0; i < WARMUP_FRAMES; i++) {
+  // Auto-exposure and white balance start from a cold AGC on every wake --
+  // the sensor was powered down for the sleep -- and against a close diffused
+  // light the first frames come back dark and green. Counted in FRAMES,
+  // because a time budget hands the darkest scenes the fewest chances to
+  // converge; ADAPT_MS survives only as a ceiling. An empty grab is
+  // the sensor not having produced a frame yet, not a dead sensor.
+  unsigned long hardStop = millis() + ADAPT_MS + 6000;
+  int discarded = 0;
+  while ((discarded < ADAPT_FRAMES || discarded < WARMUP_FRAMES)
+         && millis() < hardStop) {
     camera_fb_t *warm = esp_camera_fb_get();
-    if (warm) esp_camera_fb_return(warm);
+    if (warm) {
+      esp_camera_fb_return(warm);
+      discarded++;
+    } else {
+      delay(50);
+    }
   }
+  Serial.printf("adapted over %d frame(s)\n", discarded);
 
-  camera_fb_t *frames[8] = {nullptr};
+  Shot frames[8] = {};
   int kept = 0;
   for (int i = 0; i < FRAMES_PER_WAKE && kept < 8; i++) {
     camera_fb_t *fb = esp_camera_fb_get();
@@ -327,21 +500,34 @@ void setup() {
       Serial.println("capture failed");
       continue;
     }
-    frames[kept++] = fb;
+    // Copied out and handed straight back, so the driver can be shut down
+    // before a byte goes over the air. PSRAM has room for many of these.
+    uint8_t *copy = (uint8_t *)ps_malloc(fb->len);
+    if (copy) {
+      memcpy(copy, fb->buf, fb->len);
+      frames[kept].buf = copy;
+      frames[kept].len = fb->len;
+      kept++;
+    } else {
+      Serial.println("no PSRAM for a frame copy");
+    }
+    esp_camera_fb_return(fb);
     // A breath between frames. Two frames taken in the same instant share
     // whatever was wrong with that instant, which is the one thing having two
     // of them is supposed to rule out.
     if (i + 1 < FRAMES_PER_WAKE) delay(200);
   }
   lights(0);
+  cameraOff();
 
+  String offered;
   if (kept > 0) {
-    Serial.printf("pushing %d frame(s)\n", kept);
-    pushFrames(frames, kept);
-    for (int i = 0; i < kept; i++) esp_camera_fb_return(frames[i]);
+    Serial.printf("pushing %d frame(s), sensor off\n", kept);
+    pushFrames(frames, kept, offered);
+    for (int i = 0; i < kept; i++) free(frames[i].buf);
   }
 
-  checkForUpdate();
+  updateIfOffered(offered);
   sleepNow();
 }
 

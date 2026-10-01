@@ -1,37 +1,52 @@
-# The HTTP endpoint
+# The HTTP endpoints
 
-| Endpoint | What |
-| --- | --- |
-| `GET /read` | Capture, parse, judge. `?meter=` `?prevalue=` `?save=` `?elapsed_s=` |
-| `POST /read` | Same, but reads the JPEG from the request body. No camera needed — this is what the tests use |
-| `GET /capture` | A photo and nothing else. For aiming |
-| `GET /last.jpg` | The frame behind the last answer |
-| `GET /last_annotated.jpg` | Same frame with ROI boxes and per-drum readings drawn on |
-| `POST /preview` | Try a set of ROIs without saving them. The editor's Test button |
-| `POST /reference` | Store the current frame as the alignment reference |
-| `GET /archive` | Every stored frame as one streamed zip. `?meter=` `?days=` |
-| `GET /archive/days` | What is on disk, newest first, with age and byte counts. Read this before the one above |
-| `GET /roi` | The editor |
-| `GET /aim` | A one-button photo page for aiming the camera and focusing the lens; its size in KB rises as focus sharpens |
-| `GET /health` | Config status, known meters, whether auth is on |
+MeterCam listens on `:8770` in LXC 104.
 
-Auth is `X-Auth-Token`, matching `HomeAssistant/config/irbridge/rest_commands.yaml`.
-Also accepted as `?token=`, because the editor is a browser page and a browser
-cannot set a header on a plain navigation.
+| Endpoint | Who calls it | What |
+| --- | --- | --- |
+| `POST /read?meter=gas&fw=<version>` | the camera, once per wake | Read the frames, gate, write an accepted reading to Home Assistant, answer |
+| `GET /firmware/gas-cam.bin` | the camera, when offered a newer build | The firmware image |
+| `GET /firmware/version.txt` | gas-cam-5 and older boards, or a human with curl | The version on offer; 404 when none is published. gas-cam-6 and later read it from the `/read` answer instead |
+| `GET /health` | Docker's healthcheck, deploy.sh | Config status, meters, auth, firmware on offer, seconds since each meter's last read |
+
+## Auth
+
+`X-Auth-Token`, the same shape as `HomeAssistant/config/irbridge/rest_commands.yaml`,
+or `?token=`. With `METERCAM_TOKEN` unset, auth is off and `/health` says
+`"auth": "DISABLED"`. That is how the LAN deployment runs today.
+
+## `POST /read`
+
+The body is `multipart/form-data` with one file part per frame, in order. A
+single raw JPEG body is also accepted, and refused as unconfirmed while
+`confirm.samples` asks for more than one frame. `fw` is optional and only
+logged.
 
 ```json
 {
-  "meter": "gas", "value": 2246.91, "accepted": true, "reason": null,
-  "dial": 2246.916,
-  "digits": [0, 2, 2, 4, 6, 9, 1, 6], "raw": "02246916",
-  "prevalue": 2246.90, "delta": 0.01,
-  "confidence": {"per_drum": [0.99, 0.98, "..."], "min": 0.91},
-  "align": {"ok": true, "inliers": 84, "dx": -2.1, "dy": 0.4},
-  "captured_at": "2026-09-05T14:32:07+0300", "duration_ms": 1840
+  "meter": "gas", "value": 2261.72, "accepted": true, "reason": null,
+  "dial": 2261.72, "digits": [0, 2, 2, 6, 1, 7, 2], "raw": "0226172",
+  "drums": [0.0, 2.0, 2.0, 6.0, 1.0, 7.0, 2.0],
+  "prevalue": 2261.71, "prevalue_from": "home assistant", "delta": 0.01,
+  "elapsed_s": 1800,
+  "confidence": {"per_drum": [0.998, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0], "min": 0.998},
+  "align": {"ok": true, "inliers": 1845, "matches": 1848, "dx": 0.0, "dy": 0.0, "rotation_deg": 0.0},
+  "samples": {"wanted": 2, "taken": 2, "values": [2261.72, 2261.72]},
+  "frames_supplied": 2, "firmware_running": "gas-cam-6",
+  "published_to": "input_number.gas_meter_camera_reading",
+  "image": null,
+  "firmware": "gas-cam-6"
 }
 ```
 
-`accepted: false` always carries a `reason` and still populates `value`, so a
-rejected read can be looked at rather than guessed at.
-
----
+- `accepted: false` always carries a `reason` and still fills in whatever was
+  read, so a refusal can be looked at rather than guessed at. `image` is then
+  the path of the archived frame.
+- `published_to` is the helper that was written. `publish_error` replaces it
+  when Home Assistant refused the write. Nothing is lost: each reading is an
+  absolute total, so the next accepted wake writes the newer one.
+- `firmware` is present on every answer, including the 502 a crashed read
+  returns. A board whose reads are failing is exactly the board that may need
+  the next build.
+- The status is 200 for any verdict, 400 for a malformed request, and 502 when
+  the reader itself raised an exception.

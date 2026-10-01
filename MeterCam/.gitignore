@@ -1,5 +1,5 @@
-# The live config. Holds the camera's address on the LAN and, once the ESP32
-# arrives, its hostname. service/config.example.json is the committed template.
+# The live config: this meter's ROIs and Home Assistant's address. It lives in
+# the LXC; service/config.example.json is the committed template.
 config.json
 .env
 
@@ -8,11 +8,9 @@ config.json
 # one on that basis is a question better left unasked.
 models/*.tflite
 
-# Frames. data/ is what the service writes (raw, rejected, and the alignment
-# reference); corpus/ is what tools/grab.py collects for tuning and tests.
-# Both are photographs of the inside of a house, and neither belongs in git.
+# What the service writes: refused frames and the alignment reference.
+# Photographs of the inside of a house; they do not belong in git.
 data/
-corpus/
 
 # The node's own secrets: wifi password and MeterCam's token.
 # firmware/gas-cam/include/config.h.example is the committed template.

@@ -36,11 +36,11 @@ flowchart LR
 | [`Proxmox/`](Proxmox/README.md) | Read-only Proxmox API scripts, used to measure the Home Assistant guest's resource history from the RRD series. |
 
 **This is the `metercam` branch**: `master` plus the MeterCam project, which
-isn't merged until it proves itself:
+feeds the Energy dashboard's gas tab and is not merged into `master` yet:
 
 | Module | What it is |
 | --- | --- |
-| [`MeterCam/`](MeterCam/README.md) | An ESP32-CAM that photographs the gas meter's dial, and a service in a Proxmox LXC that reads the digits and hands Home Assistant a reading only when it can stand behind it. |
+| [`MeterCam/`](MeterCam/README.md) | An ESP32-CAM that wakes every 30 minutes to photograph the gas meter's dial, and a service in a Proxmox LXC that reads the digits and hands Home Assistant a reading only when it can stand behind it. |
 
 Unfinished projects live on branches of their own until they are:
 

@@ -7,19 +7,23 @@ services:
     ports:
       - "8770:8770"
     volumes:
-      # config.json is gitignored and holds the camera address. Mounted rather
-      # than baked in so a ROI change is an edit and a restart, not a rebuild.
+      # config.json is gitignored and holds this meter's ROIs. Mounted rather
+      # than baked in so a ROI change is an edit and a recreate, not a rebuild.
       - ./config.json:/config/config.json:ro
       # The .tflite files. fetch.sh downloads them; they are not committed,
       # because jomjol's repositories state no licence and redistributing
       # someone's trained weights on that basis is not a fight worth having.
       - ./models:/models:ro
-      # Frames, kept for debugging. ./data/images/gas/raw and .../rejected.
-      # Also holds ref/gas.jpg, the alignment reference written by POST
-      # /reference -- so this one is NOT read-only.
+      # images/gas/rejected (refused frames), images/gas/last_accepted.json,
+      # ref/gas.jpg (the alignment reference) and firmware/ (the OTA channel).
+      # The service writes here, so this one is NOT read-only.
       - ./data:/data
     environment:
       # Unset means auth is off and /health says so. Fine on the bench, wrong
       # on the LAN. Put the real value in .env next to this file.
       METERCAM_TOKEN: "${METERCAM_TOKEN:-}"
+      # Home Assistant's long-lived token, for the prevalue fetch and the
+      # write-back. Unset, readings are gated and archived but reach nothing.
+      # Also in .env, never in config.json.
+      METERCAM_HA_TOKEN: "${METERCAM_HA_TOKEN:-}"
       TZ: "${TZ:-Europe/Kyiv}"

@@ -4,24 +4,21 @@ Tests for the reading arithmetic. Plain asserts, run directly:
 
     python tests/test_reader.py
 
-Three tiers, and the split matters.
+Two tiers, and the split matters.
 
 Sections 1-3 are pure arithmetic: the carry rule and the plausibility gate.
-They need no models, no corpus, no camera and no OpenCV, so they run anywhere
+They need no models, no camera and no OpenCV, so they run anywhere
 and they run now. These guard the failure that cannot be undone -- a misread
 that comes out as a DECREASE, which Home Assistant takes as a meter reset and
 which retyping the value afterwards does not repair. Section 2 exists because
 that failure is a plausible consequence of getting one comparison backwards.
 
-Section 4 needs OpenCV, so on a bare workstation it skips and in the container
-it runs:
+The rest needs OpenCV, Flask or the model weights, so on a bare workstation it
+skips and in the container it runs:
 
     docker compose exec metercam python tests/test_reader.py
 
-Section 5 is the corpus: real frames with the true reading written beside them.
-It skips, loudly, when the frames are absent -- they are deliberately not in
-git, being photographs of the inside of a house. The model weights are absent
-for a different reason: no stated licence upstream.
+The weights are not in git: no stated licence upstream.
 
 Matches the house convention in HomeAssistant/tools/test_dtek_schedule.py:
 no pytest, no fixtures framework, exit 0 or 1.
@@ -122,178 +119,17 @@ def test_assemble():
     done()
 
 
-def test_camera_calls():
-    """How the camera is driven around a shot.
-
-    Pure plumbing, no network: `fetch` is swapped for a recorder, so what this
-    pins is the ORDER and the METHOD -- prepare, torch on, settle, photo, torch
-    off no matter what the photo did, and a POST where a POST was asked for.
-
-    The method matters because of the ESP32-CAM. A phone's control endpoints
-    answer to a GET; ESPHome's REST API acts only on a POST and silently
-    ignores a GET, so a torch that is configured as a bare string on that node
-    would never come on -- and the failure is not an error, it is a dark frame
-    the reader then refuses. That is precisely the class of bug the config
-    comments elsewhere in this repo keep warning about.
-    """
-    section("8. driving the camera: order, and the method")
-    from service import reader as rd
-
-    calls = []
-
-    def recorder(url, timeout=15, method=None, body=None):
-        calls.append((url, method))
-        if url.endswith("/photo"):
-            return b"JPEG"
-        return b""
-
-    real_fetch, real_sleep = rd.fetch, rd.time.sleep
-    rd.fetch, rd.time.sleep = recorder, lambda _s: None
-    try:
-        cam = {
-            "snapshot_url": "http://cam/photo",
-            "prepare_urls": [
-                "http://cam/settings/quality?set=90",
-                {"url": "http://cam/light/flash/turn_on?brightness=128",
-                 "method": "POST"},
-            ],
-            "torch_on_url": {"url": "http://cam/light/flash/turn_on",
-                             "method": "POST"},
-            "torch_off_url": {"url": "http://cam/light/flash/turn_off",
-                              "method": "POST"},
-            "torch_settle_ms": 1,
-        }
-        got = rd.capture(cam)
-        check("capture: hands back the photo body", got, b"JPEG")
-        check("capture: prepare, torch, photo, torch off -- in that order",
-              [c[0] for c in calls],
-              ["http://cam/settings/quality?set=90",
-               "http://cam/light/flash/turn_on?brightness=128",
-               "http://cam/light/flash/turn_on",
-               "http://cam/photo",
-               "http://cam/light/flash/turn_off"])
-        check("capture: a bare string stays a GET", calls[0][1], None)
-        check("capture: an object carries its method", calls[1][1], "POST")
-        check("capture: and so does the torch", calls[2][1], "POST")
-
-        # The torch must go off even when the photo throws, or a failed read
-        # leaves a white LED burning in a cupboard until the next one.
-        calls.clear()
-
-        def thrower(url, timeout=15, method=None, body=None):
-            calls.append((url, method))
-            if url.endswith("/photo"):
-                raise OSError("camera went away mid-shot")
-            return b""
-
-        rd.fetch = thrower
-        raised = False
-        try:
-            rd.capture(cam)
-        except OSError:
-            raised = True
-        check("capture: a failed photo is not swallowed", raised, True)
-        check("capture: and the torch is still switched off",
-              calls[-1], ("http://cam/light/flash/turn_off", "POST"))
-
-        # A torch that cannot be reached must not cost us the photo.
-        calls.clear()
-
-        def flaky(url, timeout=15, method=None, body=None):
-            calls.append((url, method))
-            if "flash" in url:
-                raise OSError("no such node")
-            return b"JPEG"
-
-        rd.fetch = flaky
-        check("capture: an unreachable torch still gets the frame",
-              rd.capture(cam), b"JPEG")
-    finally:
-        rd.fetch, rd.time.sleep = real_fetch, real_sleep
-    done()
-
-
-def test_preprocess():
-    """The modes, and the one thing they must not touch.
-
-    Synthetic drums rather than photographs: a white 'stroke' on a red field
-    is exactly the picture the green mode exists for, and it is checkable
-    without a corpus. What this pins is behaviour, not accuracy -- whether any
-    of it reads the meter better is tools/score.py's question and needs real
-    frames.
-    """
-    section("9. preprocess(): contrast, and what it may not move")
-    import numpy as np
-    from service.reader import preprocess, prep_for
-
-    # A white stroke down the middle of a red drum, BGR.
-    red = np.zeros((40, 24, 3), dtype=np.uint8)
-    red[:, :] = (40, 40, 200)                       # B, G, R
-    red[8:32, 9:15] = (255, 255, 255)
-
-    def contrast(img):
-        """How far the ink stands off the background, in the green channel."""
-        return float(img[20, 12, 1]) - float(img[2, 2, 1])
-
-    check("preprocess: none is the identity",
-          preprocess(red, None) is red, True)
-    check("preprocess: 'none' is too", preprocess(red, "none") is red, True)
-
-    before = contrast(red)
-    green = preprocess(red, "green")
-    check("preprocess: green keeps three channels for the interpreter",
-          green.shape, red.shape)
-    check("preprocess: green drives the red field toward black",
-          int(green[2, 2, 1]) < int(red[2, 2, 2]), True)
-    check("preprocess: and leaves white ink bright",
-          int(green[20, 12, 1]) > 200, True)
-    check("preprocess: so the ink stands off further than it did",
-          contrast(green) >= before, True)
-
-    clahe = preprocess(red, "clahe")
-    check("preprocess: clahe keeps three channels", clahe.shape, red.shape)
-    check("preprocess: clahe keeps it in colour -- the field stays redder "
-          "than it is green",
-          int(clahe[2, 2, 2]) > int(clahe[2, 2, 1]), True)
-
-    both = preprocess(red, "clahe+green")
-    check("preprocess: clahe+green ends up monochrome",
-          int(both[20, 12, 0]) == int(both[20, 12, 1]) == int(both[20, 12, 2]),
-          True)
-
-    # A dict may carry the knobs; a bare string is the short form.
-    check("preprocess: a dict with mode works like the string",
-          preprocess(red, {"mode": "green"}).tolist() == green.tolist(), True)
-    check("preprocess: a dict without a mode is a no-op",
-          preprocess(red, {"clip": 4.0}) is red, True)
-
-    # Per ROI, because this dial is two different pictures.
-    meter = {"preprocess": {"mode": "clahe"}}
-    check("prep_for: the meter's, when the ROI says nothing",
-          prep_for(meter, {"x": 0})["mode"], "clahe")
-    check("prep_for: the ROI wins when it says something",
-          prep_for(meter, {"preprocess": {"mode": "green"}})["mode"], "green")
-    check("prep_for: and an ROI can turn it off for one drum",
-          prep_for(meter, {"preprocess": "none"}), "none")
-    check("prep_for: nothing configured anywhere is nothing",
-          prep_for({}, {"x": 0}), None)
-    done()
-
-
 def test_home_assistant():
     """Fetching the prevalue and writing the reading back.
 
-    This is the half that only exists because the camera sleeps. Under the
-    pull model Home Assistant passed the previous reading in and decided what
-    to do with the answer; a board that wakes on its own timer can do neither,
-    so the fetch and the write moved here.
+    A board that wakes on its own timer cannot carry the previous reading or
+    act on the verdict, so this service fetches the one and writes the other.
 
     What these pin is the boundary, not the plumbing: no url or no token means
-    no Home Assistant at all and /read behaves exactly as it always did, and
-    `write: false` is a deployment that reads and reports without touching the
-    house. Both are the escape hatch back to the shape that was better.
+    no Home Assistant at all, and `write: false` reads and reports without
+    touching the house.
     """
-    section("10. home assistant: fetch the prevalue, write the reading")
+    section("8. home assistant: fetch the prevalue, write the reading")
     from service import app as A
 
     calls = []
@@ -325,10 +161,16 @@ def test_home_assistant():
               (ha2["write_entity"], ha2["url"]),
               ("input_number.water", "http://ha:8123"))
 
-        # The way back to the pull model is to say nothing.
+        # No Home Assistant is said by saying nothing.
         check("ha: no url means no home assistant", A.ha_cfg({}, {}), None)
-        check("ha: and neither does a url without a token",
-              A.ha_cfg({"home_assistant": {"url": "http://ha:8123"}}, {}), None)
+        # The environment's token stands in for a missing config one, and in
+        # the container the environment HAS one -- so take it away for this.
+        real_token, A.HA_TOKEN = A.HA_TOKEN, None
+        try:
+            check("ha: and neither does a url without a token",
+                  A.ha_cfg({"home_assistant": {"url": "http://ha:8123"}}, {}), None)
+        finally:
+            A.HA_TOKEN = real_token
         check("ha: write:false reads and reports, and touches nothing",
               A.ha_publish(dict(ha, write=False), 1.0), None)
 
@@ -601,7 +443,7 @@ def test_gate():
     check("a 10 m3 jump is refused", accepted, False)
     check("jump says why", "rate" in (reason or ""), True)
 
-    # A poll that was missed for an hour must not reject the gas that was
+    # A wake that was missed for an hour must not reject the gas that was
     # genuinely burned while nobody was looking.
     accepted, _ = gate(4823.0, 4821.6, cfg, elapsed_s=3600, **ok)
     check("the rate limit scales with the gap", accepted, True)
@@ -624,7 +466,7 @@ def test_gate():
     # Without a prevalue there is no rate limit and no decrease check, so the
     # first reading after a restart would be the least guarded one of the day
     # -- and it is the one that sets the statistics baseline. Refuse it. The
-    # cost is one poll; the alternative is permanent.
+    # cost is one wake; the alternative is permanent.
     accepted, reason = gate(4821.7, None, cfg, **ok)
     check("no prevalue is refused by default", accepted, False)
     check("  and says why", reason,
@@ -638,6 +480,32 @@ def test_gate():
     # for being zero, not for lacking a prevalue.
     accepted, reason = gate(0.0, None, relaxed, **ok)
     check("zero is still refused with no prevalue", accepted, False)
+
+    # THE LOCKOUT. The camera sleeps 1800 s and never sends elapsed_s, so
+    # without the server working the gap out, a busy winter half hour (1.0 m3
+    # at 2 m3/h) was over the flat 0.6 -- and the prevalue only moves on an
+    # accept, so every read after it was refused against the same number.
+    from service.digits import seconds_since
+    now = 1_790_000_000.0
+    record = {"value": 4821.6, "at_epoch": now - 1800}
+    check("gap from the stored epoch", seconds_since(record, now), 1800.0)
+    accepted, _ = gate(4822.6, 4821.6, cfg, **ok)
+    check("without a gap, 1.0 m3 in half an hour is refused", accepted, False)
+    accepted, _ = gate(4822.6, 4821.6, cfg,
+                       elapsed_s=seconds_since(record, now), **ok)
+    check("with the gap it is accepted", accepted, True)
+    # ...and a refusal does not strand the next read: the gap keeps growing
+    # from the last ACCEPT, so the allowance grows with it.
+    accepted, _ = gate(4823.8, 4821.6, cfg,
+                       elapsed_s=seconds_since(record, now + 1800), **ok)
+    check("an hour after the last accept, 2.2 m3 is accepted", accepted, True)
+    check("records from before at_epoch still parse",
+          seconds_since({"at": "2026-09-30T10:00:00+0300"},
+                        1790751600.0 + 600), 600.0)
+    check("nothing stored -> no gap", seconds_since(None, now), None)
+    check("garbage -> no gap", seconds_since({"at": "yesterday"}, now), None)
+    check("a clock that went backwards -> no gap",
+          seconds_since({"at_epoch": now + 60}, now), None)
 
     done()
 
@@ -686,7 +554,7 @@ def test_jump_counter():
 
 
 def test_transform():
-    section("4. transform(): un-mirroring a front-facing camera")
+    section("4. transform(): un-mirroring and rotating a frame")
     try:
         import cv2
         import numpy as np
@@ -734,63 +602,6 @@ def test_transform():
     done()
 
 
-def test_corpus():
-    section("5. corpus: real frames against hand-noted readings")
-    root = pathlib.Path(__file__).resolve().parent.parent
-    # In the container the config is a mount at /config/config.json, not a
-    # sibling of this file -- so honour the same env var the service reads.
-    config = pathlib.Path(os.environ.get("METERCAM_CONFIG") or (root / "config.json"))
-    frames = sorted(glob.glob(str(root / "corpus" / "*" / "*.jpg")))
-    labelled = [f for f in frames if os.path.exists(f[:-4] + ".txt")]
-
-    if not config.exists():
-        print("  SKIPPED - no config.json (copy service/config.example.json)")
-        return
-    if not labelled:
-        print("  SKIPPED - no labelled frames in corpus/")
-        print("  Collect some:  python tools/grab.py --config config.json --once")
-        print("  Then write the true dial reading into the .txt beside each one.")
-        return
-
-    import json
-    from service.reader import ModelCache, read
-
-    with open(config, encoding="utf-8") as fh:
-        cfg = json.load(fh)
-    models = ModelCache()
-    checked = 0
-    prev = None
-
-    for path in labelled:
-        meter_name = pathlib.Path(path).parent.name
-        meter = cfg["meters"].get(meter_name)
-        if meter is None:
-            continue
-        with open(path[:-4] + ".txt", encoding="utf-8") as fh:
-            want_raw = fh.read().strip()
-        with open(path, "rb") as fh:
-            blob = fh.read()
-
-        # Judged against the last TRUE reading before it, which is what Home
-        # Assistant supplies as prevalue. Without one the gate refuses
-        # everything for want of a comparison, and a "reject" label would then
-        # pass for the wrong reason -- proving only that the guard we did not
-        # mean to test was working.
-        result = read(meter, models, image_bytes=blob, prevalue=prev)
-        name = os.path.basename(path)
-
-        # "reject" in the label means the frame is deliberately bad -- dark,
-        # moved, fogged -- and the right answer is a refusal, not a number.
-        if want_raw.lower() == "reject":
-            check("%s must be rejected" % name, result["accepted"], False)
-        else:
-            check("%s reads correctly" % name, result["value"], float(want_raw))
-            prev = float(want_raw)
-        checked += 1
-
-    print("  %d labelled frames" % checked)
-
-
 def test_adversarial():
     """Section 6: trash must never be accepted, whatever the model says.
 
@@ -812,7 +623,7 @@ def test_adversarial():
     This section asserts the outcome, not the mechanism: any of the guards may
     do the catching, but nothing here may ever come back accepted.
     """
-    section("6. adversarial frames: trash is never accepted")
+    section("5. adversarial frames: trash is never accepted")
 
     try:
         import cv2
@@ -857,14 +668,14 @@ def test_adversarial():
     cache = reader.ModelCache()
     for name, frame in frames.items():
         blob = cv2.imencode(".jpg", frame)[1].tobytes()
-        out = reader.read(meter, cache, image_bytes=blob,
+        out = reader.read(meter, cache, [blob],
                           prevalue=2246.916, elapsed_s=300)
         check("%s is refused" % name, out.get("accepted"), False)
         check("  %s says why" % name, out.get("reason") is not None, True)
 
         # And with nothing to compare against -- the restart case, where the
         # rate limit and decrease check are both absent -- it must still refuse.
-        bare = reader.read(meter, cache, image_bytes=blob, prevalue=None)
+        bare = reader.read(meter, cache, [blob], prevalue=None)
         check("  %s refused with no prevalue too" % name,
               bare.get("accepted"), False)
 
@@ -878,13 +689,13 @@ def test_publishing():
     read(). Every check here is STRUCTURAL -- the published value is the dial
     with its fast drums cut off, and the prevalue was trimmed the same way
     before anything compared it -- so it holds whatever the model happens to
-    read off a synthetic frame, and needs neither a corpus nor a true reading.
+    read off a synthetic frame, and needs no true reading.
 
     The frame is refused, as trash should be. That is not what is under test:
     a refused read still carries `value`, `dial` and `prevalue`, which is the
     whole reason those are populated on the way out.
     """
-    section("7. report_decimals: what read() actually publishes")
+    section("6. report_decimals: what read() actually publishes")
 
     try:
         import cv2
@@ -918,7 +729,7 @@ def test_publishing():
                  "tolerance_down": 0.0, "min_confidence": 0.5},
     }
 
-    out = reader.read(meter, reader.ModelCache(), image_bytes=blob,
+    out = reader.read(meter, reader.ModelCache(), [blob],
                       prevalue=2246.916, elapsed_s=300)
 
     dial, value = out.get("dial"), out.get("value")
@@ -938,12 +749,116 @@ def test_publishing():
     # report_decimals existed behaves exactly as it did.
     plain = dict(meter)
     del plain["report_decimals"]
-    was = reader.read(plain, reader.ModelCache(), image_bytes=blob,
+    was = reader.read(plain, reader.ModelCache(), [blob],
                       prevalue=2246.916, elapsed_s=300)
     check("without report_decimals the dial is published whole",
           was.get("value"), was.get("dial"))
     check("  and the prevalue is left alone", was.get("prevalue"), 2246.916)
 
+    done()
+
+
+def test_seven_drums():
+    """Section 2f: the mounted camera sees seven drums, not eight.
+
+    The ESP32-CAM on its bracket frames 0 2 2 6 1 | 4 2 -- the 0.001 drum is
+    out of shot. That drum was never published (report_decimals: 2), so the
+    meter is configured as what the camera sees: seven drums, two decimals.
+    Two things change and both are checked here: nothing is truncated any
+    more, and the LAST drum is now a published one.
+    """
+    from service.digits import assemble, gate, reported_decimals, truncate
+
+    section("2f. seven drums: decimals 2, the 0.001 drum out of frame")
+
+    meter = {"decimals": 2, "report_decimals": 2}
+    check("reports what it reads", reported_decimals(meter), 2)
+
+    # As dig-class100 would return them off the frame taken 2026-09-27.
+    value, digits, raw = assemble([0.1, 2.0, 1.9, 6.1, 0.8, 4.2, 1.7],
+                                  decimals=2, counter_type="jump")
+    check("assembles to the dial", (value, raw), (2261.42, "0226142"))
+
+    # round_last_drum_down. The overnight frames of 2026-09-28: last drum
+    # mid-roll at 1.6, dial labelled .41, rounding published .42.
+    mid = [0.1, 2.0, 2.0, 6.1, 1.0, 4.0, 1.6]
+    check("mid-roll rounds to the arriving digit",
+          assemble(mid, 2, "jump")[0], 2261.42)
+    check("  and down to the leaving one with last_down",
+          assemble(mid, 2, "jump", last_down=True)[0], 2261.41)
+    check("  a clean digit is untouched",
+          assemble(mid[:-1] + [7.1], 2, "jump", last_down=True)[0], 2261.47)
+    check("  nor one read a little low",
+          assemble(mid[:-1] + [6.8], 2, "jump", last_down=True)[0], 2261.47)
+    check("  only the last drum: a low 5.8 upstream still rounds",
+          assemble(mid[:-2] + [5.8, 1.6], 2, "jump", last_down=True)[0], 2261.61)
+    # 9 -> 0: the neighbour has already snapped to 5, so a floored 9 would say
+    # .59 for a dial at .50. It must round, as it did before.
+    check("  and 9 -> 0 still rounds (no .59 for a dial at .50)",
+          assemble(mid[:-2] + [5.0, 9.6], 2, "jump", last_down=True)[0], 2261.50)
+    check("  a centred 9 stays 9",
+          assemble(mid[:-2] + [4.0, 9.0], 2, "jump", last_down=True)[0], 2261.49)
+    check("truncate is a no-op when nothing is dropped",
+          truncate(value, 2, 2), 2261.42)
+    check("  and does not mangle a value that is not a clean float",
+          truncate(2261.4200000001, 2, 2), 2261.4200000001)
+
+    # THE trap. gate() exempts the last drum from min_confidence by position.
+    # On eight drums that was the unpublished 0.001 drum; on seven it is the
+    # 0.01 drum, which IS published. So the published drum must have a floor
+    # of its own -- min_confidence_last_digit -- or a 0.05-confidence guess
+    # at it would sail through.
+    cfg = {"max_delta": 0.6, "max_delta_window_s": 300, "tolerance_down": 0.0,
+           "min_confidence": 0.5, "require_prevalue": True}
+    shaky = [0.9] * 6 + [0.05]
+    check("without a last-digit floor a 5% last drum is accepted",
+          gate(2261.42, 2261.40, cfg, 7, 7, shaky)[0], True)
+    floored = dict(cfg, min_confidence_last_digit=0.3)
+    accepted, reason = gate(2261.42, 2261.40, floored, 7, 7, shaky)
+    check("  with one it is refused", accepted, False)
+    check("  for the last drum", "last drum" in (reason or ""), True)
+    check("wrong drum count is still refused",
+          gate(2261.42, 2261.40, floored, 8, 7, [0.9] * 8)[0], False)
+
+    done()
+
+
+def test_single_push():
+    """A single pushed frame must not skip confirm.samples.
+
+    The camera sends one frame when a grab or an allocation fails, and anyone
+    on the LAN can POST one. read() used to mark it `unconfirmed` and pass it
+    to the gate, while three frames against samples: 5 were refused. The image
+    work is stubbed: this is about the control flow, not the vision.
+    """
+    section("7. read(): one pushed frame against confirm.samples")
+    from service import reader
+
+    real = reader.read_once
+
+    def fake(meter, models, image_bytes, prevalue=None):
+        return {"value": 4821.7, "digits": [4, 8, 2, 1, 7, 0, 0, 0],
+                "reason": None, "_confidences": [0.9] * 8, "_frame": None}
+
+    reader.read_once = fake
+    try:
+        meter = {"decimals": 1, "rois": [{}] * 8, "confirm": {"samples": 2},
+                 "gate": {"max_delta": 0.6, "min_confidence": 0.5}}
+        one = reader.read(meter, None, [b"x"], prevalue=4821.6)
+        check("one frame against samples: 2 is refused", one["accepted"], False)
+        check("  saying why", (one["reason"] or "").split(":")[0], "unconfirmed")
+        two = reader.read(meter, None, [b"x", b"y"], prevalue=4821.6)
+        check("two agreeing frames are accepted", two["accepted"], True)
+        allowed = dict(meter, confirm={"samples": 2, "allow_unconfirmed_push": True})
+        check("allow_unconfirmed_push accepts the single frame",
+              reader.read(allowed, None, [b"x"],
+                          prevalue=4821.6)["accepted"], True)
+        single = dict(meter, confirm={"samples": 1})
+        check("samples: 1 never asked for more",
+              reader.read(single, None, [b"x"],
+                          prevalue=4821.6)["accepted"], True)
+    finally:
+        reader.read_once = real
     done()
 
 
@@ -956,6 +871,7 @@ def main():
     test_align_gate()
     test_confirm_samples()
     test_report_decimals()
+    test_seven_drums()
     test_gate()
     test_transform()
     try:
@@ -966,18 +882,10 @@ def main():
         test_publishing()
     except ImportError as exc:
         print("  SKIPPED - %s" % exc)
+    # Control flow, not vision -- but reader.py imports cv2 at module scope, so
+    # it skips here and runs in the container with everything else that does.
     try:
-        test_corpus()
-    except ImportError as exc:
-        print("  SKIPPED - %s" % exc)
-    # Plumbing, not vision -- but reader.py imports cv2 at module scope, so it
-    # skips here and runs in the container with everything else that does.
-    try:
-        test_camera_calls()
-    except ImportError as exc:
-        print("  SKIPPED - %s" % exc)
-    try:
-        test_preprocess()
+        test_single_push()
     except ImportError as exc:
         print("  SKIPPED - %s" % exc)
     # app.py pulls in Flask, which lives in the image rather than on a
