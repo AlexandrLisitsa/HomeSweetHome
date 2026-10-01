@@ -6,22 +6,22 @@
     "items": [
       {
         "id": "1f7842bdff194a86b0760a3b04ad05bc",
-        "url": "/local/dtek-shutdowns-card.js?v=1.1.1",
+        "url": "/local/dtek-shutdowns-card.js?v=1.3.0",
         "type": "module"
       },
       {
         "id": "504a7eef6aab46e38dae85aab34e7ea7",
-        "url": "/local/powmr-inverter-console-card.js?v=1.6.0",
+        "url": "/local/powmr-inverter-console-card.js?v=1.7.0",
         "type": "module"
       },
       {
         "id": "7005a1469b8546f2b0f05a4e7ab9c216",
-        "url": "/local/jkbms-battery-console-card.js?v=1.3.0",
+        "url": "/local/jkbms-battery-console-card.js?v=1.4.0",
         "type": "module"
       },
       {
         "id": "4555f6320abe4636813c150ae8979526",
-        "url": "/local/climate-console-card.js?v=1.1.1",
+        "url": "/local/climate-console-card.js?v=1.2.0",
         "type": "module"
       },
       {

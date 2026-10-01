@@ -3,7 +3,9 @@
 The hypervisor that runs the home: one small Proxmox VE host with Home Assistant
 as a VM and the network services (ad-blocking DNS, remote access, a public
 tunnel) as LXC containers. This project documents the host and every guest on
-it, one doc each, and holds read-only tooling to measure them.
+it, one doc each, holds read-only tooling to measure them, and the hook that
+sends every backup off-site ([`docs/backups.md`](docs/backups.md)). What keeps
+it all from filling up is in [`docs/maintenance.md`](docs/maintenance.md).
 
 | Guest | What it does | Doc |
 | --- | --- | --- |
@@ -22,15 +24,21 @@ than eyeball it off a graph ([the CPU case study](docs/cpu-growth-case-study.md)
 | Host | your Proxmox host (`<proxmox-ip>`) — API and UI on `8006`, SSH on `22` |
 | Credentials | `secrets.env` — gitignored; see `secrets.env.example` |
 | Keys | `~/.ssh/pve_ed25519` for the host, alongside `~/.ssh/ha_ed25519` for the guest |
+| Backups | weekly vzdump jobs, copied encrypted to Google Drive — [`docs/backups.md`](docs/backups.md) |
 
 ## Access
 
-Two credentials. A **read-only API token** (`PVEAuditor`) sees every node, guest,
-config and metric and changes nothing; everything that only measures uses it. A
-**root SSH key** is the one path that writes, used only to create and deploy
-MeterCam's container; see [`docs/ssh-write-path.md`](docs/ssh-write-path.md).
-Setup for both, including the privilege-separation trap that makes a fresh token
-return 403 to everything, is in `secrets.env.example`.
+Two ways in, for two jobs:
+
+- A **read-only API token** for measuring. `PVEAuditor` can see every node, VM,
+  config and metric and change nothing. Setup steps and the privilege-separation
+  trap are in `secrets.env.example`. The measuring tools below use only this.
+- **SSH as root** with a dedicated key, for everything that writes: creating and
+  deploying MeterCam's container (see [`docs/ssh-write-path.md`](docs/ssh-write-path.md)),
+  and host administration — installing packages, the backup hook, the backup
+  jobs. The hook is installed by hand (see [`docs/backups.md`](docs/backups.md)).
+  Changes made this way are written up in the docs, since there is no mirror of
+  the host's config in this repository.
 
 Verify:
 
@@ -47,14 +55,16 @@ sh tools/pve_ssh.sh pveversion     # write
 | `tools/cpu_trend.py` | the HA guest's CPU by week (or by hour: `... day`), against a recorded baseline | no |
 | `tools/pve_ssh.sh` | run a command on the host as **root**, over SSH — the write path ([`docs/ssh-write-path.md`](docs/ssh-write-path.md)) | **yes** |
 | `tools/_pve_env.sh` | not a command: sourced by `pve_get.sh` and `pve_ssh.sh` to load `secrets.env` | — |
+| `tools/pct-fstrim.service` + `.timer` | **installed on the host**: trims every running container weekly so freed space returns to the thin pool ([`docs/maintenance.md`](docs/maintenance.md)) | no |
+| `tools/vzdump-offsite.sh` | **runs on the host**, as the vzdump hook of both backup jobs: uploads the dumps to Google Drive through rclone crypt and prunes the off-site copies | changes Drive, not the host |
 
 ```sh
 python tools/cpu_trend.py        # weekly, the whole year
 python tools/cpu_trend.py day    # per-hour, the last day
 ```
 
-There is deliberately no write helper. If the VM's RAM or core count ever needs
-changing, that is an SSH job and a separate decision.
+There is deliberately no write helper over the API. If the VM's RAM or core
+count ever needs changing, that is an SSH job and a separate decision.
 
 ## Endpoints worth knowing
 
@@ -83,5 +93,7 @@ help".
 | [`docs/103-cloudflare.md`](docs/103-cloudflare.md) | LXC 103, Cloudflare Tunnel |
 | [`docs/104-metercam.md`](docs/104-metercam.md) | LXC 104, MeterCam |
 | [`docs/ssh-write-path.md`](docs/ssh-write-path.md) | the root SSH key that changes the host, and what the read/write split does and does not buy |
+| [`docs/backups.md`](docs/backups.md) | what is backed up, where, the retention, and how to restore |
+| [`docs/maintenance.md`](docs/maintenance.md) | housekeeping: what keeps the host and its guests from slowly filling up |
 | [`docs/security.md`](docs/security.md) | the certificate, the read-only token, and what a leak could and could not do |
 | [`docs/cpu-growth-case-study.md`](docs/cpu-growth-case-study.md) | the investigation into the Home Assistant guest's CPU growth, and the model that fits it |

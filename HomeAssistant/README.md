@@ -127,6 +127,19 @@ endings, which is why `.gitattributes` pins `*.sh` and `*.yaml` to LF: HAOS runs
 BusyBox `ash`, which does not tolerate CRLF, and Git Bash hides the problem
 locally.
 
+## Backups
+
+HA makes a full, encrypted backup every night and keeps it in two places: 3
+copies on its own disk and 14 on Google Drive, through the *Google Drive*
+integration (signed in as the household's infrastructure Google account). The
+backup encryption key must also be in the household password manager: without
+it no copy can be restored. Settings → System → Backups shows both locations.
+
+The mirror in `config/` is not a backup: it leaves out the database,
+`.storage` and every secret. What the whole home's backups look like, and how to
+restore HA onto a fresh VM, is in
+[`../Proxmox/docs/backups.md`](../Proxmox/docs/backups.md).
+
 ## Docs
 
 | Doc | About |
@@ -138,3 +151,4 @@ locally.
 | [`docs/climate-dashboard.md`](docs/climate-dashboard.md) | the climate dashboard and its checker |
 | [`docs/ac-features.md`](docs/ac-features.md) | the inventory of both A/C units' features the climate card is built from |
 | [`docs/renaming-entities.md`](docs/renaming-entities.md) | renaming entity ids across the registry, dashboards and YAML |
+| [`docs/remote-access-security.md`](docs/remote-access-security.md) | how HA is reached from the internet: the traffic flow, and how each request is accepted or denied |

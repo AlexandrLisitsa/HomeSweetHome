@@ -33,7 +33,7 @@ flowchart LR
 | [`PowerStation/`](PowerStation/README.md) | ESPHome firmware for an ESP32 that drives a PowMr hybrid inverter over UART and reads a JK BMS over BLE, with tariff- and grid-fault-aware power-priority logic and a night-tariff-only charging mode. |
 | [`IRBridge/`](IRBridge/README.md) | Android app that turns an old phone's IR blaster into an authenticated HTTP API, so Home Assistant can drive a "dumb" split A/C — including a protocol sweep to find which IR codec the unit speaks. |
 | [`FloorPlan/`](FloorPlan/README.md) | Tooling that renders a Sweet Home 3D model from above and turns it into the isometric **Home** dashboard, where each lamp lights its own room. |
-| [`Proxmox/`](Proxmox/README.md) | Read-only Proxmox API scripts, used to measure the Home Assistant guest's resource history from the RRD series. |
+| [`Proxmox/`](Proxmox/README.md) | The host and its guests, one doc each; read-only Proxmox API scripts that measure the Home Assistant guest's resource history; and the backup setup that keeps every guest and HA's backups on the host and, encrypted, on Google Drive ([`Proxmox/docs/backups.md`](Proxmox/docs/backups.md)). |
 
 **This is the `metercam` branch**: `master` plus the MeterCam project, which
 feeds the Energy dashboard's gas tab and is not merged into `master` yet:
@@ -75,6 +75,7 @@ example next to it (or in [`HomeAssistant/examples/`](HomeAssistant/examples)):
 | `PowerStation/secrets.yaml` | `PowerStation/secrets.yaml.example` | Wi-Fi, API key, OTA password, BMS MAC |
 | `Proxmox/secrets.env` | `Proxmox/secrets.env.example` | read-only Proxmox API token |
 | `IRBridge/local.properties` | `IRBridge/local.properties.example` | Android SDK path |
+| Proxmox host `/root/.config/rclone/rclone.conf` | — (see [`Proxmox/docs/backups.md`](Proxmox/docs/backups.md#credentials)) | Google Drive token and the crypt password for the off-site backups |
 
 See [SECURITY.md](SECURITY.md) for how this is enforced and how to report a leak.
 

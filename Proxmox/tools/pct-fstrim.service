@@ -1,0 +1,8 @@
+[Unit]
+Description=Return freed blocks of every running LXC to the local-lvm thin pool
+# LXC rootfs on lvmthin has no discard option; without this, deleted files
+# keep their thin blocks forever (CT101 sat at 95% thin with a 59% filesystem).
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c "for id in $$(pct list | awk \x27NR>1 && $$2==\"running\" {print $$1}\x27); do pct fstrim $$id; done"

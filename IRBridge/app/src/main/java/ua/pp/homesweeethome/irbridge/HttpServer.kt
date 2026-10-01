@@ -73,12 +73,22 @@ class HttpServer(
      * [BridgeService] catch it and put the reason in the notification.
      */
     fun start(): Int {
+        // Idempotent. A second start used to bind again, fail with
+        // BindException because the first engine holds the port, and the
+        // service's error path then stopped the WORKING server along with it.
+        if (engine != null) return boundPort
         val port = prefs.port
         engine = engineScope.embeddedServer(CIO, port = port, host = "0.0.0.0") { module() }
             .also { it.start(wait = false) }
+        boundPort = port
         log.info("http server listening on 0.0.0.0:$port")
         return port
     }
+
+    val isRunning: Boolean get() = engine != null
+
+    /** The port the running engine is bound to; prefs.port may have moved since. */
+    private var boundPort: Int = 0
 
     /**
      * Short grace period on purpose: this is called from `onDestroy` on the

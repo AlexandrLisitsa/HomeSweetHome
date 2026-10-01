@@ -18,8 +18,14 @@ router. (Private access for the household goes through
 
 ## Things to know
 
-- Anything published through the tunnel is on the internet. Home Assistant's log
-  shows scanners probing it with invalid credentials; keep strong passwords and
-  multi-factor login on every Home Assistant user.
+- The tunnel publishes exactly two hostnames, both to Home Assistant: the main
+  one, behind Cloudflare Access with Google login, and a Google-only one that a
+  WAF rule limits to Google Home's two machine calls. Anything else gets the
+  tunnel's 404. The design, and how each request is accepted or denied, is in
+  [`../../HomeAssistant/docs/remote-access-security.md`](../../HomeAssistant/docs/remote-access-security.md).
+- Home Assistant trusts this container, and only it, as a reverse proxy, so it
+  logs and bans the real client address. If the container's address changes,
+  update `trusted_proxies` in HA (Settings → System → Network) or every
+  request through the tunnel is refused.
 - The tunnel token is the credential. It lives only in the service's unit on the
   container and is never committed.

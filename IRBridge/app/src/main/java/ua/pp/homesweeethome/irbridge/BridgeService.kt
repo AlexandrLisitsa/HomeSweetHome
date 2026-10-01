@@ -44,6 +44,7 @@ class BridgeService : LifecycleService() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
+    private var wifiLowLatencyLock: WifiManager.WifiLock? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -67,6 +68,17 @@ class BridgeService : LifecycleService() {
         if (intent?.action == ACTION_STOP) {
             stopSelf()
             return START_NOT_STICKY
+        }
+
+        // Already serving: a second start command is not an error. Some OEM
+        // ROMs deliver both BOOT_COMPLETED and QUICKBOOT_POWERON on one boot,
+        // and a double tap on Start sends two. Binding again failed, and the
+        // failure path below called stopSelf() -- whose onDestroy stopped the
+        // server that was running fine. The phone came back from a power cut
+        // with the bridge off.
+        if (server.isRunning) {
+            log.info("start requested while running; ignoring")
+            return START_STICKY
         }
 
         val port = runCatching { server.start() }.getOrElse {
@@ -105,15 +117,27 @@ class BridgeService : LifecycleService() {
             acquire()
         }
         val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            WifiManager.WIFI_MODE_FULL_LOW_LATENCY
-        } else {
+        // HIGH_PERF is the one that keeps the radio out of power save with the
+        // screen OFF, which is this phone's whole life. It still works up to
+        // Android 13 and is only non-functional from 14 (API 34). LOW_LATENCY
+        // -- what this used to pick on Android 10 -- is documented as active
+        // only while the app is in the foreground AND the screen is on, so
+        // screen-off it did nothing: the "stops answering after an hour"
+        // symptom this lock exists to prevent. Hold both where both exist.
+        if (Build.VERSION.SDK_INT < 34) {
             @Suppress("DEPRECATION")
-            WifiManager.WIFI_MODE_FULL_HIGH_PERF
+            wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "irbridge:wifi").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
         }
-        wifiLock = wm.createWifiLock(mode, "irbridge:wifi").apply {
-            setReferenceCounted(false)
-            acquire()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            wifiLowLatencyLock = wm.createWifiLock(
+                WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "irbridge:wifi-ll"
+            ).apply {
+                setReferenceCounted(false)
+                acquire()
+            }
         }
         log.info("wake + wifi locks held")
     }
@@ -121,8 +145,10 @@ class BridgeService : LifecycleService() {
     private fun releaseLocks() {
         runCatching { wakeLock?.takeIf { it.isHeld }?.release() }
         runCatching { wifiLock?.takeIf { it.isHeld }?.release() }
+        runCatching { wifiLowLatencyLock?.takeIf { it.isHeld }?.release() }
         wakeLock = null
         wifiLock = null
+        wifiLowLatencyLock = null
     }
 
     // ------------------------------------------------------------ notification

@@ -103,6 +103,18 @@ command_line:
         - outage_reason
         - outage_start
         - outage_end
+        # DTEK's strings verbatim, beside the parsed ones above. On 29.09.2026
+        # the parsed pair came out null for three hours because DTEK writes
+        # the time first; with these the card shows the text regardless.
+        - outage_start_raw
+        - outage_end_raw
+        # Sentences naming anything in the answer the poller could not read:
+        # an unparsable date, a new outage type, a new field. Empty normally.
+        - warnings
+        # Houses on the street with an outage record, and houses listed. 1 of
+        # 288 on 29.09.2026: this building, not the line.
+        - street_outages
+        - street_houses
         - schedule_in_effect
         - schedule_update
         - now_state
@@ -197,6 +209,20 @@ template:
         attributes:
           error: "{{ state_attr('sensor.dtek_shutdowns', 'error') }}"
           last_poll: "{{ state_attr('sensor.dtek_shutdowns', 'fetched_at') }}"
+
+      # DTEK sent something the poller could not fully read. Everything else
+      # keeps publishing -- the raw strings included -- so this is the only
+      # place a changed format shows up before it costs an alert.
+      - name: "DTEK format drift"
+        unique_id: dtek_format_drift
+        device_class: problem
+        icon: mdi:file-question-outline
+        availability: >-
+          {{ states('sensor.dtek_shutdowns') not in ['unknown', 'unavailable'] }}
+        state: >-
+          {{ (state_attr('sensor.dtek_shutdowns', 'warnings') or []) | length > 0 }}
+        attributes:
+          warnings: "{{ state_attr('sensor.dtek_shutdowns', 'warnings') or [] }}"
 
       # Is the schedule saying the power should be off during THIS half hour.
       #
@@ -331,6 +357,11 @@ automation:
   # next_outage_start/_end derive from `fact`, which has been empty since
   # 24.07.2026, so the sensors read unknown and the triggers stay false. They
   # start working by themselves on the day the schedules return.
+  #
+  # The second pair below is not schedule-shaped and is never dormant: it
+  # follows the outage DTEK records against this address -- the yellow box on
+  # its site -- and shares the same two channels, so the design stays two
+  # knobs on the phone, one per edge.
 
   # Fifteen minutes of warning before a scheduled window.
   #
@@ -428,4 +459,175 @@ automation:
       - service: notify.persistent_notification
         data:
           title: '✅ Alert: Scheduled outage ends in 15 min'
+          message: "{{ message }}"
+
+  # DTEK has recorded an outage against this address -- an emergency repair,
+  # a planned one, anything that puts the yellow "no electricity at your
+  # address right now" box on its site. First seen on 29.09.2026, when this
+  # package knew about it for three hours and told nobody.
+  #
+  # Driven by the STATUS of sensor.dtek_shutdowns, the poller's own verdict:
+  # ok -> outage_emergency, ok -> outage_planned, and planned <-> emergency
+  # when DTEK reclassifies one mid-way. Every change into an outage status is
+  # a message.
+  #
+  # `stale` and `error` are not statuses of the grid, they are the poller
+  # failing, and a failed poll keeps the last good attributes. So the status
+  # a change is measured FROM is the last real one: for a stale state it is
+  # rebuilt out of outage_active/outage_type exactly as status_for() does in
+  # dtek_poll.py. Without that, one failed poll in the middle of an outage
+  # would announce the same outage twice, and one just before it would hide
+  # it. unknown/unavailable (a restart) have no attributes and never fire.
+  #
+  # The second trigger is DTEK moving its restore estimate while the status
+  # holds, which it does routinely. Same `tag` throughout, so a revised
+  # estimate replaces the earlier notification rather than stacking under it.
+  - id: dtek_outage_reported
+    alias: '⚠️ Alert: DTEK reports an outage'
+    mode: queued
+    trigger:
+      - platform: state
+        entity_id: sensor.dtek_shutdowns
+        id: status
+      - platform: state
+        entity_id: sensor.dtek_shutdowns
+        attribute: outage_end
+        id: revised
+    condition:
+      - condition: template
+        value_template: >-
+          {% set outages = ['outage', 'outage_planned', 'outage_emergency'] %}
+          {% set f = trigger.from_state %}
+          {% set t = trigger.to_state.state if trigger.to_state else none %}
+          {% if trigger.id == 'revised' %}
+            {{ t in outages and f is not none and f.state == t
+               and f.attributes.get('outage_end') is not none
+               and trigger.to_state.attributes.get('outage_end') is not none }}
+          {% else %}
+            {% set fa = f.attributes.get('outage_active') if f else none %}
+            {% set was = f.state if f and f.state in ['ok'] + outages
+                  else none if fa is none
+                  else 'ok' if not fa
+                  else {'1': 'outage_planned', '2': 'outage_emergency'}.get(f.attributes.get('outage_type') | string, 'outage') %}
+            {{ t in outages and was is not none and was != t }}
+          {% endif %}
+    action:
+      - variables:
+          title: >-
+            {% if trigger.id == 'revised' %}⚠️ DTEK: restore time revised{% else %}⚠️ Alert: {{ {'outage_emergency': 'DTEK emergency outage', 'outage_planned': 'DTEK planned outage'}.get(trigger.to_state.state, 'DTEK reports an outage') }}{% endif %}
+          reason_line: >-
+            {{ state_attr('sensor.dtek_shutdowns', 'outage_reason') or 'Outage' }}
+          window_line: >-
+            {% set a = state_attr('sensor.dtek_shutdowns', 'outage_start') %}
+            {% set b = state_attr('sensor.dtek_shutdowns', 'outage_end') %}
+            {% set bits = [] %}
+            {% if a %}{% set bits = bits + ['off since ' ~ (as_datetime(a) | as_local | as_timestamp | timestamp_custom('%H:%M'))] %}{% endif %}
+            {% if b %}{% set bits = bits + ['expected back by ' ~ (as_datetime(b) | as_local | as_timestamp | timestamp_custom('%H:%M'))] %}{% endif %}
+            {{ bits | join(', ') }}
+          # This building, or the line? The answer lists the whole street.
+          scope_line: >-
+            {% set n = state_attr('sensor.dtek_shutdowns', 'street_outages') %}
+            {% set of = state_attr('sensor.dtek_shutdowns', 'street_houses') %}
+            {% if n is number and of is number and n > 0 %}{% if n == 1 %}Only this building on the street.{% else %}{{ n }} of {{ of }} houses on the street.{% endif %}{% endif %}
+          # The claim against the measurement, the whole point of this package.
+          # on = UNSAFE -- see the POLARITY WARNING above.
+          grid_line: >-
+            {% if is_state('binary_sensor.powmr_inverter_grid_condition_safe', 'on') %}The inverter sees no mains.{% else %}The inverter still sees mains.{% endif %}
+          battery_line: >-
+            {% set r = states('sensor.battery_runtime_remaining') %}
+            {% set s = states('sensor.jkbms_gateway_bms_state_of_charge') %}
+            {% if r | is_number and s | is_number %}Battery {{ s | float | round(0) }}%, about {{ r | float | round(1) }} h left at the current draw.{% elif s | is_number %}Battery {{ s | float | round(0) }}%.{% endif %}
+          message: >-
+            {{ reason_line }}, queue {{ states('sensor.dtek_queue') }}{% if window_line %}: {{ window_line }}{% endif %}. {% if scope_line %}{{ scope_line }} {% endif %}{{ grid_line }} {{ battery_line }}
+      - service: notify.household
+        data:
+          title: "{{ title }}"
+          message: "{{ message }}"
+          data:
+            ttl: 0
+            priority: high
+            channel: DTEK emergency starts
+            tag: dtek_outage
+      - service: notify.persistent_notification
+        data:
+          title: "{{ title }}"
+          message: "{{ message }}"
+
+  # DTEK has cleared the outage record: the status goes from an outage back to
+  # ok. Same tag, so it replaces the warning instead of leaving it on the lock
+  # screen after the fact. Measured from the last real status for the same
+  # reason as above, so outage -> stale -> ok still clears.
+  - id: dtek_outage_cleared
+    alias: '✅ Alert: DTEK outage cleared'
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: sensor.dtek_shutdowns
+        to: 'ok'
+    condition:
+      - condition: template
+        value_template: >-
+          {% set f = trigger.from_state %}
+          {{ f is not none and (f.state in ['outage', 'outage_planned', 'outage_emergency']
+             or (f.state in ['stale', 'error'] and f.attributes.get('outage_active') is true)) }}
+    action:
+      - variables:
+          grid_line: >-
+            {% if is_state('binary_sensor.powmr_inverter_grid_condition_safe', 'on') %}The inverter still sees no mains.{% else %}The inverter sees mains.{% endif %}
+          message: >-
+            DTEK no longer reports an outage for queue {{ states('sensor.dtek_queue') }}. {{ grid_line }}
+      - service: notify.household
+        data:
+          title: '✅ Alert: DTEK outage cleared'
+          message: "{{ message }}"
+          data:
+            ttl: 0
+            priority: high
+            channel: DTEK emergency ends
+            tag: dtek_outage
+      - service: notify.persistent_notification
+        data:
+          title: '✅ Alert: DTEK outage cleared'
+          message: "{{ message }}"
+
+  # DTEK's restore estimate has passed and the outage is still on record.
+  # Estimates are routinely optimistic, and the silence after one lapses reads
+  # exactly like "it is fixed and nobody said". One push per estimate: the
+  # template trigger fires on false -> true, and a revised outage_end drops it
+  # back to false, which re-arms it for the new time.
+  #
+  # outage_active rather than the status, so a failed poll (status `stale`,
+  # attributes kept) does not flap it false and push the same lapse twice.
+  - id: dtek_outage_overdue
+    alias: '⚠️ Alert: DTEK estimate passed'
+    mode: single
+    trigger:
+      - platform: template
+        value_template: >-
+          {% set e = state_attr('sensor.dtek_shutdowns', 'outage_end') %}
+          {% set d = as_datetime(e) if e else none %}
+          {{ state_attr('sensor.dtek_shutdowns', 'outage_active') == true
+             and d is not none and d < now() }}
+    action:
+      - variables:
+          end_line: >-
+            {{ as_datetime(state_attr('sensor.dtek_shutdowns', 'outage_end')) | as_local | as_timestamp | timestamp_custom('%H:%M') }}
+          reason_line: >-
+            {{ state_attr('sensor.dtek_shutdowns', 'outage_reason') or 'Outage' }}
+          grid_line: >-
+            {% if is_state('binary_sensor.powmr_inverter_grid_condition_safe', 'on') %}The inverter sees no mains.{% else %}The inverter still sees mains.{% endif %}
+          message: >-
+            DTEK's {{ end_line }} estimate has passed and the outage is still on record ({{ reason_line }}, queue {{ states('sensor.dtek_queue') }}). {{ grid_line }}
+      - service: notify.household
+        data:
+          title: '⚠️ Alert: DTEK estimate passed'
+          message: "{{ message }}"
+          data:
+            ttl: 0
+            priority: high
+            channel: DTEK emergency starts
+            tag: dtek_outage
+      - service: notify.persistent_notification
+        data:
+          title: '⚠️ Alert: DTEK estimate passed'
           message: "{{ message }}"
