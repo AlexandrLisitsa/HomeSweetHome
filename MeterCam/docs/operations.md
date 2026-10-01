@@ -29,9 +29,24 @@ was rolling, or two frames that disagreed, costs half an hour, and the next
 accepted reading includes the gas. A run of refusals with the same reason is
 worth a look.
 
+## The last picture, and the archive
+
+From a browser or curl on the LAN (add `?token=…` once auth is on):
+
+```sh
+curl -o last.jpg  'http://<metercam-ip>:8770/last.jpg'           # the newest frame
+curl -s           'http://<metercam-ip>:8770/archive/days'       # what is stored, per day, with sizes
+curl -O -J        'http://<metercam-ip>:8770/archive?days=3'     # today and the two days before, as a zip
+```
+
+The zip holds the frames with their `.json` (and `.txt` for refusals), under
+the same `gas/raw|rejected/<date>/` paths as on disk. It is streamed, so the
+browser's progress bar spins rather than fills.
+
 ## Why was a reading refused?
 
-Every refused read is kept:
+Every read is kept: accepted ones under `raw/` for 7 days, refused ones under
+`rejected/` for 90:
 
 ```
 data/images/gas/rejected/2026-10-02/2026-10-02-00-42-none.jpg     the frame, as the camera sent it
@@ -68,9 +83,9 @@ The reference and the ROIs are redone **together**:
 
 1. Back up: `cp -p data/ref/gas.jpg data/ref/gas-<date>.jpg` and
    `cp -p config.json config.json.bak-<date>`.
-2. Take a sharp frame from the camera's new position: the newest refused frame
-   in `data/images/gas/rejected/` will do once the camera is settled. Copy it to
-   `data/ref/gas.jpg`.
+2. Take a sharp frame from the camera's new position: `data/images/gas/last.jpg`
+   will do once the camera is settled (check it via `/last.jpg` first). Copy it
+   to `data/ref/gas.jpg`.
 3. Place one ROI per drum on that frame, left to right: seven boxes of about
    140×210 px, each centred on its digit with a little margin. Write them into
    `meters.gas.rois` in `config.json`.
@@ -93,5 +108,5 @@ statistics, because retyping does not fix them:
   the hour it happened.
 - **A drop of more than 10%** is booked as a meter reset: Adjust sum as above.
 
-Then find out why: the frames are in `rejected/` only if they were refused, so
-re-read the next wakes' frames as above.
+Then find out why: the accepted frame is in `raw/<date>/`, named for the value
+it published, with the whole answer beside it.

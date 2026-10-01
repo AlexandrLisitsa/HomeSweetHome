@@ -33,7 +33,8 @@ ESP32-CAM (deep sleep)                  MeterCam, LXC 104 :8770              Hom
 3. **The gate decides.** The reading has to be plausible against the previous
    one: no decrease, no impossible jump, confident digits. Only then does
    MeterCam write it to Home Assistant. A refused reading writes nothing, and
-   its frames are kept with the reason beside them.
+   its frames are kept with the reason beside them. Every frame is archived;
+   the newest one is at `/last.jpg`, and `/archive` downloads the lot.
 4. **Every answer carries the newest firmware version.** If it is higher than
    the board's own, the board updates itself before going back to sleep.
 
@@ -67,7 +68,7 @@ drum. Optical reading depends on nothing hidden inside the meter.
 | --- | --- |
 | `service/digits.py` | The carry rule, the agreement check and the gate. Stdlib only, so the tests that guard the irreversible failures run anywhere |
 | `service/reader.py` | Decode, orient, align, crop, infer, assemble |
-| `service/app.py` | `POST /read`, `/health`, `/firmware/*`; the Home Assistant prevalue fetch and write |
+| `service/app.py` | `POST /read`, `/last.jpg`, `/archive`, `/firmware/*`, `/health`; the Home Assistant prevalue fetch and write |
 | `service/config.example.json` | Template for the box's `config.json`, with the reasoning for each setting |
 | `tests/test_reader.py` | Plain asserts, no pytest |
 | `models/fetch.sh` | Downloads the weights. Not committed: no stated licence upstream |
