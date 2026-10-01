@@ -21,7 +21,7 @@ Assistant as a VM, and the network services as LXC containers.
 | 101 | LXC | `adguard` | 1 | 512 MB | 2 GB | [AdGuard Home](101-adguard.md) |
 | 102 | LXC | `tailscale` | 1 | 512 MB | 2 GB | [Tailscale](102-tailscale.md) |
 | 103 | LXC | `cloudflare` | 1 | 512 MB | 2 GB | [Cloudflare Tunnel](103-cloudflare.md) |
-| 104 | LXC | `metercam` | 2 | 1 GB | 8 GB | MeterCam: the gas-meter camera service, in Docker (on the `metercam` branch) |
+| 104 | LXC | `metercam` | 2 | 1 GB | 8 GB | [MeterCam](104-metercam.md) |
 
 All of them start with the host (`onboot=1`). Every guest runs Debian or, for the
 VM, Home Assistant OS; 100 and 101 were created with the
@@ -45,7 +45,8 @@ memory on the host first.
 ## Access
 
 Read-only through the API token (`tools/pve_get.sh`), and SSH as root for
-administration, as described in the [README](../README.md#access). Installed on
+administration, as described in the [README](../README.md#access). MeterCam's
+deployment goes over the same [SSH write path](ssh-write-path.md). Installed on
 the host from this repository: the backup hook ([backups.md](backups.md)) and
 the weekly `pct fstrim` timer ([maintenance.md](maintenance.md)).
 

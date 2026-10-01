@@ -35,8 +35,14 @@ flowchart LR
 | [`FloorPlan/`](FloorPlan/README.md) | Tooling that renders a Sweet Home 3D model from above and turns it into the isometric **Home** dashboard, where each lamp lights its own room. |
 | [`Proxmox/`](Proxmox/README.md) | The host and its guests, one doc each; read-only Proxmox API scripts that measure the Home Assistant guest's resource history; and the backup setup that keeps every guest and HA's backups on the host and, encrypted, on Google Drive ([`Proxmox/docs/backups.md`](Proxmox/docs/backups.md)). |
 
-Two projects that are not finished yet live on branches of their own until they
-are:
+**This is the `metercam` branch**: `master` plus the MeterCam project, which
+feeds the Energy dashboard's gas tab and is not merged into `master` yet:
+
+| Module | What it is |
+| --- | --- |
+| [`MeterCam/`](MeterCam/README.md) | An ESP32-CAM that wakes every 30 minutes to photograph the gas meter's dial, and a service in a Proxmox LXC that reads the digits and hands Home Assistant a reading only when it can stand behind it. |
+
+Unfinished projects live on branches of their own until they are:
 
 - [`metercam`](../../tree/metercam): **MeterCam**, a camera that reads the gas
   meter's dial for Home Assistant.

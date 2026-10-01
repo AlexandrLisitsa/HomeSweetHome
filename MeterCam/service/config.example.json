@@ -1,0 +1,126 @@
+{
+  "_comment": [
+    "Template for config.json, which lives in the LXC next to docker-compose.yml",
+    "and is never in git. It is mounted read-only; after an edit, recreate the",
+    "container (docker compose up -d --force-recreate), because a single-file",
+    "bind mount keeps the old file's inode when an editor replaces it.",
+    "",
+    "rois and align.reference are ONE MATCHED PAIR: every ROI is a pixel",
+    "rectangle in the reference frame. Move the camera and both are redone",
+    "together -- see docs/operations.md."
+  ],
+  "meters": {
+    "gas": {
+      "_comment": [
+        "Itron Gallus 2000 G4. 8 drums behind glass: five black (whole m3), three",
+        "red (0.001 m3). WHITE DIGITS ON DARK DRUMS, the opposite of most meters",
+        "the networks were trained on; inverting them was measured and changed",
+        "nothing, so it is not the thing to reach for first.",
+        "",
+        "The camera frames seven drums -- 0 2 2 6 1 | 7 2 -- and the 0.001 drum",
+        "is out of shot, so the meter is read as seven drums with two decimals."
+      ],
+      "transform": {
+        "flip": "none",
+        "rotate": 0,
+        "deskew": 0.0,
+        "_comment": [
+          "Applied to every frame first. flip: none | horizontal | vertical |",
+          "both; rotate: 0 | 90 | 180 | 270 clockwise; deskew: fine levelling",
+          "in degrees, positive counter-clockwise. A tilted row cannot be fitted",
+          "by axis-aligned boxes, and the model reads a digit's height in its",
+          "box as PHASE -- level the row here before placing ROIs."
+        ]
+      },
+      "align": {
+        "enabled": true,
+        "reference": "/data/ref/gas.jpg",
+        "min_matches": 12,
+        "min_inliers": 60,
+        "min_inlier_ratio": 0.35,
+        "max_shift_px": 300,
+        "max_rotation_deg": 10,
+        "on_failure": "reject",
+        "_comment": [
+          "ORB matches every frame against the reference and warps it back onto",
+          "it, so a nudged bracket costs nothing. The min_*/max_* bars are",
+          "digits.align_gate(): a transform that exists is not one that can be",
+          "trusted. A missing reference or a failed alignment REJECTS the read --",
+          "fixed rectangles over an uncorrected frame give a confident wrong",
+          "number, which is worse than none."
+        ]
+      },
+      "model": "/models/dig-class100-0180-s2-q.tflite",
+      "decimals": 2,
+      "report_decimals": 2,
+      "counter_type": "jump",
+      "round_last_drum_down": true,
+      "_comment_reading": [
+        "counter_type jump: each whole-number drum snaps forward when the drum",
+        "to its right completes a turn, so every drum is rounded on its own.",
+        "The wrong value corrupts digits the model read correctly.",
+        "",
+        "report_decimals 2: do not coarsen this. max_delta must exceed the",
+        "meter's 0.5 m3 per 5 min plus one published step; at whole m3 a",
+        "misread units drum (+1 m3) would sit inside the allowance.",
+        "",
+        "round_last_drum_down: a last drum caught mid-roll publishes the digit",
+        "LEAVING the window, from 0.7 of the way through; never across 9 -> 0."
+      ],
+      "rois": [
+        {"x": 0,    "y": 460, "w": 140, "h": 210},
+        {"x": 230,  "y": 460, "w": 140, "h": 210},
+        {"x": 473,  "y": 460, "w": 140, "h": 210},
+        {"x": 716,  "y": 460, "w": 140, "h": 210},
+        {"x": 959,  "y": 460, "w": 140, "h": 210},
+        {"x": 1202, "y": 460, "w": 140, "h": 210},
+        {"x": 1445, "y": 460, "w": 140, "h": 210}
+      ],
+      "gate": {
+        "max_delta": 0.6,
+        "max_delta_window_s": 300,
+        "tolerance_down": 0.0,
+        "min_confidence": 0.5,
+        "min_confidence_last_digit": 0.3,
+        "require_prevalue": true,
+        "_comment": [
+          "max_delta 0.6 m3 per 300 s, scaled by the time since the last",
+          "accepted read: a G4 at its rated maximum only reaches 0.5. It is",
+          "there to catch a misread digit, not to police the boiler.",
+          "",
+          "tolerance_down 0.0: the Energy sensor is total_increasing, and a",
+          "decrease of more than 10% is taken as a meter reset that retyping",
+          "does not undo. Never accept one.",
+          "",
+          "min_confidence skips the last drum by position; on seven drums that",
+          "is the published 0.01 drum, so it gets its own floor."
+        ]
+      },
+      "confirm": {
+        "samples": 2,
+        "max_last_digit_step": 1,
+        "_comment": [
+          "The frames of one wake must agree. The camera sends two; one frame",
+          "alone is refused."
+        ]
+      },
+      "home_assistant": {
+        "url": "http://192.0.2.3:8123",
+        "prevalue_entity": "input_number.gas_meter_camera_reading",
+        "write_entity": "input_number.gas_meter_camera_reading",
+        "write": true,
+        "prevalue_fallback": "last_accepted",
+        "_comment": [
+          "The token is METERCAM_HA_TOKEN in .env, never here.",
+          "",
+          "An accepted reading is written to the camera's own helper;",
+          "sensor.gas_meter_reading (the Energy dashboard's gas source) takes the",
+          "higher of that and the hand-typed helper -- see",
+          "HomeAssistant/config/packages/gas_meter.yaml. The prevalue is the same",
+          "helper; while it is 0 (just created) or Home Assistant is restarting,",
+          "the service's own last accepted reading stands in."
+        ]
+      }
+    }
+  }
+}
