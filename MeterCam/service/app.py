@@ -29,7 +29,9 @@ Auth
 That is a LAN service with no TLS either way; the token stops a stray script
 on the network, not a determined attacker.
 
-If METERCAM_TOKEN is unset, auth is OFF and `/health` says so out loud.
+If METERCAM_TOKEN is unset, auth is OFF and `/health` says so out loud. With
+it off, `/last.jpg` and `/archive` hand photographs of the house to anything on
+the LAN that asks.
 """
 
 from __future__ import annotations
@@ -41,6 +43,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import zipfile
 
 from flask import Flask, Response, jsonify, request, send_file
 
@@ -196,24 +199,24 @@ def last_accepted_record(name):
 
 
 def archive(meter_name, meter, result):
-    """Keep a refused read's frames, foldered by date and named for the value.
+    """Keep the frame of every read, foldered by date and named for the value.
 
-        gas/rejected/2026-10-02/2026-10-02-00-42-none.jpg
+        gas/raw/2026-10-02/2026-10-02-01-42-2261.72.jpg        accepted
+        gas/rejected/2026-10-02/2026-10-02-00-42-none.jpg      refused
 
-    A reading that failed the gate is the only evidence of why, and by the
-    time anyone looks the meter has moved on. Accepted reads are not kept: the
-    number is in Home Assistant, and the frame adds nothing to it.
+    A refused frame is the only evidence of why, and by the time anyone looks
+    the meter has moved on; an accepted one is how a published number is
+    checked against the dial afterwards. Beside each, the whole answer as
+    .json; a refused one also gets its reason as .txt, and when the frames of
+    a wake disagreed every one of them is kept (~sN.jpg).
 
-    Beside each frame, the whole answer as .json and the reason as .txt. When
-    the frames of a wake disagreed, every one of them is kept (~sN.jpg), since
-    which sample differed is the question.
-
-    Pruned by the LXC's metercam-prune timer (deploy/lxc_provision.sh).
+    raw/ and rejected/ sit ABOVE the date folder because they carry different
+    retention -- 7 days against 90 -- and metercam-prune selects on
+    `*/raw/*` (deploy/lxc_provision.sh).
     """
-    if result.get("accepted"):
-        return None
     now = time.localtime()
-    directory = IMAGE_DIR / meter_name / "rejected" / time.strftime("%Y-%m-%d", now)
+    sub = "raw" if result.get("accepted") else "rejected"
+    directory = IMAGE_DIR / meter_name / sub / time.strftime("%Y-%m-%d", now)
 
     value = result.get("value")
     # reported_decimals, not the dial's own: the name is the number that would
@@ -242,15 +245,36 @@ def archive(meter_name, meter, result):
                     fh.write(reader.to_jpeg(extra))
             except OSError:
                 break
-        with open(path.with_suffix(".txt"), "w", encoding="utf-8") as fh:
-            fh.write("%s\nvalue=%s prevalue=%s\n"
-                     % (result.get("reason"), result.get("value"),
-                        result.get("prevalue")))
+        if not result.get("accepted"):
+            with open(path.with_suffix(".txt"), "w", encoding="utf-8") as fh:
+                fh.write("%s\nvalue=%s prevalue=%s\n"
+                         % (result.get("reason"), result.get("value"),
+                            result.get("prevalue")))
         with open(path.with_suffix(".json"), "w", encoding="utf-8") as fh:
             json.dump(strip(result), fh, indent=1, default=str)
     except OSError:
         return None  # a full disk must not break the reading
     return str(path)
+
+
+def remember(meter_name, result):
+    """The newest frame, as /last.jpg serves it: the camera's own bytes.
+
+    Replaced atomically: someone may be fetching it while the next read
+    writes it, and half a JPEG is not an error anyone enjoys diagnosing.
+    """
+    blob = result.get("_jpeg")
+    if not blob:
+        return
+    try:
+        directory = IMAGE_DIR / meter_name
+        directory.mkdir(parents=True, exist_ok=True)
+        tmp = directory / "last.jpg.part"
+        with open(tmp, "wb") as fh:
+            fh.write(blob)
+        os.replace(tmp, directory / "last.jpg")
+    except OSError:
+        pass  # a full disk must not break the reading
 
 
 def strip(result):
@@ -356,6 +380,7 @@ def do_read():
             result["prevalue_from"] = prevalue_from
             result["firmware_running"] = fw
             stored = archive(name, meter, result)
+            remember(name, result)
             if result.get("accepted") and result.get("value") is not None:
                 last_accepted(name, result["value"])
         _LAST_READ[name] = time.time()
@@ -393,6 +418,18 @@ def do_read():
         else (" publish failed: %s" % payload["publish_error"])
         if payload.get("publish_error") else ""), flush=True)
     return jsonify(payload)
+
+
+@APP.route("/last.jpg")
+def last_jpg():
+    """The frame behind the last answer, exactly as the camera sent it."""
+    if not authorised():
+        return deny()
+    name = request.args.get("meter", "gas")
+    path = IMAGE_DIR / name / "last.jpg"
+    if not path.is_file():
+        return jsonify({"error": "nothing read yet for %r" % name}), 404
+    return send_file(str(path), mimetype="image/jpeg", max_age=0)
 
 
 # ---------------------------------------------------------------------------
@@ -437,6 +474,208 @@ def firmware_binary(name):
     print("firmware %s served" % name, flush=True)
     return send_file(str(path), mimetype="application/octet-stream",
                      as_attachment=True, download_name=name)
+
+
+# ---------------------------------------------------------------------------
+# The archive, for taking frames off the box
+# ---------------------------------------------------------------------------
+
+_DAY_FMT = "%Y-%m-%d"
+
+
+class _Sink:
+    """A write-only file object that hands its bytes straight to a generator.
+
+    zipfile needs somewhere to write; Flask needs something to yield. This is
+    the join between them, and it is the whole reason no temp file appears
+    anywhere below. Python 3.7+ zipfile copes with a non-seekable stream by
+    emitting data descriptors instead of seeking back to patch headers, so it
+    never asks for anything this cannot do.
+    """
+
+    def __init__(self):
+        self._buf = bytearray()
+        self._written = 0
+
+    def write(self, data):
+        self._buf += data
+        self._written += len(data)
+        return len(data)
+
+    def tell(self):
+        return self._written
+
+    def flush(self):
+        pass
+
+    def take(self):
+        out = bytes(self._buf)
+        del self._buf[:]
+        return out
+
+
+def _archive_day(path, rel):
+    """The day a stored file belongs to.
+
+    Normally the date directory, which archive() writes and is the cheapest and
+    most honest source. Frames written before that layout existed sit directly
+    under raw/ with no date folder, so fall back to mtime rather than skipping
+    them: a download called "all" that quietly omits files is worse than one
+    that dates a handful of old frames from the filesystem.
+    """
+    for part in rel.parts:
+        try:
+            time.strptime(part, _DAY_FMT)
+            return part
+        except ValueError:
+            continue
+    return time.strftime(_DAY_FMT, time.localtime(path.stat().st_mtime))
+
+
+def _days_between(day, today):
+    a = time.mktime(time.strptime(day, _DAY_FMT))
+    b = time.mktime(time.strptime(today, _DAY_FMT))
+    return int(round((b - a) / 86400.0))
+
+
+def _archive_walk(meter=None, days=None):
+    """Yield (relative path, absolute path, day) for every archived file.
+
+    The .txt sidecars come too. They carry the rejection reason, which is the
+    thing that makes a rejected frame worth keeping at all -- a download
+    without them is a download of unexplained pictures.
+
+    `days` counts CALENDAR days back from today, so days=1 is today and days=3
+    is today plus the two before it. Someone asking for three days means three
+    dated folders, not a rolling 72 hours that slices the earliest one in half.
+    """
+    if not IMAGE_DIR.is_dir():
+        return
+    cutoff = None
+    if days is not None and days > 0:
+        cutoff = time.strftime(_DAY_FMT,
+                               time.localtime(time.time() - (days - 1) * 86400))
+    for path in sorted(IMAGE_DIR.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(IMAGE_DIR)
+        if meter and rel.parts[0] != meter:
+            continue
+        day = _archive_day(path, rel)
+        # ISO dates sort lexicographically, which is the entire reason the
+        # folders are named this way.
+        if cutoff is not None and day < cutoff:
+            continue
+        yield rel, path, day
+
+
+@APP.route("/archive/days")
+def archive_days():
+    """What is on disk, newest first, and how far back each day sits.
+
+    This exists to be read BEFORE /archive. The archive is capped at 1 GB, and
+    the byte counts here are what stop a full download being a surprise.
+    """
+    if not authorised():
+        return deny()
+
+    meter = request.args.get("meter")
+    days = request.args.get("days", type=int)
+
+    today = time.strftime(_DAY_FMT)
+    buckets = {}
+    for rel, path, day in _archive_walk(meter, days):
+        bucket = buckets.setdefault(day, {
+            "day": day, "frames": 0, "bytes": 0, "meters": {},
+        })
+        parts = rel.parts
+        name = parts[0] if len(parts) > 1 else "?"
+        klass = parts[1] if len(parts) > 2 else "?"
+        try:
+            bucket["bytes"] += path.stat().st_size
+        except OSError:
+            continue
+        if path.suffix == ".jpg":
+            bucket["frames"] += 1
+            counts = bucket["meters"].setdefault(name, {})
+            counts[klass] = counts.get(klass, 0) + 1
+
+    out = []
+    for day in sorted(buckets, reverse=True):
+        bucket = buckets[day]
+        bucket["age_days"] = _days_between(day, today)
+        out.append(bucket)
+
+    return jsonify({
+        "now": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "days": out,
+        "total": {
+            "frames": sum(d["frames"] for d in out),
+            "bytes": sum(d["bytes"] for d in out),
+        },
+    })
+
+
+@APP.route("/archive")
+def archive_download():
+    """Every stored frame as one zip, streamed.
+
+    Streamed rather than assembled. The archive may hold up to 1 GB
+    (MAX_ARCHIVE_MB) and this container has 1 GB of RAM, so building
+    the zip anywhere -- memory or a temp file -- is the one implementation that
+    cannot work here.
+
+    ZIP_STORED because JPEGs are already compressed. Deflating them again costs
+    the whole archive's worth of CPU on a 1.5 GHz Celeron with no AVX and saves
+    a percent or two, and a read may fall due while this is still running.
+
+    No Content-Length: knowing it means walking and sizing the tree before
+    sending a byte, and the cost of not knowing is a browser progress bar that
+    spins instead of filling. /archive/days answers "how big is this" first,
+    which is the better place for that question.
+
+        GET /archive                      everything
+        GET /archive?days=3               today and the two before it
+        GET /archive?meter=gas&days=1     one meter, today
+    """
+    if not authorised():
+        return deny()
+
+    meter = request.args.get("meter")
+    days = request.args.get("days", type=int)
+
+    # Materialised before streaming starts, so the prune timer firing mid
+    # download cannot make the generator disagree with itself. Paths only --
+    # a week of frames is a few thousand strings.
+    files = list(_archive_walk(meter, days))
+
+    name = "metercam-%s%s%s.zip" % (
+        (meter + "-") if meter else "",
+        ("last%dd-" % days) if days else "",
+        time.strftime("%Y%m%d-%H%M%S"),
+    )
+
+    def generate():
+        sink = _Sink()
+        with zipfile.ZipFile(sink, "w", zipfile.ZIP_STORED) as zf:
+            for rel, path, _day in files:
+                try:
+                    zf.write(str(path), arcname=rel.as_posix())
+                except OSError:
+                    # Pruned between listing and writing, or unreadable. The
+                    # rest of the archive is still worth having.
+                    continue
+                chunk = sink.take()
+                if chunk:
+                    yield chunk
+        yield sink.take()
+
+    # json.dumps quotes and escapes the filename for the header, which beats
+    # hand-quoting it -- the name carries a meter id from the query string.
+    return Response(generate(), mimetype="application/zip", headers={
+        "Content-Disposition": "attachment; filename=%s" % json.dumps(name),
+        "X-Archive-Files": str(len(files)),
+    })
 
 
 def create_app():

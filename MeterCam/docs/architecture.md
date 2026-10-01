@@ -45,9 +45,10 @@ service's own `last_accepted.json` stands in. With neither, the read is
 refused: an unguarded first reading is exactly the one that can set a
 `total_increasing` sensor's baseline wrong for good.
 
-An accepted reading is written with `input_number.set_value`. A refused one is
-archived, frames and reason, under `data/images/gas/rejected/<date>/`. Either
-way the answer carries `"firmware"`, the contents of
+An accepted reading is written with `input_number.set_value` and its frame
+archived under `data/images/gas/raw/<date>/`. A refused one is archived, frames
+and reason, under `data/images/gas/rejected/<date>/`. The newest frame is also
+`last.jpg`. Either way the answer carries `"firmware"`, the contents of
 `data/firmware/version.txt`.
 
 ## Home Assistant

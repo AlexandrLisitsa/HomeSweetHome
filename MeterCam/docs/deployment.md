@@ -26,7 +26,7 @@ house stays on the box in `/opt/metercam/` and is never overwritten by a deploy:
 | `.env` | `METERCAM_TOKEN`, `METERCAM_HA_TOKEN` | environment |
 | `models/*.tflite` | jomjol's weights | `/models`, read-only |
 | `data/ref/gas.jpg` | the alignment reference | `/data` |
-| `data/images/gas/` | refused frames, `last_accepted.json` | `/data` |
+| `data/images/gas/` | archived frames (`raw/`, `rejected/`), `last.jpg`, `last_accepted.json` | `/data` |
 | `data/firmware/` | `gas-cam.bin`, `version.txt`, older builds for rollback | `/data` |
 
 The reference and the ROIs are one matched pair: each ROI is a pixel rectangle
@@ -104,14 +104,16 @@ runtime, because `requirements.txt` pins nothing. If it fails, put
 
 ## Frame retention
 
-Only refused reads are archived (`gas/rejected/<date>/`, a JPEG of about
-300 KB per frame plus `.json` and `.txt`). `lxc_provision.sh` installs
-`metercam-prune.timer`, **hourly**, with two rules:
+Every read is archived: accepted ones in `gas/raw/<date>/`, refused ones in
+`gas/rejected/<date>/`, about 300 KB a frame plus its `.json` (and `.txt` for a
+refusal). At 48 wakes a day that is about 14 MB a day. `lxc_provision.sh`
+installs `metercam-prune.timer`, **hourly**, with two rules:
 
-1. **Age**: rejected frames are kept 90 days. The `raw/` rule (7 days) only
-   sweeps frames older builds kept of accepted reads.
+1. **Age**: raw frames are kept 7 days, rejected ones 90. A refused frame is the
+   whole record of why; an accepted one is corroborated by the reading it
+   produced.
 2. **Size**: a hard ceiling of `MAX_ARCHIVE_MB`, 1024. Over it, the oldest go
-   first.
+   first, raw before rejected.
 
 The ceiling is not redundant. A camera knocked out of alignment refuses every
 wake, and at 48 wakes a day the age rule alone would let that fill the rootfs.
