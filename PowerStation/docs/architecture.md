@@ -60,8 +60,9 @@ The single ESPHome `script` named `evaluate_power_mode` decides the inverter's *
 - Grid normalized (after 5 min of good voltage)
 - User toggles `Auto Grid Protection`
 - User toggles `Auto Tariff Mode`
+- An outage pre-charge starts or ends (§11) — run by `evaluate_charge_window`, which is the one that detects the edge
 
-Boot and the two tariff boundaries also run `evaluate_charge_window` (§10). The two scripts are independent: neither reads the other's state, and this one never touches the charger.
+Boot and the two tariff boundaries also run `evaluate_charge_window` (§10). The two scripts are otherwise independent: this one never touches the charger, and the only thing they share is the pre-charge test, which both compute the same way.
 
 `mode: restart` means a new run cancels any in-progress run — the latest signal wins.
 
@@ -72,6 +73,7 @@ The script picks one of these three target modes — **Utility First**, **Solar 
 | # | Condition | Action | Why |
 | --- | --- | --- | --- |
 | 1 | `Auto Grid Protection` ON **and** grid is bad | Force **SBU Battery** | Protect loads from a sick grid. Bypasses NTP entirely — works during a complete network outage. |
+| 1b | (else) outage pre-charge active (§11) | **Utility First** | HA asked for a full pack before a scheduled DTEK outage. Beats the tariff, which would spend the battery by day; loses to rule 1. |
 | 2 | (else) `Auto Tariff Mode` ON, NTP failed | **Utility First** | Without trustworthy time we can't know the tariff window, so play it safe by using the grid. |
 | 3 | (else) `Auto Tariff Mode` ON, night (23:00 ≤ hour < 07:00) | **Utility First** | Night electricity is cheap — use the grid, save the battery. |
 | 4 | (else) `Auto Tariff Mode` ON, day (07:00 ≤ hour < 23:00) | **SBU Battery** | Day electricity is expensive — discharge the battery (and solar, when present). |
@@ -345,7 +347,37 @@ Without the interval, a write lost at a tariff boundary would persist for up to 
 
 ---
 
-## 11. The Calculated Grid Real Power sensor
+## 11. Outage pre-charge
+
+The one rule that comes from outside the ESP. Home Assistant knows when DTEK has scheduled the power off; the firmware does not. When a window is coming and the pack would not be full in time, HA asks for a pre-charge, and the firmware puts the inverter on the grid and opens the charger until the outage starts. The planning, including how many amps, is HA's — see [`HomeAssistant/docs/outage-precharge.md`](../../HomeAssistant/docs/outage-precharge.md). This section covers only what the firmware does with the request.
+
+**The interface is two entities.**
+
+| Entity | Who writes it | Meaning |
+| --- | --- | --- |
+| `Outage Pre-charge` (switch, restored, default ON) | the user, from the dashboard chip | Arms the feature. OFF releases any active pre-charge at once. |
+| `Pre-charge Until` (datetime, restored) | Home Assistant | The start of the outage HA is charging for. Any past moment, including the restored default `2000-01-01 00:00`, means "no request". |
+
+**Active** means: the switch is ON, NTP time is valid, and now is before `Pre-charge Until`. Without valid time it is never active: the request is a wall-clock time and cannot be honoured against an unknown clock. The fail-open rules for the tariff and the charge gate still apply.
+
+**While active:**
+- `evaluate_power_mode` rule 1b picks **Utility First**. Rule 1 (grid protection) still wins; when the grid goes bad there is nothing to charge from anyway.
+- `evaluate_charge_window` turns the BMS charge MOSFET ON and skips the night gate, whether or not `Night Charging Only` is engaged.
+- Home Assistant sets `Max AC Charge Current` to what the plan needs.
+
+**The edges** are detected in `evaluate_charge_window`, against the `precharge_was_active` global:
+- **Start:** the current `Max AC Charge Current` is saved to `precharge_saved_current`.
+- **End:** that value is put back, and `evaluate_power_mode` is run once so the tariff rules take the priority back.
+
+Only on the edge, deliberately. Re-running `evaluate_power_mode` every 5 minutes would also undo any manual Power Priority choice, which until now only the tariff boundaries ever did. Both globals are restored across reboots. Otherwise a reboot in the middle of a charge would look like a fresh start and save HA's current as the user's.
+
+**Why the deadline lives here.** The override ends when the ESP's own clock passes `Pre-charge Until`, at the next 5-minute tick of `evaluate_charge_window`. So a Home Assistant that crashes mid-charge cannot leave the inverter pinned to Utility First. HA also releases early: it writes a past time when the window is cancelled, the pack is full, or the switch goes off.
+
+**Interplay with the charge gate.** At the end edge, the normal gate runs straight away in the same script. With `Night Charging Only` ON by day, that blocks the charger again. With it OFF, the charger is left ON, which is where the user had it before any `Night Charging Only` ownership.
+
+---
+
+## 12. The Calculated Grid Real Power sensor
 
 The inverter doesn't directly report how much power it's pulling from the grid. We infer it from other facts. The lambda for `sns_grid_real_power` runs every 3 s and walks three rules:
 
@@ -364,7 +396,7 @@ A second sensor (`Grid Real Energy Consumption`) integrates this with the ESPHom
 
 ---
 
-## 12. Home Assistant interface
+## 13. Home Assistant interface
 
 ### Sensors exposed (read-only)
 
@@ -389,14 +421,16 @@ A second sensor (`Grid Real Energy Consumption`) integrates this with the ESPHom
 | Auto Grid Protection | switch | Master switch for emergency rule 1 |
 | Auto Tariff Mode | switch | Master switch for tariff rules 2–4. Mutually exclusive with `Night Charging Only` |
 | Night Charging Only | switch | Gates battery charging to the night window and leaves the power priority alone (§10). Mutually exclusive with `Auto Tariff Mode` |
-| AC Charging Enabled | switch | The JK BMS charge MOSFET (register `0x1D`) — *not* an inverter setting, despite the name. Owned by the charge gate while `Night Charging Only` is on (§10) |
+| AC Charging Enabled | switch | The JK BMS charge MOSFET (register `0x1D`) — *not* an inverter setting, despite the name. Owned by the charge gate while `Night Charging Only` is on (§10), and by an active outage pre-charge (§11) |
+| Outage Pre-charge | switch | Arms the outage pre-charge (§11). OFF releases one in progress |
+| Pre-charge Until | datetime | Written by HA: charge until this moment (the outage start). A past moment means no request (§11) |
 | BMS Discharging Switch / BMS Balancer Switch | switches | Forwarded directly to the JK BMS via BLE |
 
-All `select` and `switch` entities use `optimistic: true` and `restore_value`/`restore_mode` so they survive reboots without waiting for HA round-trips.
+All `select`, `switch` and `datetime` entities use `optimistic: true` and `restore_value`/`restore_mode` so they survive reboots without waiting for HA round-trips.
 
 ---
 
-## 13. Failure modes — what the firmware does under stress
+## 14. Failure modes — what the firmware does under stress
 
 | What goes wrong | What happens |
 | --- | --- |
@@ -408,11 +442,12 @@ All `select` and `switch` entities use `optimistic: true` and `restore_value`/`r
 | Inverter NAKs a command | Retried up to 20 times. If still NAK, dropped with an error log. Next command in the queue gets its own 20-retry budget. |
 | BMS BLE link drops | BMS sensors go stale, and `sns_grid_real_power` returns `NAN` while BMS power is unavailable. `evaluate_power_mode` is unaffected — it reads no BMS data. The night-charging gate **is** affected: the charge MOSFET cannot be written, so the 5-minute re-assertion keeps retrying until BLE returns (§10). Inverter control over UART continues throughout. |
 | Grid voltage spike (EMI noise on UART) | Sanity check drops the frame, warning logged. Next poll cycle (3 s) replaces it. |
+| HA dies during a pre-charge | The override ends by itself at `Pre-charge Until`, at the next 5-minute tick, and the saved charge current is put back (§11). |
 | Grid genuinely bad | `grid_safe` flips after 5 s of bad voltage → if protection is on, inverter switches to SBU Battery. Stays there until grid is stable for 5 minutes. |
 
 ---
 
-## 14. Things to know before changing the YAML
+## 15. Things to know before changing the YAML
 
 - **Don't change either logic script to `mode: queued` or `parallel`.** Both are `restart` because events can fire faster than a script completes, and you want the most recent signal to win.
 - **The tariff window lives in `substitutions:`** (§8). Change `night_tariff_start` / `night_tariff_end` in one place — the `on_time` triggers and both scripts follow. Don't re-hardcode 23 or 7.
