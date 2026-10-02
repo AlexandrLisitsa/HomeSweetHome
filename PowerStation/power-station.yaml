@@ -128,6 +128,11 @@ globals:
   - id: poll_turn
     type: bool
     initial_value: 'false'
+  # Tries left for the command at the FRONT of the queue; 0 with a non-empty
+  # queue means it has used its last try and gives up on its next turn.
+  # Producers push, then prime this only if their command is now the front
+  # (`size() == 1`): testing the counter for 0 instead read "front command
+  # exhausted" as "idle" and handed a NAKed command 20 fresh tries.
   - id: command_retries
     type: int
     initial_value: '0'
@@ -184,7 +189,7 @@ script:
             ESP_LOGW("logic", "🚨 EMERGENCY: Grid is BAD. Forcing Battery Mode.");
             target_priority = "SBU Battery";
             id(command_queue).push_back("POP02");
-            if (id(command_retries) == 0) id(command_retries) = 20;
+            if (id(command_queue).size() == 1) id(command_retries) = 20;
           }
 
           // 2b. OUTAGE PRE-CHARGE (rule 1b in docs/architecture.md §3, and §11):
@@ -594,7 +599,7 @@ select:
           std::string val = x;
           while(val.length() < 3) val = "0" + val;
           id(command_queue).push_back("MUCHGC" + val);
-          if (id(command_retries) == 0) id(command_retries) = 20;
+          if (id(command_queue).size() == 1) id(command_retries) = 20;
           ESP_LOGI("dispatcher", "New Charge Limit Queued: %s", x.c_str());
 
   - platform: template
@@ -611,7 +616,7 @@ select:
           if (x == "Solar First") cmd = "POP01";
           else if (x == "SBU Battery") cmd = "POP02";
           id(command_queue).push_back(cmd);
-          if (id(command_retries) == 0) id(command_retries) = 20;
+          if (id(command_queue).size() == 1) id(command_retries) = 20;
           ESP_LOGI("dispatcher", "New Priority Queued: %s", x.c_str());
 
   - platform: template
@@ -626,10 +631,22 @@ select:
       - lambda: |-
           std::string cmd = (x == "UPS") ? "PGR01" : "PGR00";
           id(command_queue).push_back(cmd);
-          if (id(command_retries) == 0) id(command_retries) = 20;
+          if (id(command_queue).size() == 1) id(command_retries) = 20;
           ESP_LOGI("dispatcher", "New AC Input Mode Queued: %s", x.c_str());
 
 # --- CHARGE VOLTAGE CONTROLS ---
+# Not optimistic: set_action decides whether a value from HA is accepted, and
+# only an accepted value is published. on_value queues the command, so the
+# boot-time replay of the restored value (TemplateNumber::setup publishes it
+# without going through set_action) still re-sends what was last accepted.
+#
+# A refused value is never published: the entity keeps showing what the
+# inverter was last given, and the other slider's check compares against
+# that. TemplateNumber::control() still saves the refused value to flash right
+# after set_action returns, which the next boot would replay; the refusal
+# therefore schedules a write-back of the accepted value for when control()
+# has returned. That write-back goes through set_action again and is let
+# straight through, without publishing or re-sending anything.
 number:
   - platform: template
     name: "Bulk Charge Voltage"
@@ -641,23 +658,34 @@ number:
     step: 0.1
     restore_value: true
     initial_value: 28.0
-    optimistic: true
+    optimistic: false
+    set_action:
+      - lambda: |-
+          // Bulk below float is refused here rather than left to a NAK: the
+          // two sliders are independent and nothing else stops it.
+          static bool writing_back = false;
+          if (writing_back) return;
+          float fl = id(num_float_voltage).state;
+          if (!std::isnan(fl) && x < fl) {
+            ESP_LOGW("dispatcher", "Bulk %.1f V below float %.1f V - not sent, keeping %.1f V",
+                     x, fl, id(num_bulk_voltage).state);
+            App.scheduler.set_timeout(&writing_back, 0, []() {
+              writing_back = true;
+              id(num_bulk_voltage).make_call().set_value(id(num_bulk_voltage).state).perform();
+              writing_back = false;
+            });
+            return;
+          }
+          id(num_bulk_voltage).publish_state(x);
     on_value:
       - lambda: |-
           // PI30 defines this as PCVV<nn.n>: ONE decimal. "%.2f" sent
           // PCVV28.00, and the NAK loops docs/architecture.md blames on
           // float > bulk are at least as likely to be this.
-          // Bulk below float is refused here rather than left to a NAK: the
-          // two sliders are independent and nothing else stops it.
-          float fl = id(num_float_voltage).state;
-          if (!std::isnan(fl) && x < fl) {
-            ESP_LOGW("dispatcher", "Bulk %.1f V below float %.1f V - not sent", x, fl);
-            return;
-          }
           char buf[16];
           snprintf(buf, sizeof(buf), "PCVV%.1f", x);
           id(command_queue).push_back(std::string(buf));
-          if (id(command_retries) == 0) id(command_retries) = 20;
+          if (id(command_queue).size() == 1) id(command_retries) = 20;
 
   - platform: template
     name: "Float Charge Voltage"
@@ -669,20 +697,31 @@ number:
     step: 0.1
     restore_value: true
     initial_value: 27.2
-    optimistic: true
-    on_value:
+    optimistic: false
+    set_action:
       - lambda: |-
-          // PBFT<nn.n>: one decimal, see PCVV above. Float above bulk is
-          // refused here for the same reason.
+          // Float above bulk is refused for the same reason; see bulk.
+          static bool writing_back = false;
+          if (writing_back) return;
           float bulk = id(num_bulk_voltage).state;
           if (!std::isnan(bulk) && x > bulk) {
-            ESP_LOGW("dispatcher", "Float %.1f V above bulk %.1f V - not sent", x, bulk);
+            ESP_LOGW("dispatcher", "Float %.1f V above bulk %.1f V - not sent, keeping %.1f V",
+                     x, bulk, id(num_float_voltage).state);
+            App.scheduler.set_timeout(&writing_back, 0, []() {
+              writing_back = true;
+              id(num_float_voltage).make_call().set_value(id(num_float_voltage).state).perform();
+              writing_back = false;
+            });
             return;
           }
+          id(num_float_voltage).publish_state(x);
+    on_value:
+      - lambda: |-
+          // PBFT<nn.n>: one decimal, see PCVV above.
           char buf[16];
           snprintf(buf, sizeof(buf), "PBFT%.1f", x);
           id(command_queue).push_back(std::string(buf));
-          if (id(command_retries) == 0) id(command_retries) = 20;
+          if (id(command_queue).size() == 1) id(command_retries) = 20;
 
 # --- OUTAGE PRE-CHARGE DEADLINE ---
 # Written by Home Assistant (packages/outage_precharge.yaml): the start of the

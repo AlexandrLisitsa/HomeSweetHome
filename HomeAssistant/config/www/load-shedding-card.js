@@ -31,7 +31,7 @@
  */
 
 const CARD = "load-shedding-card";
-const VERSION = "3.1.1";
+const VERSION = "3.1.2";
 
 const RED = "var(--error-color, #db4437)";
 const GREEN = "var(--success-color, #43a047)";
@@ -299,7 +299,15 @@ class LoadSheddingCard extends HTMLElement {
         dev.steps = dev.steps || [];
         const lowest = dev.steps.reduce((m, s) => Math.min(m, Number(s.soc) || 100), 100);
         const svcs = this._services(dev.entity.split(".")[0]);
-        dev.steps.push({ soc: dev.steps.length ? Math.max(5, lowest - 10) : 80,
+        // Ten below the lowest, floored at 5 -- and if that % is already a step
+        // (the floor usually), the next free one down, then up, so Save never
+        // refuses a step the button just made with "two steps at 5%".
+        const taken = dev.steps.map((s) => Number(s.soc));
+        const want = dev.steps.length ? Math.max(5, lowest - 10) : 80;
+        let soc = want;
+        for (let n = want; taken.indexOf(soc) >= 0 && n > 1; ) soc = --n;
+        for (let n = want; taken.indexOf(soc) >= 0 && n < 100; ) soc = ++n;
+        dev.steps.push({ soc: taken.indexOf(soc) >= 0 ? want : soc,
           action: svcs.length ? svcs[0].action : "", data: {} });
       });
     } else if (act === "remove-step") {
@@ -351,7 +359,12 @@ class LoadSheddingCard extends HTMLElement {
         const parsed = JSON.parse(this._ui.importText);
         if (!parsed || !Array.isArray(parsed.devices)) throw new Error("no devices list");
         this._ui.importText = "";
-        SHARED.set({ override_step: Number(parsed.override_step) || 10, devices: parsed.devices });
+        // Export writes warn_margin, so Import keeps it -- read the way the
+        // stored rules and the settings field read it, 1 when it is not a number.
+        const margin = parsed.warn_margin === null || parsed.warn_margin === ""
+          ? NaN : Number(parsed.warn_margin);
+        SHARED.set({ override_step: Number(parsed.override_step) || 10,
+          warn_margin: Number.isFinite(margin) ? margin : 1, devices: parsed.devices });
       } catch (e) {
         SHARED.error = "Import: that is not a rules JSON (" + e.message + ").";
         SHARED.notify();
@@ -580,7 +593,7 @@ class LoadSheddingCard extends HTMLElement {
         </div>
         <div class="pad barpad">
           <div class="bar">
-            <div class="fill" style="width:${soc === null ? 0 : soc}%"></div>
+            <div class="fill" style="width:${soc === null ? 0 : Math.max(0, Math.min(100, soc))}%"></div>
             ${marks}
           </div>
           <div class="scale"><span>0%</span><span>battery</span><span>100%</span></div>

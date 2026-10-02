@@ -35,6 +35,18 @@ jobs:
         run: python HomeAssistant/tools/check_dtek_templates.py
       - name: Automations and IR bridge scripts
         run: python HomeAssistant/tools/check_automations.py
+      - name: Entity references across the config
+        run: python IRBridge/tools/check_ha_entities.py HomeAssistant/config
+      - name: Outage pre-charge plan and automations
+        run: python HomeAssistant/tools/test_outage_precharge.py
+      - name: Adaptive night charge plan and automations
+        run: python HomeAssistant/tools/test_adaptive_charge.py
+      - name: Load shedding engine
+        run: python HomeAssistant/tools/test_load_shedding.py
+      - name: Battery runtime
+        run: python HomeAssistant/tools/test_battery_runtime.py
+      - name: Day/night tariff switch
+        run: python HomeAssistant/tools/test_tariff_switch.py
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -42,6 +54,22 @@ jobs:
         run: node HomeAssistant/tools/test_climate_chart.js
       - name: Battery and inverter card history
         run: node HomeAssistant/tools/test_console_history.js
+      - name: Inverter, battery and load-shedding cards
+        run: node HomeAssistant/tools/test_power_cards.js
+
+  power-station:
+    name: PowerStation firmware logic
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r HomeAssistant/tools/requirements.txt
+      # The real lambdas out of power-station.yaml, compiled with the runner's
+      # own g++ (the script falls back to the gcc:13 image only without one).
+      - name: Extract, compile and run
+        run: python PowerStation/tools/test_firmware_logic.py
 
   irbridge:
     name: IRBridge Android build

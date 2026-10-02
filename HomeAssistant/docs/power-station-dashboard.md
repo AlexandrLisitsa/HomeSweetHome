@@ -8,8 +8,8 @@ BMS gateway.
 
 | Tab | Card | Version | Side of the system |
 | --- | --- | --- | --- |
-| Inverter | `config/www/powmr-inverter-console-card.js` (`custom:powmr-inverter-console-card`) | 2.1.2 | AC: grid → inverter → house |
-| Battery (`/battery`) | `config/www/jkbms-battery-console-card.js` (`custom:jkbms-battery-console-card`) | 1.3.0 | DC: inverter bus ↔ battery pack |
+| Inverter | `config/www/powmr-inverter-console-card.js` (`custom:powmr-inverter-console-card`) | 2.1.3 | AC: grid → inverter → house |
+| Battery (`/battery`) | `config/www/jkbms-battery-console-card.js` (`custom:jkbms-battery-console-card`) | 1.4.1 | DC: inverter bus ↔ battery pack |
 
 ## Why custom cards
 

@@ -362,5 +362,50 @@ shed = {"ac": rec(80), "led": dict(rec(70), name="LED", override_soc=55)}
 check("only what was not overridden comes back", render(RESTORE["back"], shed=shed), ["ac"])
 check("names for the message", render(RESTORE["names"], shed=shed, back=["ac", "led"]), "x, LED")
 
+
+print("corner cases")
+check("battery exactly at a step (80%) -> that step is due", due(soc=80), [{"id": "ac", "soc": 80.0}])
+check("80.01% -> not yet", due(soc=80.01), [])
+check("battery as a string with decimals '78.0' -> same as 78",
+      due(soc="78.0"), [{"id": "ac", "soc": 80.0}])
+check("battery 'unknown' -> nothing", due(soc="unknown"), [])
+check("battery '' -> nothing", due(soc=""), [])
+check("battery 100 -> nothing", due(soc=100), [])
+check("battery 0 -> every device at its deepest step",
+      due(soc=0), [{"id": "ac", "soc": 60.0}, {"id": "led", "soc": 40.0}])
+check("grid sensor 'unavailable' -> nothing (only 'on' is an outage)",
+      render(DECISION, {"sensor.jkbms_gateway_bms_state_of_charge": 10,
+                        "binary_sensor.powmr_inverter_grid_condition_safe": "unavailable",
+                        "input_boolean.load_shedding_enabled": "on", AC: "cool", LED: "on"},
+             {("sensor.load_shedding_config", "devices"): [ac_dev(), led_dev()]})["due"], [])
+check("no rules at all (devices attribute missing) -> nothing",
+      render(DECISION, {"sensor.jkbms_gateway_bms_state_of_charge": 10,
+                        "binary_sensor.powmr_inverter_grid_condition_safe": "on",
+                        "input_boolean.load_shedding_enabled": "on"}, {}),
+      {"due": [], "overridden": [], "warn": []})
+check("step % written as a string '80' -> still a step",
+      due(soc=78, devices=[ac_dev(steps=(("80", "climate.set_temperature", {"temperature": 27}),))]),
+      [{"id": "ac", "soc": 80.0}])
+check("step % garbage 'x' -> ignored, the other step still works",
+      due(soc=55, devices=[ac_dev(steps=(("x", "climate.set_hvac_mode", {"hvac_mode": "off"}),
+                                         (60, "climate.set_temperature", {"temperature": 27})))]),
+      [{"id": "ac", "soc": 60.0}])
+check("device 'unavailable' and no guard -> left alone",
+      [d for d in due(soc=30, led="unavailable") if d["id"] == "led"], [])
+check("override exactly 180 s after the step -> not yet (strictly more)",
+      over(soc=75, ac_temp=24, shed={"ac": rec(80, minutes_ago=3, applied=AC_APPLIED)}), [])
+check("store record with a garbage `since` -> age 0, no override",
+      over(soc=75, ac_temp=24, shed={"ac": dict(rec(80, applied=AC_APPLIED), since="garbage")}), [])
+check("validator: step at 0% is refused",
+      errors({"devices": [dict(led_dev(), steps=[{"soc": 0, "action": "light.turn_off"}])]}),
+      ["LED: step 1 needs a battery % of 1-100"])
+check("validator: step at 100% is fine",
+      errors({"devices": [dict(led_dev(), steps=[{"soc": 100, "action": "light.turn_off"}])]}), [])
+check("validator: devices as a string is refused",
+      errors({"devices": "light.x"}), ["the config needs a list of devices"])
+check("validator: step data that is not an object",
+      errors({"devices": [dict(led_dev(), steps=[{"soc": 50, "action": "light.turn_off", "data": "x"}])]}),
+      ["LED: step at 50% has data that is not an object"])
+
 print("\n%s" % ("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed"))
 sys.exit(1 if FAILED else 0)

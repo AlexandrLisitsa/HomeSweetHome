@@ -73,7 +73,7 @@
  */
 
 const CARD = "powmr-inverter-console-card";
-const VERSION = "2.1.2";
+const VERSION = "2.1.3";
 
 /*
  * Brand colours stay literal: they identify a leg of the diagram (amber =
@@ -687,6 +687,10 @@ class PowmrInverterConsoleCard extends HTMLElement {
     this._built = false;
     this._print = null;
     this._hist.clear();
+    // A history reply still in flight belongs to the old tree: it may have no
+    // chart at all now. Dropping the token makes it land on the floor.
+    this._token = null;
+    this._drawnKey = null;
     if (this._hass) this._render();
   }
 
@@ -932,7 +936,9 @@ class PowmrInverterConsoleCard extends HTMLElement {
    * The count starts at grid_in_range's last_changed, which is only exact if
    * HA was connected when it flipped -- an HA restart mid-countdown resets it,
    * and the timer then over-reads by up to that much. It clamps at 0 for the
-   * second or two between the firmware's release and HA hearing about it.
+   * second or two between the firmware's release and HA hearing about it, and
+   * at grid_return_s when the browser's clock runs behind HA's and the flip
+   * looks like it happened in the future.
    */
   _returnLeft() {
     const c = this._config;
@@ -941,7 +947,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
     if (!safe || !rng || safe.state !== "on" || rng.state !== "on") return null;
     const t = Date.parse(rng.last_changed || "");
     if (!Number.isFinite(t)) return null;
-    return Math.max(0, c.grid_return_s - (Date.now() - t) / 1000);
+    return Math.max(0, Math.min(c.grid_return_s, c.grid_return_s - (Date.now() - t) / 1000));
   }
 
   /**
@@ -958,12 +964,26 @@ class PowmrInverterConsoleCard extends HTMLElement {
       : "";
     let text = "";
     if (st === "on" && plan) {
-      if (plan.state === "charging") text = a.current + " A → " + at;
-      else if (plan.state === "waiting_night") text = "at night → " + at;
+      if (plan.state === "charging") text = this._chargeText(a.current, at);
+      else if (plan.state === "waiting_night") text = at ? "at night → " + at : "at night";
       else if (plan.state === "full") text = "full";
     }
     if (sub) sub.textContent = text;
     if (plan && a.reason) node.title += " · " + plan.state + ": " + a.reason;
+  }
+
+  /**
+   * "<A> A → HH:MM" for a charging plan, shared by Pre-charge and adaptive.
+   * Either half can be missing for a tick while the template sensor settles
+   * (or after a hand edit of its attributes), and then that half is left out
+   * rather than printed as "undefined A" or a bare arrow.
+   */
+  _chargeText(current, at) {
+    const n = current === null || current === undefined || current === "" ? NaN : Number(current);
+    const amps = Number.isFinite(n) ? n + " A" : "";
+    if (amps && at) return amps + " → " + at;
+    if (amps) return amps;
+    return at ? "charging → " + at : "charging";
   }
 
   /**
@@ -990,7 +1010,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
       : "";
     let text = "";
     if (st === "on" && plan) {
-      if (plan.state === "charging") text = a.current + " A → " + at;
+      if (plan.state === "charging") text = this._chargeText(a.current, at);
       else if (plan.state === "full") text = "full";
       else if (plan.state === "day") text = "tonight";
     }
@@ -1360,7 +1380,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
     const plan = (this._stateObj(c.precharge_plan) || {}).attributes || {};
     const ad = (this._stateObj(c.adaptive_plan) || {}).attributes || {};
     return ids.map((id) => this._state(id)).join("|")
-      + "|" + this._state(c.precharge_plan) + "|" + plan.current + "|" + plan.until
+      + "|" + this._state(c.precharge_plan) + "|" + plan.current + "|" + plan.until + "|" + plan.reason
       + "|" + this._state(c.adaptive_charge) + "|" + this._state(c.adaptive_plan)
       + "|" + ad.current + "|" + ad.until + "|" + ad.reason
       + "|" + this._range + "|" + this._sel;
@@ -1444,7 +1464,9 @@ class PowmrInverterConsoleCard extends HTMLElement {
       const col = this._socColor(soc);
       el.socVal.innerHTML = this._fmt(soc, 0) + '<i>%</i>';
       el.socVal.style.color = col;
-      el.socFill.style.width = (soc === null ? 0 : soc).toFixed(0) + "%";
+      // Clamped: a BMS glitch past 100 % (or below 0) is still a full (empty)
+      // bar, and a negative width is invalid CSS the browser would ignore.
+      el.socFill.style.width = (soc === null ? 0 : Math.max(0, Math.min(100, soc))).toFixed(0) + "%";
       // The gradient is in the stylesheet; this only says what colour it is.
       el.socFill.style.setProperty("--fc", col);
       // The BMS sign is the truth; the inverter's two currents are magnitudes.
@@ -2202,6 +2224,8 @@ class PowmrInverterConsoleCard extends HTMLElement {
 
   _drawChart(spec, rec) {
     const el = this._el;
+    // Belt and braces for the token: no history block, nothing to draw on.
+    if (!el.chLine) return;
     this._hideHover();
 
     /*

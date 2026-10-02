@@ -102,9 +102,12 @@ sh tools/ha_get.sh /api/config
 | `tools/check_dtek_templates.py` | renders every Jinja template in `packages/dtek_shutdowns.yaml` and the DTEK dashboard against fake states | no — pure local |
 | `tools/check_climate_card.py` | cross-references every entity `climate-console-card.js` names against `/api/states` | no — GET-only |
 | `tools/test_dtek_schedule.py` | fixture tests for `config/dtek/dtek_poll.py`'s schedule maths | no — no network |
-| `tools/test_outage_precharge.py` | renders the outage pre-charge plan in `packages/outage_precharge.yaml` against fake states | no — pure local |
+| `tools/test_outage_precharge.py` | renders the outage pre-charge plan in `packages/outage_precharge.yaml` and runs its drive and started automations through the simulator | no — pure local |
 | `tools/test_adaptive_charge.py` | renders the adaptive night charge plan in `packages/adaptive_charge.yaml` and runs its drive, outage-off and guard automations through the simulator, DST included | no — pure local |
+| `tools/test_battery_runtime.py` | renders `packages/battery_runtime.yaml`: runtime remaining, time to full and its edge triggers, against idle, unavailable, flat and full packs | no — pure local |
+| `tools/test_tariff_switch.py` | runs the day/night tariff automation in `config/automations.yaml` at 07:00 / 23:00, on HA start and over DST weekends | no — pure local |
 | `tools/ha_automation_sim.py` | not a command: a small simulator the tests above use to run a package's `automation:` list against a fake house (limits in its docstring) | — |
+| `tools/test_power_cards.js` | render and logic tests for the inverter, battery and load-shedding cards against a fake `hass` and a small DOM | no — pure local |
 | `tools/test_load_shedding.py` | renders the load-shedding engine's templates in `packages/load_shedding.yaml` (decision, warnings, validator, stores, restore) against fake states | no — pure local |
 | `tools/test_climate_chart.js` | fixture tests for the climate card's chart and dial maths | no — no network |
 
@@ -135,7 +138,10 @@ python tools/check_dtek_templates.py
 python tools/test_dtek_schedule.py
 python tools/test_outage_precharge.py
 python tools/test_adaptive_charge.py
+python tools/test_battery_runtime.py
+python tools/test_tariff_switch.py
 python tools/test_load_shedding.py
+node tools/test_power_cards.js
 ```
 
 The DTEK, pre-charge, adaptive-charge and load-shedding ones need `python -m pip install -r tools/requirements.txt`;
