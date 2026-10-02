@@ -68,7 +68,40 @@ host_config_tarball() {
     echo "$out"
 }
 
+# MeterCam (LXC 104) is not dumped: ~400 MB a copy for what is mostly a Docker
+# image that rebuilds from git, on a Drive that is already near its 15 GB.
+# What cannot be rebuilt is this, a few MB, carried in the same encrypted
+# upload as the LXC dumps:
+#
+#   .env              HA token, gas-bot token, Telegram api_id/api_hash
+#   config.json       the meter's ROIs (matched to data/ref)
+#   data/ref          the alignment reference frame
+#   data/telegram     the Telegram session (a logged-in account)
+#   data/firmware     what the camera is offered over OTA
+#   models            the digit models (no licence to re-download from git)
+#
+# Not data/images: the archived photographs are the bulk and are disposable.
+METERCAM_VMID="${METERCAM_VMID:-104}"
+METERCAM_DIR="/opt/metercam"
+metercam_tarball() {
+    out="$1/metercam-state-$(date +%Y_%m_%d-%H_%M_%S).tar.zst"
+    pct status "$METERCAM_VMID" 2>/dev/null | grep -q running || return 1
+    pct exec "$METERCAM_VMID" -- tar -C "$METERCAM_DIR" -cf - --ignore-failed-read \
+        .env config.json docker-compose.yml data/ref data/telegram data/firmware models \
+        2>/dev/null | zstd -q -19 > "$out" || return 1
+    # A tar that found nothing still writes a valid, tiny archive.
+    [ "$(zstd -dc "$out" | tar -tf - | grep -c -E '^(\./)?\.env$|gasbot\.session$')" -ge 1 ] || return 1
+    chmod 600 "$out"
+    echo "$out"
+}
+
 case "$phase" in
+metercam-state)
+    # By hand: `vzdump-offsite.sh metercam-state /tmp` writes the archive
+    # and prints its path, to check what goes off-site without a backup run.
+    metercam_tarball "${2:-/tmp}" || { log "ERROR: MeterCam state archive failed"; exit 1; }
+    ;;
+
 job-start)
     : > "$QUEUE"
     ;;
@@ -89,14 +122,21 @@ job-end)
         tmp=$(mktemp -d)
         trap 'rm -rf "$tmp"' EXIT
         cfg=$(host_config_tarball "$tmp")
+        # A failed MeterCam archive must not cost the other guests their
+        # off-site copy: upload the rest, then fail the job at the end.
+        metercam_failed=0
+        mcs=$(metercam_tarball "$tmp") || { metercam_failed=1; mcs=""; \
+            log "ERROR: MeterCam state archive failed (is LXC $METERCAM_VMID running?)"; }
 
         for dest in weekly $(first_run_of_month && echo monthly); do
             for b in $lxc_bases; do
                 log "copy $b -> $dest/"
                 $RCLONE copy "$dumpdir" "${REMOTE}$dest/" --include "$b.*"
             done
-            log "copy $(basename "$cfg") -> $dest/"
-            $RCLONE copy "$cfg" "${REMOTE}$dest/"
+            for f in "$cfg" $mcs; do
+                log "copy $(basename "$f") -> $dest/"
+                $RCLONE copy "$f" "${REMOTE}$dest/"
+            done
         done
 
         log "prune weekly/ older than $WEEKLY_MAX_AGE, monthly/ older than $MONTHLY_MAX_AGE"
@@ -134,6 +174,10 @@ job-end)
 
     $RCLONE rmdirs "$REMOTE" --leave-root
     rm -f "$QUEUE" "$FORCE_MONTHLY"
+    if [ "${metercam_failed:-0}" -ne 0 ]; then
+        log "done, but WITHOUT the MeterCam state archive"
+        exit 1
+    fi
     log "done"
     ;;
 

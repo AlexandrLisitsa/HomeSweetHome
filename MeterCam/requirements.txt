@@ -16,3 +16,9 @@ numpy>=1.26
 # just larger. Pinning nothing here on purpose: the models are old and stable,
 # and the runtime is the part that moves.
 ai-edge-litert>=1.0
+
+# Telegram client API (MTProto) for service/gasbot.py: the monthly gas reading
+# goes to Gazmerezhi's bot as the household's own Telegram user.
+telethon>=1.36
+# QR-code login for gasbot.py, drawn as SVG (pure Python, no Pillow).
+qrcode>=7.4

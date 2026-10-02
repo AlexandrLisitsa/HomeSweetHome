@@ -72,6 +72,14 @@ and a typed value only wins if someone types the dial while the camera is
 down. A stale typed value can never pull the reading back, which matters
 because a decrease of more than 10% is booked as a meter reset.
 
+The monthly bill goes the other way. On the 1st, Home Assistant fetches
+`/last_accepted.jpg` (the frame **and** its reading in one answer, so the two
+cannot disagree), asks on the phone, and on *Submit* calls `/gas/bot/submit`.
+MeterCam then files the number with the gas operator's Telegram bot
+([`gas-bot.md`](gas-bot.md)). MeterCam holds the bot client because it has what
+HAOS lacks: a persistent `/data` for the Telegram session, and a Python where
+packages can be installed.
+
 ## Why the deciding stays in the service
 
 Home Assistant writes nothing it was not told to. Whether a number is good

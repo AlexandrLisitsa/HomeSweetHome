@@ -31,6 +31,9 @@ read before it goes live, and a `git revert` if it was wrong.
   ([`docs/load-shedding.md`](docs/load-shedding.md)).
 - **Gas and water on the Energy dashboard**, from hand-read meters
   ([`docs/gas-and-water-meters.md`](docs/gas-and-water-meters.md)).
+- **Monthly gas reading to Gazmerezhi**: on the 1st the phone shows the meter
+  photo and the number, and one button sends it through the operator's Telegram bot
+  ([`docs/gas-reading-submission.md`](docs/gas-reading-submission.md)).
 - **Two air conditioners**: an infrared one through [`../IRBridge`](../IRBridge)
   and a networked one ([`docs/climate-dashboard.md`](docs/climate-dashboard.md)).
 - **Google Home and Gemini**: entities exposed through the Google Assistant
@@ -161,6 +164,7 @@ restore HA onto a fresh VM, is in
 | [`docs/outage-precharge.md`](docs/outage-precharge.md) | charging the battery to full before a scheduled DTEK outage, and the Pre-charge chip |
 | [`docs/load-shedding.md`](docs/load-shedding.md) | the load-shedding engine and its constructor tab: steps, warnings, holds, overrides, restore, backup |
 | [`docs/gas-and-water-meters.md`](docs/gas-and-water-meters.md) | hand-read gas and water meters on the Energy dashboard |
+| [`docs/gas-reading-submission.md`](docs/gas-reading-submission.md) | the monthly gas reading to Gazmerezhi's Telegram bot, confirmed from the phone |
 | [`docs/power-station-dashboard.md`](docs/power-station-dashboard.md) | the Power station dashboard: the inverter and battery cards, the grid-return countdown, the palette |
 | [`docs/climate-dashboard.md`](docs/climate-dashboard.md) | the climate dashboard and its checker |
 | [`docs/ac-features.md`](docs/ac-features.md) | the inventory of both A/C units' features the climate card is built from |

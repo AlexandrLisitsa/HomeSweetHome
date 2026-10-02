@@ -47,12 +47,16 @@ import zipfile
 
 from flask import Flask, Response, jsonify, request, send_file
 
-from . import digits, reader
+from . import digits, gasbot, reader
 
 APP = Flask(__name__)
 
 CONFIG_PATH = os.environ.get("METERCAM_CONFIG", "/config/config.json")
 TOKEN = os.environ.get("METERCAM_TOKEN") or None
+# /gas/bot/* sends a meter reading to the gas operator as the household.
+# That needs its own token, required even when METERCAM_TOKEN is off: a
+# stray script on the LAN must not be able to file a reading.
+GASBOT_TOKEN = os.environ.get("GASBOT_TOKEN") or None
 IMAGE_DIR = pathlib.Path(os.environ.get("METERCAM_IMAGES", "/data/images"))
 FIRMWARE_DIR = pathlib.Path(os.environ.get("METERCAM_FIRMWARE", "/data/firmware"))
 
@@ -257,8 +261,11 @@ def archive(meter_name, meter, result):
     return str(path)
 
 
-def remember(meter_name, result):
+def remember(meter_name, result, filename="last.jpg"):
     """The newest frame, as /last.jpg serves it: the camera's own bytes.
+
+    Also kept as last_accepted.jpg for an accepted read, the frame behind
+    last_accepted.json -- what the monthly gas.ua notification shows.
 
     Replaced atomically: someone may be fetching it while the next read
     writes it, and half a JPEG is not an error anyone enjoys diagnosing.
@@ -269,10 +276,10 @@ def remember(meter_name, result):
     try:
         directory = IMAGE_DIR / meter_name
         directory.mkdir(parents=True, exist_ok=True)
-        tmp = directory / "last.jpg.part"
+        tmp = directory / (filename + ".part")
         with open(tmp, "wb") as fh:
             fh.write(blob)
-        os.replace(tmp, directory / "last.jpg")
+        os.replace(tmp, directory / filename)
     except OSError:
         pass  # a full disk must not break the reading
 
@@ -383,6 +390,7 @@ def do_read():
             remember(name, result)
             if result.get("accepted") and result.get("value") is not None:
                 last_accepted(name, result["value"])
+                remember(name, result, "last_accepted.jpg")
         _LAST_READ[name] = time.time()
 
     latest = _firmware_version()
@@ -432,6 +440,27 @@ def last_jpg():
     return send_file(str(path), mimetype="image/jpeg", max_age=0)
 
 
+@APP.route("/last_accepted.jpg")
+def last_accepted_jpg():
+    """The frame behind the last ACCEPTED reading, with that reading.
+
+    X-Value and X-At carry last_accepted.json, so a caller gets the number
+    and the photo of it in one request and they can never disagree.
+    """
+    if not authorised():
+        return deny()
+    name = request.args.get("meter", "gas")
+    path = IMAGE_DIR / name / "last_accepted.jpg"
+    record = last_accepted_record(name)
+    if not path.is_file() or not record:
+        return jsonify({"error": "nothing accepted yet for %r" % name}), 404
+    resp = send_file(str(path), mimetype="image/jpeg", max_age=0)
+    resp.headers["X-Value"] = str(record.get("value"))
+    resp.headers["X-At"] = str(record.get("at"))
+    resp.headers["X-At-Epoch"] = str(record.get("at_epoch"))
+    return resp
+
+
 # ---------------------------------------------------------------------------
 # Firmware, for a board that updates itself
 # ---------------------------------------------------------------------------
@@ -447,6 +476,37 @@ def _firmware_version():
             return fh.read().strip() or None
     except OSError:
         return None
+
+
+@APP.route("/gas/bot/status")
+def gas_bot_status():
+    """Walk @mygrmu_bot to the value prompt and back; send nothing."""
+    if not gasbot_authorised():
+        return deny()
+    return jsonify(gasbot.run())
+
+
+@APP.route("/gas/bot/submit", methods=["POST"])
+def gas_bot_submit():
+    """Send ONE monthly reading to @mygrmu_bot. Body: {"value": 2262}."""
+    if not gasbot_authorised():
+        return deny()
+    body = request.get_json(silent=True) or {}
+    try:
+        value = float(str(body.get("value", "")).replace(",", "."))
+    except ValueError:
+        return jsonify({"ok": False, "error": "value must be a number"}), 400
+    if value <= 0 or value >= 100000 or round(value, 2) != value:
+        return jsonify({"ok": False, "error": "value out of range: %r" % body.get("value")}), 400
+    result = gasbot.run(value)
+    print("gas bot submit %s -> %s" % (value, "ok" if result.get("ok")
+                                        else result.get("error")), flush=True)
+    return jsonify(result)
+
+
+def gasbot_authorised():
+    supplied = request.headers.get("X-Gasbot-Token")
+    return GASBOT_TOKEN is not None and supplied == GASBOT_TOKEN
 
 
 @APP.route("/firmware/version.txt")

@@ -23,10 +23,11 @@ house stays on the box in `/opt/metercam/` and is never overwritten by a deploy:
 | On the box | What | Mounted as |
 | --- | --- | --- |
 | `config.json` | the meter, its ROIs, Home Assistant's address | `/config/config.json`, read-only |
-| `.env` | `METERCAM_TOKEN`, `METERCAM_HA_TOKEN` | environment |
+| `.env` | `METERCAM_TOKEN`, `METERCAM_HA_TOKEN`, `GASBOT_*` | environment |
+| `data/telegram/` | the gas bot's Telegram session (a logged-in account: keep it private) | `/data` |
 | `models/*.tflite` | jomjol's weights | `/models`, read-only |
 | `data/ref/gas.jpg` | the alignment reference | `/data` |
-| `data/images/gas/` | archived frames (`raw/`, `rejected/`), `last.jpg`, `last_accepted.json` | `/data` |
+| `data/images/gas/` | archived frames (`raw/`, `rejected/`), `last.jpg`, `last_accepted.json` + `last_accepted.jpg` | `/data` |
 | `data/firmware/` | `gas-cam.bin`, `version.txt`, older builds for rollback | `/data` |
 
 The reference and the ROIs are one matched pair: each ROI is a pixel rectangle
@@ -118,3 +119,11 @@ installs `metercam-prune.timer`, **hourly**, with two rules:
 The ceiling is not redundant. A camera knocked out of alignment refuses every
 wake, and at 48 wakes a day the age rule alone would let that fill the rootfs.
 Change the numbers in `_lxc_env.sh` and re-run `lxc_provision.sh`.
+
+## Gas reading bot
+
+`service/gasbot.py` sends the monthly gas reading to Gazmerezhi's Telegram bot.
+It needs `GASBOT_API_ID`, `GASBOT_API_HASH`, `GASBOT_ACCOUNT`, `GASBOT_COUNTER`
+and `GASBOT_TOKEN` in `.env`, then a one-time Telegram login. Both are in
+[`gas-bot.md`](gas-bot.md). Until they are set, `/gas/bot/*` answers
+`not configured` and the rest of the service is unaffected.
