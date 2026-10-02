@@ -1,0 +1,773 @@
+# ---------------------------------------------------------------------------
+# Load shedding — step devices down as the battery drains during an outage
+#
+#     sensor.load_shedding_config  — the rules, built on the dashboard
+#     sensor.load_shedding         — what the system has done this outage
+#     input_boolean.load_shedding_enabled — the master switch
+#
+# The rules are not in this file. They are edited on the "Load shedding" tab
+# of the Shutdowns dashboard (config/www/load-shedding-card.js), a constructor:
+# add any device, give it any number of steps, and make each step any action
+# that device's own domain offers. This file is the engine that carries them
+# out. Full write-up: HomeAssistant/docs/load-shedding.md.
+#
+# ---------------------------------------------------------------------------
+# The rules, as data
+#
+#     override_step: 10
+#     devices:
+#       - id: hall_ac                       # stable, made by the panel
+#         name: Hall A/C
+#         entity: climate.daewoo_a_c
+#         enabled: true
+#         guard: {plug: switch..., running: binary_sensor..., online: binary_sensor...}
+#         steps:
+#           - {soc: 80, action: climate.set_temperature, data: {temperature: 27}}
+#           - {soc: 60, action: climate.set_hvac_mode,   data: {hvac_mode: "off"}}
+#
+# At any battery level a device is at its DEEPEST step reached: the reached
+# step with the lowest %. Devices go in the order of their first step. An
+# action is `domain.service` and must be of the entity's own domain; the one
+# extra is `climate.adjust_temperature` {by: 2}, which sets the temperature to
+# the setpoint the device had BEFORE its first step plus `by` — so "two degrees
+# warmer" never stacks.
+#
+# The rules are stored in a trigger-based template sensor fed by an event, the
+# same way as the runtime state below: it survives restarts, and the panel
+# writes it only through script.load_shedding_save_config, which checks it.
+# Git does not see edits made on the panel; the panel exports and imports the
+# JSON for that.
+#
+# ---------------------------------------------------------------------------
+# Only during an outage
+#
+# The state of charge alone does not say the grid is gone. Auto Tariff Mode
+# runs the house off the pack every day on purpose (PowerStation
+# docs/architecture.md, rule 4). So everything is gated on the inverter's own
+# verdict, binary_sensor.powmr_inverter_grid_condition_safe, whose `on` means
+# UNSAFE. A brownout counts: the inverter is on battery then too.
+#
+# A device is only acted on while it is on (or, with a guard, while its
+# `running` sensor says so). An A/C that is already off is left alone, so it
+# is not "restored" into running when the grid comes back.
+#
+# ---------------------------------------------------------------------------
+# The guard
+#
+# Optional, for a device whose "off" might not take: the hall A/C is infrared
+# and write-only. After a step that switches the device off, if `running` is
+# still on two minutes later — or `online` (the IR bridge) is off — the `plug`
+# is cut. The plug comes back on first when the grid returns.
+#
+# ---------------------------------------------------------------------------
+# Overrides
+#
+# Thirty seconds after a step, the device's state is recorded as `applied`.
+# If, three minutes or more after the step, the device no longer looks like
+# that — you put the setpoint back, raised the lamp, switched it on — that is
+# an override, and it wins until the battery has fallen `override_step` further.
+# Then the deepest step reached is applied again.
+#
+# ---------------------------------------------------------------------------
+# A warning before each step, and holding a device
+#
+# When a device is within `warn_margin` % (default 1) of its next step — a step
+# at 50% warns at 51% — the phones get one notification for that step, with a
+# "Keep it on" button. The panel's "Coming up" table shows the same thing and
+# has the same button. Either one HOLDS the device: its steps wait until the
+# battery has fallen `override_step` further, exactly as if you had overridden
+# it. A device already stepped down can be put back from the table, which
+# restores it and holds it the same way. "Release" ends a hold.
+#
+# ---------------------------------------------------------------------------
+# When the grid comes back
+#
+# On the grid sensor's unsafe -> safe edge (which already includes the
+# firmware's five minutes of stable voltage), every device the system touched
+# and you did not override is put back with scene.apply from the snapshot taken
+# before its first step. scene.apply is Home Assistant's own reproduce-state,
+# so it knows how to put back any domain — an A/C's mode and setpoint, a lamp's
+# brightness, a fan's speed. The same runs at HA start, so an outage that ended
+# while HA was down is still cleaned up.
+#
+# ---------------------------------------------------------------------------
+# Runtime bookkeeping
+#
+# sensor.load_shedding, fed by `load_shedding_set`. Its `loads` attribute is
+#
+#     id -> {entity, name, since, soc, step_soc, snapshot, applied,
+#            plug, plug_cut, override_soc}
+#
+# A hold placed before any step has no snapshot and a null step_soc. The
+# `warned` attribute lists "id@soc" for every warning already sent this
+# outage, so each step warns once.
+#
+# Events are handled one at a time, so two devices stepped in the same minute
+# cannot overwrite each other. The field that wipes it is `reset`, not
+# `clear`: in Jinja, d.clear finds the dict's own .clear method before the key.
+# ---------------------------------------------------------------------------
+
+input_boolean:
+  load_shedding_enabled:
+    name: "Load shedding"
+    icon: mdi:transmission-tower-off
+
+template:
+  # --- the rules ------------------------------------------------------------
+  - trigger:
+      - platform: event
+        event_type: load_shedding_config_set
+    action:
+      - variables:
+          cfg: "{{ trigger.event.data.config }}"
+    sensor:
+      - name: "Load shedding config"
+        unique_id: load_shedding_config
+        icon: mdi:playlist-edit
+        state: "{{ (cfg['devices'] if cfg is mapping and cfg['devices'] is defined else []) | count }}"
+        attributes:
+          devices: "{{ cfg['devices'] if cfg is mapping and cfg['devices'] is defined else [] }}"
+          override_step: "{{ cfg['override_step'] if cfg is mapping and cfg['override_step'] is defined else 10 }}"
+          warn_margin: "{{ cfg['warn_margin'] if cfg is mapping and cfg['warn_margin'] is defined else 1 }}"
+
+  # --- what has been done ---------------------------------------------------
+  - trigger:
+      - platform: event
+        event_type: load_shedding_set
+    action:
+      - variables:
+          # Either {reset: true}, {warned: "id@soc"}, or {id, value}; a value
+          # that is not a mapping deletes the id.
+          warned: >-
+            {% set cur = state_attr('sensor.load_shedding', 'warned') %}
+            {% set cur = cur if cur is iterable and cur is not string and cur is not mapping else [] %}
+            {% set d = trigger.event.data %}
+            {% if d.reset | default(false) %}{{ [] }}
+            {% elif d.warned is defined and d.warned not in cur %}{{ cur + [d.warned] }}
+            {% else %}{{ cur }}{% endif %}
+          loads: >-
+            {% set cur = state_attr('sensor.load_shedding', 'loads') %}
+            {% set cur = cur if cur is mapping else {} %}
+            {% set d = trigger.event.data %}
+            {% if d.reset | default(false) %}
+              {{ {} }}
+            {% elif d.id is not defined %}
+              {{ cur }}
+            {% else %}
+              {% set ns = namespace(out={}) %}
+              {% for k, v in cur.items() if k != d.id %}
+                {% set ns.out = dict(ns.out, **{k: v}) %}
+              {% endfor %}
+              {% if d.value is mapping %}
+                {% set ns.out = dict(ns.out, **{d.id: d.value}) %}
+              {% endif %}
+              {{ ns.out }}
+            {% endif %}
+    sensor:
+      - name: "Load shedding"
+        unique_id: load_shedding
+        icon: mdi:transmission-tower-off
+        state: "{{ loads | count }}"
+        attributes:
+          loads: "{{ loads }}"
+          warned: "{{ warned }}"
+
+script:
+  # --- the only way the panel writes the rules --------------------------------
+  load_shedding_save_config:
+    alias: "Load shedding: save the rules"
+    mode: queued
+    fields:
+      config:
+        description: "{override_step, devices: [...]} — see packages/load_shedding.yaml"
+        required: true
+        selector:
+          object:
+    sequence:
+      - variables:
+          # Every problem with the config, as sentences. Empty = good.
+          errors: >-
+            {% set e = namespace(list=[], ids=[]) %}
+            {% if config is not mapping or config['devices'] is not defined
+                  or config['devices'] is string or config['devices'] is not iterable %}
+              {% set e.list = e.list + ['the config needs a list of devices'] %}
+            {% else %}
+              {% set os = config['override_step'] if config['override_step'] is defined else 10 %}
+              {% if not (os | is_number) or os | float < 1 or os | float > 50 %}
+                {% set e.list = e.list + ['override_step must be 1-50'] %}
+              {% endif %}
+              {% set wm = config['warn_margin'] if config['warn_margin'] is defined else 1 %}
+              {% if not (wm | is_number) or wm | float < 0 or wm | float > 20 %}
+                {% set e.list = e.list + ['warn_margin must be 0-20'] %}
+              {% endif %}
+              {% for d in config['devices'] %}
+                {% set label = (d['name'] if d is mapping and d['name'] is defined else 'device ' ~ loop.index) %}
+                {% if d is not mapping or d['id'] is not defined or not d['id'] or d['entity'] is not defined
+                      or (d['entity'] | string).split('.') | count != 2 %}
+                  {% set e.list = e.list + [label ~ ': needs an id and an entity'] %}
+                {% else %}
+                  {% if d['id'] in e.ids %}{% set e.list = e.list + [label ~ ': duplicate id ' ~ d['id']] %}{% endif %}
+                  {% set e.ids = e.ids + [d['id']] %}
+                  {% set domain = d['entity'].split('.')[0] %}
+                  {% set seen = namespace(socs=[]) %}
+                  {% for s in (d['steps'] if d['steps'] is defined and d['steps'] is not string else []) %}
+                    {% if s is not mapping or s['soc'] is not defined or not (s['soc'] | is_number) or s['soc'] | float < 1 or s['soc'] | float > 100 %}
+                      {% set e.list = e.list + [label ~ ': step ' ~ loop.index ~ ' needs a battery % of 1-100'] %}
+                    {% else %}
+                      {% if s['soc'] | float in seen.socs %}
+                        {% set e.list = e.list + [label ~ ': two steps at ' ~ s['soc'] ~ '%'] %}
+                      {% endif %}
+                      {% set seen.socs = seen.socs + [s['soc'] | float] %}
+                      {% set a = (s['action'] if s['action'] is defined else '') | string %}
+                      {% if a.split('.') | count != 2 or a.split('.')[0] != domain %}
+                        {% set e.list = e.list + [label ~ ': step at ' ~ s['soc'] ~ '% must be a ' ~ domain ~ ' action'] %}
+                      {% endif %}
+                      {% if s['data'] is defined and s['data'] is not mapping %}
+                        {% set e.list = e.list + [label ~ ': step at ' ~ s['soc'] ~ '% has data that is not an object'] %}
+                      {% endif %}
+                    {% endif %}
+                  {% endfor %}
+                {% endif %}
+              {% endfor %}
+            {% endif %}
+            {{ e.list }}
+      # The panel calls this with return_response and reads {ok, errors}: a
+      # stop with error: true is not reported back through a service call.
+      - variables:
+          result: "{{ {'ok': errors | count == 0, 'errors': errors} }}"
+      - if:
+          - condition: template
+            value_template: "{{ errors | count > 0 }}"
+        then:
+          - stop: "The rules were refused."
+            response_variable: result
+      - event: load_shedding_config_set
+        event_data:
+          config:
+            override_step: "{{ config['override_step'] if config['override_step'] is defined else 10 }}"
+            warn_margin: "{{ config['warn_margin'] if config['warn_margin'] is defined else 1 }}"
+            devices: "{{ config['devices'] }}"
+      - stop: "Saved."
+        response_variable: result
+
+  # The rules this package started with, as steps. Run by the seed automation
+  # when there are none; also handy to get back to a known state.
+  load_shedding_seed:
+    alias: "Load shedding: seed the starting rules"
+    mode: single
+    sequence:
+      - service: script.load_shedding_save_config
+        data:
+          config:
+            override_step: 10
+            warn_margin: 1
+            devices:
+              - id: hall_ac
+                name: "Hall A/C"
+                entity: climate.daewoo_a_c
+                enabled: true
+                guard:
+                  plug: switch.0x70b3d52b600fddcb
+                  running: binary_sensor.a_c_running
+                  online: binary_sensor.ir_bridge_online
+                steps:
+                  - soc: 80
+                    action: climate.set_hvac_mode
+                    data:
+                      hvac_mode: "off"
+              - id: bedroom_ac
+                name: "Bedroom A/C"
+                entity: climate.153931629566331_climate
+                enabled: true
+                guard:
+                  plug: switch.0xa4c13820fe9ec412
+                  running: binary_sensor.bedroom_a_c_running
+                steps:
+                  - soc: 60
+                    action: climate.set_hvac_mode
+                    data:
+                      hvac_mode: "off"
+              - id: led_ambient
+                name: "LED ambient"
+                entity: light.0xa4c1385443844c1e
+                enabled: true
+                steps:
+                  - soc: 80
+                    action: light.turn_on
+                    data:
+                      brightness_pct: 30
+                  - soc: 50
+                    action: light.turn_off
+                    data: {}
+
+  # --- apply one step to one device ----------------------------------------
+  load_shed_apply:
+    alias: "Load shedding: apply a step"
+    mode: parallel
+    max: 20
+    fields:
+      id:
+        description: "The device's id in the rules"
+      soc:
+        description: "The battery % of the step to apply"
+    sequence:
+      - variables:
+          # The attributes worth putting back, and comparing for overrides.
+          # `state` is always taken as well.
+          keys: &keys
+            - temperature
+            - target_temp_low
+            - target_temp_high
+            - fan_mode
+            - swing_mode
+            - preset_mode
+            - brightness
+            - color_temp_kelvin
+            - percentage
+            - oscillating
+            - current_position
+            - volume_level
+            - source
+          dev: >-
+            {{ (state_attr('sensor.load_shedding_config', 'devices') or [])
+               | selectattr('id', 'eq', id) | first | default(none) }}
+      - condition: template
+        value_template: "{{ dev is mapping }}"
+      - variables:
+          e: "{{ dev.entity }}"
+          step: >-
+            {% set ns = namespace(s=none) %}
+            {% for s in dev.steps if s.soc | float == soc | float %}{% set ns.s = s %}{% endfor %}
+            {{ ns.s }}
+          prev: "{{ (state_attr('sensor.load_shedding', 'loads') or {}).get(id) }}"
+          now_soc: "{{ states('sensor.jkbms_gateway_bms_state_of_charge') | float(0) | round(0) }}"
+          # What the device looked like before the system touched it: kept
+          # from the first step, so a second step does not record the first.
+          snapshot: >-
+            {% if prev is mapping and prev.snapshot is mapping %}{{ prev.snapshot }}
+            {% else %}
+              {% set ns = namespace(d={'state': states(e)}) %}
+              {% for k in keys if state_attr(e, k) is not none %}
+                {% set ns.d = dict(ns.d, **{k: state_attr(e, k)}) %}
+              {% endfor %}
+              {{ ns.d }}
+            {% endif %}
+      - condition: template
+        # Already at this step and not overridden: nothing to do. Guards
+        # against two evaluations starting the same step.
+        value_template: >-
+          {{ step is mapping and not (prev is mapping and prev.override_soc is none
+             and prev.step_soc | float(-1) == soc | float) }}
+      - variables:
+          service: >-
+            {{ 'climate.set_temperature' if step.action == 'climate.adjust_temperature' else step.action }}
+          data: >-
+            {% if step.action == 'climate.adjust_temperature' %}
+              {{ {'temperature': (snapshot.temperature | float(24)) + (step.data.by | float(0))} }}
+            {% else %}{{ step.data if step.data is mapping else {} }}{% endif %}
+          # Does this step switch the device off? Only then does the guard act.
+          turns_off: >-
+            {{ service.endswith('.turn_off')
+               or (service == 'climate.set_hvac_mode' and data.hvac_mode | default('') == 'off') }}
+          record: >-
+            {{ {'entity': e, 'name': dev.name, 'since': now().isoformat(), 'soc': now_soc,
+                'step_soc': soc | float, 'snapshot': snapshot, 'applied': none,
+                'plug': prev.plug if prev is mapping else none,
+                'plug_cut': prev.plug_cut if prev is mapping else false,
+                'override_soc': none} }}
+      - event: load_shedding_set
+        event_data:
+          id: "{{ id }}"
+          value: "{{ record }}"
+      - action: "{{ service }}"
+        continue_on_error: true
+        target:
+          entity_id: "{{ e }}"
+        data: "{{ data }}"
+      - delay: "00:00:30"
+      - variables:
+          applied: >-
+            {% set ns = namespace(d={'state': states(e)}) %}
+            {% for k in keys if state_attr(e, k) is not none %}
+              {% set ns.d = dict(ns.d, **{k: state_attr(e, k)}) %}
+            {% endfor %}
+            {{ ns.d }}
+          guard: "{{ dev.guard if dev.guard is mapping else {} }}"
+      - event: load_shedding_set
+        event_data:
+          id: "{{ id }}"
+          value: "{{ dict(record, applied=applied) }}"
+      - variables:
+          cut: false
+      - if:
+          - condition: template
+            value_template: "{{ turns_off and guard.plug is defined and guard.plug }}"
+        then:
+          - if:
+              - condition: template
+                value_template: "{{ guard.running is defined and guard.running and not (guard.online is defined and guard.online and not is_state(guard.online, 'on')) }}"
+            then:
+              - wait_template: "{{ is_state(guard.running, 'off') }}"
+                timeout: "00:01:30"
+                continue_on_timeout: true
+          - variables:
+              cut: >-
+                {{ (guard.running is defined and guard.running and is_state(guard.running, 'on'))
+                   or (guard.online is defined and guard.online and not is_state(guard.online, 'on')) }}
+          - if:
+              - condition: template
+                value_template: "{{ cut and is_state(guard.plug, 'on') }}"
+            then:
+              - service: switch.turn_off
+                target:
+                  entity_id: "{{ guard.plug }}"
+              - event: load_shedding_set
+                event_data:
+                  id: "{{ id }}"
+                  value: "{{ dict(record, applied=applied, plug=guard.plug, plug_cut=true) }}"
+      - variables:
+          what: >-
+            {% set svc = step.action.split('.')[1] | replace('_', ' ') %}
+            {% set d = step.data if step.data is mapping else {} %}
+            {{ svc }}{% if d | count %} ({% for k, v in d.items() %}{{ k | replace('_', ' ') }} {{ v }}{{ ', ' if not loop.last }}{% endfor %}){% endif %}
+          message: >-
+            Battery {{ now_soc }}%: {{ dev.name }} — {{ what }}{{ ', plug cut' if cut else '' }}.
+            {% set r = states('sensor.battery_runtime_remaining') %}{% if r | is_number %}About {{ r | float | round(1) }} h left at the current draw.{% endif %}
+      - service: notify.household
+        data:
+          title: "🔌 Load shedding"
+          message: "{{ message }}"
+          data:
+            channel: Load shedding
+      - service: notify.persistent_notification
+        data:
+          title: "🔌 Load shedding"
+          message: "{{ message }}"
+
+  # --- put one device back --------------------------------------------------
+  load_shed_restore_one:
+    alias: "Load shedding: restore one device"
+    mode: parallel
+    max: 20
+    fields:
+      rec:
+        description: "The device's record from sensor.load_shedding"
+    sequence:
+      - if:
+          - condition: template
+            value_template: "{{ rec.plug_cut | default(false) and rec.plug and not is_state(rec.plug, 'on') }}"
+        then:
+          - service: switch.turn_on
+            target:
+              entity_id: "{{ rec.plug }}"
+          # A networked unit rejoins the LAN slowly; an IR one boots its board.
+          - wait_template: "{{ states(rec.entity) not in ['unavailable', 'unknown'] }}"
+            timeout: "00:02:00"
+            continue_on_timeout: true
+          - delay: "00:00:10"
+      - condition: template
+        value_template: "{{ rec.snapshot is mapping and rec.snapshot.state not in ['unavailable', 'unknown'] }}"
+      - service: scene.apply
+        continue_on_error: true
+        data:
+          entities: "{{ {rec.entity: rec.snapshot} }}"
+
+  # --- keep a device on: from the panel's "Coming up" table or a phone ----------
+  # Before a step: hold it until the battery has fallen override_step further.
+  # Already stepped down: put it back the way it was, and hold it the same way.
+  load_shedding_hold:
+    alias: "Load shedding: keep a device on"
+    mode: queued
+    fields:
+      id:
+        description: "The device's id in the rules"
+    sequence:
+      - variables:
+          dev: >-
+            {{ (state_attr('sensor.load_shedding_config', 'devices') or [])
+               | selectattr('id', 'eq', id) | first | default(none) }}
+          prev: "{{ (state_attr('sensor.load_shedding', 'loads') or {}).get(id) }}"
+          now_soc: "{{ states('sensor.jkbms_gateway_bms_state_of_charge') | float(0) | round(0) }}"
+      # Only during an outage: the store is wiped when the grid returns, and a
+      # hold placed with the grid up would otherwise wait for the next outage.
+      - condition: template
+        value_template: "{{ dev is mapping and is_state('binary_sensor.powmr_inverter_grid_condition_safe', 'on') }}"
+      - if:
+          - condition: template
+            value_template: "{{ prev is mapping and prev.snapshot is mapping and prev.override_soc is none }}"
+        then:
+          - service: script.load_shed_restore_one
+            data:
+              rec: "{{ prev }}"
+      - event: load_shedding_set
+        event_data:
+          id: "{{ id }}"
+          value: >-
+            {% if prev is mapping %}{{ dict(prev, override_soc=now_soc, plug_cut=false) }}
+            {% else %}{{ {'entity': dev.entity, 'name': dev.name, 'since': now().isoformat(),
+                          'soc': now_soc, 'step_soc': none, 'snapshot': none, 'applied': none,
+                          'plug': none, 'plug_cut': false, 'override_soc': now_soc} }}{% endif %}
+
+  # End a hold: the device is treated as fresh again, so the deepest step
+  # reached applies on the next evaluation.
+  load_shedding_release:
+    alias: "Load shedding: release a hold"
+    mode: queued
+    fields:
+      id:
+        description: "The device's id in the rules"
+    sequence:
+      - condition: template
+        value_template: >-
+          {{ ((state_attr('sensor.load_shedding', 'loads') or {}).get(id) or {}).override_soc is not none }}
+      - event: load_shedding_set
+        event_data:
+          id: "{{ id }}"
+          value: null
+
+automation:
+  - id: load_shedding_evaluate
+    alias: "Load shedding: evaluate"
+    mode: queued
+    max: 3
+    trigger:
+      - platform: state
+        entity_id: sensor.jkbms_gateway_bms_state_of_charge
+      - platform: state
+        entity_id: binary_sensor.powmr_inverter_grid_condition_safe
+        to: "on"
+      - platform: state
+        entity_id:
+          - input_boolean.load_shedding_enabled
+          - sensor.load_shedding_config
+      # Overrides and devices switched on mid-outage are caught by this. A
+      # state_changed trigger would be faster but would wake this automation
+      # for every state change in the house.
+      - platform: time_pattern
+        minutes: "/1"
+    condition:
+      - condition: state
+        entity_id: input_boolean.load_shedding_enabled
+        state: "on"
+      - condition: state
+        entity_id: binary_sensor.powmr_inverter_grid_condition_safe
+        state: "on"
+    action:
+      - variables:
+          # One render decides everything; tools/test_load_shedding.py renders
+          # this exact text. {due: [{id, soc}] in order, overridden: [ids],
+          # warn: [{id, at, key}]}.
+          decision: >-
+            {% set soc_s = states('sensor.jkbms_gateway_bms_state_of_charge') %}
+            {% set devices = state_attr('sensor.load_shedding_config', 'devices') or [] %}
+            {% set shed = state_attr('sensor.load_shedding', 'loads') %}
+            {% set shed = shed if shed is mapping else {} %}
+            {% set ostep = state_attr('sensor.load_shedding_config', 'override_step') | float(10) %}
+            {% set margin = state_attr('sensor.load_shedding_config', 'warn_margin') | float(1) %}
+            {% set tol = {'brightness': 3, 'temperature': 0.5, 'target_temp_low': 0.5,
+                          'target_temp_high': 0.5, 'percentage': 2, 'current_position': 2,
+                          'volume_level': 0.03, 'color_temp_kelvin': 50} %}
+            {% set out = namespace(due=[], over=[], warn=[]) %}
+            {% if is_state('input_boolean.load_shedding_enabled', 'on')
+                  and is_state('binary_sensor.powmr_inverter_grid_condition_safe', 'on')
+                  and soc_s | is_number %}
+              {% set soc = soc_s | float %}
+              {% set rows = namespace(list=[]) %}
+              {% for d in devices if d is mapping and d.enabled | default(true) and d.steps is defined %}
+                {% set st = namespace(top=0, target=none) %}
+                {% for s in d.steps if s.soc | is_number %}
+                  {% if s.soc | float > st.top %}{% set st.top = s.soc | float %}{% endif %}
+                  {% if soc <= s.soc | float and (st.target is none or s.soc | float < st.target) %}
+                    {% set st.target = s.soc | float %}
+                  {% endif %}
+                {% endfor %}
+                {% if st.top > 0 %}
+                  {% set rows.list = rows.list + [{'d': d, 'top': st.top, 'target': st.target}] %}
+                {% endif %}
+              {% endfor %}
+              {% for r in rows.list | sort(attribute='top', reverse=true) %}
+                {% set d = r.d %}
+                {% set e = d.entity %}
+                {% set g = d.guard if d.guard is mapping else {} %}
+                {% set on = states(e) not in ['off', 'unavailable', 'unknown']
+                            or (g.running is defined and g.running and is_state(g.running, 'on')) %}
+                {% set rec = shed.get(d.id) %}
+                {# Where it fires next: a hold waits for override_step lower,
+                   otherwise the highest step below the battery that is deeper
+                   than the one already applied. Warned `margin` % before. #}
+                {% set nx = namespace(at=none) %}
+                {% if rec is mapping and rec.override_soc is not none %}
+                  {% set nx.at = rec.override_soc | float - ostep %}
+                {% else %}
+                  {% for s in d.steps if s.soc | is_number and s.soc | float < soc
+                        and (rec is not mapping or s.soc | float < rec.step_soc | float(101)) %}
+                    {% if nx.at is none or s.soc | float > nx.at %}{% set nx.at = s.soc | float %}{% endif %}
+                  {% endfor %}
+                {% endif %}
+                {% if on and nx.at is not none and margin > 0 and nx.at < soc <= nx.at + margin %}
+                  {% set out.warn = out.warn + [{'id': d.id, 'at': nx.at, 'key': d.id ~ '@' ~ (nx.at | round(1))}] %}
+                {% endif %}
+                {% if rec is not mapping %}
+                  {% if on and r.target is not none %}
+                    {% set out.due = out.due + [{'id': d.id, 'soc': r.target}] %}
+                  {% endif %}
+                {% elif rec.override_soc is none %}
+                  {% set age = (now() - as_datetime(rec.since)).total_seconds() if as_datetime(rec.since) else 0 %}
+                  {# Does it still look the way the step left it? #}
+                  {% set ch = namespace(changed=false) %}
+                  {% if rec.plug_cut and rec.plug %}
+                    {% set ch.changed = is_state(rec.plug, 'on') %}
+                  {% elif rec.applied is mapping and states(e) not in ['unavailable', 'unknown'] %}
+                    {% for k, v in rec.applied.items() %}
+                      {% set now_v = states(e) if k == 'state' else state_attr(e, k) %}
+                      {% if k in tol and v | is_number and now_v | is_number %}
+                        {% if (now_v | float - v | float) | abs > tol[k] %}{% set ch.changed = true %}{% endif %}
+                      {% elif now_v != v %}
+                        {% set ch.changed = true %}
+                      {% endif %}
+                    {% endfor %}
+                  {% endif %}
+                  {% if ch.changed and age > 180 %}
+                    {% set out.over = out.over + [d.id] %}
+                  {% elif on and r.target is not none and r.target < rec.step_soc | float(101) %}
+                    {# A deeper step has been reached. #}
+                    {% set out.due = out.due + [{'id': d.id, 'soc': r.target}] %}
+                  {% endif %}
+                {% elif on and r.target is not none and soc <= rec.override_soc | float - ostep %}
+                  {% set out.due = out.due + [{'id': d.id, 'soc': r.target}] %}
+                {% endif %}
+              {% endfor %}
+            {% endif %}
+            {{ {'due': out.due, 'overridden': out.over, 'warn': out.warn} }}
+          soc_now: "{{ states('sensor.jkbms_gateway_bms_state_of_charge') | float(0) | round(0) }}"
+      - repeat:
+          for_each: "{{ decision.overridden }}"
+          sequence:
+            - event: load_shedding_set
+              event_data:
+                id: "{{ repeat.item }}"
+                value: >-
+                  {% set rec = state_attr('sensor.load_shedding', 'loads')[repeat.item] %}
+                  {{ dict(rec, override_soc=soc_now) }}
+      - repeat:
+          for_each: >-
+            {% set sent = state_attr('sensor.load_shedding', 'warned') or [] %}
+            {{ decision.warn | rejectattr('key', 'in', sent) | list }}
+          sequence:
+            - event: load_shedding_set
+              event_data:
+                warned: "{{ repeat.item.key }}"
+            - variables:
+                dev: >-
+                  {{ (state_attr('sensor.load_shedding_config', 'devices') or [])
+                     | selectattr('id', 'eq', repeat.item.id) | first }}
+                held: "{{ ((state_attr('sensor.load_shedding', 'loads') or {}).get(repeat.item.id) or {}).override_soc is not none }}"
+                message: >-
+                  Battery {{ soc_now }}%: {{ dev.name }} steps down at {{ repeat.item.at | round(0) }}%{{ ' (your hold ends there)' if held else '' }}.
+            - service: notify.household
+              data:
+                title: "🔌 Load shedding: {{ dev.name }} next"
+                message: "{{ message }}"
+                data:
+                  channel: Load shedding
+                  tag: "load-shedding-{{ repeat.item.id }}"
+                  actions:
+                    - action: "LOAD_SHED_HOLD_{{ repeat.item.id }}"
+                      title: "Keep it on"
+      - repeat:
+          for_each: "{{ decision.due }}"
+          sequence:
+            - service: script.turn_on
+              target:
+                entity_id: script.load_shed_apply
+              data:
+                variables:
+                  id: "{{ repeat.item.id }}"
+                  soc: "{{ repeat.item.soc }}"
+
+  - id: load_shedding_restore
+    alias: "Load shedding: restore when the grid is back"
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.powmr_inverter_grid_condition_safe
+        from: "on"
+        to: "off"
+      - platform: homeassistant
+        event: start
+    condition:
+      - condition: state
+        entity_id: binary_sensor.powmr_inverter_grid_condition_safe
+        state: "off"
+      - condition: template
+        value_template: "{{ (state_attr('sensor.load_shedding', 'loads') or {}) | count > 0 }}"
+    action:
+      - variables:
+          shed: "{{ state_attr('sensor.load_shedding', 'loads') }}"
+          # Only what the system changed and you did not take back.
+          back: >-
+            {% set ns = namespace(ids=[]) %}
+            {% for k, rec in shed.items() if rec is mapping and rec.override_soc is none %}
+              {% set ns.ids = ns.ids + [k] %}
+            {% endfor %}
+            {{ ns.ids }}
+          names: >-
+            {% set ns = namespace(n=[]) %}
+            {% for k in back %}{% set ns.n = ns.n + [shed[k].name | default(k)] %}{% endfor %}
+            {{ ns.n | join(', ') }}
+      - repeat:
+          for_each: "{{ back }}"
+          sequence:
+            - service: script.turn_on
+              target:
+                entity_id: script.load_shed_restore_one
+              data:
+                variables:
+                  rec: "{{ shed[repeat.item] }}"
+      - event: load_shedding_set
+        event_data:
+          reset: true
+      - if:
+          - condition: template
+            value_template: "{{ back | count > 0 }}"
+        then:
+          - variables:
+              message: "Grid is back: {{ names }} put back the way they were."
+          - service: notify.household
+            data:
+              title: "🔌 Load shedding"
+              message: "{{ message }}"
+              data:
+                channel: Load shedding
+          - service: notify.persistent_notification
+            data:
+              title: "🔌 Load shedding"
+              message: "{{ message }}"
+
+  # First start with no rules at all: put the starting ones in.
+  - id: load_shedding_seed_when_empty
+    alias: "Load shedding: seed the rules when there are none"
+    mode: single
+    trigger:
+      - platform: homeassistant
+        event: start
+    condition:
+      - condition: template
+        value_template: "{{ (state_attr('sensor.load_shedding_config', 'devices') or []) | count == 0 }}"
+    action:
+      - service: script.load_shedding_seed
+
+  # The "Keep it on" button on a warning.
+  - id: load_shedding_hold_from_phone
+    alias: "Load shedding: keep it on (from a phone)"
+    mode: queued
+    trigger:
+      - platform: event
+        event_type: mobile_app_notification_action
+    condition:
+      - condition: template
+        value_template: "{{ trigger.event.data.action is string and trigger.event.data.action.startswith('LOAD_SHED_HOLD_') }}"
+    action:
+      - service: script.load_shedding_hold
+        data:
+          id: "{{ trigger.event.data.action[15:] }}"

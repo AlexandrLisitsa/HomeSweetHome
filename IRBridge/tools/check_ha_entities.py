@@ -130,6 +130,9 @@ REF = re.compile(
 SERVICE_VERBS = {
     "set_value", "turn_on", "turn_off", "toggle", "reload", "select_option",
     "increment", "decrement", "publish", "create", "dismiss", "set_datetime",
+    "set_hvac_mode", "set_temperature",
+    # Not a service: load_shedding.yaml's relative-setpoint pseudo-action.
+    "adjust_temperature",
 }
 
 EXTERNAL = {

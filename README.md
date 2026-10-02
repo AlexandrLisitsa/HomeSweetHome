@@ -29,7 +29,7 @@ flowchart LR
 
 | Module | What it is |
 | --- | --- |
-| [`HomeAssistant/`](HomeAssistant/README.md) | The live Home Assistant `/config`, mirrored so config changes are reviewable diffs; custom Lovelace cards (inverter, battery, climate, outage schedule, floor plan); the DTEK outage-schedule poller; and SSH/REST/WebSocket tooling to pull, push and inspect the box. |
+| [`HomeAssistant/`](HomeAssistant/README.md) | The live Home Assistant `/config`, mirrored so config changes are reviewable diffs; custom Lovelace cards (inverter, battery, climate, outage schedule, load shedding, floor plan); the DTEK outage-schedule poller; battery-driven load shedding during outages; and SSH/REST/WebSocket tooling to pull, push and inspect the box. |
 | [`PowerStation/`](PowerStation/README.md) | ESPHome firmware for an ESP32 that drives a PowMr hybrid inverter over UART and reads a JK BMS over BLE, with tariff- and grid-fault-aware power-priority logic, a night-tariff-only charging mode, and a pre-charge that fills the battery before a scheduled DTEK outage. |
 | [`IRBridge/`](IRBridge/README.md) | Android app that turns an old phone's IR blaster into an authenticated HTTP API, so Home Assistant can drive a "dumb" split A/C — including a protocol sweep to find which IR codec the unit speaks. |
 | [`FloorPlan/`](FloorPlan/README.md) | Tooling that renders a Sweet Home 3D model from above and turns it into the isometric **Home** dashboard, where each lamp lights its own room. |

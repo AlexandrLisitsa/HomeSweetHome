@@ -6,6 +6,7 @@
 # check_dtek_templates.py renders the package's Jinja against fake states.
 # check_automations.py does the same for automations.yaml and the IR scripts.
 # test_outage_precharge.py does the same for packages/outage_precharge.yaml.
+# test_load_shedding.py does the same for packages/load_shedding.yaml.
 # ha_dashboard.py talks to HA's WebSocket API.
 # test_dtek_schedule.py, ha_get.sh, ha_call.sh and ha_pull.sh need none of it.
 PyYAML>=6.0
