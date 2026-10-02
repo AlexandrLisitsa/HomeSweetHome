@@ -100,6 +100,7 @@ ex="$ex --exclude=./.irbridge-last-backup" # pointer written by ha_deploy.sh
 # Backups of config, which are not loaded and would double every diff.
 ex="$ex --exclude='./irbridge-backup-*'"   # rollback points ha_deploy.sh leaves behind
 ex="$ex --exclude='./rename*-backup-*'"    # rollback points from the entity-id rename procedure (README); each holds a full core.entity_registry
+ex="$ex --exclude='./backup-*'"            # dated rollback points made by hand before a change (backup-20261002/ held the pre-MeterCam gas packages)
 ex="$ex --exclude='*.bak-*'"               # stray hand-made backups
 
 echo "pulling /config from $host ..." >&2

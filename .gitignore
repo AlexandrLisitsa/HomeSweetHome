@@ -21,6 +21,7 @@ local.properties
 **/.storage/
 **/zigbee2mqtt/
 HomeAssistant/config/*-backup-*/
+HomeAssistant/config/backup-*/
 
 # Registry snapshots pulled for auditing (entity/device layout, person names).
 HomeAssistant/.state/
