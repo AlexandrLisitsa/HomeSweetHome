@@ -85,6 +85,12 @@ below 10 A, and it is 60 A when the deadline is under 15 minutes away. The ESP
 holds the override until the outage start itself, so the 30-minute buffer only
 affects the sizing.
 
+Pre-charge outranks [adaptive night charge](adaptive-charge.md). When this plan
+leaves `idle` (a window is published), adaptive is switched off, and a
+notification says so. It stays off until you switch it back on. If you switch
+it off while a pre-charge is charging, adaptive waits to hand back your own
+current until the pre-charge is over.
+
 When a pre-charge starts, `notify.household` sends one message on the
 `Outage pre-charge` channel, with the time and the amps. A day-rate charge is
 never a surprise. Re-targets after that are silent.

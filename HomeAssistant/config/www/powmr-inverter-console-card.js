@@ -73,7 +73,7 @@
  */
 
 const CARD = "powmr-inverter-console-card";
-const VERSION = "2.0.0";
+const VERSION = "2.1.2";
 
 /*
  * Brand colours stay literal: they identify a leg of the diagram (amber =
@@ -139,6 +139,10 @@ const DEFAULTS = {
   // What the outage pre-charge intends (HomeAssistant/config/packages/
   // outage_precharge.yaml). Read only for the Pre-charge chip's sub-label.
   precharge_plan: "sensor.outage_pre_charge_plan",
+  // Adaptive night charge (HomeAssistant/config/packages/adaptive_charge.yaml):
+  // the second dot on the AC charge chip, and the plan behind its sub-label.
+  adaptive_charge: "input_boolean.adaptive_night_charge",
+  adaptive_plan: "sensor.adaptive_charge_plan",
   // Ceilings the flow speed scales against. 2400 W is the inverter's rating
   // and was already the `max` on the tab's old bar-gauge.
   max_grid_w: 2400,
@@ -163,7 +167,7 @@ const DEFAULTS = {
 const CHIPS = [
   { label: "Auto", cfg: "chip_auto", ent: "switch.powmr_inverter_auto_tariff_mode", icon: "mdi:clock-check-outline", color: BATT_C },
   { label: "Protect", cfg: "chip_protect", ent: "switch.powmr_inverter_auto_grid_protection", icon: "mdi:shield-home", color: BATT_C },
-  { label: "AC charge", cfg: "chip_ac_charge", ent: "switch.powmr_inverter_ac_charging_enabled", icon: "mdi:battery-charging-50", color: GRID_C, live: true },
+  { label: "AC charge", cfg: "chip_ac_charge", ent: "switch.powmr_inverter_ac_charging_enabled", icon: "mdi:battery-charging-50", color: GRID_C, live: true, adaptive: true },
   { label: "Night only", cfg: "chip_night_only", ent: "switch.powmr_inverter_night_charging_only", icon: "mdi:weather-night", color: LOAD_C },
   { label: "Pre-charge", cfg: "chip_precharge", ent: "switch.powmr_inverter_outage_pre_charge", icon: "mdi:battery-clock", color: GRID_C, plan: true },
 ];
@@ -178,6 +182,12 @@ CHIPS.forEach((c) => { DEFAULTS[c.cfg] = c.ent; });
  * on all night whether or not a watt is moving, so ON alone says nothing; the
  * chip pulses while the grid is up and the BMS says the pack is taking
  * current. There is no PV here, so a charging pack on grid is the AC charger.
+ *
+ * `adaptive` gives a chip a second dot, after its own: adaptive night charge,
+ * which sizes the charge current to finish by 07:00. It is its own switch
+ * (an input_boolean), lit orange on its own, with a sub-label from its plan
+ * ("20 A → 07:00"). It only works under Auto or Night only, with the charger
+ * on, so otherwise the dot is dimmed and a tap on it does nothing.
  */
 
 /*
@@ -388,6 +398,13 @@ ha-card {
 .chip.on .dot { background: var(--cc); box-shadow: 0 0 8px var(--cs); }
 .chip.on.live { animation: pmchip 2s ease-in-out infinite; }
 .chip.on.live .dot { animation: pmpulse 2s ease-in-out infinite; }
+/* The adaptive dot keeps its own state, whatever the chip's switch is doing. */
+.chip .dw.ad { margin-left: -6px; }
+.chip .dw.ad .dot { background: transparent; box-shadow: none; animation: none;
+  border: 1px solid #3A3F49; width: 7px; height: 7px; box-sizing: border-box; }
+.chip .dw.ad.on .dot { background: ${GRID_C}; border-color: ${GRID_C}; box-shadow: 0 0 8px ${GRID_C}99; }
+.chip .dw.ad.dis { cursor: not-allowed; opacity: .35; }
+.chip .dw.ad.dis:hover { background: transparent; }
 @keyframes pmchip { 0%, 100% { box-shadow: 0 0 0 0 transparent } 50% { box-shadow: 0 0 14px -2px var(--cs) } }
 
 /* --- panels ------------------------------------------------------------- */
@@ -858,8 +875,11 @@ class PowmrInverterConsoleCard extends HTMLElement {
       if (act === "toggle") {
         ev.stopPropagation();
         ev.preventDefault();
+        // A dimmed adaptive dot: Auto and Night only are both off.
+        if (node.classList && node.classList.contains("dis")) return;
         const ent = node.getAttribute("data-ent");
-        if (ent && this._hass) this._hass.callService("switch", "toggle", { entity_id: ent });
+        // switch.* for the firmware chips, input_boolean.* for adaptive.
+        if (ent && this._hass) this._hass.callService(ent.split(".")[0], "toggle", { entity_id: ent });
         return;
       }
       if (act === "range") {
@@ -944,6 +964,45 @@ class PowmrInverterConsoleCard extends HTMLElement {
     }
     if (sub) sub.textContent = text;
     if (plan && a.reason) node.title += " · " + plan.state + ": " + a.reason;
+  }
+
+  /**
+   * The AC charge chip's adaptive dot and its sub-label. The dot is the
+   * input_boolean; it dims when there is no night charge to size: neither
+   * Auto nor Night only is on, or the AC charger is off under Auto. Under
+   * Night only the firmware owns the charger (it is off all day by design),
+   * so it does not count. It also dims while a DTEK outage window is pending:
+   * the night is pre-charge's then, and adaptive was switched off for it.
+   * Same rule as adaptive_charge.yaml's guard.
+   */
+  _patchAdaptive(dot, sub) {
+    const c = this._config;
+    const st = this._state(c.adaptive_charge);
+    const outage = ["waiting_night", "charging", "full"].includes(this._state(c.precharge_plan));
+    const charges = this._state(c.chip_night_only) === "on"
+      || (this._state(c.chip_auto) === "on" && this._state(c.chip_ac_charge) === "on");
+    const usable = charges && !outage;
+    const plan = this._stateObj(c.adaptive_plan);
+    const a = (plan && plan.attributes) || {};
+    const t = Date.parse(a.until || "");
+    const at = Number.isFinite(t)
+      ? new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })
+      : "";
+    let text = "";
+    if (st === "on" && plan) {
+      if (plan.state === "charging") text = a.current + " A → " + at;
+      else if (plan.state === "full") text = "full";
+      else if (plan.state === "day") text = "tonight";
+    }
+    if (dot) {
+      dot.classList.toggle("on", st === "on");
+      dot.classList.toggle("dis", !usable && st !== "on");
+      dot.title = !usable && st !== "on"
+        ? (outage ? "Adaptive night charge — off while an outage is scheduled (pre-charge)"
+          : "Adaptive night charge — needs Auto or Night only, and the AC charger on")
+        : "Adaptive night charge — " + st + (plan && a.reason ? " · " + plan.state + ": " + a.reason : "");
+    }
+    if (sub) sub.textContent = text;
   }
 
   /** The header pill: grid word, dot colour and the return countdown. */
@@ -1032,7 +1091,11 @@ class PowmrInverterConsoleCard extends HTMLElement {
             <span class="lbl" data-more="${c[ch.cfg]}" role="button" tabindex="0">${this._esc(ch.label)}</span>${
               ch.plan ? `<span class="sub" data-ref="chipSub${i}" data-more="${c.precharge_plan}" role="button" tabindex="0"></span>` : ""}
             <span class="dw" data-act="toggle" data-ent="${c[ch.cfg]}" role="button" tabindex="0"
-                  title="Toggle ${this._esc(ch.label)}"><span class="dot"></span></span>
+                  title="Toggle ${this._esc(ch.label)}"><span class="dot"></span></span>${
+              ch.adaptive ? `
+            <span class="dw ad" data-ref="chipAd${i}" data-act="toggle" data-ent="${c.adaptive_charge}" role="button" tabindex="0"
+                  title="Toggle adaptive night charge"><span class="dot"></span></span>
+            <span class="sub" data-ref="chipAdSub${i}" data-more="${c.adaptive_plan}" role="button" tabindex="0"></span>` : ""}
           </div>`).join("")}
         </div>
       </div>`);
@@ -1295,8 +1358,11 @@ class PowmrInverterConsoleCard extends HTMLElement {
       c.max_charge_current, c.power_priority, c.ac_input_mode, c.tariff,
     ].concat(CHIPS.map((ch) => c[ch.cfg]));
     const plan = (this._stateObj(c.precharge_plan) || {}).attributes || {};
+    const ad = (this._stateObj(c.adaptive_plan) || {}).attributes || {};
     return ids.map((id) => this._state(id)).join("|")
       + "|" + this._state(c.precharge_plan) + "|" + plan.current + "|" + plan.until
+      + "|" + this._state(c.adaptive_charge) + "|" + this._state(c.adaptive_plan)
+      + "|" + ad.current + "|" + ad.until + "|" + ad.reason
       + "|" + this._range + "|" + this._sel;
   }
 
@@ -1334,6 +1400,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
         ? ((this._stateObj(c[ch.cfg]).attributes.friendly_name || ch.label) + " — " + st)
         : ch.label;
       if (ch.plan) this._patchPlan(node, el["chipSub" + i], st);
+      if (ch.adaptive) this._patchAdaptive(el["chipAd" + i], el["chipAdSub" + i]);
     });
 
     // --- grid tile ---------------------------------------------------------

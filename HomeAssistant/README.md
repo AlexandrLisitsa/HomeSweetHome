@@ -24,6 +24,9 @@ read before it goes live, and a `git revert` if it was wrong.
 - **Outage pre-charge**: when DTEK schedules an outage, the battery is charged
   to full before it starts, at the lowest current that makes it and at night
   rates when they suffice ([`docs/outage-precharge.md`](docs/outage-precharge.md)).
+- **Adaptive night charge**: the night-tariff charge runs at the lowest current
+  that still fills the pack by 07:00, re-sized every hour
+  ([`docs/adaptive-charge.md`](docs/adaptive-charge.md)).
 - **Load shedding**: during an outage, devices step down one by one as the
   battery drains, with a warning one step ahead and everything put back when
   the grid returns. The rules are built on the Shutdowns dashboard: any device,
@@ -100,6 +103,8 @@ sh tools/ha_get.sh /api/config
 | `tools/check_climate_card.py` | cross-references every entity `climate-console-card.js` names against `/api/states` | no — GET-only |
 | `tools/test_dtek_schedule.py` | fixture tests for `config/dtek/dtek_poll.py`'s schedule maths | no — no network |
 | `tools/test_outage_precharge.py` | renders the outage pre-charge plan in `packages/outage_precharge.yaml` against fake states | no — pure local |
+| `tools/test_adaptive_charge.py` | renders the adaptive night charge plan in `packages/adaptive_charge.yaml` and runs its drive, outage-off and guard automations through the simulator, DST included | no — pure local |
+| `tools/ha_automation_sim.py` | not a command: a small simulator the tests above use to run a package's `automation:` list against a fake house (limits in its docstring) | — |
 | `tools/test_load_shedding.py` | renders the load-shedding engine's templates in `packages/load_shedding.yaml` (decision, warnings, validator, stores, restore) against fake states | no — pure local |
 | `tools/test_climate_chart.js` | fixture tests for the climate card's chart and dial maths | no — no network |
 
@@ -129,10 +134,11 @@ python ../IRBridge/tools/check_ha_templates.py
 python tools/check_dtek_templates.py
 python tools/test_dtek_schedule.py
 python tools/test_outage_precharge.py
+python tools/test_adaptive_charge.py
 python tools/test_load_shedding.py
 ```
 
-The DTEK, pre-charge and load-shedding ones need `python -m pip install -r tools/requirements.txt`;
+The DTEK, pre-charge, adaptive-charge and load-shedding ones need `python -m pip install -r tools/requirements.txt`;
 `ha_dashboard.py` needs it too, for `websocket-client`.
 
 The first cross-references every entity id the YAML *references* against the
@@ -162,6 +168,7 @@ restore HA onto a fresh VM, is in
 | [`docs/private-files.md`](docs/private-files.md) | what is never mirrored into git, and the household-language files kept out of it |
 | [`docs/dtek-outage-schedule.md`](docs/dtek-outage-schedule.md) | the DTEK outage-schedule poller, its sensors and its card |
 | [`docs/outage-precharge.md`](docs/outage-precharge.md) | charging the battery to full before a scheduled DTEK outage, and the Pre-charge chip |
+| [`docs/adaptive-charge.md`](docs/adaptive-charge.md) | the night charge at the lowest current that fills the pack by 07:00, and the AC charge chip's second dot |
 | [`docs/load-shedding.md`](docs/load-shedding.md) | the load-shedding engine and its constructor tab: steps, warnings, holds, overrides, restore, backup |
 | [`docs/gas-and-water-meters.md`](docs/gas-and-water-meters.md) | hand-read gas and water meters on the Energy dashboard |
 | [`docs/gas-reading-submission.md`](docs/gas-reading-submission.md) | the monthly gas reading to Gazmerezhi's Telegram bot, confirmed from the phone |

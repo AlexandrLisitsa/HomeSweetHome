@@ -1,0 +1,342 @@
+# ---------------------------------------------------------------------------
+# Adaptive night charge — the lowest current that still fills the pack by 07:00
+#
+#     input_boolean.adaptive_night_charge   the on/off, the second dot on the
+#                                           dashboard's AC charge chip
+#     sensor.adaptive_charge_plan           what it intends to do, and why
+#
+# Drives one entity on the PowerStation ESP32 (PowerStation/power-station.yaml):
+# select.powmr_inverter_max_ac_charge_current.
+#
+# Full write-up: HomeAssistant/docs/adaptive-charge.md.
+#
+# ---------------------------------------------------------------------------
+# Why
+#
+# At night the firmware already charges from the grid: Auto puts the inverter
+# on Utility First, Night only opens the BMS charger. Both charge at whatever
+# Max AC Charge Current says, and that is a fixed number picked for the worst
+# night. Most nights it is more than the pack needs, so the pack fills by 01:00
+# warmer than it had to be and then sits full. The cheaper, cooler answer is
+# the smallest current that still finishes inside the tariff.
+#
+# Every hour the plan re-sizes the current from what is still missing and the
+# time that is left: it falls as the pack fills and rises if charging lags (a
+# load that ate into the charger's budget, a CV taper that came early).
+#
+# ---------------------------------------------------------------------------
+# Who decides what
+#
+# Nothing here is a fail-safe and nothing needs to be. The firmware still owns
+# when the charger runs; HA only picks the amps. An HA that dies mid-night
+# leaves a current that is too low, never one that is too high, and the next
+# night the user's own value is back (it is restored at 07:00, or on the first
+# render after HA returns in the day).
+#
+# Outage pre-charge outranks this, and the two never run together: when DTEK
+# publishes an outage window (the pre-charge plan leaves `idle`), adaptive
+# switches itself off, and it cannot be switched on again while a window is
+# pending. Pre-charge then owns the select alone; the firmware saves and
+# restores it around the override.
+#
+# The one overlap left is the hand-back. Switching off puts the user's current
+# back, and if the pre-charge is already charging that would overwrite its
+# amps -- so the drive holds every write while a pre-charge runs (HA's plan
+# reads `charging`, or the ESP's own Pre-charge Until is less than 6 min past,
+# the ESP restoring its saved current on its next 5-minute tick), and the
+# hand-back goes out after.
+#
+# Adaptive only means something while the firmware charges at night, so it
+# works only with Auto or Night only on. With both off the plan reads
+# `inactive` and hands the current back -- but the boolean is left on: the
+# firmware turns one of the two off as the other comes on, and that blip must
+# not cancel adaptive. Switching it ON with both off is refused (the guard).
+# Switching the AC charger off by hand switches adaptive off too (the guard).
+# ---------------------------------------------------------------------------
+
+input_boolean:
+  adaptive_night_charge:
+    name: "Adaptive night charge"
+    icon: mdi:battery-charging-medium
+
+input_number:
+  # The user's own Max AC Charge Current, saved at the first adaptive write of
+  # the night and put back when the night ends. 0 = nothing saved. No
+  # `initial:`, so a restart mid-night still knows what to restore.
+  adaptive_charge_saved_current:
+    name: "Adaptive charge saved current"
+    icon: mdi:content-save
+    min: 0
+    max: 60
+    step: 1
+    unit_of_measurement: "A"
+    mode: box
+
+template:
+  - trigger:
+      # Hourly re-size -- 23:00, the start of the tariff, is one of them.
+      - platform: time_pattern
+        minutes: 0
+      - platform: state
+        entity_id:
+          - input_boolean.adaptive_night_charge
+          - switch.powmr_inverter_auto_tariff_mode
+          - switch.powmr_inverter_night_charging_only
+      - platform: homeassistant
+        event: start
+      - platform: event
+        event_type: event_template_reloaded
+    action:
+      - variables:
+          plan: >-
+            {% set full_ah = 280.0 %}{# the pack; see battery_runtime.yaml #}
+            {% set margin = 1.15 %}{# CV taper at the top, charger losses #}
+            {% set buffer_min = 30 %}{# aim to be full this long before 07:00 #}
+            {% set max_a = 60 %}
+            {% set steps = [2, 10, 20, 30, 40, 50, 60] %}
+            {% set night_start = 23 %}{% set night_end = 7 %}
+            {% set t = now() %}
+            {% set cap = states('sensor.jkbms_gateway_bms_capacity_remaining') %}
+            {% set at_night = t.hour >= night_start or t.hour < night_end %}
+            {% set out = namespace(state='day', reason='', current=none, need_ah=none,
+                                   hours_left=none, until=none) %}
+            {% if not is_state('input_boolean.adaptive_night_charge', 'on') %}
+              {% set out.state = 'off' %}
+              {% set out.reason = 'switched off' %}
+            {% elif not (is_state('switch.powmr_inverter_auto_tariff_mode', 'on')
+                         or is_state('switch.powmr_inverter_night_charging_only', 'on')) %}
+              {% set out.state = 'inactive' %}
+              {% set out.reason = 'needs Auto or Night only' %}
+            {% elif not at_night %}
+              {% set out.reason = 'waiting for the night tariff' %}
+            {% elif not cap | is_number %}
+              {% set out.state = 'unknown' %}
+              {% set out.reason = 'battery capacity unknown' %}
+            {% else %}
+              {% set mid = t.replace(hour=0, minute=0, second=0, microsecond=0) %}
+              {% set end = mid + timedelta(days=1 if t.hour >= night_start else 0, hours=night_end) %}
+              {% set deadline = end - timedelta(minutes=buffer_min) %}
+              {# Inside the buffer already: the tariff's own end is what is left. #}
+              {% if deadline <= t %}{% set deadline = end %}{% endif %}
+              {# Real seconds, not clock readings: datetimes sharing now()'s
+                 zone subtract in wall-clock time, and a DST night is 7 or 9
+                 hours long, not 8. #}
+              {% set hours = (as_timestamp(deadline) - as_timestamp(t)) / 3600 %}
+              {% set deficit = full_ah - cap | float %}
+              {% set need = [deficit, 0] | max * margin %}
+              {% set out.until = end.isoformat() %}
+              {% set out.need_ah = need | round(1) %}
+              {% set out.hours_left = hours | round(2) %}
+              {% if deficit <= full_ah * 0.01 %}
+                {% set out.state = 'full' %}
+                {% set out.reason = 'battery full, trickle' %}
+                {% set out.current = steps | first %}
+              {% else %}
+                {% set out.state = 'charging' %}
+                {% set rate = need / hours if hours > 0.25 else max_a %}
+                {% set out.current = (steps | select('ge', rate) | list + [max_a]) | first %}
+                {% set out.reason = 'needs ' ~ (rate | round(1)) ~ ' A to be full by '
+                                    ~ deadline.strftime('%H:%M') if rate <= max_a
+                                    else 'behind, charging at full current' %}
+              {% endif %}
+            {% endif %}
+            {{ {'state': out.state, 'reason': out.reason, 'current': out.current,
+                'need_ah': out.need_ah, 'hours_left': out.hours_left, 'until': out.until} }}
+    sensor:
+      # off        the dot is off
+      # inactive   on, but Auto and Night only are both off
+      # day        on, outside 23:00-07:00
+      # unknown    no battery reading; the select is left alone
+      # full       the pack is full; `current` is the 2 A trickle
+      # charging   `current` amps, re-sized every hour, until `until`
+      - name: "Adaptive charge plan"
+        unique_id: adaptive_charge_plan
+        icon: mdi:battery-charging-medium
+        state: "{{ plan.state }}"
+        attributes:
+          reason: "{{ plan.reason }}"
+          current: "{{ plan.current }}"
+          need_ah: "{{ plan.need_ah }}"
+          hours_left: "{{ plan.hours_left }}"
+          until: "{{ plan.until }}"
+
+automation:
+  # Carries the plan to the select. Writes only what differs.
+  - id: adaptive_charge_drive
+    alias: 'Adaptive charge: drive the charge current'
+    mode: queued
+    max: 3
+    trigger:
+      - platform: state
+        entity_id: sensor.adaptive_charge_plan
+      - platform: state
+        entity_id: sensor.adaptive_charge_plan
+        attribute: current
+      # Self-healing, every 5 min: an ESP that rebooted onto its default, or
+      # put back its own saved current as a pre-charge ended, is corrected
+      # even when the plan did not move.
+      - platform: time_pattern
+        minutes: "/5"
+      # A deferred hand-back (switched off mid pre-charge) goes out the moment
+      # the pre-charge ends.
+      - platform: state
+        entity_id: sensor.outage_pre_charge_plan
+      - platform: homeassistant
+        event: start
+    condition:
+      - condition: template
+        value_template: >-
+          {{ states('select.powmr_inverter_max_ac_charge_current') not in ['unknown', 'unavailable'] }}
+    action:
+      # Never touch the select while a pre-charge runs -- see the header. An
+      # action step, not a `condition:`, so it is read when a queued run
+      # actually starts. The hand-back owed by `off` waits for the pre-charge
+      # to end (the triggers above).
+      - condition: template
+        value_template: >-
+          {{ not (is_state('sensor.outage_pre_charge_plan', 'charging')
+                  or (is_state('switch.powmr_inverter_outage_pre_charge', 'on')
+                      and as_timestamp(states('datetime.powmr_inverter_pre_charge_until'), 0) + 360
+                          > as_timestamp(now()))) }}
+      - variables:
+          plan: "{{ states('sensor.adaptive_charge_plan') }}"
+          amps: "{{ state_attr('sensor.adaptive_charge_plan', 'current') }}"
+          have: "{{ states('select.powmr_inverter_max_ac_charge_current') | int(-1) }}"
+          saved: "{{ states('input_number.adaptive_charge_saved_current') | int(0) }}"
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ plan in ['charging', 'full'] and amps | is_number and have != amps | int }}"
+            sequence:
+              # The first write of the night keeps the user's value to put back.
+              - if:
+                  - condition: template
+                    value_template: "{{ saved == 0 and have > 0 }}"
+                then:
+                  - service: input_number.set_value
+                    target:
+                      entity_id: input_number.adaptive_charge_saved_current
+                    data:
+                      value: "{{ have }}"
+              - service: select.select_option
+                target:
+                  entity_id: select.powmr_inverter_max_ac_charge_current
+                data:
+                  option: "{{ '%02d' | format(amps | int) }}"
+          # Night over, switched off or no longer applicable: hand it back.
+          - conditions:
+              - condition: template
+                value_template: "{{ plan in ['day', 'off', 'inactive'] and saved > 0 }}"
+            sequence:
+              - if:
+                  - condition: template
+                    value_template: "{{ have != saved }}"
+                then:
+                  - service: select.select_option
+                    target:
+                      entity_id: select.powmr_inverter_max_ac_charge_current
+                    data:
+                      option: "{{ '%02d' | format(saved) }}"
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.adaptive_charge_saved_current
+                data:
+                  value: 0
+
+  # An outage window from DTEK hands the night to pre-charge: adaptive goes
+  # off, and stays off until switched on again (the guard refuses that while
+  # a window is pending). The hand-back of the user's current follows from
+  # `off` in the drive, held while a pre-charge is already charging.
+  - id: adaptive_charge_outage_off
+    alias: 'Adaptive charge: off when an outage is scheduled'
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: sensor.outage_pre_charge_plan
+        to:
+          - waiting_night
+          - charging
+          - full
+      # A window published while HA was down.
+      - platform: homeassistant
+        event: start
+    condition:
+      - condition: state
+        entity_id: input_boolean.adaptive_night_charge
+        state: 'on'
+      - condition: state
+        entity_id: sensor.outage_pre_charge_plan
+        state:
+          - waiting_night
+          - charging
+          - full
+    action:
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.adaptive_night_charge
+      # It stays off until someone switches it back on, so say so.
+      - variables:
+          until: "{{ state_attr('sensor.outage_pre_charge_plan', 'until') }}"
+          at: >-
+            {{ (as_datetime(until) | as_local).strftime('%d.%m %H:%M') if until else 'soon' }}
+      - service: notify.household
+        data:
+          title: '🔋 Adaptive night charge off'
+          message: >-
+            DTEK scheduled an outage at {{ at }}, so outage pre-charge takes over
+            the battery charge and adaptive night charge was switched off.
+            Switch it back on from the AC charge chip after the outage.
+          data:
+            channel: Adaptive charge
+
+  # Adaptive can only be on while the firmware charges at night: Auto or Night
+  # only on, and the AC charger (the BMS charge switch) on -- and with no
+  # outage window pending (see adaptive_charge_outage_off). Switching the
+  # charger off by hand switches adaptive off with it; switching adaptive on
+  # while either is missing is refused. The card refuses the tap too; this
+  # catches the more-info dialog and scripts.
+  #
+  # Under Night only the charger is the firmware's, not the user's: it goes
+  # off at 07:00 every morning by design, so it is not counted then -- or
+  # Night only would cancel adaptive every day.
+  - id: adaptive_charge_guard
+    alias: 'Adaptive charge: needs Auto or Night only, and the charger on'
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: input_boolean.adaptive_night_charge
+        to: 'on'
+      - platform: state
+        entity_id: switch.powmr_inverter_ac_charging_enabled
+        from: 'on'
+        to: 'off'
+    condition:
+      - condition: state
+        entity_id: input_boolean.adaptive_night_charge
+        state: 'on'
+      - condition: or
+        conditions:
+          # An outage window is pending: the night is pre-charge's.
+          - condition: state
+            entity_id: sensor.outage_pre_charge_plan
+            state:
+              - waiting_night
+              - charging
+              - full
+          - condition: and
+            conditions:
+              - condition: state
+                entity_id: switch.powmr_inverter_night_charging_only
+                state: 'off'
+              - condition: or
+                conditions:
+                  - condition: state
+                    entity_id: switch.powmr_inverter_auto_tariff_mode
+                    state: 'off'
+                  - condition: state
+                    entity_id: switch.powmr_inverter_ac_charging_enabled
+                    state: 'off'
+    action:
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.adaptive_night_charge
