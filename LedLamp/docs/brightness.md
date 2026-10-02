@@ -11,7 +11,7 @@ How the numbers are worked out:
 - **Strip:** 1400 lm/m at 14 W/m, but that is **both** channels at 100 %. A Zigbee colour-temperature controller mixes
   the two whites so they add up to 100 %: at 2700 K only WW is on, at 6500 K only CW, in between both share. So the
   usable maximum is **one channel's worth: 700 lm/m at 7 W/m**. No Zigbee CCT controller found can change this:
-  MiBoxer confirms the E2-ZR [keeps 50 % + 50 % at neutral and "it can not be changed"](https://forum.miboxer.com/t/fut035z-setting-both-channels-to-100-in-dual-white-color-mode/249).
+  MiBoxer confirms its controllers [keep 50 % + 50 % at neutral and "it can not be changed"](https://forum.miboxer.com/t/fut035z-setting-both-channels-to-100-in-dual-white-color-mode/249).
 - **Diffuser:** an opal cover passes about 80 %.
 - **Power supply + controller:** about 85 % × 98 % efficient.
 
