@@ -49,8 +49,20 @@ For the full list of sensors and controls exposed to HA see [§13 of the archite
 - The ESP32 toolchain lives in a named Docker volume (`powerstation_esphome-platformio`) mounted at `/root/.platformio`. Without it, `run --rm` discards the toolchain and re-downloads it on every build; adding it took a warm rebuild from 152 s to 78 s. Wipe it with `docker volume rm powerstation_esphome-platformio` if a toolchain install ever goes bad.
 - The previous WiFi password lived in the YAML and is therefore in git history — rotate the WiFi password once you've confirmed the new build flashes successfully.
 
+## Tools
+
+Run from the repository root. None of them talks to the device or Home Assistant.
+
+| Script | Does | Changes anything live? |
+| --- | --- | --- |
+| `tools/test_firmware_logic.py` | extracts the YAML lambdas, compiles them with the unit tests (native `g++` or the `gcc:13` Docker image) and runs them; see [`docs/testing.md`](docs/testing.md) | no — writes only `tools/build/` |
+| `tools/extract_lambdas.py` | generates `tools/build/firmware_logic.gen.h` from `power-station.yaml`; run by the script above | no |
+
+`tools/firmware_stubs.h` and `tools/test_firmware_logic.cpp` are the fake ESPHome layer and the tests themselves.
+
 ## Docs
 
 | Doc | About |
 | --- | --- |
 | [`docs/architecture.md`](docs/architecture.md) | how the firmware works: decision rules, grid-health detection, the PI30 protocol, the command queue, failure modes |
+| [`docs/testing.md`](docs/testing.md) | the host-side unit tests for the firmware logic: how to run them, what they cover, known bugs |

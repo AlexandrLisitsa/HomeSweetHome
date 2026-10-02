@@ -104,7 +104,10 @@ template:
               {% set deficit = full_ah - cap | float %}
               {% set need = [deficit, 0] | max * margin %}
               {% set deadline = start - timedelta(minutes=buffer_min) %}
-              {% set hours_left = (deadline - t).total_seconds() / 3600 %}
+              {# Real seconds throughout, not clock readings: datetimes that
+                 share now()'s zone subtract in wall-clock time, and a DST
+                 night is 7 or 9 hours long, not 8. #}
+              {% set hours_left = (as_timestamp(deadline) - as_timestamp(t)) / 3600 %}
               {# Hours of night tariff between now and the deadline. #}
               {% set mid = t.replace(hour=0, minute=0, second=0, microsecond=0) %}
               {% set ns = namespace(night=0) %}
@@ -113,7 +116,7 @@ template:
                 {% set we = mid + timedelta(days=d + 1, hours=night_end) %}
                 {% set a = [ws, t] | max %}
                 {% set b = [we, deadline] | min %}
-                {% if b > a %}{% set ns.night = ns.night + (b - a).total_seconds() / 3600 %}{% endif %}
+                {% if b > a %}{% set ns.night = ns.night + (as_timestamp(b) - as_timestamp(a)) / 3600 %}{% endif %}
               {% endfor %}
               {% set at_night = t.hour >= night_start or t.hour < night_end %}
               {% set night_enough = ns.night * max_a >= need %}
@@ -207,10 +210,12 @@ automation:
             target:
               entity_id: datetime.powmr_inverter_pre_charge_until
             data:
-              # Naive local time, which is how datetime.set_value reads it.
+              # UTC with an explicit offset. Naive local time cannot name the
+              # second 03:30 of the October fall-back (it reads as the first,
+              # an hour early); datetime.set_value honours an offset as given.
               # The release value is the ESP's own restored default.
               datetime: >-
-                {{ (want_ts | timestamp_custom('%Y-%m-%d %H:%M:%S')) if want_ts > 0 else '2000-01-01 00:00:00' }}
+                {{ (want_ts | timestamp_custom('%Y-%m-%dT%H:%M:%S+00:00', false)) if want_ts > 0 else '2000-01-01 00:00:00' }}
       - if:
           - condition: template
             value_template: >-

@@ -87,7 +87,7 @@
  */
 
 const CARD = "jkbms-battery-console-card";
-const VERSION = "1.4.0";
+const VERSION = "1.4.1";
 
 /*
  * The design's palette, literal. Names are what the design calls them: two
@@ -792,6 +792,10 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
     this._built = false;
     this._print = null;
     this._hist.clear();
+    // A history reply still in flight belongs to the old tree: it may have no
+    // chart at all now. Dropping the token makes it land on the floor.
+    this._token = null;
+    this._drawnKey = null;
     if (this._hass) this._render();
   }
 
@@ -1684,7 +1688,10 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
         ? ranked[(ranked.length - 1) / 2]
         : (ranked[ranked.length / 2 - 1] + ranked[ranked.length / 2]) / 2)
       : null;
-    const drifting = (v) => v !== null && median !== null && Math.abs(v - median) > DELTA_WARN;
+    // In whole millivolts: 3.32 - 3.30 is 0.020000000000000018 in floats, and a
+    // cell exactly on the 20 mV line is within tolerance, as _deltaColor says.
+    const drifting = (v) => v !== null && median !== null
+      && Math.round(Math.abs(v - median) * 1000) > Math.round(DELTA_WARN * 1000);
 
     if (el.busIn) {
       const inW = watts === null ? null : Math.max(0, watts);
@@ -2547,6 +2554,8 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
 
   _drawChart(spec, rec) {
     const el = this._el;
+    // Belt and braces for the token: no history block, nothing to draw on.
+    if (!el.chLine) return;
     this._hideHover();
 
     /*

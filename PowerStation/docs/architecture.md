@@ -142,8 +142,8 @@ The PowMr inverter speaks a Voltronic-derived ASCII protocol called **PI30**. Ea
 | `POP01` | Set output priority: **Solar First** | `select_power_priority` on_value (manual only) |
 | `POP02` | Set output priority: **SBU Battery** | `select_power_priority` on_value, plus emergency rule 1 |
 | `MUCHGC<NNN>` | Set max AC charge current, 3-digit padded (e.g. `MUCHGC010` = 10 A) | `select_max_charge` on_value |
-| `PCVV<XX.XX>` | Set CV/bulk voltage | `num_bulk_voltage` on_value |
-| `PBFT<XX.XX>` | Set float voltage | `num_float_voltage` on_value |
+| `PCVV<NN.N>` | Set CV/bulk voltage, one decimal (e.g. `PCVV28.0`) | `num_bulk_voltage` on_value |
+| `PBFT<NN.N>` | Set float voltage, one decimal (e.g. `PBFT27.2`) | `num_float_voltage` on_value |
 | `PGR00` / `PGR01` | Set AC input voltage range: Appliance (`PGR00`, ~90–280 V) / UPS (`PGR01`, ~170–280 V) | `select_inverter_mode` on_value |
 
 ### CRC byte substitution
@@ -195,33 +195,48 @@ Dropped frames log a warning (`Ignored corrupted frame (EMI spike detected)`) an
 UART is half-duplex and the inverter responds slowly. Commands are queued and sent one at a time:
 
 - **Queue**: `std::vector<std::string>` (used as a FIFO).
-- **Retries**: each command gets up to 20 attempts. At 3 s per attempt, that's a 60 s window before giving up.
+- **Retries**: `command_retries` counts the tries left for the command at the **front** of the queue. A command gets up to 20 tries if the inverter stays silent, and at most 2 more once it NAKs (see the reply loop). Commands and polls take turns, so 20 tries span about two minutes.
 - **Idle behavior**: when the queue is empty, the 3 s loop sends `QPIGS` to refresh sensor data.
+
+### Queuing a command
+
+Every producer (the select and number `on_value` handlers, rule 1's direct `POP02`) does the same two steps:
+
+```
+queue.push_back(cmd)
+if queue.size() == 1: retries = 20   # cmd is the new front
+```
+
+The counter is primed only when the new command is the front. A command queued behind another leaves the counter alone: it belongs to the front command, and the next command is primed when that one is popped (ACK or give-up). Producers used to prime when `retries == 0`, but 0 with a non-empty queue means "the front command has used its last try". A command queued in that window gave a refused command 20 fresh tries, which undid the NAK cut.
 
 ### Send loop (every 3 s)
 
 ```
-if queue not empty:
+poll_now = poll_turn or queue empty
+poll_turn = not poll_now
+if not poll_now:
   if retries > 0:
     send queue.front(); decrement retries
   else:
-    log error; pop queue.front(); reset retries to 20 for next command
+    log error; pop queue.front(); retries = 20 if queue not empty
 else:
   send QPIGS
 ```
+
+While commands are waiting, every other tick is a `QPIGS` poll, so `sns_grid_v` (the input to `grid_safe`) keeps updating while a command is being retried.
 
 ### Reply loop (every 50 ms)
 
 Reads incoming bytes into a buffer until `\r`. Then:
 
 1. If the buffer contains `(ACK` — command accepted. Pop the queue. Reset retries for the next command (or to 0 if queue is now empty).
-2. If the buffer contains `(NAK` — command rejected. **Don't pop.** The send loop retries on the next tick.
+2. If the buffer contains `(NAK` — command rejected. **Don't pop**, but cut the tries left to at most 2. A NAK is an answer, not a lost frame: the inverter read the command and refused it. The two extra tries cover a frame garbled on the way. After that the send loop gives up and pops it. A NAK never raises the counter.
 3. Otherwise, assume it's QPIGS data. Parse and publish (subject to the §5 sanity check).
 4. Buffer length capped at 200 bytes — overflow drops the frame as corrupt.
 
 ### Why 20 retries
 
-Empirically: the inverter occasionally NAKs valid commands during heavy load. 20 retries (~60 s) covers transient busy states. Anything that fails 20 times in a row is genuinely broken — log and move on rather than block the queue forever.
+The 20 tries are for silence: a frame lost on the wire, or the inverter too busy to answer. Anything that gets no answer 20 times in a row is genuinely broken, so it is logged and dropped rather than left to block the queue forever. A NAK is different. Repeating a refused command does not change the inverter's mind, so it gets 2 more tries, not 20.
 
 ---
 
@@ -286,12 +301,20 @@ Two `number` entities set the charge targets directly. They are the user's charg
 
 | Entity | Command | Default | Range |
 | --- | --- | --- | --- |
-| Bulk Charge Voltage (`num_bulk_voltage`) | `PCVV<XX.XX>` | 28.0 V | 24.0 – 29.0 V |
-| Float Charge Voltage (`num_float_voltage`) | `PBFT<XX.XX>` | 27.2 V | 24.0 – 28.5 V |
+| Bulk Charge Voltage (`num_bulk_voltage`) | `PCVV<NN.N>` | 28.0 V | 24.0 – 29.0 V |
+| Float Charge Voltage (`num_float_voltage`) | `PBFT<NN.N>` | 27.2 V | 24.0 – 28.5 V |
+
+PI30 defines both commands with one decimal (`PCVV28.0`). The firmware formats them with `%.1f`. It used to send two decimals (`PCVV28.00`).
 
 The defaults sit above the resting voltage of a full 8S LiFePO4 pack (~26.8 V), which is what lets the inverter push current into it.
 
-**The inverter rejects any configuration where float > bulk.** Such a command NAKs, retries 20 times, and is then dropped (§6). The two entities are independent sliders, so the order you move them in is the order the commands queue: when lowering both, lower float first; when raising both, raise bulk first. A `PCVV`/`PBFT` command that dies after 20 retries is almost always this.
+**The inverter rejects any configuration where float > bulk, so the firmware refuses it first.** The two entities are independent sliders. Each one's `set_action` checks the new value against the other's current value: a bulk below float, or a float above bulk, is logged (`... - not sent, keeping ... V`) and never queued. When lowering both, lower float first; when raising both, raise bulk first. The other order is refused, not sent.
+
+The numbers are not optimistic. `set_action` publishes a value only if it accepts it, and `on_value` queues the command, so a refused value never becomes the entity's state. HA keeps showing what the inverter was last given, and the other slider is checked against that. Before this, the refusal ran in `on_value` after the optimistic number had already published, so the entity showed a voltage the inverter never got.
+
+ESPHome's `TemplateNumber::control()` saves every requested value to flash after `set_action` returns, refused or not, and the next boot replays the saved value. A refusal therefore schedules a write-back for the next main-loop pass: it sets the number to its current (accepted) value again, and that write is let through without publishing or re-sending anything. At boot, `TemplateNumber::setup` publishes the saved value without going through `set_action`, so `on_value` re-sends the last accepted pair.
+
+If the inverter still NAKs a voltage command, it gets 2 more tries and is dropped (§6).
 
 > **Historical note.** A `switch_ac_charging` template switch used to drive this pair as an on/off control for charging — dropping both to 25.00 V (below the pack's resting voltage, so the inverter never injects current) and restoring 28.0/27.2 V to re-enable. It was removed in favour of the two `number` entities. Charging is now gated at the BMS instead (§10). This is why 25.00 V appears in the git history and in nothing else.
 
@@ -426,7 +449,7 @@ A second sensor (`Grid Real Energy Consumption`) integrates this with the ESPHom
 | Pre-charge Until | datetime | Written by HA: charge until this moment (the outage start). A past moment means no request (§11) |
 | BMS Discharging Switch / BMS Balancer Switch | switches | Forwarded directly to the JK BMS via BLE |
 
-All `select`, `switch` and `datetime` entities use `optimistic: true` and `restore_value`/`restore_mode` so they survive reboots without waiting for HA round-trips.
+All `select`, `switch` and `datetime` entities use `optimistic: true` and `restore_value`/`restore_mode` so they survive reboots without waiting for HA round-trips. The two charge-voltage numbers also use `restore_value` but are not optimistic: their `set_action` publishes only a value it accepts (§9).
 
 ---
 
@@ -439,7 +462,8 @@ All `select`, `switch` and `datetime` entities use `optimistic: true` and `resto
 | Internet (NTP) drops mid-day | Tariff rule 2 fires: fall back to **Utility First**. The charge gate fails open and allows charging (§10). Grid protection (rule 1) still works because it doesn't need time. |
 | Internet (NTP) drops at boot | Boot proceeds after the 2-minute wait (§7). `evaluate_power_mode` falls back to **Utility First**; `evaluate_charge_window` fails open and allows charging. |
 | Inverter UART silent | All inverter sensors stay in "unknown" state. Decision logic refuses to run because `sns_grid_v.has_state()` is false (the very first guard in the script). |
-| Inverter NAKs a command | Retried up to 20 times. If still NAK, dropped with an error log. Next command in the queue gets its own 20-retry budget. |
+| Inverter NAKs a command | Tries left are cut to 2. If it still fails, it is dropped with an error log. The next command in the queue gets its own 20-try budget; queuing a new command never refills the tries of the one in front (§6). |
+| Inverter silent after a command | Retried up to 20 times, with a `QPIGS` poll between tries, then dropped with an error log. |
 | BMS BLE link drops | BMS sensors go stale, and `sns_grid_real_power` returns `NAN` while BMS power is unavailable. `evaluate_power_mode` is unaffected — it reads no BMS data. The night-charging gate **is** affected: the charge MOSFET cannot be written, so the 5-minute re-assertion keeps retrying until BLE returns (§10). Inverter control over UART continues throughout. |
 | Grid voltage spike (EMI noise on UART) | Sanity check drops the frame, warning logged. Next poll cycle (3 s) replaces it. |
 | HA dies during a pre-charge | The override ends by itself at `Pre-charge Until`, at the next 5-minute tick, and the saved charge current is put back (§11). |
