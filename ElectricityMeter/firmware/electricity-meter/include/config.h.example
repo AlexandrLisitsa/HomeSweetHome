@@ -1,0 +1,18 @@
+// Copy to config.h and fill in. config.h is gitignored: it holds the WiFi
+// password and the OTA password.
+#pragma once
+
+// --- network ---------------------------------------------------------------
+#define WIFI_SSID        "your-wifi-ssid"
+#define WIFI_PASSWORD    "your-wifi-password"
+
+// What the board calls itself: the router's client list, mDNS
+// (http://electricity-meter.local/ on phones and laptops that resolve .local),
+// and the OTA target.
+#define HOSTNAME         "electricity-meter"
+
+// --- over-the-air updates --------------------------------------------------
+// Anyone on the LAN who knows this can replace the firmware. Pass the same
+// value to the ota build through the ELECTRICITY_METER_OTA_PASSWORD environment
+// variable; see platformio.ini.
+#define OTA_PASSWORD     "change-me"

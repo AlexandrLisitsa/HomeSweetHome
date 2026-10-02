@@ -43,6 +43,9 @@ Unfinished projects live on branches of their own until they are:
 
 - [`ledlamp`](../../tree/ledlamp): **LedLamp**, a ceiling lamp rebuilt as a Zigbee
   tunable-white COB light, with its parts list, wiring and a printable guide.
+- [`feature/electricity-meter`](../../tree/feature/electricity-meter):
+  **ElectricityMeter**, a photodiode on an ESP8266 that counts the electricity
+  meter's imp/kWh LED.
 
 ## Getting started
 
