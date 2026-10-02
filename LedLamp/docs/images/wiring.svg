@@ -37,7 +37,7 @@
 
     <rect x="395" y="110" width="120" height="130" rx="8" fill="#34495c" stroke="#23303b"/>
     <text x="408" y="133" font-size="12" font-weight="700" fill="#fff">Zigbee controller</text>
-    <text x="408" y="149" font-size="9.5" fill="#cfd8e0">MiBoxer FUT037Z+</text>
+    <text x="408" y="149" font-size="9.5" fill="#cfd8e0">Moes ZLD-RCW</text>
     <text x="408" y="163" font-size="9.5" fill="#cfd8e0">RGB+CCT · R/G/B empty</text>
     <g font-size="8.5" fill="#cfd8e0">
       <text x="400" y="189">V+ in</text><text x="400" y="205">V− in</text>

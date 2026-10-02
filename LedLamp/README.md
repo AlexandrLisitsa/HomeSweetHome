@@ -25,33 +25,32 @@ and [`docs/`](docs) by `tools/build_pdf.py`.
 
 ---
 
-## 1. Parts to buy: ≈ 2685 UAH for the lamp, ≈ 820 for the wall switch
+## 1. Parts to buy: ≈ 2855 UAH for the lamp, ≈ 820 for the wall switch
 
 | # | Part | Pick | Shop | Price, UAH |
 |---|---|---|---|---|
 | 1 | CCT COB strip, **7 m** (5.7 m used, 1.3 m spare) | **LEDTech 24V COB/FCOB CCT 2700–6500K Multi White**: 14 W/m (7+7), 1400 lm/m, 608 LED/m, Ra>90, **10 mm** wide | [prom.ua (LEDTechnics)](https://prom.ua/ua/p2655960753-svetodiodnaya-lenta-ledtech.html) | ~1578 (225.40/m × 7 m) |
-| 2 | Zigbee controller | **MiBoxer (Mi-Light) FUT037Z+** 3-in-1 (RGB / RGBW / RGB+CCT), used in RGB+CCT mode with R, G and B left empty: Zigbee 3.0 + 2.4G RF, DC 12–24 V, 6 A/ch, 12 A total, **74.5×36×17 mm**, PWM 250 Hz / 16 kHz | [OLX (Poltava, private seller)](https://www.olx.ua/d/uk/obyavlenie/svtlododniy-kontroler-mi-light-fut037z-dlya-keruvannya-rgb-rgbw-ta-rgb-cct-led-strchkami-ID10QSv3.html), via OLX Delivery | 679 |
+| 2 | Zigbee controller | **Moes ZLD-RCW** RGB+CCT, with R, G and B left empty: Zigbee 3.0 (Tuya), DC 12–24 V, 5 channels, 15 A, 2700–6500 K, **90×40×24 mm** | [prom.ua (SELLBOT)](https://prom.ua/ua/p2985124892-kontroler-svitlodiodnih-strichok.html), in one order with the wall switch | 849 |
 | 3 | Power supply | **BIOM Professional STICK BPBLS-60-24**: 24 V / 2.5 A, **313×15×18 mm**, IP20, metal case, 176–265 V in | [prom.ua (MaxiLight)](https://prom.ua/ua/p1368494384-blok-pitaniya-biom.html) · [prom.ua (LedSpectr), 353](https://ledspectr.com.ua/ua/p1368396659-blok-pitaniya-biom.html) | 327 |
 | 4 | Wire (0.75 + 0.5 mm²), heat-shrink, 3 **WAGO 221-412** (2-wire, genuine, 23 each) | wire local; WAGO from [prom.ua (Електро Крамниця)](https://prom.ua/ua/p1776340735-klema-shvidkogo-montazhu.html), in one order with the wall switch's blank | — | ~100 |
-| | **Total (lamp)** | | | **≈ 2685** |
+| | **Total (lamp)** | | | **≈ 2855** |
 
 **Ask the strip seller for 7 m.** The layout uses about 5.7 m; the rest covers cutting mistakes and a spare stripe for
 repairs. The listing is priced per metre; if they only sell whole 5 m reels, two reels (10 m) cost ~2254 and the total
-rises to ≈ 3360. The spare strip and the better power supply put the lamp about 185 over the original 2500 budget; the wall switch ([`docs/wall-switch.md`](docs/wall-switch.md)) adds ≈ 820. The [LT COB-24-MW-608 at svetum](https://svetum.com.ua/ua/catalog/svetodiodnaya-lenta/led-lenta-lt-cob-608sht-m-7-7w-m-24v-ip20-2700-6500k-multi-white-10mm-cob-24-mw-608-91106/)
+rises to ≈ 3530. The spare strip and the better power supply put the lamp about 355 over the original 2500 budget; the wall switch ([`docs/wall-switch.md`](docs/wall-switch.md)) adds ≈ 820. The [LT COB-24-MW-608 at svetum](https://svetum.com.ua/ua/catalog/svetodiodnaya-lenta/led-lenta-lt-cob-608sht-m-7-7w-m-24v-ip20-2700-6500k-multi-white-10mm-cob-24-mw-608-91106/)
 (same 7+7 W/m, CRI 90, 10 mm) is sold only in 5 m steps.
 
 **Why these:**
 - **Strip:** the only one found that meets every point (2700–6500 K, Ra>90, 10 mm, 14 W/m) at the lowest price. Light
   per metre decides the brightness, so stay at 14 W/m: 10 W/m strips give about a third less.
 - **Controller:** no CCT-only Zigbee controller cheaper than the E2-ZR (1210) was in stock in Ukraine on 2026-10-03
-  (the Tuya C02Z at 600 was sold out), so the pick is an RGB+CCT unit with R, G and B left unused. The FUT037Z+ is
-  from MiBoxer, the same maker as the E2-ZR, for about half the price: a Zigbee 3.0 router, the same **16 kHz** PWM
-  option, and it pairs directly with MiBoxer 2.4G RF remotes (they work even if HA is down). Zigbee2MQTT supports it
-  ([FUT037Z+](https://www.zigbee2mqtt.io/devices/FUT037Z_.html): brightness, color_temp 153–500 mired, colour, `do_not_disturb`, power-on behaviour).
-  It is sold by a private seller on OLX: before paying, ask for a photo of the label showing **FUT037Z+** and
-  Zigbee 3.0 (the plain FUT037 is RF-only and will not pair), and pay through OLX Delivery for buyer protection.
-  It is rated for **−10 to 40 °C**, so it sits at the rim, away from the strip, and the one-hour test (checklist
-  step 9) checks it too.
+  (the Tuya C02Z at 600 was sold out), so the pick is an RGB+CCT unit with R, G and B left unused. The Moes comes
+  from SELLBOT, a shop with returns and a 99 % rating, and travels in the same parcel as the wall switch, so it adds
+  no delivery. Zigbee2MQTT supports it ([ZLD-RCW_1](https://www.zigbee2mqtt.io/devices/ZLD-RCW_1.html): brightness, color_temp 153–500 mired, colour,
+  `do_not_disturb`, power-on behaviour), and it is mains-powered, so it is a Zigbee router. Its PWM frequency is
+  unpublished (flicker on phone cameras is possible; flicker you can see is not expected) and it has no RF remote.
+  Its temperature rating isn't published either, so it sits at the rim, away from the strip, and the one-hour test
+  (checklist step 9) checks it.
 - **Power supply:** the only mains part, sitting in a closed metal lamp, so it is the one worth paying a little more
   for. BIOM is an established Ukrainian LED brand with a local warranty, and the stick is thin enough (15 mm) to sit
   between two stripes. 5.7 m of strip draws ~40 W (1.7 A), so the 60 W unit runs at about two-thirds load. It sells out
@@ -60,9 +59,10 @@ rises to ≈ 3360. The spare strip and the better power supply put the lamp abou
 **Swaps if something is out of stock:**
 - Power supply: [LED STORY Profi 60W slim](https://led-story.ua/blok-24v-zhivlennja-led-strichok-60w-25a-tonkij-korpus-ip20-led-story-profi/), 297×17×17 mm, IP20, 218 (on sale), in stock.
   A shop house brand with no efficiency, ripple or safety figures, so only if the BIOM can't be had.
-- Controller: the **Moes ZLD-RCW** ([SELLBOT, 849](https://prom.ua/ua/p2985124892-kontroler-svitlodiodnih-strichok.html), [Z2M](https://www.zigbee2mqtt.io/devices/ZLD-RCW_1.html)),
-  another RGB+CCT unit wired the same way, from a shop rather than a private seller (lamp ≈ 2855). Its PWM is
-  unpublished, batches vary, and it has no direct remote; at 90×40×24 mm it fits the same slot.
+- Controller: the **MiBoxer FUT037Z+** ([OLX, 679](https://www.olx.ua/d/uk/obyavlenie/svtlododniy-kontroler-mi-light-fut037z-dlya-keruvannya-rgb-rgbw-ta-rgb-cct-led-strchkami-ID10QSv3.html), about 807 delivered, [Z2M](https://www.zigbee2mqtt.io/devices/FUT037Z_.html)),
+  another RGB+CCT unit wired the same way (set it to RGB+CCT mode with its button). Same maker as the E2-ZR, 16 kHz
+  PWM and an RF remote, 74.5 × 36 × 17 mm, rated −10 to 40 °C; but a private seller, so confirm **FUT037Z+** on the
+  label (the plain FUT037 is RF-only) and pay through OLX Delivery.
 - Controller, CCT-only: the **MiBoxer E2-ZR** ([OPTSVET, 1210](https://prom.ua/ua/p2560711030-kontroller-light-tunable.html), [Z2M](https://www.zigbee2mqtt.io/devices/E2-ZR.html)),
   the original pick (lamp ≈ 3215). Purpose-built for tunable white, so there is no colour mode to avoid, but at
   100.6 × 40 mm it is a tight fit at the rim.
@@ -75,7 +75,7 @@ rises to ≈ 3360. The spare strip and the better power supply put the lamp abou
 flowchart LR
     M["230 V mains<br/>L · N · PE"] --> PSU["Slim PSU, IP20<br/>230 V AC → 24 V DC, 60 W"]
     M -. PE .-> CASE["Metal case<br/>(earthed)"]
-    PSU -- "+24 V / 0 V" --> ZB["Zigbee controller<br/>MiBoxer FUT037Z+"]
+    PSU -- "+24 V / 0 V" --> ZB["Zigbee controller<br/>Moes ZLD-RCW"]
     ZB -- "+24 V common" --> LED["24 V COB CCT strip<br/>16 vertical stripes, ~5.7 m"]
     ZB -- "WW − (PWM)" --> LED
     ZB -- "CW − (PWM)" --> LED
@@ -87,8 +87,8 @@ flowchart LR
 ![Wiring: mains to the PSU, 24 V to the controller, the three-wire bus to every stripe, the case earthed](docs/images/wiring.svg)
 
 - **The strip is common-anode**: one `+24 V` pad and two negative pads (`WW`, `CW`). The controller switches the
-  negatives. Follow the controller's label for which outputs are V+ and the two whites, and set the FUT037Z+ to
-  **RGB+CCT mode** (its mode button; see its manual), or the white outputs stay off. Leave R, G and B unconnected.
+  negatives. Follow the controller's label for which outputs are V+ and the two whites, and leave R, G and B
+  unconnected (the Moes is RGB+CCT only, so there is no mode to set).
 - **Use colour temperature only.** HA also shows a colour picker for this light. Picking a colour drives only R, G and B,
   which aren't connected, so the lamp goes dark. Nothing is harmed, but the dashboard should offer colour temperature only.
 - **Earth the case.** The PSU sits on mains inside a metal case; connect PE to the case's earth screw. The 24 V side is
@@ -107,9 +107,9 @@ flowchart LR
 
 - **16 vertical stripes, 10 mm wide with 15 mm gaps** (25 mm centre to centre), ending about 15 mm from the wall. The
   full pattern is 18 stripes; the PSU stick takes one stripe's place (at x = +16 cm, where the case is still 339 mm
-  tall) and the controller takes the outermost stripe on the left. The FUT037Z+ (74.5 × 36 mm) fits there
-  with room to spare; the larger E2-ZR (100.6 × 40 mm) would leave about 2–3 mm to the wall and 0.5 mm to the next
-  stripe on paper. If your case is smaller inside, drop the
+  tall) and the controller takes the outermost stripe on the left. The Moes (90 × 40 mm) fits there, but
+  only just: about 2–3 mm to the wall and 0.5 mm to the next stripe on paper. It is **24 mm** thick, so check the free
+  height under the diffuser (checklist step 2). If your case is smaller inside, drop the
   22.5 cm stripe next to it (≈ 5.45 m in total). Each stripe is cut at the nearest pads, so the
   lengths are 42.5 cm in the middle down to 12.5 cm at the right edge: **≈ 5.7 m in total**.
 - **Keep the centre line clear**: the stripes sit at ±12.5, ±37.5 … mm, so a 15 mm gap runs down the middle. The top
@@ -126,8 +126,8 @@ flowchart LR
   painted steel. A 15 mm gap is plenty; at 7 W/m even 10 mm would be safe, but narrower gaps don't add light because
   the length is capped by the case.
 - **Zigbee through metal is weak.** Mount the controller with the antenna end toward the diffuser. It is mains-powered,
-  so it also works as a **Zigbee router**. Its PWM frequency (250 Hz or 16 kHz) is switched with a MiBoxer RF remote;
-  16 kHz rules out flicker on phone cameras.
+  so it also works as a **Zigbee router**. Its PWM frequency isn't published, so phone cameras may show
+  banding; the eye shouldn't.
 - COB strip needs little distance to the diffuser: 15–20 mm already looks dot-free.
 
 ---
@@ -149,9 +149,9 @@ flowchart LR
 8. Pair with Zigbee2MQTT (permit join, then follow the device's pairing method on its z2m page). Check that
    `brightness` and `color_temp` both work from HA. Set **`do_not_disturb` on**: when power returns after an outage the
    lamp goes back to the state it was in, so a lamp that was off stays off instead of lighting up in the night (with
-   it off, the lamp always turns on). If you have a MiBoxer RF remote, switch PWM to 16 kHz.
+   it off, the lamp always turns on).
 9. Close the diffuser, run at full power for an hour, and check the strip is comfortably warm, not hot (under ~60 °C),
-   and the controller no more than warm (it is rated to 40 °C).
+   and the controller no more than warm (keep it under about 40 °C).
 10. Repeat the lux-meter readings and compare.
 11. Fit the wall switch and its automation ([`docs/wall-switch.md`](docs/wall-switch.md)).
 

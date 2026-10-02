@@ -39,9 +39,9 @@
       <!-- PSU stick in one stripe's place -->
       <rect x="155" y="-45.1" width="15" height="90.1" fill="#8f9aa5" stroke="#5d6772" stroke-width=".8"/>
       <rect x="155" y="45" width="15" height="4" fill="#5d6772"/>
-      <!-- FUT037Z+ at the left rim -->
-      <rect x="-232" y="-14.5" width="36" height="29" fill="#34495c" stroke="#23303b"/>
-      <rect x="-232" y="14.5" width="36" height="5" fill="#23303b"/>
+      <!-- Moes ZLD-RCW at the left rim -->
+      <rect x="-232" y="-14.5" width="40" height="29" fill="#34495c" stroke="#23303b"/>
+      <rect x="-232" y="14.5" width="40" height="5" fill="#23303b"/>
       <!-- bus along the top ends -->
       <polyline points="-214.0,-13.0 -187.5,-34.4 -162.5,-45.2 -137.5,-52.4 -112.5,-56.0 -87.5,-59.6 -62.5,-63.2 -37.5,-63.2 -12.5,-63.2 12.5,-63.2 37.5,-63.2 62.5,-63.2 87.5,-59.6 112.5,-56.0 137.5,-52.4 187.5,-34.4 212.5,-20.0" fill="none" stroke="#d23b3b" stroke-width="1.6"/>
       <polyline points="-214.0,-15.5 -187.5,-36.9 -162.5,-47.7 -137.5,-54.9 -112.5,-58.5 -87.5,-62.1 -62.5,-65.7 -37.5,-65.7 -12.5,-65.7 12.5,-65.7 37.5,-65.7 62.5,-65.7 87.5,-62.1 112.5,-58.5 137.5,-54.9 187.5,-36.9 212.5,-22.5" fill="none" stroke="#e08a2c" stroke-width="1.6"/>
@@ -55,7 +55,7 @@
       <line x1="510" y1="100" x2="560" y2="140" stroke="#7a838e"/>
       <text x="520" y="154">PSU stick, in one stripe's place</text>
       <line x1="130" y1="112" x2="90" y2="160" stroke="#7a838e"/>
-      <text x="30" y="174">MiBoxer FUT037Z+ at the left rim</text>
+      <text x="30" y="174">Moes ZLD-RCW at the left rim</text>
       <line x1="300" y1="44" x2="280" y2="34" stroke="#7a838e"/>
       <text x="150" y="30" font-size="10">3-wire bus along the top ends</text>
     </g>

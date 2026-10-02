@@ -95,5 +95,5 @@ automation:
 - **Battery**: replace the CR2032 on a schedule (e.g. every 12 months) and add an HA low-battery alert for the caregiver.
 - **After a power cut the lamp goes back to how it was** (`do_not_disturb` on, see the [build checklist](../README.md#3-build-checklist)): if it was off it stays off, so it doesn't wake anyone at night. If it was on, it comes back on.
 - **The one real risk:** this switch works through HA. If HA or Zigbee2MQTT is down, pressing it does nothing. Keep HA
-  on a UPS, and give the caregiver a second way to switch the lamp (the HA app, or a MiBoxer RF remote paired straight
-  to the FUT037Z+).
+  on a UPS, and give the caregiver a second way to switch the lamp (the HA app; the Moes controller has no RF
+  remote).

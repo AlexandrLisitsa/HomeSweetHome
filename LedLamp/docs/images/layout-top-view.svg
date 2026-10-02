@@ -30,9 +30,9 @@
     <rect x="155" y="-156.5" width="15" height="313" rx="2" fill="#8f9aa5" stroke="#5d6772"/>
     <text x="166" y="0" text-anchor="middle" font-size="9.5" font-weight="700" fill="#fff" transform="rotate(-90 166 0)">BIOM PSU stick 313 × 15 × 18</text>
     <!-- controller at the left rim -->
-    <rect x="-232" y="-37.25" width="36" height="74.5" rx="3" fill="#34495c" stroke="#23303b"/>
-    <text x="-212" y="0" text-anchor="middle" font-size="9" font-weight="700" fill="#fff" transform="rotate(-90 -212 0)">FUT037Z+</text>
-    <text x="-201" y="0" text-anchor="middle" font-size="6.5" fill="#cfd8e0" transform="rotate(-90 -201 0)">antenna → diffuser</text>
+    <rect x="-232" y="-45" width="40" height="90" rx="3" fill="#34495c" stroke="#23303b"/>
+    <text x="-208" y="0" text-anchor="middle" font-size="10" font-weight="700" fill="#fff" transform="rotate(-90 -208 0)">Moes ZLD-RCW</text>
+    <text x="-197" y="0" text-anchor="middle" font-size="7" fill="#cfd8e0" transform="rotate(-90 -197 0)">antenna → diffuser</text>
     <polyline points="-214.0,-45.0 -187.5,-115.5 -162.5,-153.0 -137.5,-178.0 -112.5,-190.5 -87.5,-203.0 -62.5,-215.5 -37.5,-215.5 -12.5,-215.5 12.5,-215.5 37.5,-215.5 62.5,-215.5 87.5,-203.0 112.5,-190.5 137.5,-178.0 187.5,-115.5 212.5,-65.5" fill="none" stroke="#d23b3b" stroke-width="2"/>
     <polyline points="-214.0,-49.0 -187.5,-119.5 -162.5,-157.0 -137.5,-182.0 -112.5,-194.5 -87.5,-207.0 -62.5,-219.5 -37.5,-219.5 -12.5,-219.5 12.5,-219.5 37.5,-219.5 62.5,-219.5 87.5,-207.0 112.5,-194.5 137.5,-182.0 187.5,-119.5 212.5,-69.5" fill="none" stroke="#e08a2c" stroke-width="2"/>
     <polyline points="-214.0,-53.0 -187.5,-123.5 -162.5,-161.0 -137.5,-186.0 -112.5,-198.5 -87.5,-211.0 -62.5,-223.5 -37.5,-223.5 -12.5,-223.5 12.5,-223.5 37.5,-223.5 62.5,-223.5 87.5,-211.0 112.5,-198.5 137.5,-186.0 187.5,-123.5 212.5,-73.5" fill="none" stroke="#4f8fd6" stroke-width="2"/>
