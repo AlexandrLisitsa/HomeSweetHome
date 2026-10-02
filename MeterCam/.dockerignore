@@ -1,0 +1,18 @@
+# Config, models and frames arrive as mounts at run time, so a ROI change or a
+# new model needs no rebuild.
+#
+# tests/ DOES ship. Its vision sections need OpenCV, which only exists inside
+# the image, so a suite that cannot run there never runs against the thing
+# actually deployed.
+config.json
+.env
+data/
+models/
+deploy/
+firmware/
+docs/
+README.md
+docker-compose.yml
+__pycache__/
+*.pyc
+.git/

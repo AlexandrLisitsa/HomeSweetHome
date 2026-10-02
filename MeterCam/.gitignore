@@ -1,0 +1,25 @@
+# The live config: this meter's ROIs and Home Assistant's address. It lives in
+# the LXC; service/config.example.json is the committed template.
+config.json
+.env
+
+# Trained weights, fetched by models/fetch.sh rather than committed: jomjol's
+# repositories state no licence, and vendoring someone else's network into this
+# one on that basis is a question better left unasked.
+models/*.tflite
+
+# What the service writes: refused frames and the alignment reference.
+# Photographs of the inside of a house; they do not belong in git.
+data/
+
+# The node's own secrets: wifi password and MeterCam's token.
+# firmware/gas-cam/include/config.h.example is the committed template.
+firmware/*/include/config.h
+# PlatformIO's build tree and toolchain cache.
+firmware/*/.pio/
+
+__pycache__/
+*.pyc
+
+# The LXC's real address; see deploy/lxc.env.example.
+deploy/lxc.env

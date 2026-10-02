@@ -78,6 +78,10 @@ HERE = Path(__file__).resolve().parent
 # On the box HERE is /config/dtek, so these land on /config/dtek/.cache.json and
 # /config/secrets.yaml without special-casing anything.
 CACHE_PATH = Path(os.environ.get("DTEK_CACHE") or HERE / ".cache.json")
+# Raw answers, one file per status change -- see save_capture(). Excluded from
+# ha_pull.sh and .gitignore: promoting one to tools/fixtures/ is a decision.
+CAPTURE_DIR = Path(os.environ.get("DTEK_CAPTURES") or HERE / "captures")
+CAPTURE_KEEP = 30
 SECRETS_PATH = Path(os.environ.get("DTEK_SECRETS") or HERE.parent / "secrets.yaml")
 
 # The seven states DTEK uses, from preset.time_type, compressed to one character
@@ -113,6 +117,15 @@ FLAG_KEYS = ("showCurOutageParam", "showCurSchedule", "showTableSchedule",
 HIDDEN_REASONS = ("table_off", "empty_preset", "plan_off", "no_queue",
                   "unknown_queue", "cek", "voluntarily",
                   "emergency_no_schedule")
+
+# Everything DTEK has ever sent in a house record and beside `data`. Anything
+# outside these is reported in `warnings` rather than ignored: the 29.09.2026
+# outage was published with no times at all because a format changed and
+# nothing said so. See drift_warnings().
+ENTRY_KEYS = frozenset(("sub_type", "start_date", "end_date", "type",
+                        "sub_type_reason", "voluntarily", "cek"))
+ANSWER_KEYS = frozenset(("result", "data", "updateTimestamp") + FLAG_KEYS)
+OUTAGE_TYPES = frozenset(("1", "2"))
 
 # The one sub_type that voids the schedule outright rather than suspending it.
 # Matched verbatim against discon-schedule.js:492, which does the same.
@@ -433,15 +446,62 @@ def find_edges(slots, now):
     return next_off, next_on
 
 
+# Time FIRST is what getHomeNum actually sends ("11:05 29.09.2026", captured in
+# tools/fixtures/dtek_emergency_20260929.json). Parsing only the date-first
+# shape turned a live emergency outage into outage_start/_end = null without a
+# single error, so both are accepted and the observed one is tried first.
+DTEK_DATETIME_FORMATS = ("%H:%M %d.%m.%Y", "%d.%m.%Y %H:%M")
+
+
 def parse_dtek_datetime(text):
-    """'dd.mm.yyyy HH:MM' -> ISO 8601 with the Kyiv offset, or None."""
+    """'HH:MM dd.mm.yyyy' (or 'dd.mm.yyyy HH:MM') -> ISO 8601 in Kyiv, or None."""
     if not text:
         return None
-    try:
-        naive = datetime.strptime(text.strip(), "%d.%m.%Y %H:%M")
-    except ValueError:
-        return None
-    return naive.replace(tzinfo=KYIV).isoformat()
+    for fmt in DTEK_DATETIME_FORMATS:
+        try:
+            naive = datetime.strptime(text.strip(), fmt)
+        except ValueError:
+            continue
+        return naive.replace(tzinfo=KYIV).isoformat()
+    return None
+
+
+def drift_warnings(entry, answer, start, end):
+    """Everything in this answer the poller could not fully read, as sentences.
+
+    Empty on a normal poll. Not an error: the payload is still published with
+    whatever did parse, and the raw strings ride along beside it, so a changed
+    format degrades to "shown verbatim, flagged" instead of to null.
+    """
+    out = []
+    for name, raw in (("start_date", start), ("end_date", end)):
+        if raw and parse_dtek_datetime(raw) is None:
+            out.append("unreadable %s %r" % (name, raw))
+    otype = (entry.get("type") or "").strip()
+    if otype and otype not in OUTAGE_TYPES:
+        out.append("unknown outage type %r" % otype)
+    extra = sorted(set(entry) - ENTRY_KEYS)
+    if extra:
+        out.append("new field(s) in the house record: " + ", ".join(extra))
+    extra = sorted(set(answer or {}) - ANSWER_KEYS)
+    if extra:
+        out.append("new field(s) beside data: " + ", ".join(extra))
+    return out
+
+
+def street_scope(answer):
+    """(houses with an outage record, houses listed) for the whole street.
+
+    getHomeNum answers for every house on the street, not just ours, so this
+    costs nothing. It separates a fault in this building (1 of 288, as on
+    29.09.2026) from one on the line or the queue.
+    """
+    data = (answer or {}).get("data")
+    if not isinstance(data, dict) or not data:
+        return None, None
+    hit = sum(1 for e in data.values() if isinstance(e, dict) and any(
+        (e.get(k) or "").strip() for k in ("sub_type", "start_date", "end_date")))
+    return hit, len(data)
 
 
 def resolve(entry, answer, fact, preset, now):
@@ -470,6 +530,10 @@ def resolve(entry, answer, fact, preset, now):
         "outage_reason": sub_type or None,
         "outage_start": parse_dtek_datetime(start),
         "outage_end": parse_dtek_datetime(end),
+        # Verbatim, so a format the parser misses is still on the dashboard.
+        "outage_start_raw": start or None,
+        "outage_end_raw": end or None,
+        "warnings": drift_warnings(entry, answer, start, end),
         "schedule_update": (fact or {}).get("update"),
         # From preset, not fact, so this survives the early return below.
         "week": week_states(preset, queues),
@@ -481,6 +545,7 @@ def resolve(entry, answer, fact, preset, now):
     # what says whether it currently means anything.
     flags, week_ok, sched_ok, hidden = visibility(
         answer or {}, fact, preset, queues, entry)
+    out["street_outages"], out["street_houses"] = street_scope(answer)
     out.update(
         week_in_effect=week_ok,
         schedule_visible=sched_ok,
@@ -613,6 +678,32 @@ def status_for(payload):
         payload.get("outage_type"), "outage")
 
 
+def save_capture(answer, payload, session, house):
+    """Keep the raw answer whenever the status or the warnings change.
+
+    The 29.09.2026 golden fixture was captured by hand with the outage an hour
+    from ending. This makes the next one a file copy. Same shape as
+    tools/fixtures/dtek_emergency_20260929.json, so a capture drops into
+    test_dtek_schedule.py unchanged. No cookies, no CSRF, no street name.
+    Best effort, like save_cache().
+    """
+    stamp = payload["fetched_at"][:19].replace(":", "").replace("-", "")
+    body = {"_meta": {"captured_at": payload["fetched_at"], "house": house,
+                      "status": payload["status"],
+                      "warnings": payload["warnings"]},
+            "getHomeNum": answer, "fact": session.fact, "preset": session.preset}
+    try:
+        CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+        path = CAPTURE_DIR / ("%s_%s.json" % (stamp, payload["status"]))
+        path.write_text(json.dumps(body, ensure_ascii=False, indent=1),
+                        encoding="utf-8")
+        log("captured %s" % path.name)
+        for old in sorted(CAPTURE_DIR.glob("*.json"))[:-CAPTURE_KEEP]:
+            old.unlink()
+    except OSError as exc:
+        log("capture not written: %s" % exc)
+
+
 def poll(cache):
     city, street, house = read_secrets()
     session = Session(cache)
@@ -636,6 +727,11 @@ def poll(cache):
     payload["fetched_at"] = now.isoformat()
     payload["stale"] = False
     payload["error"] = None
+
+    prev = cache.get("last_good") or {}
+    if (prev.get("status"), prev.get("warnings")) != (payload["status"],
+                                                      payload["warnings"]):
+        save_capture(answer, payload, session, house)
 
     cache.update(cookies=session.cookies, csrf=session.csrf,
                  preset=session.preset, fact=session.fact, last_good=payload)

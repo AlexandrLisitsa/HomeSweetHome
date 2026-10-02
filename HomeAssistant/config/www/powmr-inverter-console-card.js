@@ -73,7 +73,7 @@
  */
 
 const CARD = "powmr-inverter-console-card";
-const VERSION = "1.6.0";
+const VERSION = "2.1.3";
 
 /*
  * Brand colours stay literal: they identify a leg of the diagram (amber =
@@ -136,6 +136,13 @@ const DEFAULTS = {
   power_priority: "select.powmr_inverter_power_priority",
   ac_input_mode: "select.powmr_inverter_inverter_ac_input_mode",
   tariff: "select.grid_real_tariff",
+  // What the outage pre-charge intends (HomeAssistant/config/packages/
+  // outage_precharge.yaml). Read only for the Pre-charge chip's sub-label.
+  precharge_plan: "sensor.outage_pre_charge_plan",
+  // Adaptive night charge (HomeAssistant/config/packages/adaptive_charge.yaml):
+  // the second dot on the AC charge chip, and the plan behind its sub-label.
+  adaptive_charge: "input_boolean.adaptive_night_charge",
+  adaptive_plan: "sensor.adaptive_charge_plan",
   // Ceilings the flow speed scales against. 2400 W is the inverter's rating
   // and was already the `max` on the tab's old bar-gauge.
   max_grid_w: 2400,
@@ -160,15 +167,27 @@ const DEFAULTS = {
 const CHIPS = [
   { label: "Auto", cfg: "chip_auto", ent: "switch.powmr_inverter_auto_tariff_mode", icon: "mdi:clock-check-outline", color: BATT_C },
   { label: "Protect", cfg: "chip_protect", ent: "switch.powmr_inverter_auto_grid_protection", icon: "mdi:shield-home", color: BATT_C },
-  { label: "AC charge", cfg: "chip_ac_charge", ent: "switch.powmr_inverter_ac_charging_enabled", icon: "mdi:battery-charging-50", color: GRID_C, live: true },
+  { label: "AC charge", cfg: "chip_ac_charge", ent: "switch.powmr_inverter_ac_charging_enabled", icon: "mdi:battery-charging-50", color: GRID_C, live: true, adaptive: true },
   { label: "Night only", cfg: "chip_night_only", ent: "switch.powmr_inverter_night_charging_only", icon: "mdi:weather-night", color: LOAD_C },
+  { label: "Pre-charge", cfg: "chip_precharge", ent: "switch.powmr_inverter_outage_pre_charge", icon: "mdi:battery-clock", color: GRID_C, plan: true },
 ];
 CHIPS.forEach((c) => { DEFAULTS[c.cfg] = c.ent; });
 /*
+ * `plan` marks the outage pre-charge chip. Its switch only ARMS the feature --
+ * nothing happens until DTEK publishes a window -- so ON alone says as little
+ * as AC charge's does. It carries a sub-label from the plan sensor instead:
+ * "30 A → 09:30" while charging, "at night" while the night tariff will do.
+ *
  * `live` marks the chip whose switch only PERMITS something. AC charge sits
  * on all night whether or not a watt is moving, so ON alone says nothing; the
  * chip pulses while the grid is up and the BMS says the pack is taking
  * current. There is no PV here, so a charging pack on grid is the AC charger.
+ *
+ * `adaptive` gives a chip a second dot, after its own: adaptive night charge,
+ * which sizes the charge current to finish by 07:00. It is its own switch
+ * (an input_boolean), lit orange on its own, with a sub-label from its plan
+ * ("20 A → 07:00"). It only works under Auto or Night only, with the charger
+ * on, so otherwise the dot is dimmed and a tap on it does nothing.
  */
 
 /*
@@ -224,6 +243,12 @@ const RANGES = {
 const MIN_SPAN = 60000;
 const MAX_SPAN = Math.max.apply(null, Object.keys(RANGES)
   .map((k) => RANGES[k].hours)) * 3600000;
+
+// How far back raw states reach: the recorder keeps two days
+// (configuration.yaml, purge_keep_days: 2). A window starting before this is
+// drawn from hourly long-term statistics instead. 36 h, not 48, so a window
+// that would lean on the last hours before a purge takes statistics too.
+const RAW_HORIZON = 36 * 3600000;
 
 const CH_W = 1000;
 const CH_H = 260;
@@ -364,6 +389,8 @@ ha-card {
   width: calc(17px * var(--s)); height: calc(17px * var(--s)); }
 .chip .lbl { cursor: pointer; white-space: nowrap; }
 .chip .lbl:hover { text-decoration: underline; text-underline-offset: 3px; }
+.chip .sub { font-family: var(--mono); font-size: calc(11px * var(--s)); opacity: .75; white-space: nowrap; }
+.chip .sub:empty { display: none; }
 .chip .dw { display: flex; align-items: center; justify-content: center; width: 18px; height: 22px;
   border-radius: 6px; flex: none; cursor: pointer; }
 .chip .dw:hover { background: #ffffff14; }
@@ -371,6 +398,13 @@ ha-card {
 .chip.on .dot { background: var(--cc); box-shadow: 0 0 8px var(--cs); }
 .chip.on.live { animation: pmchip 2s ease-in-out infinite; }
 .chip.on.live .dot { animation: pmpulse 2s ease-in-out infinite; }
+/* The adaptive dot keeps its own state, whatever the chip's switch is doing. */
+.chip .dw.ad { margin-left: -6px; }
+.chip .dw.ad .dot { background: transparent; box-shadow: none; animation: none;
+  border: 1px solid #3A3F49; width: 7px; height: 7px; box-sizing: border-box; }
+.chip .dw.ad.on .dot { background: ${GRID_C}; border-color: ${GRID_C}; box-shadow: 0 0 8px ${GRID_C}99; }
+.chip .dw.ad.dis { cursor: not-allowed; opacity: .35; }
+.chip .dw.ad.dis:hover { background: transparent; }
 @keyframes pmchip { 0%, 100% { box-shadow: 0 0 0 0 transparent } 50% { box-shadow: 0 0 14px -2px var(--cs) } }
 
 /* --- panels ------------------------------------------------------------- */
@@ -653,6 +687,10 @@ class PowmrInverterConsoleCard extends HTMLElement {
     this._built = false;
     this._print = null;
     this._hist.clear();
+    // A history reply still in flight belongs to the old tree: it may have no
+    // chart at all now. Dropping the token makes it land on the floor.
+    this._token = null;
+    this._drawnKey = null;
     if (this._hass) this._render();
   }
 
@@ -841,8 +879,11 @@ class PowmrInverterConsoleCard extends HTMLElement {
       if (act === "toggle") {
         ev.stopPropagation();
         ev.preventDefault();
+        // A dimmed adaptive dot: Auto and Night only are both off.
+        if (node.classList && node.classList.contains("dis")) return;
         const ent = node.getAttribute("data-ent");
-        if (ent && this._hass) this._hass.callService("switch", "toggle", { entity_id: ent });
+        // switch.* for the firmware chips, input_boolean.* for adaptive.
+        if (ent && this._hass) this._hass.callService(ent.split(".")[0], "toggle", { entity_id: ent });
         return;
       }
       if (act === "range") {
@@ -895,7 +936,9 @@ class PowmrInverterConsoleCard extends HTMLElement {
    * The count starts at grid_in_range's last_changed, which is only exact if
    * HA was connected when it flipped -- an HA restart mid-countdown resets it,
    * and the timer then over-reads by up to that much. It clamps at 0 for the
-   * second or two between the firmware's release and HA hearing about it.
+   * second or two between the firmware's release and HA hearing about it, and
+   * at grid_return_s when the browser's clock runs behind HA's and the flip
+   * looks like it happened in the future.
    */
   _returnLeft() {
     const c = this._config;
@@ -904,7 +947,82 @@ class PowmrInverterConsoleCard extends HTMLElement {
     if (!safe || !rng || safe.state !== "on" || rng.state !== "on") return null;
     const t = Date.parse(rng.last_changed || "");
     if (!Number.isFinite(t)) return null;
-    return Math.max(0, c.grid_return_s - (Date.now() - t) / 1000);
+    return Math.max(0, Math.min(c.grid_return_s, c.grid_return_s - (Date.now() - t) / 1000));
+  }
+
+  /**
+   * The Pre-charge chip's sub-label and tooltip, from the plan sensor. Empty
+   * (and hidden) while the switch is off or there is nothing to charge for,
+   * which is most of the time: the chip is then just a switch.
+   */
+  _patchPlan(node, sub, st) {
+    const plan = this._stateObj(this._config.precharge_plan);
+    const a = (plan && plan.attributes) || {};
+    const t = Date.parse(a.until || "");
+    const at = Number.isFinite(t)
+      ? new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })
+      : "";
+    let text = "";
+    if (st === "on" && plan) {
+      if (plan.state === "charging") text = this._chargeText(a.current, at);
+      else if (plan.state === "waiting_night") text = at ? "at night → " + at : "at night";
+      else if (plan.state === "full") text = "full";
+    }
+    if (sub) sub.textContent = text;
+    if (plan && a.reason) node.title += " · " + plan.state + ": " + a.reason;
+  }
+
+  /**
+   * "<A> A → HH:MM" for a charging plan, shared by Pre-charge and adaptive.
+   * Either half can be missing for a tick while the template sensor settles
+   * (or after a hand edit of its attributes), and then that half is left out
+   * rather than printed as "undefined A" or a bare arrow.
+   */
+  _chargeText(current, at) {
+    const n = current === null || current === undefined || current === "" ? NaN : Number(current);
+    const amps = Number.isFinite(n) ? n + " A" : "";
+    if (amps && at) return amps + " → " + at;
+    if (amps) return amps;
+    return at ? "charging → " + at : "charging";
+  }
+
+  /**
+   * The AC charge chip's adaptive dot and its sub-label. The dot is the
+   * input_boolean; it dims when there is no night charge to size: neither
+   * Auto nor Night only is on, or the AC charger is off under Auto. Under
+   * Night only the firmware owns the charger (it is off all day by design),
+   * so it does not count. It also dims while a DTEK outage window is pending:
+   * the night is pre-charge's then, and adaptive was switched off for it.
+   * Same rule as adaptive_charge.yaml's guard.
+   */
+  _patchAdaptive(dot, sub) {
+    const c = this._config;
+    const st = this._state(c.adaptive_charge);
+    const outage = ["waiting_night", "charging", "full"].includes(this._state(c.precharge_plan));
+    const charges = this._state(c.chip_night_only) === "on"
+      || (this._state(c.chip_auto) === "on" && this._state(c.chip_ac_charge) === "on");
+    const usable = charges && !outage;
+    const plan = this._stateObj(c.adaptive_plan);
+    const a = (plan && plan.attributes) || {};
+    const t = Date.parse(a.until || "");
+    const at = Number.isFinite(t)
+      ? new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })
+      : "";
+    let text = "";
+    if (st === "on" && plan) {
+      if (plan.state === "charging") text = this._chargeText(a.current, at);
+      else if (plan.state === "full") text = "full";
+      else if (plan.state === "day") text = "tonight";
+    }
+    if (dot) {
+      dot.classList.toggle("on", st === "on");
+      dot.classList.toggle("dis", !usable && st !== "on");
+      dot.title = !usable && st !== "on"
+        ? (outage ? "Adaptive night charge — off while an outage is scheduled (pre-charge)"
+          : "Adaptive night charge — needs Auto or Night only, and the AC charger on")
+        : "Adaptive night charge — " + st + (plan && a.reason ? " · " + plan.state + ": " + a.reason : "");
+    }
+    if (sub) sub.textContent = text;
   }
 
   /** The header pill: grid word, dot colour and the return countdown. */
@@ -990,9 +1108,14 @@ class PowmrInverterConsoleCard extends HTMLElement {
                style="--cc:${ch.color};--cb:${ch.color}4D;--cf:${ch.color}14;--cs:${ch.color}99">
             <span class="ic" data-act="toggle" data-ent="${c[ch.cfg]}" role="button" tabindex="0"
                   title="Toggle ${this._esc(ch.label)}"><ha-icon icon="${ch.icon}"></ha-icon></span>
-            <span class="lbl" data-more="${c[ch.cfg]}" role="button" tabindex="0">${this._esc(ch.label)}</span>
+            <span class="lbl" data-more="${c[ch.cfg]}" role="button" tabindex="0">${this._esc(ch.label)}</span>${
+              ch.plan ? `<span class="sub" data-ref="chipSub${i}" data-more="${c.precharge_plan}" role="button" tabindex="0"></span>` : ""}
             <span class="dw" data-act="toggle" data-ent="${c[ch.cfg]}" role="button" tabindex="0"
-                  title="Toggle ${this._esc(ch.label)}"><span class="dot"></span></span>
+                  title="Toggle ${this._esc(ch.label)}"><span class="dot"></span></span>${
+              ch.adaptive ? `
+            <span class="dw ad" data-ref="chipAd${i}" data-act="toggle" data-ent="${c.adaptive_charge}" role="button" tabindex="0"
+                  title="Toggle adaptive night charge"><span class="dot"></span></span>
+            <span class="sub" data-ref="chipAdSub${i}" data-more="${c.adaptive_plan}" role="button" tabindex="0"></span>` : ""}
           </div>`).join("")}
         </div>
       </div>`);
@@ -1254,7 +1377,12 @@ class PowmrInverterConsoleCard extends HTMLElement {
       c.tariff_day, c.tariff_night, c.total_energy,
       c.max_charge_current, c.power_priority, c.ac_input_mode, c.tariff,
     ].concat(CHIPS.map((ch) => c[ch.cfg]));
+    const plan = (this._stateObj(c.precharge_plan) || {}).attributes || {};
+    const ad = (this._stateObj(c.adaptive_plan) || {}).attributes || {};
     return ids.map((id) => this._state(id)).join("|")
+      + "|" + this._state(c.precharge_plan) + "|" + plan.current + "|" + plan.until + "|" + plan.reason
+      + "|" + this._state(c.adaptive_charge) + "|" + this._state(c.adaptive_plan)
+      + "|" + ad.current + "|" + ad.until + "|" + ad.reason
       + "|" + this._range + "|" + this._sel;
   }
 
@@ -1291,6 +1419,8 @@ class PowmrInverterConsoleCard extends HTMLElement {
       node.title = (this._stateObj(c[ch.cfg]) || {}).attributes
         ? ((this._stateObj(c[ch.cfg]).attributes.friendly_name || ch.label) + " — " + st)
         : ch.label;
+      if (ch.plan) this._patchPlan(node, el["chipSub" + i], st);
+      if (ch.adaptive) this._patchAdaptive(el["chipAd" + i], el["chipAdSub" + i]);
     });
 
     // --- grid tile ---------------------------------------------------------
@@ -1334,7 +1464,9 @@ class PowmrInverterConsoleCard extends HTMLElement {
       const col = this._socColor(soc);
       el.socVal.innerHTML = this._fmt(soc, 0) + '<i>%</i>';
       el.socVal.style.color = col;
-      el.socFill.style.width = (soc === null ? 0 : soc).toFixed(0) + "%";
+      // Clamped: a BMS glitch past 100 % (or below 0) is still a full (empty)
+      // bar, and a negative width is invalid CSS the browser would ignore.
+      el.socFill.style.width = (soc === null ? 0 : Math.max(0, Math.min(100, soc))).toFixed(0) + "%";
       // The gradient is in the stylesheet; this only says what colour it is.
       el.socFill.style.setProperty("--fc", col);
       // The BMS sign is the truth; the inverter's two currents are magnitudes.
@@ -1731,19 +1863,44 @@ class PowmrInverterConsoleCard extends HTMLElement {
     const p = (async () => {
       const rec = { at: now, start: start, end: end, pts: [], note: null };
       try {
-        const reply = await this._hass.callWS({
-          type: "history/history_during_period",
-          start_time: new Date(start).toISOString(),
-          end_time: new Date(end).toISOString(),
-          entity_ids: [entity],
-          minimal_response: true,
-          no_attributes: true,
-          significant_changes_only: false,
-        });
-        const raw = this._parse(reply, entity);
+        // Raw states are kept two days (recorder purge_keep_days), so a window
+        // reaching further back than that drew a sliver at its right edge
+        // under a "last 14 days" label -- with min/max/mean worked out from
+        // that sliver. Past the horizon the hourly long-term statistics carry
+        // it instead, the same road the climate card takes. An entity with no
+        // state_class has none, and falls back to what raw history exists.
+        let raw = [];
+        let fromStats = false;
+        if (start < now - RAW_HORIZON) {
+          const stats = await this._hass.callWS({
+            type: "recorder/statistics_during_period",
+            start_time: new Date(start).toISOString(),
+            end_time: new Date(end).toISOString(),
+            statistic_ids: [entity],
+            period: "hour",
+            types: ["mean"],
+          });
+          raw = this._parseStats(stats, entity);
+          fromStats = raw.length > 0;
+        }
+        if (!fromStats) {
+          const reply = await this._hass.callWS({
+            type: "history/history_during_period",
+            start_time: new Date(start).toISOString(),
+            end_time: new Date(end).toISOString(),
+            entity_ids: [entity],
+            minimal_response: true,
+            no_attributes: true,
+            significant_changes_only: false,
+          });
+          raw = this._parse(reply, entity);
+        }
         rec.pts = this._decimate(raw, cap);
         if (!rec.pts.length) {
           rec.note = raw.length ? "no numeric history" : "no history recorded";
+        } else if (!fromStats && start < now - RAW_HORIZON
+                   && rec.pts[0][0] > start + RAW_HORIZON) {
+          rec.note = "only the last two days are kept for this sensor";
         }
       } catch (err) {
         rec.note = "history unavailable"
@@ -1772,6 +1929,26 @@ class PowmrInverterConsoleCard extends HTMLElement {
     if (pinned.length <= 12) return;
     pinned.sort((a, b) => a[1] - b[1]);
     for (let i = 0; i < pinned.length - 12; i++) this._hist.delete(pinned[i][0]);
+  }
+
+  /**
+   * Hourly means from recorder/statistics_during_period, in the [ms, value]
+   * shape _parse() produces. Plotted at the start of each hour, as the History
+   * panel does; `start` is epoch ms on current releases, ISO on older ones.
+   */
+  _parseStats(reply, entity) {
+    const rows = reply && reply[entity];
+    if (!Array.isArray(rows)) return [];
+    const out = [];
+    for (const r of rows) {
+      if (!r) continue;
+      const v = parseFloat(r.mean);
+      if (!Number.isFinite(v)) continue;
+      const t = typeof r.start === "number" ? r.start : Date.parse(r.start);
+      if (Number.isFinite(t)) out.push([t, v]);
+    }
+    out.sort((a, b) => a[0] - b[0]);
+    return out;
   }
 
   /**
@@ -2047,6 +2224,8 @@ class PowmrInverterConsoleCard extends HTMLElement {
 
   _drawChart(spec, rec) {
     const el = this._el;
+    // Belt and braces for the token: no history block, nothing to draw on.
+    if (!el.chLine) return;
     this._hideHover();
 
     /*

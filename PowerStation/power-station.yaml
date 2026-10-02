@@ -123,6 +123,16 @@ globals:
   # Using std::vector as a FIFO command queue
   - id: command_queue
     type: std::vector<std::string>
+  # Whose turn the next 3 s tick is while commands are queued: a command, or
+  # a QPIGS poll. See the dispatcher interval.
+  - id: poll_turn
+    type: bool
+    initial_value: 'false'
+  # Tries left for the command at the FRONT of the queue; 0 with a non-empty
+  # queue means it has used its last try and gives up on its next turn.
+  # Producers push, then prime this only if their command is now the front
+  # (`size() == 1`): testing the counter for 0 instead read "front command
+  # exhausted" as "idle" and handed a NAKed command 20 fresh tries.
   - id: command_retries
     type: int
     initial_value: '0'
@@ -142,6 +152,20 @@ globals:
     restore_value: true
     initial_value: '0'
     update_interval: 5min
+  # Outage pre-charge bookkeeping (docs/architecture.md §11). Whether the
+  # override was engaged at the last evaluation, and the Max AC Charge Current
+  # (in amps) it found before HA started steering the current, so the user's
+  # setting comes back when the override ends. Both survive a reboot mid-charge:
+  # otherwise the boot evaluation would see a fresh "start" and save HA's
+  # current as the user's.
+  - id: precharge_was_active
+    type: bool
+    restore_value: true
+    initial_value: 'false'
+  - id: precharge_saved_current
+    type: int
+    restore_value: true
+    initial_value: '-1'
 
 # --- CENTRAL LOGIC BRAIN ---
 script:
@@ -165,9 +189,19 @@ script:
             ESP_LOGW("logic", "🚨 EMERGENCY: Grid is BAD. Forcing Battery Mode.");
             target_priority = "SBU Battery";
             id(command_queue).push_back("POP02");
-            if (id(command_retries) == 0) id(command_retries) = 20;
-          } 
-          
+            if (id(command_queue).size() == 1) id(command_retries) = 20;
+          }
+
+          // 2b. OUTAGE PRE-CHARGE (rule 1b in docs/architecture.md §3, and §11):
+          // HA asked us to fill the pack before a DTEK outage. Beats the tariff
+          // (which would discharge by day), loses to grid protection. Same test
+          // as evaluate_charge_window; no valid clock means no pre-charge.
+          else if (id(switch_precharge_enable).state && time.is_valid() &&
+                   time.timestamp < id(dt_precharge_until).state_as_esptime().timestamp) {
+            ESP_LOGI("logic", "🔋 OUTAGE PRE-CHARGE: Grid OK. UTILITY Mode until the outage.");
+            target_priority = "Utility First";
+          }
+
           // 3. IF GRID IS SAFE, CHECK TARIFFS AND TIME
           else if (tariff_enabled) {
             if (!time.is_valid()) {
@@ -200,17 +234,50 @@ script:
   # Gates the battery charger to the night tariff window. Owns the BMS charge
   # MOSFET only while "Night Charging Only" is engaged. Never touches the power
   # priority - that is the job of evaluate_power_mode. See docs/architecture.md §10.
+  # An outage pre-charge (§11) overrides the gate and owns the charge current
+  # for its duration. Every pre-charge trigger runs this script; it alone detects
+  # the start and end and hands the power priority to evaluate_power_mode then.
   - id: evaluate_charge_window
     mode: restart
     then:
       - lambda: |-
+          auto time = id(sntp_time).now();
+
+          // OUTAGE PRE-CHARGE. Same test as rule 2b of evaluate_power_mode.
+          bool precharge = id(switch_precharge_enable).state && time.is_valid() &&
+                           time.timestamp < id(dt_precharge_until).state_as_esptime().timestamp;
+          if (precharge != id(precharge_was_active)) {
+            id(precharge_was_active) = precharge;
+            if (precharge) {
+              // HA is about to steer the current - remember the user's setting.
+              std::string cur = id(select_max_charge).current_option();
+              id(precharge_saved_current) = atoi(cur.c_str());
+              ESP_LOGI("charge", "🔋 PRE-CHARGE START: saved charge current %d A.", id(precharge_saved_current));
+            } else if (id(precharge_saved_current) >= 0) {
+              char buf[4];
+              snprintf(buf, sizeof(buf), "%02d", id(precharge_saved_current));
+              ESP_LOGI("charge", "🔋 PRE-CHARGE END: restoring charge current %s A.", buf);
+              id(select_max_charge).make_call().set_option(buf).perform();
+              id(precharge_saved_current) = -1;
+            }
+            // Only on the edge: re-running it every 5 min would undo a manual
+            // Power Priority choice, which until now only the tariff boundaries did.
+            id(evaluate_power_mode).execute();
+          }
+          if (precharge) {
+            if (!id(switch_bms_charging).state) {
+              ESP_LOGI("charge", "🔋 PRE-CHARGE: Allowing battery charging.");
+              id(switch_bms_charging).turn_on();
+            }
+            return;
+          }
+
           // Only this mode manages the charger. While it is off, the BMS charging
           // switch belongs to the user and we never touch it.
           if (!id(switch_night_charging).state) {
             return;
           }
 
-          auto time = id(sntp_time).now();
           if (!time.is_valid()) {
             // No trustworthy time - fail OPEN. Blocking the charger on an unknown
             // clock could strand the pack empty; paying day rates is only money.
@@ -486,6 +553,23 @@ switch:
             - logger.log: "🔌 Releasing the charger back to ON."
             - switch.turn_on: switch_bms_charging
 
+  # User-facing enable for the outage pre-charge (docs/architecture.md §11).
+  # While ON, a future "Pre-charge Until" engages the override; OFF releases it
+  # at once and the charge current is handed back. Unlike the two modes above it
+  # is not mutually exclusive with anything - it sits on top of both.
+  - platform: template
+    name: "Outage Pre-charge"
+    id: switch_precharge_enable
+    icon: "mdi:battery-clock"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    on_turn_on:
+      - logger.log: "🔋 OUTAGE PRE-CHARGE ENABLED"
+      - script.execute: evaluate_charge_window
+    on_turn_off:
+      - logger.log: "🔋 OUTAGE PRE-CHARGE DISABLED"
+      - script.execute: evaluate_charge_window
+
   # ==============================
   # JKBMS SWITCHES
   # ==============================
@@ -515,7 +599,7 @@ select:
           std::string val = x;
           while(val.length() < 3) val = "0" + val;
           id(command_queue).push_back("MUCHGC" + val);
-          if (id(command_retries) == 0) id(command_retries) = 20;
+          if (id(command_queue).size() == 1) id(command_retries) = 20;
           ESP_LOGI("dispatcher", "New Charge Limit Queued: %s", x.c_str());
 
   - platform: template
@@ -532,7 +616,7 @@ select:
           if (x == "Solar First") cmd = "POP01";
           else if (x == "SBU Battery") cmd = "POP02";
           id(command_queue).push_back(cmd);
-          if (id(command_retries) == 0) id(command_retries) = 20;
+          if (id(command_queue).size() == 1) id(command_retries) = 20;
           ESP_LOGI("dispatcher", "New Priority Queued: %s", x.c_str());
 
   - platform: template
@@ -547,10 +631,22 @@ select:
       - lambda: |-
           std::string cmd = (x == "UPS") ? "PGR01" : "PGR00";
           id(command_queue).push_back(cmd);
-          if (id(command_retries) == 0) id(command_retries) = 20;
+          if (id(command_queue).size() == 1) id(command_retries) = 20;
           ESP_LOGI("dispatcher", "New AC Input Mode Queued: %s", x.c_str());
 
 # --- CHARGE VOLTAGE CONTROLS ---
+# Not optimistic: set_action decides whether a value from HA is accepted, and
+# only an accepted value is published. on_value queues the command, so the
+# boot-time replay of the restored value (TemplateNumber::setup publishes it
+# without going through set_action) still re-sends what was last accepted.
+#
+# A refused value is never published: the entity keeps showing what the
+# inverter was last given, and the other slider's check compares against
+# that. TemplateNumber::control() still saves the refused value to flash right
+# after set_action returns, which the next boot would replay; the refusal
+# therefore schedules a write-back of the accepted value for when control()
+# has returned. That write-back goes through set_action again and is let
+# straight through, without publishing or re-sending anything.
 number:
   - platform: template
     name: "Bulk Charge Voltage"
@@ -562,13 +658,34 @@ number:
     step: 0.1
     restore_value: true
     initial_value: 28.0
-    optimistic: true
+    optimistic: false
+    set_action:
+      - lambda: |-
+          // Bulk below float is refused here rather than left to a NAK: the
+          // two sliders are independent and nothing else stops it.
+          static bool writing_back = false;
+          if (writing_back) return;
+          float fl = id(num_float_voltage).state;
+          if (!std::isnan(fl) && x < fl) {
+            ESP_LOGW("dispatcher", "Bulk %.1f V below float %.1f V - not sent, keeping %.1f V",
+                     x, fl, id(num_bulk_voltage).state);
+            App.scheduler.set_timeout(&writing_back, 0, []() {
+              writing_back = true;
+              id(num_bulk_voltage).make_call().set_value(id(num_bulk_voltage).state).perform();
+              writing_back = false;
+            });
+            return;
+          }
+          id(num_bulk_voltage).publish_state(x);
     on_value:
       - lambda: |-
-          char buf[12];
-          snprintf(buf, sizeof(buf), "PCVV%.2f", x);
+          // PI30 defines this as PCVV<nn.n>: ONE decimal. "%.2f" sent
+          // PCVV28.00, and the NAK loops docs/architecture.md blames on
+          // float > bulk are at least as likely to be this.
+          char buf[16];
+          snprintf(buf, sizeof(buf), "PCVV%.1f", x);
           id(command_queue).push_back(std::string(buf));
-          if (id(command_retries) == 0) id(command_retries) = 20;
+          if (id(command_queue).size() == 1) id(command_retries) = 20;
 
   - platform: template
     name: "Float Charge Voltage"
@@ -580,13 +697,49 @@ number:
     step: 0.1
     restore_value: true
     initial_value: 27.2
-    optimistic: true
+    optimistic: false
+    set_action:
+      - lambda: |-
+          // Float above bulk is refused for the same reason; see bulk.
+          static bool writing_back = false;
+          if (writing_back) return;
+          float bulk = id(num_bulk_voltage).state;
+          if (!std::isnan(bulk) && x > bulk) {
+            ESP_LOGW("dispatcher", "Float %.1f V above bulk %.1f V - not sent, keeping %.1f V",
+                     x, bulk, id(num_float_voltage).state);
+            App.scheduler.set_timeout(&writing_back, 0, []() {
+              writing_back = true;
+              id(num_float_voltage).make_call().set_value(id(num_float_voltage).state).perform();
+              writing_back = false;
+            });
+            return;
+          }
+          id(num_float_voltage).publish_state(x);
     on_value:
       - lambda: |-
-          char buf[12];
-          snprintf(buf, sizeof(buf), "PBFT%.2f", x);
+          // PBFT<nn.n>: one decimal, see PCVV above.
+          char buf[16];
+          snprintf(buf, sizeof(buf), "PBFT%.1f", x);
           id(command_queue).push_back(std::string(buf));
-          if (id(command_retries) == 0) id(command_retries) = 20;
+          if (id(command_queue).size() == 1) id(command_retries) = 20;
+
+# --- OUTAGE PRE-CHARGE DEADLINE ---
+# Written by Home Assistant (packages/outage_precharge.yaml): the start of the
+# next DTEK outage while HA wants the pack filled for it, a past time otherwise.
+# The override ends by itself when the clock passes this, so a dead HA cannot
+# strand the inverter in Utility First. Local time, same zone as sntp_time.
+datetime:
+  - platform: template
+    name: "Pre-charge Until"
+    id: dt_precharge_until
+    type: datetime
+    icon: "mdi:calendar-clock"
+    entity_category: config
+    optimistic: true
+    restore_value: true
+    initial_value: "2000-01-01 00:00:00"
+    on_value:
+      - script.execute: evaluate_charge_window
 
 # --- BINARY SENSORS ---
 binary_sensor:
@@ -656,6 +809,8 @@ interval:
   # drops, and the tariff boundaries only fire twice a day - so a failed write
   # would otherwise persist for hours. A no-op unless the charger disagrees with
   # the current window.
+  # It is also what ends an outage pre-charge whose deadline has passed:
+  # nothing else fires at that moment.
   - interval: 5min
     then:
       - script.execute: evaluate_charge_window
@@ -663,8 +818,15 @@ interval:
   - interval: 3s
     then:
       - lambda: |-
-          // Check if there are commands in the queue
-          if (!id(command_queue).empty()) {
+          // Commands and polls take turns while anything is queued. The
+          // queue used to own the wire until it drained: a command the
+          // inverter kept refusing was re-sent every 3 s for 20 tries, and
+          // for that minute no QPIGS went out -- so sns_grid_v, the input to
+          // grid_safe, froze. Every boot replays the restored selects and
+          // numbers into the queue, so that was every boot.
+          bool poll_now = id(poll_turn) || id(command_queue).empty();
+          id(poll_turn) = !poll_now;
+          if (!poll_now) {
             if (id(command_retries) > 0) {
               // Take the first command from the queue
               std::string cmd = id(command_queue).front();
@@ -699,7 +861,7 @@ interval:
               ESP_LOGI("uart_tx", "-> Sent: %s (Retries left: %d | Queue size: %d)", cmd.c_str(), id(command_retries) - 1, id(command_queue).size());
               id(command_retries) -= 1; 
             } else {
-              ESP_LOGE("uart_tx", "❌ COMMAND FAILED AFTER 20 RETRIES: %s", id(command_queue).front().c_str());
+              ESP_LOGE("uart_tx", "❌ COMMAND GAVE UP: %s", id(command_queue).front().c_str());
               // Give up on this command and remove it from the queue
               id(command_queue).erase(id(command_queue).begin());
           
@@ -709,7 +871,8 @@ interval:
               }
             }
           } else {
-            // Regular data polling (QPIGS) if the queue is empty
+            // Regular data polling (QPIGS): every tick with an empty queue,
+            // every other tick while commands are waiting.
             std::vector<uint8_t> qpigs = {0x51, 0x50, 0x49, 0x47, 0x53, 0xB7, 0xA9, 0x0D};
             id(uart_0).write_array(qpigs.data(), qpigs.size());
           }
@@ -750,7 +913,13 @@ interval:
               }
           
               if (buffer.find("(NAK") != std::string::npos) {
-                ESP_LOGW("uart_rx", "⚠️ INVERTER REJECTED COMMAND (NAK)! Will retry...");
+                // A NAK is an answer, not a lost frame: the inverter read the
+                // command and refused it, and saying it 17 more times does
+                // not change its mind. Two more tries, for a frame garbled on
+                // the way, then the dispatcher gives up. Silence still gets
+                // the full 20.
+                if (id(command_retries) > 2) id(command_retries) = 2;
+                ESP_LOGW("uart_rx", "⚠️ INVERTER REJECTED COMMAND (NAK)! %d tries left", id(command_retries));
                 buffer.clear();
                 return;
               }

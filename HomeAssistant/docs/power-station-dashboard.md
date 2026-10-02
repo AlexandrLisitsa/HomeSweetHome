@@ -8,8 +8,8 @@ BMS gateway.
 
 | Tab | Card | Version | Side of the system |
 | --- | --- | --- | --- |
-| Inverter | `config/www/powmr-inverter-console-card.js` (`custom:powmr-inverter-console-card`) | 1.6.0 | AC: grid → inverter → house |
-| Battery (`/battery`) | `config/www/jkbms-battery-console-card.js` (`custom:jkbms-battery-console-card`) | 1.3.0 | DC: inverter bus ↔ battery pack |
+| Inverter | `config/www/powmr-inverter-console-card.js` (`custom:powmr-inverter-console-card`) | 2.1.3 | AC: grid → inverter → house |
+| Battery (`/battery`) | `config/www/jkbms-battery-console-card.js` (`custom:jkbms-battery-console-card`) | 1.4.1 | DC: inverter bus ↔ battery pack |
 
 ## Why custom cards
 
@@ -32,7 +32,7 @@ Blocks, top to bottom (`blocks:` in the card config chooses and orders them):
 | --- | --- |
 | `header` | the device name and lifetime uptime, and a status pill: **Grid connected** (green), **Grid down** (red), or **Grid returning** with a countdown (amber) |
 | `flow` | a live flow diagram: grid → inverter → house, plus the battery leg, each run's speed scaled to its power |
-| `controls` | the inverter's switches as chips (**Auto** tariff, **Protect** grid, **AC charge**, **Night only**) and its three selects (power priority, AC input mode, max AC charge current), plus the day and night tariff meters |
+| `controls` | the inverter's switches as chips (**Auto** tariff, **Protect** grid, **AC charge**, **Night only**, **Pre-charge**) and its three selects (power priority, AC input mode, max AC charge current), plus the day and night tariff meters |
 | `history` | grid, load and battery power over 30 min, 1 h, 24 h, 7 or 14 days, from the recorder |
 
 **The grid-return countdown.** After an outage the firmware waits for five minutes
@@ -42,6 +42,24 @@ of stable voltage before it trusts the grid again (`delayed_off: 300s` on
 voltage is back, so while it is on and the safe sensor is still unsafe, the pill
 counts down from its `last_changed`. It is shown only in that window. The delay
 is the card option `grid_return_s` (default 300) and must match the firmware.
+
+**The Pre-charge chip** toggles `switch.powmr_inverter_outage_pre_charge`, the
+on/off for charging the pack before a scheduled DTEK outage
+([outage-precharge.md](outage-precharge.md)). ON only arms it. While the plan
+has something to do, a sub-label from `sensor.outage_pre_charge_plan` shows
+what: **30 A → 09:30** while charging, **at night → 09:30** while the night
+tariff will cover it, or **full**. Tapping the sub-label opens the plan, and the
+chip's tooltip gives the reason.
+
+**The AC charge chip has a second dot** for adaptive night charge
+(`input_boolean.adaptive_night_charge`, see [adaptive-charge.md](adaptive-charge.md)).
+It sits after the chip's own dot and lights orange when it is on, whatever the
+BMS charger switch is doing. A sub-label from `sensor.adaptive_charge_plan`
+shows **20 A → 07:00** while it is sizing the night charge, **tonight** by day,
+or **full**. Switching the charger off switches adaptive off with it, and so
+does a DTEK outage window, which hands the night to pre-charge. The dot is
+dimmed and a tap on it does nothing in any of these cases: Auto and Night only
+both off, the charger off under Auto, or an outage window pending.
 
 Two firmware quirks the card handles:
 

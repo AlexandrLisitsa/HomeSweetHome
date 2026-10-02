@@ -126,3 +126,6 @@ the spread flattens heating seasonality inside a winter month.
 Two mechanics worth keeping: rows are keyed by timestamp, so re-importing
 corrected figures overwrites in place; and the cost series carry `state` values
 that are never read by the dashboard, which uses `sum` differences only.
+
+The monthly gas reading is also sent to the operator from these numbers, after
+a tap on the phone: [`gas-reading-submission.md`](gas-reading-submission.md).

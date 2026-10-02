@@ -153,6 +153,11 @@ script:
     sequence:
       - action: rest_command.irbridge_send_candidate
         data:
-          idx: "{{ idx | default(states('input_number.irbridge_candidate') | int, true) }}"
+          # Not `default(..., true)`: that treats every falsy value as missing,
+          # and 0 is falsy -- so index 0, the confirmed protocol, was silently
+          # replaced by whatever the input_number held.
+          idx: >-
+            {{ idx if idx is defined and idx not in ['', none]
+               else states('input_number.irbridge_candidate') | int }}
           command: "{{ command }}"
           repeat: 2

@@ -21,12 +21,21 @@ local.properties
 **/.storage/
 **/zigbee2mqtt/
 HomeAssistant/config/*-backup-*/
+HomeAssistant/config/backup-*/
 
 # Registry snapshots pulled for auditing (entity/device layout, person names).
 HomeAssistant/.state/
 
 # dtek_poll.py writes its session cookie and last good payload here.
 HomeAssistant/config/dtek/.cache.json
+# Raw DTEK answers, one per status change. Promote one to
+# HomeAssistant/tools/fixtures/ by hand; the rest is a rolling window of 30.
+HomeAssistant/config/dtek/captures/
+
+# gas_submit.py: the months already sent, and the meter photos
+# it puts under /local for the monthly notification.
+HomeAssistant/config/gas/.state.json
+HomeAssistant/config/www/gas_meter/
 
 # Point-in-time audit notes: internal addresses, entity ids and tariffs.
 HomeAssistant/docs/audit.md
@@ -44,9 +53,6 @@ MeterCam/config.json
 MeterCam/data/
 MeterCam/corpus/
 MeterCam/models/*.tflite
-# Its Home Assistant package is deployed to the box, so ha_pull.sh brings it
-# down; it is tracked on the metercam branch only.
-HomeAssistant/config/packages/metercam_gas.yaml
 
 # ---------------------------------------------------------------------------
 # Build output

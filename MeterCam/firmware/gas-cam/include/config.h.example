@@ -1,0 +1,87 @@
+// Copy to config.h and fill in. config.h is gitignored: it holds the WiFi
+// password and MeterCam's token.
+#pragma once
+
+// --- network ---------------------------------------------------------------
+#define WIFI_SSID        "your-wifi-ssid"
+#define WIFI_PASSWORD    "your-wifi-password"
+
+// MeterCam, in its LXC. An IP rather than a name: this board wakes for a few
+// seconds and mDNS resolution is one more thing that can spend them.
+#define METERCAM_HOST    "192.0.2.8"          // your MeterCam LXC's address
+#define METERCAM_PORT    8770
+#define METERCAM_METER   "gas"
+// Matches METERCAM_TOKEN in the service's .env. Empty means the service runs
+// with auth off.
+#define METERCAM_TOKEN   ""
+
+// --- what a wake looks like ------------------------------------------------
+// Deep sleep between wakes: the sensor is powered down and held down, the
+// LEDs and the on-board flash are held LOW, the radio is off. Awake, this
+// board runs hot; asleep it draws almost nothing. 30 minutes gives the Energy
+// dashboard real hourly bars at this house's burn.
+#define SLEEP_SECONDS    1800
+
+// Frames per wake. Two, because MeterCam requires the frames of a wake to
+// agree and one frame cannot be checked against anything -- a flicker or a
+// drum caught mid-tick would sail through. Every extra frame is time with
+// both LEDs lit on a board that runs hot.
+#define FRAMES_PER_WAKE  2
+
+// JPEG quality, 0-63, LOWER IS BETTER. 6 is about 270-300 KB a UXGA frame.
+// The alignment reference is one of these frames: change this and take a
+// new reference.
+#define JPEG_QUALITY     6
+
+// --- the lights ------------------------------------------------------------
+// Two white LEDs on the lid rim, one each side of the slot's SHORT axis,
+// rather than the module's own flash. The on-board LED sits beside the lens
+// and fires straight down the optical axis, so against the meter's glass it
+// reflects back into the frame and hides the drum it was meant to light. A
+// light's hotspot on the glass lands about halfway between it and the lens,
+// so from the rim it falls on the tin's black mask rather than on the digits.
+// White, not red: under red light the red decimal drums wash out to the same
+// white as their digits.
+//
+// GPIO14 and GPIO13. With no SD card the free pins on this module are 2, 4,
+// 12, 13, 14 and 15 -- not 16, which is PSRAM chip-select. 2, 12 and 15 are
+// strapping pins read at reset (12 held HIGH selects the wrong flash voltage
+// and the board simply does not boot), and 4 is the on-axis flash. 13 and 14
+// have no strapping role at all.
+//
+// Wired straight off the pins, no resistors: pin -> LED anode, cathode ->
+// GND. A white LED drops 3.0-3.2 V against the pin's 3.3 V, so the pin's own
+// driver limits the current; they are lit about a second per wake. Do NOT
+// wire a red or yellow LED this way -- with ~1.2 V of headroom it draws as
+// much as the pin can give.
+//
+// The on-board flash on GPIO4 is never lit, and held LOW through the sleep
+// (FLASH_LED_GPIO_NUM in board.h): a floating GPIO4 glows.
+#define LED_LEFT_PIN     14
+#define LED_RIGHT_PIN    13
+// 0-255, PWM.
+#define LED_BRIGHTNESS   255
+// Let the LEDs settle before any frame is worth looking at.
+#define LED_SETTLE_MS    250
+
+// Frames thrown away, lights on, before the first kept one. The sensor is
+// powered down between wakes, so every wake starts from a cold AGC, and
+// against a close light the first frames come back dark and green.
+//
+// Counted in FRAMES, not milliseconds: a dark scene exposes for longer, so a
+// time budget gives the darkest scenes the fewest frames to converge in --
+// measured here, the same wake came back after 3 frames and dark, or 27 and
+// converged, with nothing but luck between them. ADAPT_FRAMES is the control;
+// WARMUP_FRAMES a floor; ADAPT_MS (+6 s) only a ceiling, so a sensor that
+// produces nothing cannot hold the board awake.
+#define ADAPT_FRAMES     20
+#define WARMUP_FRAMES    3
+#define ADAPT_MS         2000
+
+// --- firmware --------------------------------------------------------------
+// What this build calls itself, as gas-cam-<n>. Every /read answer names the
+// newest build on the server; the board updates when its number is HIGHER
+// than this one's, never otherwise.
+#define FIRMWARE_VERSION "gas-cam-6"
+// The image to fetch when it is.
+#define FIRMWARE_BINARY  "gas-cam.bin"

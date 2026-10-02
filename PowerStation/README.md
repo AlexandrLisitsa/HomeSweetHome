@@ -1,6 +1,6 @@
 # PowerStation
 
-ESPHome firmware for an ESP32 that drives a PowMr hybrid inverter over UART and reads a JKBMS LiFePO4 battery over BLE. Its "logic brain" picks the inverter power priority (`Utility First` / `SBU Battery`) based on grid health, time-of-day tariff, and user switches exposed to Home Assistant. A second, independent script gates battery charging to the cheap night tariff window when `Night Charging Only` is enabled.
+ESPHome firmware for an ESP32 that drives a PowMr hybrid inverter over UART and reads a JKBMS LiFePO4 battery over BLE. Its "logic brain" picks the inverter power priority (`Utility First` / `SBU Battery`) based on grid health, time-of-day tariff, and user switches exposed to Home Assistant. A second, independent script gates battery charging to the cheap night tariff window when `Night Charging Only` is enabled. When DTEK schedules an outage, Home Assistant can ask for an **outage pre-charge**: the firmware switches to the grid and opens the charger until the outage starts, then hands everything back ([§11](docs/architecture.md#11-outage-pre-charge)).
 
 For a full explanation of how the firmware behaves — decision rules, magic numbers, the PI30 protocol, command queue mechanics, failure modes — see [`docs/architecture.md`](docs/architecture.md).
 
@@ -41,7 +41,7 @@ The device is discovered automatically by the [ESPHome integration](https://www.
 
 Re-pair the device in HA after rotating the key.
 
-For the full list of sensors and controls exposed to HA see [§12 of the architecture doc](docs/architecture.md#12-home-assistant-interface).
+For the full list of sensors and controls exposed to HA see [§13 of the architecture doc](docs/architecture.md#13-home-assistant-interface).
 
 ## Notes
 
@@ -49,8 +49,20 @@ For the full list of sensors and controls exposed to HA see [§12 of the archite
 - The ESP32 toolchain lives in a named Docker volume (`powerstation_esphome-platformio`) mounted at `/root/.platformio`. Without it, `run --rm` discards the toolchain and re-downloads it on every build; adding it took a warm rebuild from 152 s to 78 s. Wipe it with `docker volume rm powerstation_esphome-platformio` if a toolchain install ever goes bad.
 - The previous WiFi password lived in the YAML and is therefore in git history — rotate the WiFi password once you've confirmed the new build flashes successfully.
 
+## Tools
+
+Run from the repository root. None of them talks to the device or Home Assistant.
+
+| Script | Does | Changes anything live? |
+| --- | --- | --- |
+| `tools/test_firmware_logic.py` | extracts the YAML lambdas, compiles them with the unit tests (native `g++` or the `gcc:13` Docker image) and runs them; see [`docs/testing.md`](docs/testing.md) | no — writes only `tools/build/` |
+| `tools/extract_lambdas.py` | generates `tools/build/firmware_logic.gen.h` from `power-station.yaml`; run by the script above | no |
+
+`tools/firmware_stubs.h` and `tools/test_firmware_logic.cpp` are the fake ESPHome layer and the tests themselves.
+
 ## Docs
 
 | Doc | About |
 | --- | --- |
 | [`docs/architecture.md`](docs/architecture.md) | how the firmware works: decision rules, grid-health detection, the PI30 protocol, the command queue, failure modes |
+| [`docs/testing.md`](docs/testing.md) | the host-side unit tests for the firmware logic: how to run them, what they cover, known bugs |

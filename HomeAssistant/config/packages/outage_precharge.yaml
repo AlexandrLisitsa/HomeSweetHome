@@ -1,0 +1,256 @@
+# ---------------------------------------------------------------------------
+# Outage pre-charge — have the battery full when DTEK says the power goes off
+#
+#     sensor.outage_pre_charge_plan   — what the house intends to do, and why
+#
+# Drives two entities on the PowerStation ESP32 (PowerStation/power-station.yaml):
+#
+#     switch.powmr_inverter_outage_pre_charge    the on/off, on the dashboard
+#     datetime.powmr_inverter_pre_charge_until   "charge for the outage at ..."
+#
+# and the inverter's own select.powmr_inverter_max_ac_charge_current.
+#
+# Full write-up: HomeAssistant/docs/outage-precharge.md.
+#
+# ---------------------------------------------------------------------------
+# Who decides what
+#
+# The firmware owns the inverter. Its tariff rules put it on SBU Battery by day
+# and Night Charging Only blocks the charger by day; a pre-charge has to beat
+# both, and anything HA did behind their backs would be undone within five
+# minutes. So the override is a rule INSIDE the firmware, ranked under grid
+# protection and above the tariff, and HA's only job is to say until when.
+#
+# HA keeps the part the ESP cannot do: it knows the schedule. It works out
+# whether a charge is needed, whether the night tariff alone will make it, and
+# the lowest current that still finishes in time — then writes the outage
+# start into `Pre-charge Until` and the current into the select.
+#
+# The deadline lives on the ESP, not here, and that is the fail-safe: the
+# override ends when the ESP's own clock passes it, so an HA that dies mid-
+# charge cannot leave the inverter pinned to Utility First. The firmware also
+# saves the charge current it found and puts it back when the override ends.
+#
+# ---------------------------------------------------------------------------
+# Every DTEK pull is the new truth
+#
+# DTEK republishes the schedule whenever it likes, during the day as well, so
+# nothing here latches. The plan re-renders on every change to
+# sensor.dtek_shutdowns — and the poller stamps a new `fetched_at` on each run,
+# so that is every 300 s poll even when the schedule did not move. A window
+# that moved earlier raises the current, one that moved later lowers it or
+# drops back to waiting for the night, one that vanished releases the
+# override at once. A stale or failed poll re-serves the last good payload, so
+# the plan keeps the last known window; when it passes, the ESP's deadline
+# ends the override anyway.
+#
+# An outage here means one thing only: a window in a schedule DTEK has
+# published. next_outage_start is built from the `fact` schedule and is null
+# whenever none is in force (dtek_poll.py resolve()), so nothing else can start
+# a charge:
+#   - the weekly preset table (the card's `maybe` heatmap) is never read --
+#     charging for it would mean charging at day rates most days
+#   - an emergency outage DTEK records against the address (outage_start) is
+#     ignored -- it is published after the lights are already out
+# Inside a published schedule a `maybe` hour counts as dark, as it does for the
+# DTEK alerts: the schedule said it might go, and an unneeded charge costs less
+# than an empty pack. DTEK suspended the schedules on 24.07.2026, so this sits
+# at `idle` until they return, and then starts working by itself.
+# ---------------------------------------------------------------------------
+
+template:
+  - trigger:
+      # Every DTEK poll, state or attribute — see the header.
+      - platform: state
+        entity_id: sensor.dtek_shutdowns
+      - platform: state
+        entity_id: sensor.dtek_next_outage_start
+      # The on/off, so the plan reads `off` the moment it is switched.
+      - platform: state
+        entity_id: switch.powmr_inverter_outage_pre_charge
+      # The pack fills and the clock moves between polls. Five minutes matches
+      # the ESP's own re-assertion of the charge gate.
+      - platform: time_pattern
+        minutes: "/5"
+      - platform: homeassistant
+        event: start
+      - platform: event
+        event_type: event_template_reloaded
+    action:
+      - variables:
+          # One render, read by the state and every attribute below.
+          plan: >-
+            {% set full_ah = 280.0 %}{# the pack; see battery_runtime.yaml #}
+            {% set margin = 1.15 %}{# CV taper at the top, charger losses #}
+            {% set buffer_min = 30 %}{# aim to be full this long before the window #}
+            {% set max_a = 60 %}
+            {% set steps = [10, 20, 30, 40, 50, 60] %}
+            {% set night_start = 23 %}{% set night_end = 7 %}
+            {% set t = now() %}
+            {% set s = states('sensor.dtek_next_outage_start') %}
+            {% set start = as_datetime(s) if s not in ['unknown', 'unavailable', 'none', ''] else none %}
+            {% set cap = states('sensor.jkbms_gateway_bms_capacity_remaining') %}
+            {% set out = namespace(state='idle', reason='', current=none, need_ah=none,
+                                   hours_left=none, night_hours=none, until=none) %}
+            {% if not is_state('switch.powmr_inverter_outage_pre_charge', 'on') %}
+              {% set out.state = 'off' %}
+              {% set out.reason = 'switched off' %}
+            {% elif start is none or start <= t %}
+              {% set out.reason = 'no scheduled outage ahead' %}
+            {% elif not cap | is_number %}
+              {% set out.reason = 'battery capacity unknown' %}
+            {% else %}
+              {% set out.until = start.isoformat() %}
+              {% set deficit = full_ah - cap | float %}
+              {% set need = [deficit, 0] | max * margin %}
+              {% set deadline = start - timedelta(minutes=buffer_min) %}
+              {# Real seconds throughout, not clock readings: datetimes that
+                 share now()'s zone subtract in wall-clock time, and a DST
+                 night is 7 or 9 hours long, not 8. #}
+              {% set hours_left = (as_timestamp(deadline) - as_timestamp(t)) / 3600 %}
+              {# Hours of night tariff between now and the deadline. #}
+              {% set mid = t.replace(hour=0, minute=0, second=0, microsecond=0) %}
+              {% set ns = namespace(night=0) %}
+              {% for d in range(-1, 3) %}
+                {% set ws = mid + timedelta(days=d, hours=night_start) %}
+                {% set we = mid + timedelta(days=d + 1, hours=night_end) %}
+                {% set a = [ws, t] | max %}
+                {% set b = [we, deadline] | min %}
+                {% if b > a %}{% set ns.night = ns.night + (as_timestamp(b) - as_timestamp(a)) / 3600 %}{% endif %}
+              {% endfor %}
+              {% set at_night = t.hour >= night_start or t.hour < night_end %}
+              {% set night_enough = ns.night * max_a >= need %}
+              {% set out.need_ah = need | round(1) %}
+              {% set out.hours_left = hours_left | round(2) %}
+              {% set out.night_hours = ns.night | round(2) %}
+              {% if deficit <= full_ah * 0.01 %}
+                {% set out.state = 'full' %}
+                {% set out.reason = 'battery already full' %}
+              {% elif not at_night and night_enough %}
+                {% set out.state = 'waiting_night' %}
+                {% set out.reason = 'the night tariff alone fills it in time' %}
+              {% else %}
+                {% set out.state = 'charging' %}
+                {% if at_night and night_enough %}
+                  {% set hours = ns.night %}
+                  {% set out.reason = 'filling within the night tariff' %}
+                {% elif at_night %}
+                  {% set hours = 0 %}
+                  {% set out.reason = 'night tariff too short, charging at full current' %}
+                {% else %}
+                  {% set hours = hours_left %}
+                  {% set out.reason = 'night tariff too short or past, charging now' %}
+                {% endif %}
+                {% set rate = need / hours if hours > 0.25 else max_a %}
+                {% set out.current = (steps | select('ge', rate) | list + [max_a]) | first %}
+              {% endif %}
+            {% endif %}
+            {{ {'state': out.state, 'reason': out.reason, 'current': out.current,
+                'need_ah': out.need_ah, 'hours_left': out.hours_left,
+                'night_hours': out.night_hours, 'until': out.until} }}
+    sensor:
+      # off            the dashboard chip is off; the ESP ignores any deadline
+      # idle           no scheduled outage ahead (or no battery reading)
+      # full           already full, nothing to do
+      # waiting_night  the night tariff alone will fill it before the window
+      # charging       the override is on; `current` amps until `until`
+      - name: "Outage pre-charge plan"
+        unique_id: outage_precharge_plan
+        icon: mdi:battery-clock
+        state: "{{ plan.state }}"
+        attributes:
+          reason: "{{ plan.reason }}"
+          current: "{{ plan.current }}"
+          need_ah: "{{ plan.need_ah }}"
+          hours_left: "{{ plan.hours_left }}"
+          night_hours: "{{ plan.night_hours }}"
+          until: "{{ plan.until }}"
+
+automation:
+  # Carries the plan to the ESP. Writes only what differs, so the 5-minute
+  # re-renders cost nothing on the BLE/UART side when nothing moved.
+  - id: outage_precharge_drive
+    alias: 'Outage pre-charge: drive the inverter'
+    mode: queued
+    max: 3
+    trigger:
+      - platform: state
+        entity_id: sensor.outage_pre_charge_plan
+      - platform: state
+        entity_id: sensor.outage_pre_charge_plan
+        attribute: current
+      - platform: state
+        entity_id: sensor.outage_pre_charge_plan
+        attribute: until
+      # Self-healing: an ESP that rebooted onto a stale value is corrected
+      # within five minutes even when the plan itself did not change.
+      - platform: time_pattern
+        minutes: "/5"
+      - platform: homeassistant
+        event: start
+    condition:
+      - condition: template
+        value_template: >-
+          {{ states('datetime.powmr_inverter_pre_charge_until') not in ['unknown', 'unavailable'] }}
+    action:
+      - variables:
+          plan: "{{ states('sensor.outage_pre_charge_plan') }}"
+          until: "{{ state_attr('sensor.outage_pre_charge_plan', 'until') }}"
+          amps: "{{ state_attr('sensor.outage_pre_charge_plan', 'current') }}"
+          # 0 = no request. Any past moment means the same to the ESP.
+          want_ts: "{{ as_timestamp(until, 0) | int if plan == 'charging' and until else 0 }}"
+          have_ts: "{{ as_timestamp(states('datetime.powmr_inverter_pre_charge_until'), 0) | int }}"
+          now_ts: "{{ as_timestamp(now()) | int }}"
+      - if:
+          - condition: template
+            # Past deadlines are all equivalent; only a future one has to match.
+            value_template: "{{ have_ts != want_ts and (want_ts > now_ts or have_ts > now_ts) }}"
+        then:
+          - service: datetime.set_value
+            target:
+              entity_id: datetime.powmr_inverter_pre_charge_until
+            data:
+              # UTC with an explicit offset. Naive local time cannot name the
+              # second 03:30 of the October fall-back (it reads as the first,
+              # an hour early); datetime.set_value honours an offset as given.
+              # The release value is the ESP's own restored default.
+              datetime: >-
+                {{ (want_ts | timestamp_custom('%Y-%m-%dT%H:%M:%S+00:00', false)) if want_ts > 0 else '2000-01-01 00:00:00' }}
+      - if:
+          - condition: template
+            value_template: >-
+              {{ plan == 'charging' and amps | is_number
+                 and states('select.powmr_inverter_max_ac_charge_current') | int(-1) != amps | int }}
+        then:
+          - service: select.select_option
+            target:
+              entity_id: select.powmr_inverter_max_ac_charge_current
+            data:
+              option: "{{ '%02d' | format(amps | int) }}"
+
+  # One line on the phones when a pre-charge starts, so a day-rate charge is
+  # never a surprise on the bill. Not on re-targets — those are just the
+  # schedule moving, and the dashboard chip shows the current plan.
+  - id: outage_precharge_started
+    alias: '🔋 Outage pre-charge started'
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: sensor.outage_pre_charge_plan
+        to: 'charging'
+    condition:
+      - condition: template
+        value_template: "{{ trigger.from_state is not none and trigger.from_state.state != 'charging' }}"
+    action:
+      - variables:
+          at: >-
+            {{ as_datetime(state_attr('sensor.outage_pre_charge_plan', 'until')) | as_local | as_timestamp | timestamp_custom('%H:%M') }}
+          message: >-
+            Charging for the {{ at }} DTEK outage at {{ state_attr('sensor.outage_pre_charge_plan', 'current') }} A
+            (battery {{ states('sensor.jkbms_gateway_bms_state_of_charge') | float(0) | round(0) }}%, {{ state_attr('sensor.outage_pre_charge_plan', 'reason') }}).
+      - service: notify.household
+        data:
+          title: '🔋 Outage pre-charge started'
+          message: "{{ message }}"
+          data:
+            channel: Outage pre-charge
