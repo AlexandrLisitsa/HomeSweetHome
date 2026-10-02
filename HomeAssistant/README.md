@@ -21,6 +21,9 @@ read before it goes live, and a `git revert` if it was wrong.
 - **The DTEK outage schedule**: a poller for the distributor's queue and hourly
   schedule, so a planned outage can be told apart from a fault
   ([`docs/dtek-outage-schedule.md`](docs/dtek-outage-schedule.md)).
+- **Outage pre-charge**: when DTEK schedules an outage, the battery is charged
+  to full before it starts, at the lowest current that makes it and at night
+  rates when they suffice ([`docs/outage-precharge.md`](docs/outage-precharge.md)).
 - **Load shedding**: during an outage, devices step down one by one as the
   battery drains, with a warning one step ahead and everything put back when
   the grid returns. The rules are built on the Shutdowns dashboard: any device,
@@ -93,6 +96,7 @@ sh tools/ha_get.sh /api/config
 | `tools/check_dtek_templates.py` | renders every Jinja template in `packages/dtek_shutdowns.yaml` and the DTEK dashboard against fake states | no — pure local |
 | `tools/check_climate_card.py` | cross-references every entity `climate-console-card.js` names against `/api/states` | no — GET-only |
 | `tools/test_dtek_schedule.py` | fixture tests for `config/dtek/dtek_poll.py`'s schedule maths | no — no network |
+| `tools/test_outage_precharge.py` | renders the outage pre-charge plan in `packages/outage_precharge.yaml` against fake states | no — pure local |
 | `tools/test_load_shedding.py` | renders the load-shedding engine's templates in `packages/load_shedding.yaml` (decision, warnings, validator, stores, restore) against fake states | no — pure local |
 | `tools/test_climate_chart.js` | fixture tests for the climate card's chart and dial maths | no — no network |
 
@@ -121,10 +125,11 @@ python ../IRBridge/tools/check_ha_entities.py config
 python ../IRBridge/tools/check_ha_templates.py
 python tools/check_dtek_templates.py
 python tools/test_dtek_schedule.py
+python tools/test_outage_precharge.py
 python tools/test_load_shedding.py
 ```
 
-The DTEK and load-shedding ones need `python -m pip install -r tools/requirements.txt`;
+The DTEK, pre-charge and load-shedding ones need `python -m pip install -r tools/requirements.txt`;
 `ha_dashboard.py` needs it too, for `websocket-client`.
 
 The first cross-references every entity id the YAML *references* against the
@@ -153,6 +158,7 @@ restore HA onto a fresh VM, is in
 | --- | --- |
 | [`docs/private-files.md`](docs/private-files.md) | what is never mirrored into git, and the household-language files kept out of it |
 | [`docs/dtek-outage-schedule.md`](docs/dtek-outage-schedule.md) | the DTEK outage-schedule poller, its sensors and its card |
+| [`docs/outage-precharge.md`](docs/outage-precharge.md) | charging the battery to full before a scheduled DTEK outage, and the Pre-charge chip |
 | [`docs/load-shedding.md`](docs/load-shedding.md) | the load-shedding engine and its constructor tab: steps, warnings, holds, overrides, restore, backup |
 | [`docs/gas-and-water-meters.md`](docs/gas-and-water-meters.md) | hand-read gas and water meters on the Energy dashboard |
 | [`docs/power-station-dashboard.md`](docs/power-station-dashboard.md) | the Power station dashboard: the inverter and battery cards, the grid-return countdown, the palette |
