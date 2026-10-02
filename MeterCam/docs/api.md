@@ -8,6 +8,9 @@ MeterCam listens on `:8770` in LXC 104.
 | `GET /firmware/gas-cam.bin` | the camera, when offered a newer build | The firmware image |
 | `GET /firmware/version.txt` | gas-cam-5 and older boards, or a human with curl | The version on offer; 404 when none is published. gas-cam-6 and later read it from the `/read` answer instead |
 | `GET /last.jpg?meter=gas` | a human | The frame behind the last answer, exactly as the camera sent it |
+| `GET /last_accepted.jpg?meter=gas` | Home Assistant (`gas_submit.py`) | The frame behind the last *accepted* reading; headers `X-Value`, `X-At`, `X-At-Epoch` carry that reading |
+| `GET /gas/bot/status` | Home Assistant (`gas_submit.py`) | Dry run of `@mygrmu_bot`: walks to the reading prompt and back, answers `{ok, previous, previous_date, transcript}`. Sends no reading |
+| `POST /gas/bot/submit` | Home Assistant, on a button press | `{"value": 2262}` sends the monthly gas reading through the bot; `{ok, value, reply, transcript}` or `{ok: false, error, transcript}` |
 | `GET /archive/days` | a human | What is archived, newest day first, with frame counts and bytes. Read this before the one below |
 | `GET /archive` | a human | Every archived frame and its sidecars as one streamed zip. `?meter=gas` `?days=3` (today and the two before) |
 | `GET /health` | Docker's healthcheck, deploy.sh | Config status, meters, auth, firmware on offer, seconds since each meter's last read |
@@ -20,6 +23,12 @@ browser). With `METERCAM_TOKEN` unset, auth is off and `/health` says
 `"auth": "DISABLED"`. That is how the LAN deployment runs today, and it means
 `/last.jpg` and `/archive` hand photographs of the house to anything on the
 LAN that asks.
+
+The two `/gas/bot/*` routes ignore all of that: they always need
+`X-Gasbot-Token` equal to `GASBOT_TOKEN`, and with `GASBOT_TOKEN` unset they
+refuse everyone. They send a reading to the gas operator as the household,
+which nothing on the LAN should be able to do by accident. The conversation
+itself, and its checks, are in [`gas-bot.md`](gas-bot.md).
 
 ## `POST /read`
 

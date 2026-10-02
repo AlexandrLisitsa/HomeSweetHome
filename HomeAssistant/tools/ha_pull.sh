@@ -94,6 +94,8 @@ ex="$ex --exclude=./.cache"                # HA's downloaded brand-icon cache; p
 ex="$ex --exclude=./.ha_run.lock"          # runtime lock
 ex="$ex --exclude=./dtek/.cache.json"      # dtek_poll.py session cookie + last good payload; regenerates itself
 ex="$ex --exclude=./dtek/captures"         # raw DTEK answers per status change; promote to tools/fixtures/ by hand
+ex="$ex --exclude=./gas/.state.json"      # gas_submit.py: which months were already sent
+ex="$ex --exclude=./www/gas_meter"        # meter photos for the monthly notification; private, pruned after 92 d
 ex="$ex --exclude=./.irbridge-last-backup" # pointer written by ha_deploy.sh
 # Backups of config, which are not loaded and would double every diff.
 ex="$ex --exclude='./irbridge-backup-*'"   # rollback points ha_deploy.sh leaves behind

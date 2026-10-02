@@ -18,10 +18,13 @@ flowchart LR
         IR["IRBridge<br/>Android phone"] -- "HTTP /ir, /ac" --- HA
         AC["Daewoo A/C"] -. "infrared" .- IR
         Z2M["Zigbee2MQTT"] -- MQTT --> HA
+        CAM["ESP32-CAM<br/>gas meter"] -- "photos" --> MC["MeterCam<br/>Proxmox LXC"]
+        MC -- "readings" --> HA
         PVE["Proxmox"] -. "read-only API" .- TOOLS
     end
     HA -- "Google Assistant" --> GH["Google Home"]
     HA -. "outage schedule" .- DTEK["DTEK API"]
+    MC -. "monthly reading, on a tap" .-> GRMU["Gazmerezhi<br/>Telegram bot"]
     TOOLS["tools in this repo<br/>(ssh, REST, WebSocket)"] -- "pull / push" --- HA
 ```
 
@@ -33,19 +36,11 @@ flowchart LR
 | [`PowerStation/`](PowerStation/README.md) | ESPHome firmware for an ESP32 that drives a PowMr hybrid inverter over UART and reads a JK BMS over BLE, with tariff- and grid-fault-aware power-priority logic, a night-tariff-only charging mode, and a pre-charge that fills the battery before a scheduled DTEK outage. |
 | [`IRBridge/`](IRBridge/README.md) | Android app that turns an old phone's IR blaster into an authenticated HTTP API, so Home Assistant can drive a "dumb" split A/C — including a protocol sweep to find which IR codec the unit speaks. |
 | [`FloorPlan/`](FloorPlan/README.md) | Tooling that renders a Sweet Home 3D model from above and turns it into the isometric **Home** dashboard, where each lamp lights its own room. |
+| [`MeterCam/`](MeterCam/README.md) | An ESP32-CAM that wakes every 30 minutes to photograph the gas meter's dial, and a service in a Proxmox LXC that reads the digits and hands Home Assistant a reading only when it can stand behind it. Once a month it files that reading with the gas operator through its Telegram bot, after a tap on the phone. |
 | [`Proxmox/`](Proxmox/README.md) | The host and its guests, one doc each; read-only Proxmox API scripts that measure the Home Assistant guest's resource history; and the backup setup that keeps every guest and HA's backups on the host and, encrypted, on Google Drive ([`Proxmox/docs/backups.md`](Proxmox/docs/backups.md)). |
-
-**This is the `metercam` branch**: `master` plus the MeterCam project, which
-feeds the Energy dashboard's gas tab and is not merged into `master` yet:
-
-| Module | What it is |
-| --- | --- |
-| [`MeterCam/`](MeterCam/README.md) | An ESP32-CAM that wakes every 30 minutes to photograph the gas meter's dial, and a service in a Proxmox LXC that reads the digits and hands Home Assistant a reading only when it can stand behind it. |
 
 Unfinished projects live on branches of their own until they are:
 
-- [`metercam`](../../tree/metercam): **MeterCam**, a camera that reads the gas
-  meter's dial for Home Assistant.
 - [`ledlamp`](../../tree/ledlamp): **LedLamp**, a ceiling lamp rebuilt as a Zigbee
   tunable-white COB light, with its parts list, wiring and a printable guide.
 

@@ -31,6 +31,11 @@ HomeAssistant/config/dtek/.cache.json
 # HomeAssistant/tools/fixtures/ by hand; the rest is a rolling window of 30.
 HomeAssistant/config/dtek/captures/
 
+# gas_submit.py: the months already sent, and the meter photos
+# it puts under /local for the monthly notification.
+HomeAssistant/config/gas/.state.json
+HomeAssistant/config/www/gas_meter/
+
 # Point-in-time audit notes: internal addresses, entity ids and tariffs.
 HomeAssistant/docs/audit.md
 

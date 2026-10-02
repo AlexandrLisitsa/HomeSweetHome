@@ -1,0 +1,294 @@
+# ---------------------------------------------------------------------------
+# Gas reading to Gazmerezhi (@mygrmu_bot), once a month, confirmed from the phone
+#
+# On the 1st at 21:00 the Pixel gets the meter photo MeterCam last accepted,
+# stamped with when it was taken, and the number that would be sent -- the
+# camera's reading rounded DOWN to whole m3 (the operator takes whole m3; the
+# remainder carries into next month). Two buttons:
+#
+#     Submit             sends that number
+#     Correct & submit   a text field in the notification; sends what is typed
+#
+# Nothing is sent without a button press. Days 2-4 repeat the ask at 21:00
+# while nothing has gone in; the Dniprovska filiia takes readings on the
+# 1st..5th.
+#
+# The reading goes to Gazmerezhi's Telegram bot, driven as the household's
+# own Telegram user by MeterCam (MeterCam/docs/gas-bot.md) -- every web
+# channel for this operator is closed to code. Two halves:
+#
+#   rest_command.gas_bot_*         MeterCam's /gas/bot/status and /submit.
+#                                  Walking the bot takes up to a minute, past
+#                                  shell_command's fixed 60 s, so these are
+#                                  rest_commands with a 5-minute timeout.
+#   shell_command.gas_submit_*     /config/gas/gas_submit.py: the photo, and
+#                                  remembering which month went in. Seconds.
+#
+# No entities: "already sent this month" lives in /config/gas/.state.json.
+#
+# secrets.yaml:  gasbot_token        MeterCam's GASBOT_TOKEN
+#                gasbot_status_url   http://<metercam-ip>:8770/gas/bot/status
+#                gasbot_submit_url   http://<metercam-ip>:8770/gas/bot/submit
+#                metercam_url        optional, http://<metercam-ip>:8770
+#
+# Write-up: HomeAssistant/docs/gas-reading-submission.md.
+# ---------------------------------------------------------------------------
+
+rest_command:
+  gas_bot_status:
+    url: !secret gasbot_status_url
+    method: GET
+    headers:
+      X-Gasbot-Token: !secret gasbot_token
+    timeout: 300
+  gas_bot_submit:
+    url: !secret gasbot_submit_url
+    method: POST
+    headers:
+      X-Gasbot-Token: !secret gasbot_token
+    content_type: "application/json"
+    payload: '{"value": {{ value | int }}}'
+    timeout: 300
+
+shell_command:
+  gas_submit_prepare: "python3 /config/gas/gas_submit.py prepare"
+  gas_submit_record: "python3 /config/gas/gas_submit.py record {{ value | int }}"
+
+script:
+  gas_submit_ask:
+    alias: "Gas reading — ask on the phone"
+    description: >-
+      Fetches the photo and the number, asks the bot (dry run) for the last
+      reading, then sends the Submit / Correct notification. Run by hand to
+      re-ask; `force: true` asks even when this month's reading already went in.
+    mode: single
+    fields:
+      force:
+        description: Ask even if this month is already submitted
+        default: false
+        selector:
+          boolean:
+    sequence:
+      - service: shell_command.gas_submit_prepare
+        response_variable: run
+      - variables:
+          p: "{{ run.stdout | from_json if (run.stdout | default('')) | length else {'ok': false, 'error': run.stderr | default('no output') } }}"
+      - if:
+          - condition: template
+            value_template: "{{ not p.ok }}"
+        then:
+          - service: notify.mobile_app_pixel_10_pro_xl
+            data:
+              title: "Gas reading — could not prepare"
+              message: "{{ p.error }}"
+              data:
+                channel: Gas meter
+                tag: gas-submit
+          - stop: "prepare failed"
+      - if:
+          - condition: template
+            value_template: "{{ p.already_submitted and not (force | default(false)) }}"
+        then:
+          - stop: "already submitted this month"
+      # The bot's dry run: the previous reading, nothing sent. Its failure
+      # must not swallow the photo, so the notification goes out regardless.
+      - service: rest_command.gas_bot_status
+        response_variable: st
+        continue_on_error: true
+      - variables:
+          bot_ok: >-
+            {{ st is defined and st.status == 200 and st.content is mapping
+               and (st.content.ok | default(false)) }}
+          bot_error: >-
+            {% if bot_ok %}{% elif st is not defined %}MeterCam did not answer, or refused (see the HA log)
+            {%- elif st.content is mapping and st.content.error is defined %}Telegram bot: {{ st.content.error }}
+            {%- else %}MeterCam answered {{ st.status }}{% endif %}
+          perv: >-
+            {{ (st.content.previous | float(0)) | round(0, 'floor') | int
+               if bot_ok and st.content.previous is not none else none }}
+          camera_below: >-
+            {{ perv is not none and p.value_floor is not none and p.value_floor < perv }}
+          ready: >-
+            {{ p.value_floor is not none and not p.camera_stale and not camera_below
+               and not bot_error and p.window_open }}
+          max_value: >-
+            {{ ((p.value_floor if p.value_floor is not none else perv) + p.max_above_camera)
+               if (p.value_floor is not none or perv is not none) else 0 }}
+          problems: >-
+            {% set out = [] %}
+            {% if p.camera_error is defined %}{% set out = out + ['Camera: ' ~ p.camera_error] %}
+            {% elif camera_below %}{% set out = out + ['Camera: ' ~ p.value_floor ~ ' is below the last reading ' ~ perv] %}
+            {% elif p.camera_stale %}{% set out = out + ['Camera: photo is ' ~ (p.age_s // 3600) ~ ' h old'] %}{% endif %}
+            {% if bot_error %}{% set out = out + [bot_error] %}
+            {% elif not p.window_open %}{% set out = out + ['Readings are taken on days ' ~ p.window ~ ' only'] %}{% endif %}
+            {{ out | join('\n') }}
+          message: |-
+            {% if p.value_floor is not none %}Send {{ p.value_floor }} m³? Camera {{ p.value_raw }}.{% else %}No camera reading.{% endif %}{% if perv is not none %} Last sent {{ perv }}.{% endif %}
+            {%- if p.already_submitted %}
+            Already sent this month: {{ p.submitted_value }} m³.{% endif %}
+            {%- if problems | length %}
+            {{ problems }}{% endif %}
+          # The number rides in the action id, so the button handler needs no
+          # helper to remember what was offered. GAS_EDIT_ carries the upper
+          # bound for a typed value (camera + 50).
+          submit_button: "{{ {'action': 'GAS_SUBMIT_' ~ p.value_floor, 'title': 'Submit ' ~ p.value_floor} }}"
+          edit_button: >-
+            {{ {'action': 'GAS_EDIT_' ~ (max_value | int(0)),
+                'title': 'Correct & submit', 'behavior': 'textInput',
+                'textInputButtonTitle': 'Submit',
+                'textInputPlaceholder': 'whole m³'} }}
+          # A closed window or an unreachable bot: no buttons, the message says why.
+          actions: >-
+            {{ ([submit_button] if ready else [])
+               + ([edit_button] if (not bot_error and p.window_open) else []) }}
+      - service: notify.mobile_app_pixel_10_pro_xl
+        data:
+          title: "Gas reading {{ p.taken_at }}"
+          message: "{{ message }}"
+          data:
+            channel: Gas meter
+            tag: gas-submit
+            sticky: "true"
+            image: "{{ p.image or '' }}"
+            actions: "{{ actions }}"
+
+  gas_submit_send:
+    alias: "Gas reading — send to Gazmerezhi"
+    mode: single
+    fields:
+      value:
+        description: Whole cubic metres
+        required: true
+        selector:
+          number:
+            min: 0
+            max: 99999
+            mode: box
+    sequence:
+      - if:
+          - condition: template
+            value_template: "{{ now().day > 5 }}"
+        then:
+          - service: notify.mobile_app_pixel_10_pro_xl
+            data:
+              title: "Gas reading NOT sent ❌"
+              message: "Readings are taken on the 1st..5th only."
+              data:
+                channel: Gas meter
+                tag: gas-submit
+          - stop: "outside the window"
+      - service: notify.mobile_app_pixel_10_pro_xl
+        data:
+          title: "Gas reading"
+          message: "Sending {{ value | int }} m³ to @mygrmu_bot… (up to a minute)"
+          data:
+            channel: Gas meter
+            tag: gas-submit
+      - service: rest_command.gas_bot_submit
+        data:
+          value: "{{ value | int }}"
+        response_variable: sub
+        continue_on_error: true
+      - variables:
+          ok: >-
+            {{ sub is defined and sub.status == 200 and sub.content is mapping
+               and (sub.content.ok | default(false)) }}
+          error: >-
+            {% if ok %}{% elif sub is not defined %}No answer from MeterCam (see the HA log). Check the chat with @mygrmu_bot before trying again: it may have gone through.
+            {%- elif sub.content is mapping and sub.content.error is defined %}{{ sub.content.error }}
+            {%- else %}MeterCam answered {{ sub.status }}{% endif %}
+          reply: "{{ sub.content.reply if ok else '' }}"
+      - if:
+          - condition: template
+            value_template: "{{ ok }}"
+        then:
+          - service: shell_command.gas_submit_record
+            data:
+              value: "{{ value | int }}"
+            continue_on_error: true
+      - service: notify.mobile_app_pixel_10_pro_xl
+        data:
+          title: "{{ 'Gas reading sent ✅' if ok else 'Gas reading NOT sent ❌' }}"
+          message: "{{ ((value | int) ~ ' m³ — ' ~ reply) if ok else error }}"
+          data:
+            channel: Gas meter
+            tag: gas-submit
+            actions: >-
+              {{ [] if ok else [{'action': 'GAS_REASK', 'title': 'Try again'}] }}
+      - service: notify.persistent_notification
+        data:
+          title: "{{ 'Gas reading sent' if ok else 'Gas reading NOT sent' }}"
+          message: "{{ ((value | int) ~ ' m³: ' ~ reply) if ok else error }}"
+
+automation:
+  - id: gas_submit_monthly
+    alias: "Gas reading — monthly ask"
+    description: >-
+      21:00 on the 1st, again on the 2nd-4th while nothing has been sent
+      (the script stops by itself once this month's reading went in).
+    mode: single
+    trigger:
+      - platform: time
+        at: "21:00:00"
+    condition:
+      - condition: template
+        value_template: "{{ now().day in [1, 2, 3, 4] }}"
+    action:
+      - service: script.gas_submit_ask
+
+  - id: gas_submit_button
+    alias: "Gas reading — notification buttons"
+    mode: queued
+    trigger:
+      - platform: event
+        event_type: mobile_app_notification_action
+    condition:
+      - condition: template
+        value_template: >-
+          {{ (trigger.event.data.action | default('')).startswith('GAS_') }}
+    action:
+      - variables:
+          act: "{{ trigger.event.data.action }}"
+          typed: "{{ (trigger.event.data.reply_text | default('') | string).strip().replace(',', '.') }}"
+      - choose:
+          - conditions: "{{ act == 'GAS_REASK' }}"
+            sequence:
+              - service: script.gas_submit_ask
+                data:
+                  force: true
+          - conditions: "{{ act.startswith('GAS_SUBMIT_') }}"
+            sequence:
+              - service: script.gas_submit_send
+                data:
+                  value: "{{ act[11:] | int }}"
+          - conditions: "{{ act.startswith('GAS_EDIT_') }}"
+            sequence:
+              - variables:
+                  max_value: "{{ act[9:] | int(0) }}"
+                  valid: >-
+                    {{ typed is match('^[0-9]+(\.0+)?$')
+                       and (max_value == 0 or typed | float <= max_value) }}
+              - if:
+                  - condition: template
+                    value_template: "{{ valid }}"
+                then:
+                  - service: script.gas_submit_send
+                    data:
+                      value: "{{ typed | float | int }}"
+                else:
+                  # Rejected here, before the bot is asked anything.
+                  - service: notify.mobile_app_pixel_10_pro_xl
+                    data:
+                      title: "Gas reading — not sent"
+                      message: >-
+                        "{{ typed }}" is not a whole number of m³{% if max_value %}
+                        up to {{ max_value }}{% endif %}. Try again.
+                      data:
+                        channel: Gas meter
+                        tag: gas-submit
+                        actions:
+                          - action: "{{ act }}"
+                            title: "Correct & submit"
+                            behavior: textInput
+                            textInputButtonTitle: Submit
+                            textInputPlaceholder: "whole m³"
