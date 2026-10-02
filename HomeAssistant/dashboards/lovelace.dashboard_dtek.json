@@ -91,6 +91,110 @@
               ]
             }
           ]
+        },
+        {
+          "type": "sections",
+          "max_columns": 4,
+          "title": "Load shedding",
+          "path": "load-shedding",
+          "icon": "mdi:power-plug-off-outline",
+          "badges": [],
+          "cards": [],
+          "sections": [
+            {
+              "type": "grid",
+              "column_span": 4,
+              "cards": [
+                {
+                  "type": "custom:load-shedding-card",
+                  "blocks": [
+                    "hero"
+                  ],
+                  "grid_options": {
+                    "columns": "full"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 4,
+              "cards": [
+                {
+                  "type": "custom:load-shedding-card",
+                  "blocks": [
+                    "upcoming"
+                  ],
+                  "grid_options": {
+                    "columns": "full"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 4,
+              "cards": [
+                {
+                  "type": "custom:load-shedding-card",
+                  "blocks": [
+                    "rules"
+                  ],
+                  "grid_options": {
+                    "columns": "full"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 4,
+              "cards": [
+                {
+                  "type": "heading",
+                  "heading_style": "subtitle",
+                  "heading": "The battery against what the system did",
+                  "icon": "mdi:chart-timeline-variant"
+                },
+                {
+                  "type": "history-graph",
+                  "hours_to_show": 24,
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "entities": [
+                    {
+                      "entity": "sensor.jkbms_gateway_bms_state_of_charge",
+                      "name": "Battery"
+                    },
+                    {
+                      "entity": "binary_sensor.powmr_inverter_grid_condition_safe",
+                      "name": "Grid down (measured)"
+                    },
+                    {
+                      "entity": "sensor.load_shedding",
+                      "name": "Devices stepped down"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 4,
+              "cards": [
+                {
+                  "type": "custom:load-shedding-card",
+                  "blocks": [
+                    "backup"
+                  ],
+                  "grid_options": {
+                    "columns": "full"
+                  }
+                }
+              ]
+            }
+          ]
         }
       ]
     }

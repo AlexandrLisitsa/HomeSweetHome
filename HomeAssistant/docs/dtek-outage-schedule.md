@@ -10,7 +10,9 @@ sensor runs the script every five minutes.
 The point is not to know that the power is out; the inverter already knows that
 within five seconds. It is to tell a scheduled four-hour window apart from the
 eight-minute fault that looks identical from inside the house — which is what
-`binary_sensor.grid_outage_unscheduled` answers.
+`binary_sensor.grid_outage_unscheduled` answers. The dashboard's second tab,
+**Load shedding**, is where you build what the house steps down while the power is out
+([load-shedding.md](load-shedding.md)).
 
 Three keys in `/config/secrets.yaml` on the box (see
 [`examples/secrets.yaml.example`](../examples/secrets.yaml.example)), and they must
