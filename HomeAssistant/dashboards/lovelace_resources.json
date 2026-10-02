@@ -16,7 +16,7 @@
       },
       {
         "id": "7005a1469b8546f2b0f05a4e7ab9c216",
-        "url": "/local/jkbms-battery-console-card.js?v=1.4.0",
+        "url": "/local/jkbms-battery-console-card.js?v=1.4.1",
         "type": "module"
       },
       {
@@ -27,6 +27,11 @@
       {
         "id": "4c76537565e04bc1a363b1dd33dce966",
         "url": "/local/floorplan-card.js?v=1.5.0",
+        "type": "module"
+      },
+      {
+        "id": "46a82c8ffad94f3fadc0e885a72e0236",
+        "url": "/local/load-shedding-card.js?v=3.1.2",
         "type": "module"
       }
     ]
