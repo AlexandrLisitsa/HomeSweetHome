@@ -1,6 +1,6 @@
 # PowerStation
 
-ESPHome firmware for an ESP32 that drives a PowMr hybrid inverter over UART and reads a JKBMS LiFePO4 battery over BLE. Its "logic brain" picks the inverter power priority (`Utility First` / `SBU Battery`) based on grid health, time-of-day tariff, and user switches exposed to Home Assistant. A second, independent script gates battery charging to the cheap night tariff window when `Night Charging Only` is enabled.
+ESPHome firmware for an ESP32 that drives a PowMr hybrid inverter over UART and reads a JKBMS LiFePO4 battery over BLE. Its "logic brain" picks the inverter power priority (`Utility First` / `SBU Battery`) based on grid health, time-of-day tariff, and user switches exposed to Home Assistant. A second, independent script gates battery charging to the cheap night tariff window when `Night Charging Only` is enabled. When DTEK schedules an outage, Home Assistant can ask for an **outage pre-charge**: the firmware switches to the grid and opens the charger until the outage starts, then hands everything back ([§11](docs/architecture.md#11-outage-pre-charge)).
 
 For a full explanation of how the firmware behaves — decision rules, magic numbers, the PI30 protocol, command queue mechanics, failure modes — see [`docs/architecture.md`](docs/architecture.md).
 
@@ -41,7 +41,7 @@ The device is discovered automatically by the [ESPHome integration](https://www.
 
 Re-pair the device in HA after rotating the key.
 
-For the full list of sensors and controls exposed to HA see [§12 of the architecture doc](docs/architecture.md#12-home-assistant-interface).
+For the full list of sensors and controls exposed to HA see [§13 of the architecture doc](docs/architecture.md#13-home-assistant-interface).
 
 ## Notes
 

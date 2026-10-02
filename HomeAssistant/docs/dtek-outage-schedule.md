@@ -10,7 +10,9 @@ sensor runs the script every five minutes.
 The point is not to know that the power is out; the inverter already knows that
 within five seconds. It is to tell a scheduled four-hour window apart from the
 eight-minute fault that looks identical from inside the house — which is what
-`binary_sensor.grid_outage_unscheduled` answers.
+`binary_sensor.grid_outage_unscheduled` answers. The other half is acting on
+the schedule: [outage-precharge.md](outage-precharge.md) fills the battery
+before a scheduled window.
 
 Three keys in `/config/secrets.yaml` on the box (see
 [`examples/secrets.yaml.example`](../examples/secrets.yaml.example)), and they must

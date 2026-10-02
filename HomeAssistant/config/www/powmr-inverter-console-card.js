@@ -73,7 +73,7 @@
  */
 
 const CARD = "powmr-inverter-console-card";
-const VERSION = "1.7.0";
+const VERSION = "2.0.0";
 
 /*
  * Brand colours stay literal: they identify a leg of the diagram (amber =
@@ -136,6 +136,9 @@ const DEFAULTS = {
   power_priority: "select.powmr_inverter_power_priority",
   ac_input_mode: "select.powmr_inverter_inverter_ac_input_mode",
   tariff: "select.grid_real_tariff",
+  // What the outage pre-charge intends (HomeAssistant/config/packages/
+  // outage_precharge.yaml). Read only for the Pre-charge chip's sub-label.
+  precharge_plan: "sensor.outage_pre_charge_plan",
   // Ceilings the flow speed scales against. 2400 W is the inverter's rating
   // and was already the `max` on the tab's old bar-gauge.
   max_grid_w: 2400,
@@ -162,9 +165,15 @@ const CHIPS = [
   { label: "Protect", cfg: "chip_protect", ent: "switch.powmr_inverter_auto_grid_protection", icon: "mdi:shield-home", color: BATT_C },
   { label: "AC charge", cfg: "chip_ac_charge", ent: "switch.powmr_inverter_ac_charging_enabled", icon: "mdi:battery-charging-50", color: GRID_C, live: true },
   { label: "Night only", cfg: "chip_night_only", ent: "switch.powmr_inverter_night_charging_only", icon: "mdi:weather-night", color: LOAD_C },
+  { label: "Pre-charge", cfg: "chip_precharge", ent: "switch.powmr_inverter_outage_pre_charge", icon: "mdi:battery-clock", color: GRID_C, plan: true },
 ];
 CHIPS.forEach((c) => { DEFAULTS[c.cfg] = c.ent; });
 /*
+ * `plan` marks the outage pre-charge chip. Its switch only ARMS the feature --
+ * nothing happens until DTEK publishes a window -- so ON alone says as little
+ * as AC charge's does. It carries a sub-label from the plan sensor instead:
+ * "30 A → 09:30" while charging, "at night" while the night tariff will do.
+ *
  * `live` marks the chip whose switch only PERMITS something. AC charge sits
  * on all night whether or not a watt is moving, so ON alone says nothing; the
  * chip pulses while the grid is up and the BMS says the pack is taking
@@ -370,6 +379,8 @@ ha-card {
   width: calc(17px * var(--s)); height: calc(17px * var(--s)); }
 .chip .lbl { cursor: pointer; white-space: nowrap; }
 .chip .lbl:hover { text-decoration: underline; text-underline-offset: 3px; }
+.chip .sub { font-family: var(--mono); font-size: calc(11px * var(--s)); opacity: .75; white-space: nowrap; }
+.chip .sub:empty { display: none; }
 .chip .dw { display: flex; align-items: center; justify-content: center; width: 18px; height: 22px;
   border-radius: 6px; flex: none; cursor: pointer; }
 .chip .dw:hover { background: #ffffff14; }
@@ -913,6 +924,28 @@ class PowmrInverterConsoleCard extends HTMLElement {
     return Math.max(0, c.grid_return_s - (Date.now() - t) / 1000);
   }
 
+  /**
+   * The Pre-charge chip's sub-label and tooltip, from the plan sensor. Empty
+   * (and hidden) while the switch is off or there is nothing to charge for,
+   * which is most of the time: the chip is then just a switch.
+   */
+  _patchPlan(node, sub, st) {
+    const plan = this._stateObj(this._config.precharge_plan);
+    const a = (plan && plan.attributes) || {};
+    const t = Date.parse(a.until || "");
+    const at = Number.isFinite(t)
+      ? new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })
+      : "";
+    let text = "";
+    if (st === "on" && plan) {
+      if (plan.state === "charging") text = a.current + " A → " + at;
+      else if (plan.state === "waiting_night") text = "at night → " + at;
+      else if (plan.state === "full") text = "full";
+    }
+    if (sub) sub.textContent = text;
+    if (plan && a.reason) node.title += " · " + plan.state + ": " + a.reason;
+  }
+
   /** The header pill: grid word, dot colour and the return countdown. */
   _patchGrid() {
     const c = this._config;
@@ -996,7 +1029,8 @@ class PowmrInverterConsoleCard extends HTMLElement {
                style="--cc:${ch.color};--cb:${ch.color}4D;--cf:${ch.color}14;--cs:${ch.color}99">
             <span class="ic" data-act="toggle" data-ent="${c[ch.cfg]}" role="button" tabindex="0"
                   title="Toggle ${this._esc(ch.label)}"><ha-icon icon="${ch.icon}"></ha-icon></span>
-            <span class="lbl" data-more="${c[ch.cfg]}" role="button" tabindex="0">${this._esc(ch.label)}</span>
+            <span class="lbl" data-more="${c[ch.cfg]}" role="button" tabindex="0">${this._esc(ch.label)}</span>${
+              ch.plan ? `<span class="sub" data-ref="chipSub${i}" data-more="${c.precharge_plan}" role="button" tabindex="0"></span>` : ""}
             <span class="dw" data-act="toggle" data-ent="${c[ch.cfg]}" role="button" tabindex="0"
                   title="Toggle ${this._esc(ch.label)}"><span class="dot"></span></span>
           </div>`).join("")}
@@ -1260,7 +1294,9 @@ class PowmrInverterConsoleCard extends HTMLElement {
       c.tariff_day, c.tariff_night, c.total_energy,
       c.max_charge_current, c.power_priority, c.ac_input_mode, c.tariff,
     ].concat(CHIPS.map((ch) => c[ch.cfg]));
+    const plan = (this._stateObj(c.precharge_plan) || {}).attributes || {};
     return ids.map((id) => this._state(id)).join("|")
+      + "|" + this._state(c.precharge_plan) + "|" + plan.current + "|" + plan.until
       + "|" + this._range + "|" + this._sel;
   }
 
@@ -1297,6 +1333,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
       node.title = (this._stateObj(c[ch.cfg]) || {}).attributes
         ? ((this._stateObj(c[ch.cfg]).attributes.friendly_name || ch.label) + " — " + st)
         : ch.label;
+      if (ch.plan) this._patchPlan(node, el["chipSub" + i], st);
     });
 
     // --- grid tile ---------------------------------------------------------
