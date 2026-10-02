@@ -26,7 +26,7 @@
 | Product | Shop | UAH | Size, mm | Notes |
 |---|---|---|---|---|
 | LED STORY Profi 60W slim | [led-story.ua](https://led-story.ua/blok-24v-zhivlennja-led-strichok-60w-25a-tonkij-korpus-ip20-led-story-profi/) | 218 | 297×17×17 | Fallback; house brand, in stock |
-| **BIOM STICK BPBLS-60-24** | [samsnab](https://samsnab.com.ua/uk/osveshchenie/bloki-pitaniya-dlya-led/14837-blok-pitaniya-biom-professional-dc24-60w-bpbls-60-24-2-5a-stick) · [biom.ua, 358](https://biom.ua/blok-pitaniya-biom-professional-dc24-60w-bpbls-60-24-2.5a-stick/) | 315 | 313×15×18 | **Pick**; known brand; Viber inquiry at samsnab, out of stock elsewhere |
+| **BIOM STICK BPBLS-60-24** | [prom.ua (MaxiLight)](https://prom.ua/ua/p1368494384-blok-pitaniya-biom.html) · [prom.ua (LedSpectr), 353](https://ledspectr.com.ua/ua/p1368396659-blok-pitaniya-biom.html) | 327 | 313×15×18 | **Pick**; known brand. Out of stock at biom.ua (358), svetum and 5watt on 2026-10-03; samsnab (315) only by Viber inquiry |
 | COXO DS-60-24 | [lightland](https://lightland.com.ua/catalog/bloky-zhyvlennya/ds-60-24/) | 585 | 130×53×27 | CE/CQC, 85 %, 3-year warranty; over budget |
 | EUROLAMP PS 60W 24V 2.5A | [eurolamp.ua](https://eurolamp.ua/shop/product/eurolamp-blok-zhyvlennia-dlia-svitlodiodnoi-strichky-60w-24v-2-5a/) | 469 | 116×53×27 | Out of stock; rated only to +40 °C |
 | No-name XJK-60-24 | [prom.ua](https://prom.ua/ua/p2718370633-blok-pitaniya-24v.html) | 206 | 123×34×22 | Risky: ripple and inflated rating |

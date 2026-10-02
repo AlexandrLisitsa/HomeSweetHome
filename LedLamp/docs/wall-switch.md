@@ -8,7 +8,7 @@ The lamp's controller must stay powered, so the old mechanical switch goes: its 
 | Part | Pick | Shop | Price, UAH |
 |---|---|---|---|
 | Switch | **Aqara Wireless Remote Switch E1, two rockers** (WXKG17LM): two rockers on an 86×86×15 mm plate, CR2032, Zigbee 3.0 | [SELLBOT on prom.ua](https://prom.ua/p1506130852-bezdrotovij-vimikach-klavishi.html), ready to ship (single-rocker WXKG16LM: 600 at [sellbot](https://sellbot.com.ua/ua/p1506121949-bezdrotovij-vimikach-klavishi.html)) | 650 |
-| Box adapter | **Schneider Asfora blank EPH5600121**, white, 83×83 mm, **fixes into the box with spreading claws** | [schneider.kiev.ua](https://schneider.kiev.ua/zaglushka-bila-asfora-eph5600121/) · [Epicentr](https://epicentrk.ua/ua/shop/mplc-zagluska-schneider-electric-asfora-bilij-eph5600121-1f04090b-038f-6c0c-beb9-d97b8d769773.html) · [5watt, 133](https://5watt.ua/uk/zaglushka-2-mod-schneiderasfora-bilij-eph5600121-14600.html) | 134 |
+| Box adapter | **Schneider Asfora blank EPH5600121**, white, 83×83 mm, **fixes into the box with spreading claws** | [prom.ua (MegaSnab)](https://prom.ua/p1234517601-zaglushka-dlya-rozetki.html) · [schneider.kiev.ua](https://schneider.kiev.ua/zaglushka-bila-asfora-eph5600121/) · [Epicentr](https://epicentrk.ua/ua/shop/mplc-zagluska-schneider-electric-asfora-bilij-eph5600121-1f04090b-038f-6c0c-beb9-d97b8d769773.html) · [5watt, 133](https://5watt.ua/uk/zaglushka-2-mod-schneiderasfora-bilij-eph5600121-14600.html) | 134 |
 | Small parts | 3M VHB tape, spare CR2032, 1 Wago 221 | local | ~40 |
 | | **Total** | | **≈ 824** |
 

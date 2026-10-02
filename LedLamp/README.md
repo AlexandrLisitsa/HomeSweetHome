@@ -17,27 +17,27 @@ roughly **75 separate LEDs under small lenses**, about 2.3 m of board in total. 
 box and a 3-way terminal block (L, N, earth) sit in the middle, and the base is painted white metal. There are mounting
 holes near the rim at the top, bottom and right. The separate lensed LEDs are why the old light looks spotty.
 
-Prices and stock were checked on **2026-09-26** and change often, especially on prom.ua. Rozetka refused automated
-lookups (HTTP 403). A printable version with drawings, [`LedLamp.pdf`](LedLamp.pdf), is built from this README
+Prices and stock were checked on **2026-09-26** and re-checked on **2026-10-03**, when every part was ready to ship
+on prom.ua. They change often. Rozetka refused automated lookups (HTTP 403). A printable version with drawings, [`LedLamp.pdf`](LedLamp.pdf), is built from this README
 and [`docs/`](docs) by `tools/build_pdf.py`.
 
 ![Exploded view: the metal case with 16 COB stripes, the PSU stick and the controller, above the diffuser](docs/images/exploded-view.svg)
 
 ---
 
-## 1. Parts to buy: ≈ 3200 UAH for the lamp, ≈ 825 for the wall switch
+## 1. Parts to buy: ≈ 3215 UAH for the lamp, ≈ 825 for the wall switch
 
 | # | Part | Pick | Shop | Price, UAH |
 |---|---|---|---|---|
 | 1 | CCT COB strip, **7 m** (5.7 m used, 1.3 m spare) | **LEDTech 24V COB/FCOB CCT 2700–6500K Multi White**: 14 W/m (7+7), 1400 lm/m, 608 LED/m, Ra>90, **10 mm** wide | [prom.ua (LEDTechnics)](https://prom.ua/ua/p2655960753-svetodiodnaya-lenta-ledtech.html) | ~1578 (225.40/m × 7 m) |
 | 2 | Zigbee controller | **MiBoxer (Mi-Light) E2-ZR** W+CCT 2-in-1: Zigbee 3.0 + 2.4G RF, DC 12–24 V, 12 A, **100.6×40×17.6 mm**, PWM 250 Hz / 16 kHz | [prom.ua (OPTSVET)](https://prom.ua/ua/p2560711030-kontroller-light-tunable.html) | 1210 |
-| 3 | Power supply | **BIOM Professional STICK BPBLS-60-24**: 24 V / 2.5 A, **313×15×18 mm**, IP20, metal case, 176–265 V in | [samsnab](https://samsnab.com.ua/uk/osveshchenie/bloki-pitaniya-dlya-led/14837-blok-pitaniya-biom-professional-dc24-60w-bpbls-60-24-2-5a-stick) (order via Viber) · [biom.ua, 358](https://biom.ua/blok-pitaniya-biom-professional-dc24-60w-bpbls-60-24-2.5a-stick/) | 315 |
+| 3 | Power supply | **BIOM Professional STICK BPBLS-60-24**: 24 V / 2.5 A, **313×15×18 mm**, IP20, metal case, 176–265 V in | [prom.ua (MaxiLight)](https://prom.ua/ua/p1368494384-blok-pitaniya-biom.html) · [prom.ua (LedSpectr), 353](https://ledspectr.com.ua/ua/p1368396659-blok-pitaniya-biom.html) | 327 |
 | 4 | Wire (0.75 + 0.5 mm²), heat-shrink, 3 Wago 221 | local | — | ~100 |
-| | **Total (lamp)** | | | **≈ 3203** |
+| | **Total (lamp)** | | | **≈ 3215** |
 
 **Ask the strip seller for 7 m.** The layout uses about 5.7 m; the rest covers cutting mistakes and a spare stripe for
 repairs. The listing is priced per metre; if they only sell whole 5 m reels, two reels (10 m) cost ~2254 and the total
-rises to ≈ 3880. The spare strip, the better power supply and the E2-ZR put the lamp about 700 over the original
+rises to ≈ 3890. The spare strip, the better power supply and the E2-ZR put the lamp about 700 over the original
 2500 budget; the wall switch ([`docs/wall-switch.md`](docs/wall-switch.md)) adds ≈ 825. The [LT COB-24-MW-608 at svetum](https://svetum.com.ua/ua/catalog/svetodiodnaya-lenta/led-lenta-lt-cob-608sht-m-7-7w-m-24v-ip20-2700-6500k-multi-white-10mm-cob-24-mw-608-91106/)
 (same 7+7 W/m, CRI 90, 10 mm) is sold only in 5 m steps.
 
@@ -51,14 +51,14 @@ rises to ≈ 3880. The spare strip, the better power supply and the E2-ZR put th
   `TS0502B` with the same controls. No OTA updates through Z2M.
 - **Power supply:** the only mains part, sitting in a closed metal lamp, so it is the one worth paying a little more
   for. BIOM is an established Ukrainian LED brand with a local warranty, and the stick is thin enough (15 mm) to sit
-  between two stripes. 5.7 m of strip draws ~40 W (1.7 A), so the 60 W unit runs at about two-thirds load. It is out
-  of stock at most shops: samsnab takes orders by Viber inquiry, and biom.ua lists it at 358.
+  between two stripes. 5.7 m of strip draws ~40 W (1.7 A), so the 60 W unit runs at about two-thirds load. It sells out
+  often: on 2026-10-03 biom.ua, svetum and 5watt had none, and MaxiLight and LedSpectr on prom.ua had it ready to ship.
 
 **Swaps if something is out of stock:**
 - Power supply: [LED STORY Profi 60W slim](https://led-story.ua/blok-24v-zhivlennja-led-strichok-60w-25a-tonkij-korpus-ip20-led-story-profi/), 297×17×17 mm, IP20, 218 (on sale), in stock.
   A shop house brand with no efficiency, ripple or safety figures, so only if the BIOM can't be had.
 - Controller: the **Moes ZLD-RCW** ([SELLBOT, 849](https://prom.ua/ua/p2985124892-kontroler-svitlodiodnih-strichok.html), [Z2M](https://www.zigbee2mqtt.io/devices/ZLD-RCW_1.html)),
-  a Tuya RGB+CCT unit with R, G and B left unused. Cheaper (lamp ≈ 2842), but its PWM is unpublished, batches vary,
+  a Tuya RGB+CCT unit with R, G and B left unused. Cheaper (lamp ≈ 2854), but its PWM is unpublished, batches vary,
   and it has no direct remote.
 
 ---
