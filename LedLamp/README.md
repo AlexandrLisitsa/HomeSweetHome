@@ -25,19 +25,19 @@ and [`docs/`](docs) by `tools/build_pdf.py`.
 
 ---
 
-## 1. Parts to buy: ≈ 2685 UAH for the lamp, ≈ 825 for the wall switch
+## 1. Parts to buy: ≈ 2685 UAH for the lamp, ≈ 820 for the wall switch
 
 | # | Part | Pick | Shop | Price, UAH |
 |---|---|---|---|---|
 | 1 | CCT COB strip, **7 m** (5.7 m used, 1.3 m spare) | **LEDTech 24V COB/FCOB CCT 2700–6500K Multi White**: 14 W/m (7+7), 1400 lm/m, 608 LED/m, Ra>90, **10 mm** wide | [prom.ua (LEDTechnics)](https://prom.ua/ua/p2655960753-svetodiodnaya-lenta-ledtech.html) | ~1578 (225.40/m × 7 m) |
 | 2 | Zigbee controller | **MiBoxer (Mi-Light) FUT037Z+** 3-in-1 (RGB / RGBW / RGB+CCT), used in RGB+CCT mode with R, G and B left empty: Zigbee 3.0 + 2.4G RF, DC 12–24 V, 6 A/ch, 12 A total, **74.5×36×17 mm**, PWM 250 Hz / 16 kHz | [OLX (Poltava, private seller)](https://www.olx.ua/d/uk/obyavlenie/svtlododniy-kontroler-mi-light-fut037z-dlya-keruvannya-rgb-rgbw-ta-rgb-cct-led-strchkami-ID10QSv3.html), via OLX Delivery | 679 |
 | 3 | Power supply | **BIOM Professional STICK BPBLS-60-24**: 24 V / 2.5 A, **313×15×18 mm**, IP20, metal case, 176–265 V in | [prom.ua (MaxiLight)](https://prom.ua/ua/p1368494384-blok-pitaniya-biom.html) · [prom.ua (LedSpectr), 353](https://ledspectr.com.ua/ua/p1368396659-blok-pitaniya-biom.html) | 327 |
-| 4 | Wire (0.75 + 0.5 mm²), heat-shrink, 3 Wago 221 | local | — | ~100 |
+| 4 | Wire (0.75 + 0.5 mm²), heat-shrink, 3 **WAGO 221-412** (2-wire, genuine, 23 each) | wire local; WAGO from [prom.ua (Електро Крамниця)](https://prom.ua/ua/p1776340735-klema-shvidkogo-montazhu.html), in one order with the wall switch's blank | — | ~100 |
 | | **Total (lamp)** | | | **≈ 2685** |
 
 **Ask the strip seller for 7 m.** The layout uses about 5.7 m; the rest covers cutting mistakes and a spare stripe for
 repairs. The listing is priced per metre; if they only sell whole 5 m reels, two reels (10 m) cost ~2254 and the total
-rises to ≈ 3360. The spare strip and the better power supply put the lamp about 185 over the original 2500 budget; the wall switch ([`docs/wall-switch.md`](docs/wall-switch.md)) adds ≈ 825. The [LT COB-24-MW-608 at svetum](https://svetum.com.ua/ua/catalog/svetodiodnaya-lenta/led-lenta-lt-cob-608sht-m-7-7w-m-24v-ip20-2700-6500k-multi-white-10mm-cob-24-mw-608-91106/)
+rises to ≈ 3360. The spare strip and the better power supply put the lamp about 185 over the original 2500 budget; the wall switch ([`docs/wall-switch.md`](docs/wall-switch.md)) adds ≈ 820. The [LT COB-24-MW-608 at svetum](https://svetum.com.ua/ua/catalog/svetodiodnaya-lenta/led-lenta-lt-cob-608sht-m-7-7w-m-24v-ip20-2700-6500k-multi-white-10mm-cob-24-mw-608-91106/)
 (same 7+7 W/m, CRI 90, 10 mm) is sold only in 5 m steps.
 
 **Why these:**

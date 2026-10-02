@@ -3,14 +3,18 @@
 The lamp's controller must stay powered, so the old mechanical switch goes: its two wires are joined permanently and a
 **battery Zigbee switch that looks like an ordinary two-key rocker switch** takes its place, **fixed into the old 60 mm box**.
 
-## Parts: ≈ 825 UAH
+## Parts: ≈ 820 UAH
 
 | Part | Pick | Shop | Price, UAH |
 |---|---|---|---|
 | Switch | **Aqara Wireless Remote Switch E1, two rockers** (WXKG17LM): two rockers on an 86×86×15 mm plate, CR2032, Zigbee 3.0 | [SELLBOT on prom.ua](https://prom.ua/p1506130852-bezdrotovij-vimikach-klavishi.html), ready to ship (single-rocker WXKG16LM: 600 at [sellbot](https://sellbot.com.ua/ua/p1506121949-bezdrotovij-vimikach-klavishi.html)) | 650 |
-| Box adapter | **Schneider Asfora blank EPH5600121**, white, 83×83 mm, **fixes into the box with spreading claws** | [prom.ua (MegaSnab)](https://prom.ua/p1234517601-zaglushka-dlya-rozetki.html) · [schneider.kiev.ua](https://schneider.kiev.ua/zaglushka-bila-asfora-eph5600121/) · [Epicentr](https://epicentrk.ua/ua/shop/mplc-zagluska-schneider-electric-asfora-bilij-eph5600121-1f04090b-038f-6c0c-beb9-d97b8d769773.html) · [5watt, 133](https://5watt.ua/uk/zaglushka-2-mod-schneiderasfora-bilij-eph5600121-14600.html) | 134 |
-| Small parts | 3M VHB tape, spare CR2032, 1 Wago 221 | local | ~40 |
-| | **Total** | | **≈ 824** |
+| Box adapter | **Schneider Asfora blank EPH5600121**, white, 83×83 mm, **fixes into the box with spreading claws** | [prom.ua (Електро Крамниця)](https://prom.ua/ua/p1254302585-zaglushka-asfora-schneider.html) · [schneider.kiev.ua](https://schneider.kiev.ua/zaglushka-bila-asfora-eph5600121/) · [Epicentr](https://epicentrk.ua/ua/shop/mplc-zagluska-schneider-electric-asfora-bilij-eph5600121-1f04090b-038f-6c0c-beb9-d97b8d769773.html) · [5watt, 133](https://5watt.ua/uk/zaglushka-2-mod-schneiderasfora-bilij-eph5600121-14600.html) | 127 |
+| Small parts | 3M VHB foam tape (~1.1 mm), spare CR2032, 1 **WAGO 221-412** ([Електро Крамниця](https://prom.ua/ua/p1776340735-klema-shvidkogo-montazhu.html), 23) | local | ~40 |
+| | **Total** | | **≈ 817** |
+
+**Order the blank and all the WAGO connectors together.** Nearly every prom.ua seller of the blank has a minimum
+order (150–700 UAH; MegaSnab wants 700). Електро Крамниця asks 200, and the blank (127) plus five genuine
+WAGO 221-412 (4 needed, 1 spare) comes to 242. Its 15 UAH "Wago 221-412" listing is a PROLUM copy: skip it.
 
 **Why these:**
 - **Looks like the switch they know:** rockers you press, like the classic two-key switch, not a flat touch panel or
