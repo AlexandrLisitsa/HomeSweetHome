@@ -41,6 +41,10 @@ uint32_t lastStateMs = 0;
 bool restored = false;
 uint32_t restoreUntilMs = 0;
 
+// The last state sent, so an unchanged one is not sent again: a quiet meter
+// costs the broker and Home Assistant's recorder nothing.
+char lastState[256] = "";
+
 // "12345.6789": the register to 4 decimals, from integers. A float has 7
 // significant digits, which a five-digit register would use up before the
 // decimals start.
@@ -113,12 +117,16 @@ void publishAllDiscovery() {
            state);
   publishDiscovery("sensor", "power", "Power", fields);
 
+  // No state topic: the control keeps the last value typed into it, and
+  // Home Assistant restores that across restarts. Mirroring the register
+  // here would write a second recorder row for every pulse, next to the
+  // energy sensor's.
   snprintf(fields, sizeof fields,
-           "\"state_topic\":\"%s\",\"value_template\":\"{{ value_json.energy }}\","
-           "\"command_topic\":\"%s\",\"min\":0,\"max\":600000,\"step\":0.0001,"
+           "\"command_topic\":\"%s\",\"optimistic\":true,"
+           "\"min\":0,\"max\":600000,\"step\":0.001,"
            "\"mode\":\"box\",\"unit_of_measurement\":\"kWh\","
            "\"entity_category\":\"config\",\"icon\":\"mdi:counter\"",
-           state, topicSetReading.c_str());
+           topicSetReading.c_str());
   publishDiscovery("number", "reading", "Meter reading", fields);
 
   snprintf(fields, sizeof fields,
@@ -159,6 +167,37 @@ bool parseNumber(const char* text, double& out) {
   return *end == '\0' && std::isfinite(out);
 }
 
+void finishRestore() {
+  if (restored) return;
+  restored = true;
+  mqtt.unsubscribe(topicState.c_str());
+  Serial.printf("# register restored: %lu pulses\n", (unsigned long)meterPulses);
+}
+
+// Only what Home Assistant uses. No uptime or RSSI: they change every time,
+// and would turn every check into a publish and a recorder row.
+void buildState(char* json, size_t len) {
+  char kwh[24];
+  formatKwh(kwh, sizeof kwh, meterPulses);
+  snprintf(json, len,
+           "{\"energy\":%s,\"power\":%ld,\"pulses\":%lu,\"uncertain\":%lu,"
+           "\"missed\":%lu,\"on\":%u,\"off\":%u,\"set\":%s}",
+           kwh, lroundf(meterWatts()), (unsigned long)meterPulses,
+           (unsigned long)detector.uncertain, (unsigned long)missedSlots,
+           settings->onLevel, settings->offLevel,
+           settings->registerSet ? "true" : "false");
+}
+
+void sendState(bool force) {
+  if (!mqtt.connected() || !restored) return;
+  char json[sizeof lastState];
+  buildState(json, sizeof json);
+  if (!force && strcmp(json, lastState) == 0) return;
+  if (mqtt.publish(topicState.c_str(), json, true)) {
+    strcpy(lastState, json);
+  }
+}
+
 void onMessage(char* topic, byte* payload, unsigned int length) {
   char text[384];
   payloadString(text, sizeof text, payload, length);
@@ -166,12 +205,15 @@ void onMessage(char* topic, byte* payload, unsigned int length) {
   if (topicState == topic) {
     // Our own retained state from before the restart. Only ever raises the
     // register: a lower figure here is older than what RTC or flash had.
+    // The pulses counted since boot go on top of it, because the boot
+    // figure they were added to is the one being replaced.
     const char* p = strstr(text, "\"pulses\":");
     if (!restored && p) {
       uint32_t retained = strtoul(p + 9, nullptr, 10);
       Serial.printf("# broker: %u pulses retained\n", (unsigned)retained);
-      if (retained > meterPulses) {
-        meterPulses = retained;
+      uint32_t restoredPulses = retained + detector.pulses;
+      if (restoredPulses > meterPulses) {
+        meterPulses = restoredPulses;
         persistPulse(meterPulses);
         persistRequestSave();
       }
@@ -190,6 +232,9 @@ void onMessage(char* topic, byte* payload, unsigned int length) {
       meterPulses = (uint32_t)llround(kwh * IMP_PER_KWH);
       settings->registerSet = true;
       Serial.printf("# register set to %s kWh\n", text);
+      // A reading typed in is newer than anything retained: a state still on
+      // its way from the broker must not overwrite it.
+      finishRestore();
       // Straight to flash: this is the one deliberate jump, and it must not
       // come back as the old value after a power cut.
       persistSaveNow(meterPulses, *settings);
@@ -284,22 +329,9 @@ void mqttBegin(Settings* s) {
   mqtt.setCallback(onMessage);
 }
 
-void mqttPublishState() {
-  if (!mqtt.connected() || !restored) return;
-  char kwh[24];
-  formatKwh(kwh, sizeof kwh, meterPulses);
-  char json[256];
-  snprintf(json, sizeof json,
-           "{\"energy\":%s,\"power\":%ld,\"pulses\":%lu,\"uncertain\":%lu,"
-           "\"missed\":%lu,\"rssi\":%d,\"uptime\":%lu,\"on\":%u,\"off\":%u,"
-           "\"set\":%s}",
-           kwh, lroundf(meterWatts()), (unsigned long)meterPulses,
-           (unsigned long)detector.uncertain, (unsigned long)missedSlots, WiFi.RSSI(),
-           (unsigned long)(millis() / 1000), settings->onLevel, settings->offLevel,
-           settings->registerSet ? "true" : "false");
-  mqtt.publish(topicState.c_str(), json, true);
-  lastStateMs = millis();
-}
+// Always sends: after a command, so a refused value snaps back in Home
+// Assistant, and after a (re)connect, when the broker may have lost it.
+void mqttPublishState() { sendState(true); }
 
 void mqttLoop() {
   if (WiFi.status() != WL_CONNECTED) return;
@@ -310,12 +342,12 @@ void mqttLoop() {
   mqtt.loop();
 
   if (!restored && (int32_t)(millis() - restoreUntilMs) >= 0) {
-    restored = true;
-    mqtt.unsubscribe(topicState.c_str());
-    Serial.printf("# register restored: %lu pulses\n", (unsigned long)meterPulses);
+    finishRestore();
     mqttPublishState();
   }
+  // Checked every 10 s, sent only if it changed.
   if (restored && millis() - lastStateMs >= STATE_EVERY_MS) {
-    mqttPublishState();
+    lastStateMs = millis();
+    sendState(false);
   }
 }

@@ -13,9 +13,10 @@
 // Topics, under the board's HOSTNAME (electricity-meter):
 //
 //   <host>/status        online / offline, retained; offline is the LWT
-//   <host>/state         retained JSON every 10 s and after every change:
+//   <host>/state         retained JSON, checked every 10 s and sent only if it
+//                        changed, plus after every command and (re)connect:
 //                        energy (kWh), power (W), pulses, uncertain, missed,
-//                        rssi, uptime (s), on, off, set (register set yet?)
+//                        on, off, set (register set yet?)
 //   <host>/set/reading   kWh -> register
 //   <host>/set/on        0-1023, must stay above off
 //   <host>/set/off       0-1023, must stay below on

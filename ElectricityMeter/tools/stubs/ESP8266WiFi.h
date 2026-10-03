@@ -8,7 +8,7 @@
 class WiFiClient {};
 
 struct IpStub {
-  String toString() const { return String("192.168.0.50"); }
+  String toString() const { return String("192.0.2.50"); }
 };
 
 struct WiFiStub {

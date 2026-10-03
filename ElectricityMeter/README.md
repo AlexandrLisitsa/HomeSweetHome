@@ -17,9 +17,9 @@ login, flashing, mounting, and setting the meter reading.
 | Stage | State |
 | --- | --- |
 | 1. See what a blink looks like | **Done** (2026-10-01). The first [golden capture](data/golden/README.md) has a verified count of 163 blinks. |
-| 2. Count blinks | **Done** in code: [`include/detector.h`](firmware/electricity-meter/include/detector.h) counts all 163, tested on every push. Not yet run on the meter. |
-| 3. Report to Home Assistant | **Done** in code: MQTT discovery, the day/night [package](../HomeAssistant/config/packages/electricity_meter.yaml). Not yet deployed. |
-| 4. Commission at the meter | **Next**: flash, set the reading, compare with the display. [`docs/setup.md`](docs/setup.md). |
+| 2. Count blinks | **Done** in code: [`include/detector.h`](firmware/electricity-meter/include/detector.h) counts all 163, tested on every push. On the meter since 2026-10-03: 156 boiler blinks in 42 s, 2.07 kW. |
+| 3. Report to Home Assistant | **Done** in code: MQTT discovery, the day/night [package](../HomeAssistant/config/packages/electricity_meter.yaml), deployed 2026-10-03. |
+| 4. Commission at the meter | **Done** (2026-10-03): 2.2.0 on its fixed address, levels 990 / 940, reading set to 47267.64 kWh, the Energy dashboard's grid source. Next: compare with the display over a day (roadmap step 7). [`docs/setup.md`](docs/setup.md). |
 
 [`docs/roadmap.md`](docs/roadmap.md) has what is left and what "done" means for
 each step.
@@ -42,8 +42,10 @@ each step.
 The ESP8266's ADC itself reads 0–1 V. The Lolin V3 has a 220k/100k divider in
 front of it, so the `A0` pin takes 0–3.3 V and reads it as 0–1023.
 
-On this module **more light gives a higher reading**: about 760 between
-flashes and 1014 at the peak, with the module taped over the LED.
+On this module **more light gives a higher reading**. On the bench it read
+about 760 between flashes and 1014 at the peak; as mounted at the meter it
+reads about 910 and clips at 1024, so the levels there are 990 / 940
+([`docs/setup.md`](docs/setup.md) step 7).
 
 ## How it counts
 
@@ -58,8 +60,10 @@ C++, compiled into the firmware and, unchanged, into the tests.
 - **Time is samples.** A blink's time is its slot number × 10 ms, which carries
   no clock jitter. Power is the energy of the blinks in the last 10 s (562.5 J
   each) over the time they span. It is capped at one blink's energy over the
-  time since the last one, so it falls towards 0 when the load stops instead
-  of freezing.
+  time since the last one, so it falls when the load stops instead of
+  freezing, and **reads 0 once that cap is under 10 W**: one minute without a
+  blink. The flat never draws less than that while on the grid, so it means
+  the draw has stopped. The register still counts every blink.
 - **A gap is not ignored.** If the sampler misses 3 or more slots in a row
   (≥ 30 ms, room for a whole flash), the energy sensor's `uncertain`
   attribute goes up by one.
@@ -104,7 +108,7 @@ leaves a broken esptool behind (the same trap as `PowerStation/`).
 ```powershell
 cd ElectricityMeter\firmware\electricity-meter
 
-# First time, over the cable. The monitor prints the board's address.
+# First time, over the cable. The monitor shows the board's status lines.
 pio run -e usb -t upload -t monitor
 
 # Afterwards, over WiFi, with the board mounted at the meter.
@@ -112,7 +116,9 @@ $env:ELECTRICITY_METER_OTA_PASSWORD = '<OTA_PASSWORD from config.h>'
 pio run -e ota -t upload --upload-port <board-ip>
 ```
 
-Give the board a fixed DHCP lease in the router so its address does not move.
+`STATIC_IP` in `config.h` pins the board's address (the next free one in the
+house's static block; see the root README's [Network](../README.md#network)
+section). Without it the board uses DHCP.
 `http://electricity-meter.local/` also works on iPhones and laptops, but most Android
 phones do not resolve `.local` names, so use the IP there.
 
@@ -160,9 +166,9 @@ long enough to swallow a flash is possible, though: the 0.9 s block at boot is
 one. A counter built on this has to treat a reported miss as "a blink may be
 missing here", not ignore it.
 
-The board still prints every sample over USB serial as one integer per line
-(lines starting with `#` are status), so the PlatformIO monitor and the Arduino
-Serial Plotter keep working on the bench.
+Serial carries `#` status lines only. Stage one also printed every sample
+there, 100 lines a second for a cable nobody plugs in at the meter; `/samples`
+and [`tools/capture.py`](tools/capture.py) do that job now.
 
 WiFi adds a few counts of noise to the ESP8266's ADC: on the bench it reads a
 spread of about 5 counts with WiFi up, compared with 3 without it. A meter flash
@@ -189,4 +195,11 @@ first is 47 s of the boiler heating: 163 blinks, at 1.99 kW.
 | Script | What it does | Changes anything live? |
 | --- | --- | --- |
 | [`tools/capture.py`](tools/capture.py) | Records every sample from the board to `data/golden/<date>-<time>-<label>.csv`, marking any slot the board missed. Also records Home Assistant's inverter power readings next to it. | No. It only reads. |
-| [`tools/test_firmware.py`](tools/test_firmware.py) | Compiles the firmware's detector and MQTT code for the PC (g++, or the `gcc:13` Docker image on Windows). It replays the golden captures, drives the MQTT commands against [stubs](tools/stubs), and parses every discovery payload as JSON. CI runs it on every push. | No. |
+| [`tools/test_firmware.py`](tools/test_firmware.py) | Compiles the firmware's detector, MQTT and persistence code for the PC (g++, or the `gcc:13` Docker image on Windows) and runs `test_detector.cpp`, `test_mqtt_link.cpp` and `test_persist.cpp` against [stubs](tools/stubs). They replay the golden captures and the levels as mounted, drive every MQTT command with good and bad payloads, restore the register from each copy, and check discovery against Home Assistant's rules. CI runs it on every push. | No. |
+
+## Docs
+
+- [`docs/setup.md`](docs/setup.md): from the parts on the desk to the meter on
+  the Energy dashboard, step by step.
+- [`docs/roadmap.md`](docs/roadmap.md): what is left, and what "done" means for
+  each step.

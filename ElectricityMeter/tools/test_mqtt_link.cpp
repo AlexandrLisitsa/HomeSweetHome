@@ -60,7 +60,87 @@ static std::string lastState() {
 
 static bool has(const std::string& s, const char* part) { return s.find(part) != std::string::npos; }
 
-int main() {
+static size_t stateCount() { return countTopic("electricity-meter/state"); }
+
+static int finish() {
+  std::printf(failed ? "\n%d FAILED\n" : "\nall passed\n", failed);
+  return failed ? 1 : 0;
+}
+
+// Booted from a flash copy 5 minutes old, counted 30 pulses while the broker
+// was being reached, then the broker's fresher copy arrives.
+static int restoreAddsCounted() {
+  Settings settings = {950, 820, true};
+  detector.pulses = 30;
+  meterPulses = 1000 + 30;
+  std::printf("restore keeps what was counted since boot\n");
+  mqttBegin(&settings);
+  mqttLoop();
+  g_mqtt->deliver("electricity-meter/state", "{\"pulses\":1500,\"set\":true}");
+  check("retained 1500 + 30 counted since boot", meterPulses == 1530,
+        std::to_string(meterPulses));
+  check("and goes to RTC", rtcPulses == 1530, std::to_string(rtcPulses));
+  return finish();
+}
+
+// The reading is typed in while the board is still waiting for the broker's
+// retained state; the old state arrives a moment later.
+static int readingBeatsRestore() {
+  Settings settings = {950, 820, false};
+  meterPulses = 0;
+  std::printf("a reading set during the restore wait wins\n");
+  mqttBegin(&settings);
+  mqttLoop();
+  g_mqtt->deliver("electricity-meter/set/reading", "100");
+  check("100 kWh -> 640000 pulses", meterPulses == 640000, std::to_string(meterPulses));
+  check("published at once", has(lastState(), "\"energy\":100.0000"), lastState());
+  g_mqtt->deliver("electricity-meter/state", "{\"pulses\":9999999,\"set\":true}");
+  check("a late retained state does not overwrite it", meterPulses == 640000,
+        std::to_string(meterPulses));
+  return finish();
+}
+
+// The draw stops: power must read 0 within a minute, not decay for 19.
+static int powerFloor() {
+  Settings settings = {990, 940, true};
+  meterPulses = 1000;
+  std::printf("power reads 0 once the draw has stopped\n");
+  mqttBegin(&settings);
+  mqttLoop();
+  nowMs += 3000;
+  mqttLoop();  // restore wait over
+  // 562.5 W: a pulse every 100 slots.
+  for (uint32_t s = 0; s <= 1000; s += 100) {
+    detector.feed(s, 1018, 0);
+    detector.feed(s + 1, 760, 0);
+  }
+  sampleCount = 1000;
+  mqttPublishState();
+  check("562.5 W while the pulses come", has(lastState(), "\"power\":563"), lastState());
+  sampleCount = 1000 + 5000;  // 50 s without a pulse: at most 11.25 W
+  mqttPublishState();
+  check("11 W after 50 s without one (still possible)", has(lastState(), "\"power\":11,"),
+        lastState());
+  sampleCount = 1000 + 5700;  // 57 s: at most 9.9 W
+  mqttPublishState();
+  check("0 W once the bound is under 10 W", has(lastState(), "\"power\":0,"), lastState());
+  size_t states = stateCount();
+  for (int i = 0; i < 120; i++) {  // the next 20 minutes, a check every 10 s
+    sampleCount += 1000;
+    nowMs += 10000;
+    mqttLoop();
+  }
+  check("and nothing more is sent while it stays quiet", stateCount() == states,
+        std::to_string(stateCount() - states));
+  return finish();
+}
+
+int main(int argc, char** argv) {
+  std::string scenario = argc > 1 ? argv[1] : "";
+  if (scenario == "power-floor") return powerFloor();
+  if (scenario == "restore-adds-counted") return restoreAddsCounted();
+  if (scenario == "reading-beats-restore") return readingBeatsRestore();
+
   Settings settings = {950, 820, false};
   meterPulses = 1000;  // what flash had at boot
 
@@ -101,6 +181,27 @@ int main() {
   g_mqtt->deliver("electricity-meter/state", "{\"pulses\":999999,\"set\":true}");
   check("a retained message after the restore is ignored", meterPulses == 1500,
         std::to_string(meterPulses));
+  check("no uptime or rssi in the state", !has(st, "uptime") && !has(st, "rssi"), st);
+
+  std::printf("state only when it changed\n");
+  size_t states = stateCount();
+  nowMs += 10000;
+  mqttLoop();
+  check("an unchanged state is not sent again", stateCount() == states,
+        std::to_string(stateCount() - states));
+  meterPulses++;
+  nowMs += 5000;
+  mqttLoop();
+  check("not before 10 s", stateCount() == states, std::to_string(stateCount() - states));
+  nowMs += 5000;
+  mqttLoop();
+  check("a pulse is sent at the next check", stateCount() == states + 1,
+        std::to_string(stateCount() - states));
+  check("with the new register", has(lastState(), "\"pulses\":1501"), lastState());
+  nowMs += 10000;
+  mqttLoop();
+  check("and not again", stateCount() == states + 1, std::to_string(stateCount() - states));
+  meterPulses--;  // keep the figures below as they were
 
   std::printf("meter reading\n");
   int saves = saveNowCalls;
@@ -109,11 +210,25 @@ int main() {
         std::to_string(meterPulses));
   check("saved to flash at once", saveNowCalls == saves + 1);
   check("state shows it", has(lastState(), "\"energy\":12345.6789"), lastState());
-  for (const char* bad : {"abc", "", "-5", "600000", "12 kWh", "nan"}) {
+  std::string huge = "1" + std::string(400, '0');
+  for (const char* bad : {"abc", "", "-5", "600000", "12 kWh", "nan", "inf", "-inf",
+                          " ", "1,5", huge.c_str()}) {
+    states = stateCount();
     g_mqtt->deliver("electricity-meter/set/reading", bad);
-    check((std::string("rejected: '") + bad + "'").c_str(), meterPulses == 79012345,
-          std::to_string(meterPulses));
+    std::string label = std::string("rejected: '") + std::string(bad).substr(0, 12) + "'";
+    check(label.c_str(), meterPulses == 79012345, std::to_string(meterPulses));
+    check("  and answered with the unchanged state", stateCount() == states + 1);
   }
+  struct { const char* text; uint32_t pulses; } good[] = {
+      {"0", 0},                {"-0", 0},          {" 5", 32000},     {"5\n", 32000},
+      {"1e3", 6400000},        {"0.0001", 1},      {"0.00007", 0},    {"599999.9999", 3839999999u},
+  };
+  for (auto& g : good) {
+    g_mqtt->deliver("electricity-meter/set/reading", g.text);
+    std::string label = std::string("accepted: '") + g.text + "'";
+    check(label.c_str(), meterPulses == g.pulses, std::to_string(meterPulses));
+  }
+  g_mqtt->deliver("electricity-meter/set/reading", "12345.6789");
 
   std::printf("detection levels\n");
   g_mqtt->deliver("electricity-meter/set/on", "900");
@@ -131,6 +246,22 @@ int main() {
   g_mqtt->deliver("electricity-meter/set/on", "800");
   check("on not at or below off", settings.onLevel == 900, std::to_string(settings.onLevel));
   check("state carries the levels", has(lastState(), "\"on\":900,\"off\":800"), lastState());
+  states = stateCount();
+  g_mqtt->deliver("electricity-meter/set/on", "abc");
+  check("a refused level is answered anyway, so HA snaps back", stateCount() == states + 1);
+  g_mqtt->deliver("electricity-meter/set/on", "1023");
+  check("on 1023, the top, accepted", settings.onLevel == 1023, std::to_string(settings.onLevel));
+  g_mqtt->deliver("electricity-meter/set/off", "1");
+  check("off 1, the bottom, accepted", settings.offLevel == 1, std::to_string(settings.offLevel));
+  g_mqtt->deliver("electricity-meter/set/on", "1");
+  check("on equal to off refused", settings.onLevel == 1023, std::to_string(settings.onLevel));
+  g_mqtt->deliver("electricity-meter/set/on", "990");
+  g_mqtt->deliver("electricity-meter/set/off", "940");
+  check("990 / 940, as set at the meter", settings.onLevel == 990 && settings.offLevel == 940 &&
+        detector.onLevel == 990 && detector.offLevel == 940);
+  int requests = saveRequests;
+  g_mqtt->deliver("electricity-meter/set/off", "941");
+  check("a level change asks for a save", saveRequests == requests + 1);
 
   std::printf("Home Assistant restarts\n");
   size_t before = g_mqtt->published.size();
@@ -153,6 +284,5 @@ int main() {
   }
   std::fclose(out);
 
-  std::printf(failed ? "\n%d FAILED\n" : "\nall passed\n", failed);
-  return failed ? 1 : 0;
+  return finish();
 }

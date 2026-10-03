@@ -16,7 +16,7 @@ static const uint32_t WINDOW_SLOTS = 1000;                           // 10 s
 
 static int failed = 0;
 
-static void check(const char* label, bool ok, const std::string& got) {
+static void check(const char* label, bool ok, const std::string& got = "") {
   if (!ok) failed++;
   std::printf("  %-4s %-58s %s\n", ok ? "ok" : "FAIL", label, got.c_str());
 }
@@ -177,6 +177,148 @@ int main() {
     check("6 kW: every pulse counted", fast.pulses == 64, std::to_string(fast.pulses));
     w = fast.watts(s - 1, INTERVAL_MS, JOULES_PER_PULSE, WINDOW_SLOTS);
     check("6 kW within 2%", std::fabs(w - 6000) < 120, std::to_string(w));
+  }
+
+  std::printf("levels are strict\n");
+  {
+    Detector d;
+    uint32_t slot = 0;
+    d.feed(slot++, 950, 0);
+    check("exactly 'on' is not a flash", d.pulses == 0, std::to_string(d.pulses));
+    d.feed(slot++, 1024, 0);
+    check("1024, the ADC's ceiling, is", d.pulses == 1, std::to_string(d.pulses));
+    d.feed(slot++, 820, 0);
+    d.feed(slot++, 1024, 0);
+    check("exactly 'off' does not end it", d.pulses == 1, std::to_string(d.pulses));
+  }
+
+  std::printf("as mounted on 2026-10-03: baseline ~910, flashes clip at 1024\n");
+  {
+    // What the board read at the meter with the boiler on: a baseline of
+    // 903-913 (the corridor lamp moves it by ~7), three samples at 1024 and a
+    // falling edge near 930, a flash every 27 slots.
+    auto mounted = [](Detector& d, int flashes, int lamp) {
+      uint32_t slot = 0;
+      for (int i = 0; i < flashes; i++) {
+        for (uint16_t v : {1024, 1024, 1024, 929}) d.feed(slot++, v, 0);
+        for (int k = 0; k < 23; k++) d.feed(slot++, (uint16_t)(903 + lamp + (k * 7) % 11), 0);
+      }
+      return slot;
+    };
+    Detector tuned;
+    tuned.onLevel = 990;
+    tuned.offLevel = 940;
+    uint32_t end = mounted(tuned, 156, 0);
+    check("990/940 counts all 156", tuned.pulses == 156, std::to_string(tuned.pulses));
+    float w = tuned.watts(end, INTERVAL_MS, JOULES_PER_PULSE, WINDOW_SLOTS);
+    check("at 2.08 kW (27 slots a blink)", std::fabs(w - 2083) < 30, std::to_string(w));
+    Detector lamp;
+    lamp.onLevel = 990;
+    lamp.offLevel = 940;
+    mounted(lamp, 156, 7);
+    check("the corridor lamp (+7) changes nothing", lamp.pulses == 156,
+          std::to_string(lamp.pulses));
+    Detector defaults;
+    mounted(defaults, 156, 0);
+    check("the bench defaults 950/820 stick after one flash", defaults.pulses == 1,
+          std::to_string(defaults.pulses));
+    check("and stay in it", defaults.inFlash());
+  }
+
+  std::printf("a sensor pinned at 1024\n");
+  {
+    Detector d;
+    uint32_t slot = 0;
+    for (int i = 0; i < 4242; i++) d.feed(slot++, 1024, 0);
+    check("counts one, never more", d.pulses == 1, std::to_string(d.pulses));
+  }
+
+  std::printf("levels changed mid-flash\n");
+  {
+    Detector d;
+    uint32_t slot = 0;
+    d.feed(slot++, 1000, 0);
+    d.feed(slot++, 900, 0);  // above off 820: still in the flash
+    d.offLevel = 940;        // raised from Home Assistant
+    d.feed(slot++, 900, 0);
+    check("the new 'off' ends it on the next sample", !d.inFlash());
+    d.feed(slot++, 1000, 0);
+    check("and the next flash counts", d.pulses == 2, std::to_string(d.pulses));
+  }
+
+  std::printf("a gap inside a flash\n");
+  {
+    Detector d;
+    uint32_t slot = 0;
+    d.feed(slot++, 1018, 0);
+    slot += 5;
+    d.feed(slot++, 1018, 5);
+    check("the flash still counts once", d.pulses == 1, std::to_string(d.pulses));
+    check("and the gap is uncertain", d.uncertain == 1, std::to_string(d.uncertain));
+    d.feed(slot, 760, 0);
+    slot += 4;
+    d.feed(slot++, 760, 3);
+    check("3 missed slots (exactly a flash) are uncertain too", d.uncertain == 2,
+          std::to_string(d.uncertain));
+  }
+
+  std::printf("slotsMissedIn\n");
+  {
+    const uint32_t slot = 10000;  // 10 ms in us
+    struct { uint32_t gap, want; } cases[] = {
+        {0, 0},      {10000, 0},  {14999, 0}, {15000, 0}, {15001, 1}, {20000, 1},
+        {24999, 1},  {25000, 2},  {30000, 2}, {40000, 3}, {888892, 88},
+    };
+    for (auto& c : cases) {
+      uint32_t got = slotsMissedIn(c.gap, slot);
+      check(("gap " + std::to_string(c.gap) + " us -> " + std::to_string(c.want)).c_str(),
+            got == c.want, std::to_string(got));
+    }
+  }
+
+  std::printf("power, edges\n");
+  {
+    // More pulses in the window than the 32 kept: averaged over the 32.
+    Detector d;
+    uint32_t slot = 0;
+    for (int i = 0; i < 100; i++) {
+      flash(d, slot);
+      idle(d, slot, 4);  // a pulse every 10 slots: 5625 W
+    }
+    float w = d.watts(slot - 4, INTERVAL_MS, JOULES_PER_PULSE, WINDOW_SLOTS);
+    check("100 pulses in the window, history 32: 5625 W", std::fabs(w - 5625) < 1,
+          std::to_string(w));
+
+    // The slot counter wraps after 497 days; pulses either side of it.
+    Detector wrap;
+    uint32_t s = 0xffffffffu - 250;
+    for (int i = 0; i < 6; i++) {
+      wrap.feed(s, 1018, 0);
+      wrap.feed(s + 1, 760, 0);
+      s += 100;
+    }
+    w = wrap.watts(s - 100, INTERVAL_MS, JOULES_PER_PULSE, WINDOW_SLOTS);
+    check("across the slot counter's wrap: 562.5 W", std::fabs(w - 562.5f) < 0.5f,
+          std::to_string(w));
+
+    // Weeks without a pulse (a long outage): slots x ms passes 32 bits. At
+    // 429496730 slots (49.7 days) it wraps to 4 ms, which would read as the
+    // old rate instead of nothing.
+    Detector idleLong;
+    idleLong.feed(0, 1018, 0);
+    idleLong.feed(1, 760, 0);
+    idleLong.feed(100, 1018, 0);
+    w = idleLong.watts(100 + 429496730u, INTERVAL_MS, JOULES_PER_PULSE, WINDOW_SLOTS);
+    check("49.7 days without a pulse reads ~0 W, not the old rate", w < 0.01f,
+          std::to_string(w));
+
+    // Two pulses far apart: the window falls back to the last two.
+    Detector sparse;
+    sparse.feed(0, 1018, 0);
+    sparse.feed(1, 760, 0);
+    sparse.feed(5625, 1018, 0);  // 56.25 s later: 10 W
+    w = sparse.watts(5625, INTERVAL_MS, JOULES_PER_PULSE, WINDOW_SLOTS);
+    check("10 W from two pulses 56 s apart", std::fabs(w - 10) < 0.01f, std::to_string(w));
   }
 
   std::printf(failed ? "\n%d FAILED\n" : "\nall passed\n", failed);

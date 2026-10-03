@@ -58,6 +58,32 @@ Each module is self-contained; start from its README. The common prerequisites:
 - **Docker** for building the ESPHome firmware; **JDK 17+ and the Android SDK** for the
   IRBridge app.
 
+## Network
+
+One flat `/24` behind the router. Everything that others connect to has a
+fixed address in a block at the bottom of the range, set on the device itself;
+the rest (phones, the ESP32-CAM, the inverter's ESP32) take DHCP. Real
+addresses are never committed (see [`MANIFEST.md`](MANIFEST.md) §4), so
+`192.0.2.0/24` stands in for the house subnet below. The host numbers are the
+real ones.
+
+| Address | What | Fixed in |
+| --- | --- | --- |
+| `192.0.2.1` | the router, gateway and DHCP | the router |
+| `192.0.2.2` | Proxmox host | `/etc/network/interfaces` on the host |
+| `192.0.2.3` | Home Assistant OS (VM 100) | Settings → System → Network |
+| `192.0.2.4` | AdGuard (CT 101) | the container's `net0` |
+| `192.0.2.5` | Tailscale (CT 102) | the container's `net0` |
+| `192.0.2.6` | Cloudflare tunnel (CT 103) | the container's `net0` |
+| `192.0.2.7` | taken by a device outside this repo | |
+| `192.0.2.8` | MeterCam service (CT 104) | `MeterCam/deploy/lxc.env` |
+| `192.0.2.9` | ElectricityMeter board | `STATIC_IP` in its `config.h` |
+
+**A new fixed address takes the next number after the block** (`.10` next),
+after checking that nothing answers on it: no ping reply and no ARP entry.
+Then add it to this table. The router's DHCP pool has to stay clear of the
+block.
+
 ## Secrets and private files
 
 Nothing secret is committed. Each real file below is git-ignored and has an
@@ -73,6 +99,7 @@ example next to it (or in [`HomeAssistant/examples/`](HomeAssistant/examples)):
 | `PowerStation/secrets.yaml` | `PowerStation/secrets.yaml.example` | Wi-Fi, API key, OTA password, BMS MAC |
 | `Proxmox/secrets.env` | `Proxmox/secrets.env.example` | read-only Proxmox API token |
 | `IRBridge/local.properties` | `IRBridge/local.properties.example` | Android SDK path |
+| `ElectricityMeter/firmware/electricity-meter/include/config.h` | `config.h.example` next to it | Wi-Fi, OTA and MQTT passwords, the board's fixed address |
 | Proxmox host `/root/.config/rclone/rclone.conf` | — (see [`Proxmox/docs/backups.md`](Proxmox/docs/backups.md#credentials)) | Google Drive token and the crypt password for the off-site backups |
 
 See [SECURITY.md](SECURITY.md) for how this is enforced and how to report a leak.

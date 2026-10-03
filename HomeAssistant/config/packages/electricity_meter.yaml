@@ -13,11 +13,14 @@
 # Needs `ha core restart` to take effect: utility_meter registers no reload
 # service.
 #
-# DEPLOY THIS AFTER THE METER READING HAS BEEN SET, not before. Setting the
-# reading jumps the register from 0 to the display's value, and a utility
-# meter that already exists books that whole jump to whichever zone is in
-# force -- 12 000 kWh of "consumption" tonight. If it ever has to be set
-# again, see HomeAssistant/docs/electricity-meter.md.
+# SAFE TO DEPLOY BEFORE THE METER READING IS SET, because the board holds
+# the energy sensor unavailable until then. A utility meter books nothing
+# from an unavailable source and takes the first real value as its starting
+# point (the utility_meter source as of 2026.9: no last valid state, no
+# delta).
+# What it does book is a jump in a value it already has: setting the
+# reading AGAIN later lands the whole difference in whichever zone is in
+# force. See HomeAssistant/docs/electricity-meter.md before ever doing that.
 #
 # ---------------------------------------------------------------------------
 # WHY THE CLOCK AND NOT sensor.electricity_tariff_zone

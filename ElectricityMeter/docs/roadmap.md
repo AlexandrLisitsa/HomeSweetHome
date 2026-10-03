@@ -35,7 +35,8 @@ golden data, drives the MQTT commands, and parses the discovery payloads.
 
 ## 4. Commission at the meter
 
-Follow [`setup.md`](setup.md) steps 1–8.
+Follow [`setup.md`](setup.md) steps 1–8. **Done** (2026-10-03): wired,
+2.2.0 on a fixed address, levels 990 / 940, reading set to 47267.64 kWh.
 
 **Done when** the device is in Home Assistant, a torch flash counts exactly
 one, the blinks on the phone page clear both levels, and the meter reading is
@@ -43,8 +44,8 @@ set.
 
 ## 5. Deploy the Home Assistant side
 
-Copy the package to the box, run `ha core restart`, then swap the Energy
-dashboard's grid sources
+**Done** 2026-10-03: the package is on the box, and the Energy dashboard's grid
+sources were swapped once the reading was set
 ([`HomeAssistant/docs/electricity-meter.md`](../../HomeAssistant/docs/electricity-meter.md)).
 
 **Done when** `select.electricity_meter_tariff` follows the clock and the

@@ -1,8 +1,9 @@
 # Setting up the board
 
 From the parts on the desk to the meter on the Energy dashboard. Follow the
-steps in order: step 8 has to happen before step 9, or Home Assistant books the
-meter's whole lifetime as one hour's consumption.
+steps in order. Until step 8 the board holds its energy sensor unavailable, so
+nothing in Home Assistant can book the jump from 0 to the meter's display as
+consumption.
 
 You need:
 
@@ -53,16 +54,30 @@ own. Mosquitto accepts Home Assistant users directly.
 
 `ElectricityMeter/firmware/electricity-meter/include/config.h` holds the
 secrets and is git-ignored. Yours is from stage one, so it has WiFi and OTA
-but no MQTT. Copy the MQTT block from `config.h.example` into it:
+but no MQTT. Copy the MQTT block from `config.h.example` into it, with Home
+Assistant's address:
 
 ```c
-#define MQTT_HOST        "192.168.0.3"
+#define MQTT_HOST        "<home-assistant-ip>"
 #define MQTT_PORT        1883
 #define MQTT_USER        "electricity-meter"
 #define MQTT_PASSWORD    "<the password from step 2>"
 ```
 
 If the MQTT lines are missing, the build stops with an error that says so.
+
+Give the board a **fixed address** too, so it never moves. Take the next free
+one in the house's static block (the root README's
+[Network](../../README.md#network) section has the plan), and check nothing
+answers on it first:
+
+```c
+#define STATIC_IP        "<next-free-ip>"
+#define STATIC_GATEWAY   "<router-ip>"
+#define STATIC_SUBNET    "255.255.255.0"
+```
+
+Leave the three lines out and the board takes whatever DHCP gives it.
 
 ## 4. Flash the firmware
 
@@ -87,20 +102,23 @@ pio run -e ota -t upload --upload-port <board-ip>
 The serial monitor should show, within a few seconds:
 
 ```
-# ElectricityMeter 2.0.0, one sample every 10 ms
+# ElectricityMeter 2.2.0, one sample every 10 ms
 # register 0 pulses, levels on 950 off 820
-# WiFi up: http://192.168.0.xx/  (http://electricity-meter.local/)  RSSI -60 dBm
-# MQTT: connecting to 192.168.0.3:1883
+# WiFi up: http://<board-ip>/  (http://electricity-meter.local/)  RSSI -60 dBm
+# MQTT: connecting to <home-assistant-ip>:1883
 # MQTT: connected
 # register restored: 0 pulses
 ```
 
-`MQTT: failed, state 5` means the broker rejected the login: check the user
-and password from steps 2 and 3. `state -2` means it couldn't reach
-192.168.0.3 at all.
+Serial carries only these `#` status lines. The raw samples are on the phone
+page and `/samples` (step 6).
 
-Give the board a **fixed DHCP lease** in the router, so its address never
-moves.
+`MQTT: failed, state 5` means the broker rejected the login: check the user
+and password from steps 2 and 3. `state -2` means it couldn't reach Home
+Assistant at all.
+
+After a flash that changes `STATIC_IP`, the board comes back on the new
+address, not the one you flashed to.
 
 ## 5. Check it in Home Assistant
 
@@ -111,7 +129,7 @@ six entities:
 | --- | --- | --- |
 | `sensor.electricity_meter_power` | Power, W | live |
 | `sensor.electricity_meter_energy` | The meter's register, kWh | **unavailable**, which is correct until step 8 |
-| `number.electricity_meter_reading` | Meter reading (Configuration) | 0 |
+| `number.electricity_meter_reading` | Meter reading (Configuration): keeps the last value typed into it, it does not follow the register | empty |
 | `number.electricity_meter_threshold_on` | Flash on level | 950 |
 | `number.electricity_meter_threshold_off` | Flash off level | 820 |
 | `button.electricity_meter_restart` | Restart | |
@@ -146,6 +164,20 @@ power and the levels; the graph below shows the raw sensor.
    Set them in Home Assistant (the two level numbers). The board accepts a level
    only if `1 ≤ off < on ≤ 1023`; a refused value snaps back.
 
+   **As mounted (2026-10-03)** the baseline sat near **905–910** and every
+   flash clipped at **1024**, 3–4 samples wide. The defaults' **off** (820)
+   is below that baseline, so the first flash would never end and the count
+   would stop at 1. The levels are set to **990 / 940**: that counted 156
+   boiler blinks in 42 s at 27–28 samples apart (2.07 kW). The corridor lamp
+   moves the baseline by about 7.
+
+   A flat **1024 on every sample**, with no blinks, means `A0` is pinned,
+   not that nothing is drawing. Check the wiring before anything else.
+
+   **No blinks while the house runs on battery is correct.** Only grid draw
+   turns the meter's LED. When the inverter's grid power is 0, test with the
+   boiler, which is on the meter but not behind the inverter.
+
 ## 8. Set the meter reading
 
 1. Read the register off the meter's display, in kWh. If the display cycles
@@ -167,11 +199,14 @@ Ask Claude to deploy it, or follow
 
 1. `HomeAssistant/config/packages/electricity_meter.yaml` goes to the box,
    followed by `ha core restart`. That creates the day/night meters
-   `sensor.electricity_meter_tariff_day` and `_night`.
-2. On the Energy dashboard, the grid sources switch from the inverter's
-   `powmr_inverter_grid_real_tariff_day/night` to the meter's, at the same
-   4.32 / 2.16 UAH prices. Grid power switches to
-   `sensor.electricity_meter_power`.
+   `sensor.electricity_meter_tariff_day` and `_night`. This part may go
+   before step 8: they wait, `unknown`, until the energy sensor has a value.
+   (Done 2026-10-03.)
+2. **After step 8**, the Energy dashboard's grid sources switch from the
+   inverter's `powmr_inverter_grid_real_tariff_day/night` to the meter's, at
+   the same 4.32 / 2.16 UAH prices. Grid power switches to
+   `sensor.electricity_meter_power`. Switched earlier, the dashboard shows no
+   grid use until the reading is set.
 
 ## 10. Check it against the meter
 
@@ -180,7 +215,8 @@ Ask Claude to deploy it, or follow
 - **After a day:** the same check over a longer run. A slow drift means blinks
   are being missed (raise the sensitivity: lower **on**) or counted twice
   (lower **off** further below the peak's falling edge). The energy sensor's
-  `uncertain` attribute counts gaps long enough to have hidden a blink. It
+  `uncertain` attribute counts gaps long enough to have hidden a blink. Each
+  boot adds one (the radio's calibration while WiFi joins); beyond that it
   should stay at or near 0.
 
 ## Troubleshooting
@@ -188,9 +224,11 @@ Ask Claude to deploy it, or follow
 | What you see | Likely cause | What to do |
 | --- | --- | --- |
 | The device never shows up in HA | MQTT login failing | Watch the serial monitor (step 4) for `MQTT: failed, state N`. |
+| A HA entity is missing from the device | Home Assistant refused its discovery payload | `ha core logs` shows `Error ... when processing MQTT discovery message` with the reason. `tools/test_firmware.py` checks the known rules (JSON, `step` ≥ 0.001). |
+| The board is not on its address after a flash | `STATIC_IP` changed or does not parse | A bad value falls back to DHCP and says so on serial. Find it in the router's client list. |
 | Energy stays unavailable | The register hasn't been set | Step 8. |
 | Power reads 0 while things are on | No blinks detected | Phone page: do the peaks pass the **on** level? If not, lower it, or re-centre the sensor on the LED. |
 | Count runs fast | Room light, or one blink counted twice | Re-tape the sensor. Check the falling edge on the phone page goes below **off**. |
 | Count runs slow | **on** too high for the weaker blinks | Lower **on**, keeping it well above the baseline. |
 | `uncertain` keeps rising | WiFi trouble stalling the sampler | Check the RSSI on the phone page. Below about −80 dBm, move the router or the board. |
-| Power stays at a high reading after the load stops | It decays rather than dropping | It can't be more than one blink's worth over the time since the last blink. At 100 W a blink is 5.6 s apart, so a drop takes a few seconds to show. |
+| Power takes up to a minute to reach 0 after the load stops | It falls rather than dropping | It can't be more than one blink's worth over the time since the last blink, and reads 0 once that is under 10 W (60 s without a blink). A load under 10 W reads 0 W; its kWh are still counted. |

@@ -22,6 +22,14 @@
 
 #include <stdint.h>
 
+// How many slots a gap of `gapUs` between two samples skipped. One slot is the
+// norm; anything past one and a half rounds to the nearest whole number of
+// slots, less the one the sample itself fills.
+inline uint32_t slotsMissedIn(uint32_t gapUs, uint32_t slotUs) {
+  if (gapUs <= slotUs + slotUs / 2) return 0;
+  return (gapUs + slotUs / 2) / slotUs - 1;
+}
+
 class Detector {
  public:
   static const uint16_t kDefaultOn = 950;
@@ -81,12 +89,13 @@ class Detector {
     }
     uint32_t oldest = at(used - 1);
     float averaged = (used - 1) * joulesPerPulse * 1000.0f /
-                     (float)((newest - oldest) * intervalMs);
+                     ((float)(newest - oldest) * (float)intervalMs);
     // Signed, so a caller asking about a moment before the newest pulse gets
-    // the average rather than a wrapped-around gap of 49 days.
+    // the average rather than a wrapped-around gap. Multiplied as floats:
+    // slots x ms overflows 32 bits after 50 days without a pulse.
     int32_t sinceLast = (int32_t)(nowSlot - newest);
     if (sinceLast > 0) {
-      float bound = joulesPerPulse * 1000.0f / (float)(sinceLast * intervalMs);
+      float bound = joulesPerPulse * 1000.0f / ((float)sinceLast * (float)intervalMs);
       if (bound < averaged) {
         return bound;
       }

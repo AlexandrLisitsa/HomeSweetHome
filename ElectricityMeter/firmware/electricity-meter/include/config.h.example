@@ -11,6 +11,13 @@
 // and the OTA target.
 #define HOSTNAME         "electricity-meter"
 
+// A fixed address, so the board never moves: the next free one in the house's
+// static block (root README, "Network"), outside the router's DHCP pool.
+// Leave STATIC_IP out to use DHCP.
+#define STATIC_IP        "192.0.2.9"
+#define STATIC_GATEWAY   "192.0.2.1"
+#define STATIC_SUBNET    "255.255.255.0"
+
 // --- over-the-air updates --------------------------------------------------
 // Anyone on the LAN who knows this can replace the firmware. Pass the same
 // value to the ota build through the ELECTRICITY_METER_OTA_PASSWORD environment
@@ -21,7 +28,7 @@
 // Log in as a Home Assistant user made for this board (Settings -> People ->
 // Users: not an administrator, local network only). Mosquitto accepts Home
 // Assistant's own users. See docs/setup.md.
-#define MQTT_HOST        "192.168.0.3"
+#define MQTT_HOST        "192.0.2.3"
 #define MQTT_PORT        1883
 #define MQTT_USER        "electricity-meter"
 #define MQTT_PASSWORD    "change-me"

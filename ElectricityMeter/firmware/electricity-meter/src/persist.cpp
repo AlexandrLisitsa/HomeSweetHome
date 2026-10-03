@@ -125,9 +125,12 @@ void persistLoop(uint32_t pulses, const Settings& settings) {
   // A safe moment: just after a flash has ended (the next one is at least
   // ~60 ms away even at the 6 kW limit), or when the meter has been quiet for
   // a minute. A flash write that misses a few slots then misses no blink.
-  if (detector.inFlash()) return;
+  //
+  // Quiet wins even mid-"flash": a level the sensor sits above for a minute
+  // (a baseline above "off", a sensor pinned at 1024) is not a flash, and
+  // waiting for it to end would hold every save, the level fix included.
   uint32_t since = detector.pulses ? currentSlot() - detector.lastPulseSlot() : UINT32_MAX;
-  bool justAfterFlash = since >= 4 && since <= 8;
+  bool justAfterFlash = !detector.inFlash() && since >= 4 && since <= 8;
   bool quiet = since > 60000 / SAMPLE_INTERVAL_MS;
   if (justAfterFlash || quiet) {
     persistSaveNow(pulses, settings);

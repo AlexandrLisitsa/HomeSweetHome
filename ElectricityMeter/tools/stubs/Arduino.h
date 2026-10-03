@@ -1,9 +1,11 @@
-// Just enough of the Arduino core for src/mqtt_link.cpp to compile on a PC.
-// Used by test_mqtt_link.cpp only; never by the firmware.
+// Just enough of the Arduino core for src/mqtt_link.cpp and src/persist.cpp
+// to compile on a PC.
+// Used by the tests only; never by the firmware.
 #pragma once
 
 #include <cmath>
 #include <cstdarg>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -52,5 +54,19 @@ struct EspStub {
   uint32_t getChipId() { return 0xabc123; }
   void restart() { restarted = true; }
   bool restarted = false;
+
+  // 512 bytes of RTC user memory in 4-byte blocks, as on the ESP8266. It
+  // holds garbage after a power-on; the test fills it as it needs.
+  uint8_t rtc[512] = {};
+  bool rtcUserMemoryRead(uint32_t block, uint32_t* data, size_t size) {
+    if (block * 4 + size > sizeof rtc) return false;
+    std::memcpy(data, rtc + block * 4, size);
+    return true;
+  }
+  bool rtcUserMemoryWrite(uint32_t block, uint32_t* data, size_t size) {
+    if (block * 4 + size > sizeof rtc) return false;
+    std::memcpy(rtc + block * 4, data, size);
+    return true;
+  }
 };
 extern EspStub ESP;

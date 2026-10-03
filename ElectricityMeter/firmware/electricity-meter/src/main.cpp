@@ -12,9 +12,9 @@
 //                            the meter
 //   http://<board>/samples   the same samples as JSON, for anything else
 //
-// It still prints every sample over USB serial too, one bare integer a line,
-// so the bench workflow from before (monitor, Serial Plotter) is unchanged.
-// Lines that start with '#' are status, not samples.
+// Serial carries status lines only, each starting with '#'. Stage one also
+// printed every sample there, 100 lines a second for a cable that is never
+// plugged in at the meter; /samples and tools/capture.py replaced it.
 //
 // NO SAMPLE MAY BE LOST: this is a meter. So sampling is not done in loop(),
 // where the web server would hold it up -- answering a request waits on the
@@ -23,16 +23,15 @@
 // os_timer: its callback runs whenever the sketch yields to the system, and
 // the web server and WiFi yield all the time while they wait. (It is not a
 // hardware interrupt, which is why analogRead() is safe to call from it.)
-// Serial and HTTP only read the ring the timer fills; when they fall behind
-// they catch up, they never skip. Neither may sit in a loop that does not
-// yield for longer than a slot, or the timer cannot fire: that is why serial
-// output is metered to the UART's free space and HTTP replies are capped.
+// HTTP only reads the ring the timer fills; a client that falls behind
+// catches up, it never skips. Nothing in loop() may run for longer than a
+// slot without yielding, or the timer cannot fire: that is why HTTP replies
+// are capped.
 
 #include <Arduino.h>
 #include <ArduinoOTA.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266WiFi.h>
-#include <ESP8266mDNS.h>
 #include <Ticker.h>
 
 #include "config.h"
@@ -70,8 +69,7 @@ static const uint16_t MAX_REPLY = 250;
 // holds exactly as long as no slot is missed, and missedSlots below is the
 // board's own proof that none was.
 static uint16_t ringValue[RING_SIZE];
-uint32_t sampleCount = 0;          // samples taken since boot; the ring's seq
-static uint32_t printedCount = 0;  // how far the serial output has got
+uint32_t sampleCount = 0;  // samples taken since boot; the ring's seq
 
 // The proof that nothing was lost, kept by the board rather than inferred
 // from the output. Each sample notes micros(); a gap of more than one and a
@@ -238,11 +236,8 @@ static void sample() {
     if (gapUs > longestGapUs) {
       longestGapUs = gapUs;
     }
-    const uint32_t slotUs = SAMPLE_INTERVAL_MS * 1000;
-    if (gapUs > slotUs + slotUs / 2) {
-      skipped = (gapUs + slotUs / 2) / slotUs - 1;
-      missedSlots += skipped;
-    }
+    skipped = slotsMissedIn(gapUs, SAMPLE_INTERVAL_MS * 1000);
+    missedSlots += skipped;
   }
   lastSampleUs = nowUs;
 
@@ -255,28 +250,6 @@ static void sample() {
 
   ringValue[sampleCount % RING_SIZE] = value;
   sampleCount++;
-}
-
-// Serial lags the timer by however long loop() was busy, then catches up.
-// If it fell a whole ring behind -- only possible with loop() stuck for
-// forty seconds -- it says so instead of printing samples that were
-// overwritten.
-//
-// It writes only what the UART has room for. A write into a full UART spins
-// without yielding until there is room, and while it spins the sampling
-// timer cannot fire: a backlog printed in one go is exactly how samples
-// would go missing.
-static void printSamples() {
-  uint32_t total = sampleCount;
-  if (total - printedCount > RING_SIZE) {
-    Serial.printf("# serial fell behind, %u samples not printed\n",
-                  (unsigned)(total - printedCount - RING_SIZE));
-    printedCount = total - RING_SIZE;
-  }
-  while (printedCount < total && Serial.availableForWrite() >= 6) {
-    Serial.println(ringValue[printedCount % RING_SIZE]);
-    printedCount++;
-  }
 }
 
 static void reportWifi() {
@@ -312,10 +285,21 @@ void setup() {
   WiFi.hostname(HOSTNAME);
   WiFi.setSleepMode(WIFI_NONE_SLEEP);
   WiFi.setAutoReconnect(true);
+#ifdef STATIC_IP
+  {
+    IPAddress ip, gateway, subnet;
+    if (ip.fromString(STATIC_IP) && gateway.fromString(STATIC_GATEWAY) &&
+        subnet.fromString(STATIC_SUBNET)) {
+      WiFi.config(ip, gateway, subnet, gateway);
+    } else {
+      Serial.println(F("# STATIC_IP in config.h does not parse; using DHCP"));
+    }
+  }
+#endif
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   // ArduinoOTA also starts mDNS under HOSTNAME, which is what makes
-  // electricity-meter.local resolve; the web page is advertised alongside it.
+  // electricity-meter.local resolve.
   ArduinoOTA.setHostname(HOSTNAME);
   ArduinoOTA.setPassword(OTA_PASSWORD);
   ArduinoOTA.onStart([]() {
@@ -323,7 +307,6 @@ void setup() {
     persistSaveNow(meterPulses, settings);
   });
   ArduinoOTA.begin();
-  MDNS.addService("http", "tcp", 80);
 
   server.on("/", []() { server.send_P(200, "text/html", PAGE); });
   server.on("/samples", handleSamples);
@@ -335,7 +318,6 @@ void setup() {
 }
 
 void loop() {
-  printSamples();
   reportWifi();
   ArduinoOTA.handle();
   server.handleClient();

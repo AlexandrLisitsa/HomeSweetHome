@@ -14,8 +14,8 @@ for these lives in this repo's YAML:
 | Entity | What |
 | --- | --- |
 | `sensor.electricity_meter_energy` | The register, kWh, `total_increasing`. Attributes `uncertain` (gaps long enough to have hidden a blink) and `missed_slots`. |
-| `sensor.electricity_meter_power` | W, averaged over the last 10 s of blinks. |
-| `number.electricity_meter_reading` | Sets the register. Configuration. |
+| `sensor.electricity_meter_power` | W, averaged over the last 10 s of blinks. 0 once a minute has passed without one. |
+| `number.electricity_meter_reading` | Sets the register. Shows the last value typed into it, not the live register (that would write a second history row per blink). Configuration. |
 | `number.electricity_meter_threshold_on` / `_off` | The detector's hysteresis levels, raw 0–1023. Configuration. |
 | `button.electricity_meter_restart` | Configuration. |
 
@@ -32,19 +32,22 @@ nothing to count during an outage anyway. The boundaries match
 `night_tariff_start` / `night_tariff_end` in `PowerStation/power-station.yaml`.
 `tools/test_tariff_switch.py` checks this automation alongside the inverter's.
 
-## Order matters the first time
+## The first time
 
 1. The board is flashed and online. The energy sensor reads **unavailable**,
    not 0. A `total_increasing` sensor takes its first value as the statistics
    zero point, and 0 followed by the real register would be stored as one
-   hour's consumption. The firmware holds it unavailable until step 2.
-2. Set **Meter reading** to the meter's display.
-3. Deploy the package and restart: `utility_meter` has no reload.
-4. On the Energy dashboard, swap the grid sources (below).
+   hour's consumption. The firmware holds it unavailable until step 3.
+2. Deploy the package and restart: `utility_meter` has no reload. The day and
+   night meters read `unknown` and book nothing while their source is
+   unavailable. Its first real value becomes their starting point, not a
+   jump (checked in the `utility_meter` source, 2026.9). Done 2026-10-03.
+3. Set **Meter reading** to the meter's display.
+4. On the Energy dashboard, swap the grid sources (below). Before step 3 the
+   dashboard would show no grid use at all.
 
-Steps 3 and 4 must come after step 2. A utility meter that already exists
-counts the jump from 0 to the register as consumption in whichever zone is
-running.
+The guard in step 1 is what makes this order safe. A reading set **again**
+later is a different matter: see "Correcting the register later".
 
 ## The Energy dashboard swap
 
