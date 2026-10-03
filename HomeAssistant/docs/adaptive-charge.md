@@ -2,7 +2,7 @@
 
 `config/packages/adaptive_charge.yaml`. While the night tariff runs
 (23:00–07:00), this picks the **lowest** Max AC Charge Current that still fills
-the pack before 07:00, and re-sizes it every hour. A lower current keeps the
+the pack before 07:00, and re-sizes it every 10 minutes. A lower current keeps the
 pack cooler and puts less strain on it than charging at a fixed high current and
 then sitting full from 01:00.
 
@@ -53,8 +53,10 @@ its own.
 
 ## The plan
 
-`sensor.adaptive_charge_plan` is re-rendered at the top of every hour (23:00 is
-one of those), whenever the dot, Auto or Night only changes, and when HA starts.
+`sensor.adaptive_charge_plan` is re-rendered every 10 minutes (:00, :10, :20 …;
+23:00 is one of those), whenever the dot, Auto or Night only changes, and when HA
+starts. It used to be hourly, which left a step change waiting up to an hour to
+reach the select; now it lands within 10 minutes.
 
 | State | Meaning | Chip sub-label |
 | --- | --- | --- |
@@ -63,7 +65,7 @@ one of those), whenever the dot, Auto or Night only changes, and when HA starts.
 | `day` | on, outside 23:00–07:00 | **tonight** |
 | `unknown` | no battery reading; the current is left alone | — |
 | `full` | the pack is within 1 % of full; `current` is the 2 A trickle | **full** |
-| `charging` | `current` amps, re-sized every hour, until `until` (07:00) | **20 A → 07:00** |
+| `charging` | `current` amps, re-sized every 10 minutes, until `until` (07:00) | **20 A → 07:00** |
 
 The arithmetic uses the same constants as the pre-charge plan:
 
@@ -78,7 +80,7 @@ current  = need ÷ hours to the deadline, rounded up to 2, 10, 20 … 60 A
 - The inverter only has 10 A steps (plus 2 A), so the first hours often round
   up. As the pack fills, the next renders bring the current down.
 - If charging falls behind (a heavy load ate the charger's budget, or the taper
-  came early), the next hour's render raises it again.
+  came early), the next render, at most 10 minutes later, raises it again.
 
 ## Driving the select
 
@@ -91,8 +93,8 @@ rebooted onto its default is corrected within 5 minutes.
 - **Plan becomes `day`, `off` or `inactive`:** the saved current goes back on
   the select, and the saved value is cleared.
 
-If you change the select by hand during the night, the next hourly render
-overrides it. Your hand-set value still won't be the one restored at 07:00: that
+If you change the select by hand during the night, the next render (within
+10 minutes) overrides it. Your hand-set value still won't be the one restored at 07:00: that
 is the value saved at the first write.
 
 Nothing here is a fail-safe, and nothing needs to be. If HA dies at night, the
@@ -107,5 +109,5 @@ python tools/test_adaptive_charge.py
 
 It renders the real template from the package for each case: the gating (off,
 inactive, day, unknown), the sizing at different hours and charge levels, the 2 A
-trickle when full, and the hourly re-size (falling behind, the last 15 minutes,
-inside the buffer).
+trickle when full, and the 10-minute re-size (the trigger itself, a step drop
+10 minutes on, falling behind, the last 15 minutes, inside the buffer).

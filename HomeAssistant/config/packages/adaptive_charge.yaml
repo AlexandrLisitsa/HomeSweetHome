@@ -20,9 +20,10 @@
 # warmer than it had to be and then sits full. The cheaper, cooler answer is
 # the smallest current that still finishes inside the tariff.
 #
-# Every hour the plan re-sizes the current from what is still missing and the
-# time that is left: it falls as the pack fills and rises if charging lags (a
-# load that ate into the charger's budget, a CV taper that came early).
+# Every 10 minutes the plan re-sizes the current from what is still missing and
+# the time that is left: it falls as the pack fills and rises if charging lags
+# (a load that ate into the charger's budget, a CV taper that came early). An
+# hour was too coarse: a step change waited up to 60 min to reach the select.
 #
 # ---------------------------------------------------------------------------
 # Who decides what
@@ -74,9 +75,9 @@ input_number:
 
 template:
   - trigger:
-      # Hourly re-size -- 23:00, the start of the tariff, is one of them.
+      # Re-size every 10 min -- 23:00, the start of the tariff, is one of them.
       - platform: time_pattern
-        minutes: 0
+        minutes: "/10"
       - platform: state
         entity_id:
           - input_boolean.adaptive_night_charge
@@ -148,7 +149,7 @@ template:
       # day        on, outside 23:00-07:00
       # unknown    no battery reading; the select is left alone
       # full       the pack is full; `current` is the 2 A trickle
-      # charging   `current` amps, re-sized every hour, until `until`
+      # charging   `current` amps, re-sized every 10 min, until `until`
       - name: "Adaptive charge plan"
         unique_id: adaptive_charge_plan
         icon: mdi:battery-charging-medium
