@@ -26,6 +26,7 @@ flowchart LR
     HA -- "Google Assistant" --> GH["Google Home"]
     HA -. "outage schedule" .- DTEK["DTEK API"]
     MB -. "Telegram" .-> GRMU["Gazmerezhi<br/>Telegram bot"]
+    MB -. "Telegram" .-> YASNO["YASNO<br/>Telegram bot"]
     TOOLS["tools in this repo<br/>(ssh, REST, WebSocket)"] -- "pull / push" --- HA
 ```
 
@@ -38,7 +39,7 @@ flowchart LR
 | [`IRBridge/`](IRBridge/README.md) | Android app that turns an old phone's IR blaster into an authenticated HTTP API, so Home Assistant can drive a "dumb" split A/C — including a protocol sweep to find which IR codec the unit speaks. |
 | [`FloorPlan/`](FloorPlan/README.md) | Tooling that renders a Sweet Home 3D model from above and turns it into the isometric **Home** dashboard, where each lamp lights its own room. |
 | [`MeterCam/`](MeterCam/README.md) | An ESP32-CAM that wakes every 30 minutes to photograph the gas meter's dial, and a service in a Proxmox LXC that reads the digits and hands Home Assistant a reading only when it can stand behind it. Cameras only: the water meter is next. |
-| [`MeterBots/`](MeterBots/README.md) | Files the monthly meter readings with the suppliers' Telegram bots as the household's own Telegram user, in its own Proxmox LXC, when someone taps *Submit* on the phone. Holds the Telegram session and nothing else. |
+| [`MeterBots/`](MeterBots/README.md) | Files the monthly meter readings (gas to Gazmerezhi, electricity day/night to YASNO) with the suppliers' Telegram bots as the household's own Telegram user, in its own Proxmox LXC, when someone taps *Submit* on the phone. Holds the Telegram session and nothing else. |
 | [`ElectricityMeter/`](ElectricityMeter/README.md) | A photodiode on the electricity meter's imp/kWh LED and an ESP8266 that counts its blinks, so Home Assistant gets the flat's power and consumption from the meter itself, split day / night. It is the Energy dashboard's grid source; the inverter alone misses the boiler's circuit. |
 | [`Proxmox/`](Proxmox/README.md) | The host and its guests, one doc each; read-only Proxmox API scripts that measure the Home Assistant guest's resource history; and the backup setup that keeps every guest and HA's backups on the host and, encrypted, on Google Drive ([`Proxmox/docs/backups.md`](Proxmox/docs/backups.md)). |
 

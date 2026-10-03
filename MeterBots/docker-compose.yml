@@ -21,3 +21,6 @@ services:
       GASBOT_TOKEN: "${GASBOT_TOKEN:-}"
       GASBOT_ACCOUNT: "${GASBOT_ACCOUNT:-}"
       GASBOT_COUNTER: "${GASBOT_COUNTER:-}"
+      # service/yasnobot.py: the monthly electricity reading via @Yasnoonlinebot.
+      YASNOBOT_TOKEN: "${YASNOBOT_TOKEN:-}"
+      YASNOBOT_ACCOUNT: "${YASNOBOT_ACCOUNT:-}"

@@ -82,3 +82,10 @@ a bad count):
 The board never lowers the register by itself. It keeps the register in RTC
 memory, in flash and in the broker's retained state, and takes the highest
 of the three at boot, so a restart doesn't show up as a drop.
+
+## The monthly reading to YASNO
+
+The same split, with no monthly reset, gives the meter's own day (T1) and
+night (T2) registers, `sensor.electricity_meter_register_day` / `_night`. Once
+a month they go to YASNO from the phone:
+[`electricity-reading-submission.md`](electricity-reading-submission.md).

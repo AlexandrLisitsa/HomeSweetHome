@@ -46,6 +46,26 @@
 # at the day and night rates. Monthly cycle, so they double as "this month"
 # figures; the Energy dashboard reads them through statistics and does not
 # care when they reset.
+#
+# ---------------------------------------------------------------------------
+# THE METER'S OWN T1 / T2, FOR THE MONTHLY READING TO YASNO
+#
+# The board counts one total. The meter's display also keeps a day (T1) and a
+# night (T2) register, and YASNO wants those two. The key
+# `electricity_meter_register` is the same split with NO cycle, so it never
+# resets:
+#
+#     sensor.electricity_meter_register_day      T1, kWh
+#     sensor.electricity_meter_register_night    T2, kWh
+#     select.electricity_meter_register
+#
+# They start at 0, so they are set once to the display's T21 (day) and T22
+# (night) with `utility_meter.calibrate`
+# (HomeAssistant/docs/electricity-reading-submission.md). From then on day +
+# night moves exactly as the board's total does. The total (the display's T2)
+# stays larger by a fixed amount, because the zones only began when the meter
+# went two-zone. How it splits depends on this clock matching the meter's own,
+# which is checked against the display after calibrating.
 # ---------------------------------------------------------------------------
 
 utility_meter:
@@ -63,6 +83,15 @@ utility_meter:
     tariffs:
       - day
       - night
+  electricity_meter_register:
+    name: "Electricity meter register"
+    unique_id: electricity_meter_register
+    source: sensor.electricity_meter_energy
+    periodically_resetting: false
+    always_available: true
+    tariffs:
+      - day
+      - night
 
 automation:
   # Same shape as ac_tariff_auto_switch, minus the battery: the boundaries and
@@ -71,6 +100,7 @@ automation:
   # going down at 18:00 would otherwise book the rest of the night as day.
   - id: electricity_meter_tariff_switch
     alias: "Electricity meter: switch the tariff meter day/night"
+    # Both splits, the month's and the lifetime T1/T2, on the same clock.
     mode: single
     triggers:
       - trigger: time
@@ -82,7 +112,9 @@ automation:
     actions:
       - action: select.select_option
         target:
-          entity_id: select.electricity_meter_tariff
+          entity_id:
+            - select.electricity_meter_tariff
+            - select.electricity_meter_register
         data:
           option: >-
             {{ 'night' if now().hour >= 23 or now().hour < 7 else 'day' }}

@@ -12,6 +12,9 @@ MQTT. Home Assistant splits the register by tariff zone
 **To set it up, follow [`docs/setup.md`](docs/setup.md)**: wiring, the MQTT
 login, flashing, mounting, and setting the meter reading.
 
+The monthly day/night reading to YASNO is built on this count, in Home
+Assistant ([`HomeAssistant/docs/electricity-reading-submission.md`](../HomeAssistant/docs/electricity-reading-submission.md)).
+
 ## Status
 
 | Stage | State |

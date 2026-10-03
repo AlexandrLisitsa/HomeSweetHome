@@ -34,6 +34,10 @@ SWITCHES = [
     ("meter", find(load_package(CONFIG / "packages" / "electricity_meter.yaml")["automation"],
                    "id", "electricity_meter_tariff_switch"),
      "select.electricity_meter_tariff"),
+    # The same automation also switches the lifetime T1/T2 split.
+    ("meter T1/T2", find(load_package(CONFIG / "packages" / "electricity_meter.yaml")["automation"],
+                         "id", "electricity_meter_tariff_switch"),
+     "select.electricity_meter_register"),
 ]
 FAILED = []
 
