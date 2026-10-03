@@ -303,6 +303,11 @@ def make_env(house):
                        as_timestamp=as_timestamp, as_local=as_local,
                        timestamp_custom=timestamp_custom)
     env.tests["is_number"] = is_number
+    # HA's regex tests: `match` anchors at the start (re.match), `search` not.
+    env.tests["match"] = lambda value, pattern, ignorecase=False: bool(
+        re.match(pattern, str(value), re.IGNORECASE if ignorecase else 0))
+    env.tests["search"] = lambda value, pattern, ignorecase=False: bool(
+        re.search(pattern, str(value), re.IGNORECASE if ignorecase else 0))
     return env
 
 

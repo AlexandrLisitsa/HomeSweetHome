@@ -13,6 +13,7 @@ bot said.
 | Bot | Supplier | Reading | Doc |
 | --- | --- | --- | --- |
 | `@mygrmu_bot` | Gazmerezhi (gas distribution) | the gas meter, whole m³ | [`docs/gas-bot.md`](docs/gas-bot.md) |
+| `@Yasnoonlinebot` | YASNO (electricity supply) | the electricity meter's day and night registers, whole kWh | [`docs/yasno-bot.md`](docs/yasno-bot.md) |
 
 ```
 Home Assistant ── rest_command, a token per bot ──► MeterBots :8770 ── Telethon ──► Telegram ──► the bots
@@ -32,8 +33,9 @@ that comes with it: one session, one process, one conversation at a time.
 | --- | --- |
 | `service/tgclient.py` | The Telegram session: login, the lock every bot shares, and `Walk`, a conversation that records what the bot said |
 | `service/gasbot.py` | The gas reading's walk through `@mygrmu_bot` |
-| `service/app.py` | `/health`, `/gas/bot/status`, `/gas/bot/submit`; `VERSION` |
-| `tests/` | `test_gasbot.py`, `test_tgclient.py`, `test_app.py` |
+| `service/yasnobot.py` | The electricity reading's walk through `@Yasnoonlinebot`, and `explore` for linking and re-mapping it |
+| `service/app.py` | `/health`, `/gas/bot/*`, `/yasno/bot/*`; `VERSION` |
+| `tests/` | `test_gasbot.py`, `test_yasnobot.py`, `test_tgclient.py`, `test_app.py` |
 | `deploy/` | Creates LXC 105 on the Proxmox host and deploys the service into it |
 | `.env.example` | Template for the box's `.env`: API credentials, tokens, account numbers |
 
@@ -50,6 +52,7 @@ that comes with it: one session, one process, one conversation at a time.
 
 ```sh
 python tests/test_gasbot.py      # the gas walk, against a fake bot
+python tests/test_yasnobot.py    # the YASNO walk, against a fake bot that edits in place
 python tests/test_tgclient.py    # the shared walker, the lock, the JSON on failure
 python tests/test_app.py         # the routes and tokens (needs flask)
 sh Proxmox/tools/pve_ssh.sh "pct exec 105 -- docker exec meterbots python tests/test_gasbot.py"
@@ -71,3 +74,4 @@ Telegram login, moving the session, and backups. HTTP:
 | [`docs/api.md`](docs/api.md) | The routes, their tokens, what they answer |
 | [`docs/deployment.md`](docs/deployment.md) | LXC 105, `.env`, logging in, moving the session, backups |
 | [`docs/gas-bot.md`](docs/gas-bot.md) | The gas reading: why a bot, the conversation, its checks |
+| [`docs/yasno-bot.md`](docs/yasno-bot.md) | The electricity reading: the conversation, its checks, linking the account |

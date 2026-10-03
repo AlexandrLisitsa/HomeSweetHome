@@ -16,11 +16,13 @@ core, 512 MB, 2 GB.
    | --- | --- |
    | `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` | https://my.telegram.org → API development tools |
    | `GASBOT_TOKEN`, `GASBOT_ACCOUNT`, `GASBOT_COUNTER` | the gas bot ([`gas-bot.md`](gas-bot.md)) |
+   | `YASNOBOT_TOKEN`, `YASNOBOT_ACCOUNT` | the YASNO bot ([`yasno-bot.md`](yasno-bot.md)); the account is saved in the bot once with `explore` |
 
 4. `sh MeterBots/deploy/deploy.sh`.
 5. The session: log in (below), or move an existing one in (further below).
 6. In Home Assistant's `secrets.yaml`, point the bot URLs at this box
-   (`http://<meterbots-ip>:8770/gas/bot/status` and `/submit`), then restart.
+   (`http://<meterbots-ip>:8770/gas/bot/status` and `/submit`, the same for
+   `/yasno/bot/`), then restart.
 
 `deploy.sh` ships code only (`service/`, `tests/`, `Dockerfile`, `compose`,
 `requirements.txt`). It never touches `.env` or `data/`. After editing `.env`,

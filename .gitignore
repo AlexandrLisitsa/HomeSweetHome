@@ -38,6 +38,8 @@ HomeAssistant/config/dtek/captures/
 # it puts under /local for the monthly notification.
 HomeAssistant/config/gas/.state.json
 HomeAssistant/config/www/gas_meter/
+# electricity_submit.py: the months already sent to YASNO.
+HomeAssistant/config/electricity/.state.json
 
 # Point-in-time audit notes: internal addresses, entity ids and tariffs.
 HomeAssistant/docs/audit.md

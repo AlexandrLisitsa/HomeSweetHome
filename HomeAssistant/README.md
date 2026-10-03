@@ -40,6 +40,10 @@ read before it goes live, and a `git revert` if it was wrong.
 - **Monthly gas reading to Gazmerezhi**: on the 1st the phone shows the meter
   photo and the number, and one button sends it through the operator's Telegram bot
   ([`docs/gas-reading-submission.md`](docs/gas-reading-submission.md)).
+- **Monthly electricity reading to YASNO**: at the end of the month the phone
+  shows the meter's day and night readings, and one button sends them through
+  YASNO's Telegram bot
+  ([`docs/electricity-reading-submission.md`](docs/electricity-reading-submission.md)).
 - **Two air conditioners**: an infrared one through [`../IRBridge`](../IRBridge)
   and a networked one ([`docs/climate-dashboard.md`](docs/climate-dashboard.md)).
 - **Google Home and Gemini**: entities exposed through the Google Assistant
@@ -109,6 +113,7 @@ sh tools/ha_get.sh /api/config
 | `tools/test_adaptive_charge.py` | renders the adaptive night charge plan in `packages/adaptive_charge.yaml` and runs its drive, outage-off and guard automations through the simulator, DST included | no — pure local |
 | `tools/test_battery_runtime.py` | renders `packages/battery_runtime.yaml`: runtime remaining, time to full and its edge triggers, against idle, unavailable, flat and full packs | no — pure local |
 | `tools/test_tariff_switch.py` | runs the day/night tariff automation in `config/automations.yaml` at 07:00 / 23:00, on HA start and over DST weekends | no — pure local |
+| `tools/test_electricity_submit.py` | the monthly YASNO reading: `config/electricity/electricity_submit.py`'s window and month, the same window in `packages/electricity_submit.yaml` for every day of three years, and its button handler's parsing | no — pure local |
 | `tools/test_gas_submit.py` | `config/gas/gas_submit.py` against a fake MeterCam on localhost: where it finds MeterCam, the month, the photo, the state file | no — localhost only |
 | `tools/ha_automation_sim.py` | not a command: a small simulator the tests above use to run a package's `automation:` list against a fake house (limits in its docstring) | — |
 | `tools/test_power_cards.js` | render and logic tests for the inverter, battery and load-shedding cards against a fake `hass` and a small DOM | no — pure local |
@@ -145,6 +150,7 @@ python tools/test_adaptive_charge.py
 python tools/test_battery_runtime.py
 python tools/test_tariff_switch.py
 python tools/test_gas_submit.py
+python tools/test_electricity_submit.py
 python tools/test_load_shedding.py
 node tools/test_power_cards.js
 ```
@@ -184,6 +190,7 @@ restore HA onto a fresh VM, is in
 | [`docs/electricity-meter.md`](docs/electricity-meter.md) | the meter-reading board's entities, the day/night split, the Energy dashboard swap, correcting the register |
 | [`docs/gas-and-water-meters.md`](docs/gas-and-water-meters.md) | hand-read gas and water meters on the Energy dashboard |
 | [`docs/gas-reading-submission.md`](docs/gas-reading-submission.md) | the monthly gas reading to Gazmerezhi's Telegram bot, confirmed from the phone |
+| [`docs/electricity-reading-submission.md`](docs/electricity-reading-submission.md) | the monthly day/night electricity reading to YASNO's Telegram bot: the T21/T22 registers, calibrating them, the ask and the buttons |
 | [`docs/power-station-dashboard.md`](docs/power-station-dashboard.md) | the Power station dashboard: the inverter and battery cards, the grid-return countdown, the palette |
 | [`docs/climate-dashboard.md`](docs/climate-dashboard.md) | the climate dashboard and its checker |
 | [`docs/ac-features.md`](docs/ac-features.md) | the inventory of both A/C units' features the climate card is built from |

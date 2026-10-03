@@ -109,6 +109,60 @@ except tgclient.BotError as exc:
 msg, text = tgclient._find_button(msgs, "передати  ПОКАЗАННЯ")
 check("buttons match loosely: case, spacing, emoji", text == "📊 Передати показання")
 
+print("a bot that edits its message instead of answering")
+
+
+class EditingClient(FakeClient):
+    """Pressing a button edits that very message, as YASNO's bot does."""
+
+    async def get_messages(self, entity, limit=20, min_id=0, ids=None):
+        if ids is not None:
+            return next((m for m in self.msgs if m.id == ids), None)
+        return await super().get_messages(entity, limit, min_id)
+
+
+c = EditingClient({"/start": [(0, "Menu", [["📊 Передати показання"]])]})
+w = tgclient.Walk(c, "bot", watch_edits=True)
+asyncio.run(w.start())
+msgs = asyncio.run(w.say("/start"))
+menu = msgs[0]
+
+
+async def edit_on_click(text):
+    menu.clicked.append(text)
+    menu.raw_text = "Оберіть особовий рахунок"
+    menu.buttons = [[Btn("520000000000")]]
+menu.click = edit_on_click
+got = asyncio.run(w.press(msgs, "Передати"))
+check("with watch_edits, the edited message is the answer",
+      [m.raw_text for m in got] == ["Оберіть особовий рахунок"], [m.raw_text for m in got])
+
+c = EditingClient({"/start": [(0, "Menu", [["A"]])]})
+w = tgclient.Walk(c, "bot", watch_edits=True)
+asyncio.run(w.start())
+msgs = asyncio.run(w.say("/start"))
+try:
+    asyncio.run(w.press(msgs, "A"))     # the click changes nothing
+    check("an unchanged message is not an answer", False)
+except tgclient.BotError:
+    check("an unchanged message is not an answer: it still times out", True)
+
+c = EditingClient({"/start": [(0, "Menu", [["A"]])]})
+w = tgclient.Walk(c, "bot")             # watch_edits off, as for the gas bot
+asyncio.run(w.start())
+msgs = asyncio.run(w.say("/start"))
+menu = msgs[0]
+
+
+async def edit_quietly(text):
+    menu.raw_text = "edited"
+menu.click = edit_quietly
+try:
+    asyncio.run(w.press(msgs, "A"))
+    check("without watch_edits an edit is not seen", False)
+except tgclient.BotError:
+    check("without watch_edits an edit is not seen (the gas walk is unchanged)", True)
+
 print("parsing")
 for raw, want in [("2245", 2245.0), ("2245,50", 2245.5), ("2 245,50", 2245.5),
                   ("2 245.5", 2245.5)]:

@@ -5,9 +5,11 @@ MeterBots listens on `:8770` in LXC 105. Home Assistant calls it with
 
 | Endpoint | Who calls it | What |
 | --- | --- | --- |
-| `GET /health` | Docker's healthcheck, `deploy.sh`, a human | `{status, version, bots: {gas: true/false}, session: true/false}`. `bots` says which bots have a token; `session` says whether a session file exists, not whether it is still logged in. No secrets |
+| `GET /health` | Docker's healthcheck, `deploy.sh`, a human | `{status, version, bots: {gas, yasno}, session}`. `bots` says which bots have a token; `session` says whether a session file exists, not whether it is still logged in. No secrets |
 | `GET /gas/bot/status` | Home Assistant (`gas_submit.yaml`) | Dry run of `@mygrmu_bot`: walks to the reading prompt and back, answers `{ok, previous, previous_date, transcript}`. Sends no reading |
 | `POST /gas/bot/submit` | Home Assistant, on a button press | `{"value": 2262}` (> 0, < 100000, at most 2 decimals) sends the monthly gas reading; `{ok, value, reply, transcript}` or `{ok: false, error, transcript}` |
+| `GET /yasno/bot/status` | Home Assistant (`electricity_submit.yaml`) | Dry run of `@Yasnoonlinebot`: walks to the reading prompt and back, answers `{ok, previous: {day, night, date}, transcript}`. Sends no reading |
+| `POST /yasno/bot/submit` | Home Assistant, on a button press | `{"day": 38500, "night": 6450}`, whole kWh each, > 0 and < 1000000, sends the monthly electricity reading; `{ok, day, night, reply, transcript}` or `{ok: false, error, transcript}` |
 
 ## Tokens
 
@@ -16,8 +18,10 @@ Each bot has its own token, sent as its own header:
 | Routes | Header | `.env` | Home Assistant `secrets.yaml` |
 | --- | --- | --- | --- |
 | `/gas/bot/*` | `X-Gasbot-Token` | `GASBOT_TOKEN` | `gasbot_token` |
+| `/yasno/bot/*` | `X-Yasnobot-Token` | `YASNOBOT_TOKEN` | `yasnobot_token` |
 
-A wrong or missing token gets `401`. **With the token unset, the route refuses
+A wrong or missing token gets `401`, and one bot's token never opens another's
+routes. **With the token unset, the route refuses
 everyone**, an empty header included: filing a reading as the household is not
 something a stray script on the LAN may do. `/health` needs no token and
 carries none.

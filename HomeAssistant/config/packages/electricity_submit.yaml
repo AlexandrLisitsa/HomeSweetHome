@@ -1,0 +1,318 @@
+# ---------------------------------------------------------------------------
+# Electricity reading to YASNO (@Yasnoonlinebot), once a month, confirmed
+# from the phone
+#
+# On the last day of the month at 21:00 the Pixel gets the meter's day (T1)
+# and night (T2) registers as Home Assistant counts them
+# (sensor.electricity_meter_register_day / _night, electricity_meter.yaml),
+# rounded DOWN to whole kWh -- YASNO takes "all digits before the comma" --
+# next to what YASNO last has on record. Two buttons:
+#
+#     Submit             sends those two numbers
+#     Correct & submit   a text field: "DAY NIGHT", e.g. "38500 6450"
+#
+# Nothing is sent without a button press. The 1st..3rd repeat the ask at
+# 21:00 while nothing has gone in: YASNO takes readings in the last 2 days of
+# a month and the first 3 of the next.
+#
+# The reading goes to YASNO's Telegram bot, driven as the household's own
+# Telegram user by MeterBots (MeterBots/docs/yasno-bot.md), on the same session
+# as the gas reading. Two halves:
+#
+#   rest_command.yasno_bot_*           MeterBots' /yasno/bot/status and
+#                                      /submit, with a 5-minute timeout:
+#                                      walking the bot takes up to a minute.
+#   shell_command.electricity_submit_* /config/electricity/electricity_submit.py:
+#                                      the window, and which month went in.
+#
+# No entities of its own: "already sent this month" lives in
+# /config/electricity/.state.json.
+#
+# secrets.yaml:  yasnobot_token        MeterBots' YASNOBOT_TOKEN
+#                yasnobot_status_url   http://<meterbots-ip>:8770/yasno/bot/status
+#                yasnobot_submit_url   http://<meterbots-ip>:8770/yasno/bot/submit
+#
+# Write-up: HomeAssistant/docs/electricity-reading-submission.md.
+# ---------------------------------------------------------------------------
+
+rest_command:
+  yasno_bot_status:
+    url: !secret yasnobot_status_url
+    method: GET
+    headers:
+      X-Yasnobot-Token: !secret yasnobot_token
+    timeout: 300
+  yasno_bot_submit:
+    url: !secret yasnobot_submit_url
+    method: POST
+    headers:
+      X-Yasnobot-Token: !secret yasnobot_token
+    content_type: "application/json"
+    payload: '{"day": {{ day | int }}, "night": {{ night | int }}}'
+    timeout: 300
+
+shell_command:
+  electricity_submit_prepare: "python3 /config/electricity/electricity_submit.py prepare"
+  electricity_submit_record: >-
+    python3 /config/electricity/electricity_submit.py record {{ day | int }} {{ night | int }}
+
+script:
+  electricity_submit_ask:
+    alias: "Electricity reading — ask on the phone"
+    description: >-
+      Reads the day/night registers, asks the bot (dry run) for the last
+      reading, then sends the Submit / Correct notification. Run by hand to
+      re-ask; `force: true` asks even when this month's reading already went in.
+    mode: single
+    fields:
+      force:
+        description: Ask even if this month is already submitted
+        default: false
+        selector:
+          boolean:
+    sequence:
+      - service: shell_command.electricity_submit_prepare
+        response_variable: run
+      - variables:
+          p: "{{ run.stdout | from_json if (run.stdout | default('')) | length else {'ok': false, 'error': run.stderr | default('no output') } }}"
+      - if:
+          - condition: template
+            value_template: "{{ not p.ok }}"
+        then:
+          - service: notify.mobile_app_pixel_10_pro_xl
+            data:
+              title: "Electricity reading — could not prepare"
+              message: "{{ p.error }}"
+              data:
+                channel: Electricity meter
+                tag: electricity-submit
+          - stop: "prepare failed"
+      - if:
+          - condition: template
+            value_template: "{{ p.already_submitted and not (force | default(false)) }}"
+        then:
+          - stop: "already submitted this month"
+      # The bot's dry run: the previous readings, nothing sent.
+      - service: rest_command.yasno_bot_status
+        response_variable: st
+        continue_on_error: true
+      - variables:
+          day: >-
+            {{ states('sensor.electricity_meter_register_day') | float | round(0, 'floor') | int
+               if states('sensor.electricity_meter_register_day') | is_number else none }}
+          night: >-
+            {{ states('sensor.electricity_meter_register_night') | float | round(0, 'floor') | int
+               if states('sensor.electricity_meter_register_night') | is_number else none }}
+          bot_ok: >-
+            {{ st is defined and st.status == 200 and st.content is mapping
+               and (st.content.ok | default(false)) }}
+          bot_error: >-
+            {% if bot_ok %}{% elif st is not defined %}MeterBots did not answer, or refused (see the HA log)
+            {%- elif st.content is mapping and st.content.error is defined %}Telegram bot: {{ st.content.error }}
+            {%- else %}MeterBots answered {{ st.status }}{% endif %}
+          prev: "{{ st.content.previous if bot_ok else {} }}"
+          below: >-
+            {{ day is not none and night is not none and prev.day is defined
+               and prev.day is not none and prev.night is not none
+               and (day < prev.day or night < prev.night) }}
+          ready: >-
+            {{ day is not none and night is not none and not below
+               and not bot_error and p.window_open }}
+          # A typed correction may be at most this far above what HA counted:
+          # a slipped extra digit is the mistake worth catching.
+          max_day: "{{ (day if day is not none else (prev.day | default(0, true))) + 300 }}"
+          max_night: "{{ (night if night is not none else (prev.night | default(0, true))) + 300 }}"
+          problems: >-
+            {% set out = [] %}
+            {% if day is none or night is none %}{% set out = out + ['The day/night registers have no value'] %}
+            {% elif below %}{% set out = out + ['Counted ' ~ day ~ ' / ' ~ night ~ ' is below the last reading ' ~ prev.day ~ ' / ' ~ prev.night] %}{% endif %}
+            {% if bot_error %}{% set out = out + [bot_error] %}
+            {% elif not p.window_open %}{% set out = out + ['Readings are taken in ' ~ p.window ~ ' only'] %}{% endif %}
+            {{ out | join('\n') }}
+          message: |-
+            {% if day is not none and night is not none %}Send day {{ day }}, night {{ night }} kWh?{% else %}No counted reading.{% endif %}{% if prev.day is defined and prev.day is not none %} Last on record {{ prev.day }} / {{ prev.night }} ({{ prev.date }}).{% endif %}
+            {%- if p.already_submitted %}
+            Already sent this month: {{ p.submitted.day }} / {{ p.submitted.night }}.{% endif %}
+            {%- if problems | length %}
+            {{ problems }}{% endif %}
+          # Both numbers ride in the action id, so the button handler needs no
+          # helper to remember what was offered. ELEC_EDIT_ carries the upper
+          # bounds for a typed correction.
+          submit_button: "{{ {'action': 'ELEC_SUBMIT_' ~ day ~ '_' ~ night, 'title': 'Submit'} }}"
+          edit_button: >-
+            {{ {'action': 'ELEC_EDIT_' ~ (max_day | int(0)) ~ '_' ~ (max_night | int(0)),
+                'title': 'Correct & submit', 'behavior': 'textInput',
+                'textInputButtonTitle': 'Submit',
+                'textInputPlaceholder': 'DAY NIGHT, whole kWh'} }}
+          actions: >-
+            {{ ([submit_button] if ready else [])
+               + ([edit_button] if (not bot_error and p.window_open) else []) }}
+      - service: notify.mobile_app_pixel_10_pro_xl
+        data:
+          title: "Electricity reading for {{ p.period }}"
+          message: "{{ message }}"
+          data:
+            channel: Electricity meter
+            tag: electricity-submit
+            sticky: "true"
+            actions: "{{ actions }}"
+
+  electricity_submit_send:
+    alias: "Electricity reading — send to YASNO"
+    mode: single
+    fields:
+      day:
+        description: Day (T1), whole kWh
+        required: true
+        selector:
+          number:
+            min: 0
+            max: 999999
+            mode: box
+      night:
+        description: Night (T2), whole kWh
+        required: true
+        selector:
+          number:
+            min: 0
+            max: 999999
+            mode: box
+    sequence:
+      # The window, as electricity_submit.py has it: the last 2 days of a
+      # month (two days on is next month) or the 1st..3rd.
+      - if:
+          - condition: template
+            value_template: >-
+              {{ not (now().day <= 3 or (now() + timedelta(days=2)).month != now().month) }}
+        then:
+          - service: notify.mobile_app_pixel_10_pro_xl
+            data:
+              title: "Electricity reading NOT sent ❌"
+              message: "YASNO takes readings in the last 2 days of a month and the first 3 of the next only."
+              data:
+                channel: Electricity meter
+                tag: electricity-submit
+          - stop: "outside the window"
+      - service: notify.mobile_app_pixel_10_pro_xl
+        data:
+          title: "Electricity reading"
+          message: "Sending day {{ day | int }}, night {{ night | int }} kWh to @Yasnoonlinebot… (up to a minute)"
+          data:
+            channel: Electricity meter
+            tag: electricity-submit
+      - service: rest_command.yasno_bot_submit
+        data:
+          day: "{{ day | int }}"
+          night: "{{ night | int }}"
+        response_variable: sub
+        continue_on_error: true
+      - variables:
+          ok: >-
+            {{ sub is defined and sub.status == 200 and sub.content is mapping
+               and (sub.content.ok | default(false)) }}
+          error: >-
+            {% if ok %}{% elif sub is not defined %}No answer from MeterBots (see the HA log). Check the chat with @Yasnoonlinebot before trying again: it may have gone through.
+            {%- elif sub.content is mapping and sub.content.error is defined %}{{ sub.content.error }}
+            {%- else %}MeterBots answered {{ sub.status }}{% endif %}
+          reply: "{{ sub.content.reply if ok else '' }}"
+      - if:
+          - condition: template
+            value_template: "{{ ok }}"
+        then:
+          - service: shell_command.electricity_submit_record
+            data:
+              day: "{{ day | int }}"
+              night: "{{ night | int }}"
+            continue_on_error: true
+      - service: notify.mobile_app_pixel_10_pro_xl
+        data:
+          title: "{{ 'Electricity reading sent ✅' if ok else 'Electricity reading NOT sent ❌' }}"
+          message: "{{ ('day ' ~ (day | int) ~ ', night ' ~ (night | int) ~ ' kWh — ' ~ reply) if ok else error }}"
+          data:
+            channel: Electricity meter
+            tag: electricity-submit
+            actions: >-
+              {{ [] if ok else [{'action': 'ELEC_REASK', 'title': 'Try again'}] }}
+      - service: notify.persistent_notification
+        data:
+          title: "{{ 'Electricity reading sent' if ok else 'Electricity reading NOT sent' }}"
+          message: "{{ ('day ' ~ (day | int) ~ ', night ' ~ (night | int) ~ ' kWh: ' ~ reply) if ok else error }}"
+
+automation:
+  - id: electricity_submit_monthly
+    alias: "Electricity reading — monthly ask"
+    description: >-
+      21:00 on the last day of the month, again on the 1st-3rd while nothing
+      has been sent (the script stops by itself once this month's reading
+      went in).
+    mode: single
+    trigger:
+      - platform: time
+        at: "21:00:00"
+    condition:
+      - condition: template
+        value_template: >-
+          {{ now().day in [1, 2, 3] or (now() + timedelta(days=1)).day == 1 }}
+    action:
+      - service: script.electricity_submit_ask
+
+  - id: electricity_submit_button
+    alias: "Electricity reading — notification buttons"
+    mode: queued
+    trigger:
+      - platform: event
+        event_type: mobile_app_notification_action
+    condition:
+      - condition: template
+        value_template: >-
+          {{ (trigger.event.data.action | default('')).startswith('ELEC_') }}
+    action:
+      - variables:
+          act: "{{ trigger.event.data.action }}"
+          typed: "{{ (trigger.event.data.reply_text | default('') | string).strip() }}"
+      - choose:
+          - conditions: "{{ act == 'ELEC_REASK' }}"
+            sequence:
+              - service: script.electricity_submit_ask
+                data:
+                  force: true
+          - conditions: "{{ act.startswith('ELEC_SUBMIT_') }}"
+            sequence:
+              - service: script.electricity_submit_send
+                data:
+                  day: "{{ act[12:].split('_')[0] | int }}"
+                  night: "{{ act[12:].split('_')[1] | int }}"
+          - conditions: "{{ act.startswith('ELEC_EDIT_') }}"
+            sequence:
+              - variables:
+                  bounds: "{{ act[10:].split('_') }}"
+                  parts: "{{ typed.split() }}"
+                  valid: >-
+                    {{ typed is match('^[0-9]+\s+[0-9]+$')
+                       and parts[0] | int <= bounds[0] | int(0)
+                       and parts[1] | int <= bounds[1] | int(0) }}
+              - if:
+                  - condition: template
+                    value_template: "{{ valid }}"
+                then:
+                  - service: script.electricity_submit_send
+                    data:
+                      day: "{{ parts[0] | int }}"
+                      night: "{{ parts[1] | int }}"
+                else:
+                  # Rejected here, before the bot is asked anything.
+                  - service: notify.mobile_app_pixel_10_pro_xl
+                    data:
+                      title: "Electricity reading — not sent"
+                      message: >-
+                        "{{ typed }}" is not DAY NIGHT in whole kWh, up to
+                        {{ bounds[0] }} / {{ bounds[1] }}. Try again.
+                      data:
+                        channel: Electricity meter
+                        tag: electricity-submit
+                        actions:
+                          - action: "{{ act }}"
+                            title: "Correct & submit"
+                            behavior: textInput
+                            textInputButtonTitle: Submit
+                            textInputPlaceholder: "DAY NIGHT, whole kWh"

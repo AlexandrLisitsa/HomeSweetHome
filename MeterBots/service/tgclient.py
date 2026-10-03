@@ -3,7 +3,7 @@
 One logged-in Telegram user (Telethon, MTProto) talks to the suppliers' bots
 the way a person would. This module holds what they share: the session, the
 login, the lock, and Walk, a conversation that records everything the bot said.
-Each bot (gasbot.py, ...) holds only its own conversation.
+Each bot (gasbot.py, yasnobot.py) holds only its own conversation.
 
 The session file is /data/telegram/telegram.session. It is a logged-in
 Telegram account: whoever has the file can read and send as the household. It
@@ -108,35 +108,64 @@ def _text(msgs):
     return "\n".join(m.raw_text or "" for m in msgs)
 
 
-class Walk:
-    """One conversation with a bot, with a transcript of what it said."""
+def _look(msg):
+    return (msg.raw_text or "", tuple(_buttons(msg)))
 
-    def __init__(self, client, bot):
+
+class Walk:
+    """One conversation with a bot, with a transcript of what it said.
+
+    Some bots answer a button press by EDITING the message the button was on
+    (YASNO's does) instead of sending a new one. With watch_edits, a press
+    also watches that message, and its new text and buttons count as the
+    answer. Off by default: Gazmerezhi's bot sends new messages, and its walk
+    is tested that way.
+    """
+
+    def __init__(self, client, bot, watch_edits=False):
         self.client = client
         self.bot = bot
+        self.watch_edits = watch_edits
         self.transcript = []
         self.last_id = 0
+        self._watched = None        # (message id, how it looked before the press)
 
     async def start(self):
         latest = await self.client.get_messages(self.bot, limit=1)
         self.last_id = latest[0].id if latest else 0
 
+    async def _edited(self):
+        """The watched message, if the bot has changed it since the press."""
+        if self._watched is None:
+            return []
+        mid, before = self._watched
+        msg = await self.client.get_messages(self.bot, ids=mid)
+        if msg is None or _look(msg) == before:
+            return []
+        self._watched = (mid, _look(msg))
+        return [msg]
+
     async def _collect(self):
-        """Bot messages newer than the last action, once it has gone quiet."""
+        """Bot messages newer than the last action (and, with watch_edits, the
+        pressed message once the bot has changed it), once it has gone quiet."""
         deadline = time.monotonic() + REPLY_TIMEOUT_S
         got, quiet_since = [], None
         while time.monotonic() < deadline:
             new = await self.client.get_messages(self.bot, min_id=self.last_id, limit=20)
             new = sorted((m for m in new if not m.out), key=lambda m: m.id)
             if new:
-                got.extend(new)
                 self.last_id = max(m.id for m in new)
+            new += await self._edited()
+            if new:
+                got.extend(new)
                 quiet_since = time.monotonic()
                 for m in new:
                     self.transcript.append({"bot": m.raw_text, "buttons": _buttons(m)})
             elif got and time.monotonic() - quiet_since >= QUIET_S:
+                self._watched = None
                 return got
             await asyncio.sleep(POLL_S)
+        self._watched = None
         if got:
             return got
         raise BotError("the bot did not answer within %d s" % REPLY_TIMEOUT_S,
@@ -153,6 +182,8 @@ class Walk:
         if msg is None:
             raise BotError("no '%s' button where it used to be" % label, self.transcript)
         self.transcript.append({"me": "[%s]" % text})
+        if self.watch_edits:
+            self._watched = (msg.id, _look(msg))
         await msg.click(text=text)
         return await self._collect()
 
@@ -161,7 +192,7 @@ class Walk:
 
 
 @contextlib.asynccontextmanager
-async def conversation(api, bot_name):
+async def conversation(api, bot_name, watch_edits=False):
     """A connected, logged-in client and a started Walk with `bot_name`."""
     from telethon import TelegramClient
 
@@ -171,7 +202,7 @@ async def conversation(api, bot_name):
         if not await client.is_user_authorized():
             raise BotError("Telegram session is not logged in -- run the login steps")
         bot = await client.get_entity(bot_name)
-        walk = Walk(client, bot)
+        walk = Walk(client, bot, watch_edits)
         await walk.start()
         yield walk
     finally:

@@ -8,6 +8,8 @@ a stray script on the LAN may do.
     GET  /health              alive, which bots are configured, the session
     GET  /gas/bot/status      dry run of @mygrmu_bot, sends nothing
     POST /gas/bot/submit      {"value": 2262}
+    GET  /yasno/bot/status    dry run of @Yasnoonlinebot, sends nothing
+    POST /yasno/bot/submit    {"day": 38500, "night": 6450}
 
 Routes and tokens: docs/api.md.
 """
@@ -15,13 +17,14 @@ import os
 
 from flask import Flask, jsonify, request
 
-from . import gasbot, tgclient
+from . import gasbot, tgclient, yasnobot
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 APP = Flask(__name__)
 
 GASBOT_TOKEN = os.environ.get("GASBOT_TOKEN") or None
+YASNOBOT_TOKEN = os.environ.get("YASNOBOT_TOKEN") or None
 
 
 def deny():
@@ -39,7 +42,8 @@ def health():
     file exists -- not whether it is still logged in, which takes a network
     round trip."""
     return jsonify({"status": "ok", "version": VERSION,
-                    "bots": {"gas": GASBOT_TOKEN is not None},
+                    "bots": {"gas": GASBOT_TOKEN is not None,
+                             "yasno": YASNOBOT_TOKEN is not None},
                     "session": tgclient.session_present()})
 
 
@@ -66,6 +70,44 @@ def gas_bot_submit():
     result = gasbot.run(value)
     print("gas bot submit %s -> %s" % (value, "ok" if result.get("ok")
                                         else result.get("error")), flush=True)
+    return jsonify(result)
+
+
+def yasnobot_authorised():
+    supplied = request.headers.get("X-Yasnobot-Token")
+    return YASNOBOT_TOKEN is not None and supplied == YASNOBOT_TOKEN
+
+
+@APP.route("/yasno/bot/status")
+def yasno_bot_status():
+    """Walk @Yasnoonlinebot to the reading prompt and back; send nothing.
+    Answers the previous day/night readings."""
+    if not yasnobot_authorised():
+        return deny()
+    return jsonify(yasnobot.run())
+
+
+@APP.route("/yasno/bot/submit", methods=["POST"])
+def yasno_bot_submit():
+    """Send ONE monthly electricity reading. Body: {"day": 38500, "night": 6450},
+    whole kWh, as the meter's T21 and T22 read before the comma."""
+    if not yasnobot_authorised():
+        return deny()
+    body = request.get_json(silent=True) or {}
+    values = {}
+    for zone in ("day", "night"):
+        raw = str(body.get(zone, "")).strip()
+        if not raw.isdigit():
+            return jsonify({"ok": False, "error": "%s must be whole kWh: %r"
+                            % (zone, body.get(zone))}), 400
+        values[zone] = int(raw)
+        if not 0 < values[zone] < 1000000:
+            return jsonify({"ok": False, "error": "%s out of range: %r"
+                            % (zone, body.get(zone))}), 400
+    result = yasnobot.run(values["day"], values["night"])
+    print("yasno bot submit %d %d -> %s" % (values["day"], values["night"],
+                                           "ok" if result.get("ok") else result.get("error")),
+          flush=True)
     return jsonify(result)
 
 
