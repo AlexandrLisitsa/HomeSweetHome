@@ -1,0 +1,88 @@
+# ---------------------------------------------------------------------------
+# The electricity meter: the whole flat's consumption, split day / night
+#
+# The board on the meter (ElectricityMeter/) announces itself over MQTT
+# discovery, so its entities are not defined here. These two arrive with the
+# device:
+#
+#     sensor.electricity_meter_energy   the register, kWh
+#     sensor.electricity_meter_power    W
+#
+# This file only splits the register by tariff zone.
+#
+# Needs `ha core restart` to take effect: utility_meter registers no reload
+# service.
+#
+# SAFE TO DEPLOY BEFORE THE METER READING IS SET, because the board holds
+# the energy sensor unavailable until then. A utility meter books nothing
+# from an unavailable source and takes the first real value as its starting
+# point (the utility_meter source as of 2026.9: no last valid state, no
+# delta).
+# What it does book is a jump in a value it already has: setting the
+# reading AGAIN later lands the whole difference in whichever zone is in
+# force. See HomeAssistant/docs/electricity-meter.md before ever doing that.
+#
+# ---------------------------------------------------------------------------
+# WHY THE CLOCK AND NOT sensor.electricity_tariff_zone
+#
+# ac_tariffs.yaml books A/C energy to a third `battery` zone while the house
+# runs off the pack, because those kilowatt-hours were bought at night. The
+# meter does not need that: during an outage it sees nothing at all, and
+# when the charger refills the pack at night the meter counts that at the
+# night rate, which is exactly what the bill says. The meter's own day and
+# night are the clock's, 23:00-07:00 -- the same boundaries the firmware's
+# `night_tariff_start` / `night_tariff_end` in PowerStation/power-station.yaml
+# use, and ac_tariffs.yaml mirrors. If the window moves, it moves there first.
+#
+# ---------------------------------------------------------------------------
+# A TARIFF METER TAKES ITS ID FROM THE KEY (see ac_tariffs.yaml for how that
+# was found out): the key `electricity_meter_tariff` creates
+#
+#     sensor.electricity_meter_tariff_day
+#     sensor.electricity_meter_tariff_night
+#     select.electricity_meter_tariff
+#
+# The two sensors are the Energy dashboard's grid consumption, priced there
+# at the day and night rates. Monthly cycle, so they double as "this month"
+# figures; the Energy dashboard reads them through statistics and does not
+# care when they reset.
+# ---------------------------------------------------------------------------
+
+utility_meter:
+  # periodically_resetting: false -- the register only ever climbs, and the
+  # default would read a board restart that briefly reports an older figure
+  # as a meter reset. always_available: true -- a board that drops off WiFi
+  # leaves the month's figures standing instead of blanking them.
+  electricity_meter_tariff:
+    name: "Electricity meter month"
+    unique_id: electricity_meter_tariff
+    source: sensor.electricity_meter_energy
+    cycle: monthly
+    periodically_resetting: false
+    always_available: true
+    tariffs:
+      - day
+      - night
+
+automation:
+  # Same shape as ac_tariff_auto_switch, minus the battery: the boundaries and
+  # every start. `homeassistant.start` matters because the select restores
+  # whatever zone it was left in, and a box that comes back at 02:00 after
+  # going down at 18:00 would otherwise book the rest of the night as day.
+  - id: electricity_meter_tariff_switch
+    alias: "Electricity meter: switch the tariff meter day/night"
+    mode: single
+    triggers:
+      - trigger: time
+        at: "07:00:00"
+      - trigger: time
+        at: "23:00:00"
+      - trigger: homeassistant
+        event: start
+    actions:
+      - action: select.select_option
+        target:
+          entity_id: select.electricity_meter_tariff
+        data:
+          option: >-
+            {{ 'night' if now().hour >= 23 or now().hour < 7 else 'day' }}

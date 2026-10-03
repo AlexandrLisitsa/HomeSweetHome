@@ -32,6 +32,9 @@ read before it goes live, and a `git revert` if it was wrong.
   the grid returns. The rules are built on the Shutdowns dashboard: any device,
   any number of steps, any action it supports
   ([`docs/load-shedding.md`](docs/load-shedding.md)).
+- **Electricity from the meter itself**: a photodiode on its imp/kWh LED,
+  over MQTT, split day/night for the Energy dashboard
+  ([`docs/electricity-meter.md`](docs/electricity-meter.md)).
 - **Gas and water on the Energy dashboard**, from hand-read meters
   ([`docs/gas-and-water-meters.md`](docs/gas-and-water-meters.md)).
 - **Monthly gas reading to Gazmerezhi**: on the 1st the phone shows the meter
@@ -176,6 +179,7 @@ restore HA onto a fresh VM, is in
 | [`docs/outage-precharge.md`](docs/outage-precharge.md) | charging the battery to full before a scheduled DTEK outage, and the Pre-charge chip |
 | [`docs/adaptive-charge.md`](docs/adaptive-charge.md) | the night charge at the lowest current that fills the pack by 07:00, and the AC charge chip's second dot |
 | [`docs/load-shedding.md`](docs/load-shedding.md) | the load-shedding engine and its constructor tab: steps, warnings, holds, overrides, restore, backup |
+| [`docs/electricity-meter.md`](docs/electricity-meter.md) | the meter-reading board's entities, the day/night split, the Energy dashboard swap, correcting the register |
 | [`docs/gas-and-water-meters.md`](docs/gas-and-water-meters.md) | hand-read gas and water meters on the Energy dashboard |
 | [`docs/gas-reading-submission.md`](docs/gas-reading-submission.md) | the monthly gas reading to Gazmerezhi's Telegram bot, confirmed from the phone |
 | [`docs/power-station-dashboard.md`](docs/power-station-dashboard.md) | the Power station dashboard: the inverter and battery cards, the grid-return countdown, the palette |

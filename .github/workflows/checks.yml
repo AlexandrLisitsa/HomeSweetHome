@@ -71,6 +71,19 @@ jobs:
       - name: Extract, compile and run
         run: python PowerStation/tools/test_firmware_logic.py
 
+  electricity-meter:
+    name: ElectricityMeter firmware logic
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The firmware's detector and MQTT sources, compiled with the runner's
+      # g++: the golden captures, the commands, the discovery payloads.
+      - name: Detector on the golden captures, MQTT behaviour and discovery
+        run: python ElectricityMeter/tools/test_firmware.py
+
   irbridge:
     name: IRBridge Android build
     runs-on: ubuntu-latest

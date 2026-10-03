@@ -10,6 +10,8 @@
 HomeAssistant/config/google_assistant.yaml
 HomeAssistant/config/packages/household_notify.yaml
 **/config.h
+# Test values only, for compiling the firmware's MQTT code on a PC.
+!ElectricityMeter/tools/stubs/config.h
 *.jks
 *.keystore
 *.pem
