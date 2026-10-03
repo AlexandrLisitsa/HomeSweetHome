@@ -22,6 +22,7 @@ Assistant as a VM, and the network services as LXC containers.
 | 102 | LXC | `tailscale` | 1 | 512 MB | 2 GB | [Tailscale](102-tailscale.md) |
 | 103 | LXC | `cloudflare` | 1 | 512 MB | 2 GB | [Cloudflare Tunnel](103-cloudflare.md) |
 | 104 | LXC | `metercam` | 2 | 1 GB | 8 GB | [MeterCam](104-metercam.md) |
+| 105 | LXC | `meterbots` | 1 | 512 MB | 2 GB | [MeterBots](105-meterbots.md) |
 
 All of them start with the host (`onboot=1`). Every guest runs Debian or, for the
 VM, Home Assistant OS; 100 and 101 were created with the
@@ -30,7 +31,7 @@ VM, Home Assistant OS; 100 and 101 were created with the
 
 ## Sizing
 
-RAM is the tight resource: the guests are given about 4.5 GB between them on a
+RAM is the tight resource: the guests are given about 5 GB between them on a
 host with 3.6 GB, which works because the containers use well under their limits
 (20–120 MB each) and Home Assistant's VM can balloon down to 1.5 GB when the
 host runs short (`balloon: 1536`; it uses about 1 GB of its 2). Not lower: at

@@ -1,10 +1,10 @@
 # MeterCam
 
 Reads the gas meter's dial with a camera and feeds the reading into Home
-Assistant's Energy dashboard, but only a reading it can stand behind. Once a
-month it also files that reading with the gas operator, through the operator's
-Telegram bot, when someone presses *Submit* on the phone
-([`docs/gas-bot.md`](docs/gas-bot.md)).
+Assistant's Energy dashboard, but only a reading it can stand behind. It reads
+meters and does nothing else: the water meter is the next camera. Filing the
+monthly reading with the gas operator is [MeterBots](../MeterBots/README.md),
+in its own LXC.
 
 The meter is an **Itron Gallus 2000 G4** (2011; Qmax 6 m³/h, Qmin 0.04, Pmax
 0.5 bar). Its index is eight drums behind a glass window: five black (whole m³),
@@ -71,11 +71,10 @@ drum. Optical reading depends on nothing hidden inside the meter.
 | --- | --- |
 | `service/digits.py` | The carry rule, the agreement check and the gate. Stdlib only, so the tests that guard the irreversible failures run anywhere |
 | `service/reader.py` | Decode, orient, align, crop, infer, assemble |
-| `service/app.py` | `POST /read`, `/last.jpg`, `/last_accepted.jpg`, `/archive`, `/firmware/*`, `/gas/bot/*`, `/health`; the Home Assistant prevalue fetch and write |
-| `service/gasbot.py` | The monthly reading to Gazmerezhi's Telegram bot (Telethon): the checked walk through the bot's menus, and the one-time login |
+| `service/app.py` | `POST /read`, `/last.jpg`, `/last_accepted.jpg`, `/archive`, `/firmware/*`, `/health`; the Home Assistant prevalue fetch and write |
 | `service/config.example.json` | Template for the box's `config.json`, with the reasoning for each setting |
 | `tests/test_reader.py` | Plain asserts, no pytest |
-| `tests/test_gasbot.py` | `gasbot.py` against a fake bot that says what the real one says, including every way it must refuse |
+| `tests/test_routes.py` | The service's routes, read from `app.py` without importing it: what exists, and that no bot route has crept back |
 | `models/fetch.sh` | Downloads the weights. Not committed: no stated licence upstream |
 | `firmware/gas-cam/` | The camera: AI-Thinker ESP32-CAM, PlatformIO |
 | `deploy/` | Creates LXC 104 on the Proxmox host and deploys the service into it |
@@ -86,9 +85,8 @@ drum. Optical reading depends on nothing hidden inside the meter.
 
 ```sh
 python tests/test_reader.py                                   # the arithmetic: no dependencies
-python tests/test_gasbot.py                                   # the bot walk, against a fake bot
+python tests/test_routes.py                                   # the routes: no dependencies
 sh Proxmox/tools/pve_ssh.sh "pct exec 104 -- docker exec metercam python tests/test_reader.py"
-sh Proxmox/tools/pve_ssh.sh "pct exec 104 -- docker exec metercam python tests/test_gasbot.py"
 ```
 
 The first runs on a bare workstation. `digits.py` imports nothing third-party
@@ -107,6 +105,5 @@ frames, which must never be accepted. Both must pass before a deploy.
 | [`docs/firmware.md`](docs/firmware.md) | The board: wiring, building, the first USB flash, publishing an update, rolling back |
 | [`docs/deployment.md`](docs/deployment.md) | LXC 104: creating it, first setup, deploying code, frame retention, the gas bot's keys |
 | [`docs/operations.md`](docs/operations.md) | Day to day: checking reads, the camera moved, a reading went wrong |
-| [`docs/gas-bot.md`](docs/gas-bot.md) | The monthly reading to Gazmerezhi's Telegram bot: why a bot, the conversation, its checks, the Telegram login |
 | [`docs/guardrails.md`](docs/guardrails.md) | Each guard against a bad reading, and what it is worth |
 | [`docs/pitfalls.md`](docs/pitfalls.md) | The things that are easy to get wrong when reading a dial |

@@ -2,9 +2,9 @@
 
 The service that reads the gas meter: it takes the photos the ESP32-CAM pushes
 every 30 minutes, reads the dial's digits, and writes the reading into Home
-Assistant only when it can stand behind it. Once a month it also files the
-reading with the gas operator's Telegram bot, on a button press in Home
-Assistant. The project is [`MeterCam/`](../../MeterCam/README.md).
+Assistant only when it can stand behind it. It reads meters and nothing
+else: filing the reading with the gas operator is [105](105-meterbots.md).
+The project is [`MeterCam/`](../../MeterCam/README.md).
 
 | | |
 | --- | --- |
@@ -21,19 +21,16 @@ Assistant. The project is [`MeterCam/`](../../MeterCam/README.md).
   timer installed by `lxc_provision.sh` prunes old frames.
 - It holds state that is not in git, all in `/opt/metercam/`:
   - `config.json`
-  - `.env`: the Home Assistant token, the gas-bot token, and the Telegram
-    `api_id` / `api_hash`
+  - `.env`: the Home Assistant token and MeterCam's own token
   - the models, the alignment reference and the firmware channel
-  - `data/telegram/gasbot.session`, a **logged-in Telegram account**
 
   A deploy ships code only and never overwrites any of it.
 - It is **not dumped** by the weekly backup job. Its state goes off-site as a
   ~3 MB encrypted archive with the LXC run instead
   ([`backups.md`](backups.md)).
-- It is the only guest that talks to the internet on the household's behalf.
-  It reaches Telegram (MTProto) for the gas bot, and only when Home Assistant
-  asks ([`MeterCam/docs/gas-bot.md`](../../MeterCam/docs/gas-bot.md)).
+- It talks to nothing outside the LAN. Until 2026-10-04 it also held the
+  Telegram session for the gas bot; that moved to [105](105-meterbots.md).
 - Its address, gateway and VM id are set in `MeterCam/deploy/_lxc_env.sh`, with
   the real address in the git-ignored `deploy/lxc.env`.
-- It is the one guest this repository creates and changes, through the
+- This repository creates and changes it, like 105, through the
   [SSH write path](ssh-write-path.md).

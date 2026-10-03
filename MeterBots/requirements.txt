@@ -1,0 +1,11 @@
+# Installed inside the container, not on the Home Assistant box: HAOS has no
+# pip, and a Telegram session wants a persistent /data of its own.
+
+flask>=3.0
+waitress>=3.0
+
+# Telegram's client API (MTProto): the readings go to the suppliers' bots as
+# the household's own Telegram user (docs/architecture.md says why not a bot).
+telethon>=1.36
+# QR-code login, drawn as SVG (pure Python, no Pillow).
+qrcode>=7.4

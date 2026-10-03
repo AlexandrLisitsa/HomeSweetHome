@@ -1,0 +1,12 @@
+# The image holds code and tests only. Secrets arrive from .env at run time,
+# the session through the ./data mount.
+.env
+.env.example
+data/
+deploy/
+docs/
+README.md
+docker-compose.yml
+__pycache__/
+*.pyc
+.git/

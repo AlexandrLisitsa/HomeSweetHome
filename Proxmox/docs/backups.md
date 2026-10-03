@@ -12,8 +12,9 @@ nor the loss of the host's only disk loses the home.
 | Home Assistant full backup: config, add-ons, database, `media`, `share` | HA's own disk (`hassio.local`) | daily, HA's automatic backup | 3 | ~175 MB each |
 | the same backup | Google Drive, folder `Home Assistant` | same run | 14 | ~175 MB each |
 | LXC 101, 102, 103 dumps | host, storage `local` | weekly, Sun 03:30 (job `offsite-lxc`) | 2 per guest | 245–280 MB each |
-| the same dumps + host config tarball + MeterCam state | Drive `proxmox/weekly/` (encrypted) | after each weekly run | 29 days (4 runs) | ~790 MB per run |
-| MeterCam (LXC 104) state: `.env`, Telegram session, ROIs, reference, firmware, models | inside the LXC run above, as `metercam-state-*.tar.zst` | weekly, with `offsite-lxc` | as `weekly/` and `monthly/` | ~2.7 MB |
+| the same dumps + host config tarball + MeterCam and MeterBots state | Drive `proxmox/weekly/` (encrypted) | after each weekly run | 29 days (4 runs) | ~790 MB per run |
+| MeterCam (LXC 104) state: `.env`, ROIs, reference, firmware, models | inside the LXC run above, as `metercam-state-*.tar.zst` | weekly, with `offsite-lxc` | as `weekly/` and `monthly/` | ~2.7 MB |
+| MeterBots (LXC 105) state: `.env`, Telegram session | inside the LXC run above, as `meterbots-state-*.tar.zst` | weekly, with `offsite-lxc` | as `weekly/` and `monthly/` | a few KB |
 | the same, first Sunday of the month | Drive `proxmox/monthly/` (encrypted) | copied in the same run | 93 days (3 runs) | ~790 MB per run |
 | VM 100 (Home Assistant OS) dump | host, storage `local` | weekly, Sun 04:00 (job `ha-vm`) | 1 | 4.9 GB |
 | the same, first Sunday of the month | Drive `proxmox/monthly-vm/` (encrypted) | copied in the same run | 1, replaced each month | 4.9 GB |
@@ -35,15 +36,22 @@ file left nothing in the Trash).
 **MeterCam is not dumped, on purpose.** A full LXC 104 dump is ~400 MB, almost
 all of it a Docker image that `deploy.sh` rebuilds from git, and Drive is close
 to its limit. What cannot be rebuilt is in `metercam-state-*.tar.zst`: the
-`.env` (Home Assistant token, gas-bot token, Telegram `api_id`/`api_hash`),
-`data/telegram/gasbot.session` (a logged-in Telegram account, which is why it
-only ever travels encrypted), `config.json` with its matching `data/ref/`, the
-OTA firmware and the models. The archived photos are left out. To restore,
+`.env` (the Home Assistant token), `config.json` with its matching
+`data/ref/`, the OTA firmware and the models. The archived photos are left out. To restore,
 provision a fresh LXC (`MeterCam/docs/deployment.md`), unpack the archive into
 `/opt/metercam`, and run `deploy.sh`. To see what goes off-site without a
 backup run: `vzdump-offsite.sh metercam-state /tmp`. If the archive can't be
 made, for example because 104 is stopped, the other guests are still uploaded
 and the job is marked failed.
+
+**MeterBots is not dumped either**, for the same reason: its image rebuilds
+from git. What cannot be rebuilt is `meterbots-state-*.tar.zst`: the `.env`
+(Telegram `api_id`/`api_hash`, the bots' tokens and account numbers) and
+`data/telegram/telegram.session`, a logged-in Telegram account, which is why it
+only ever travels encrypted. To restore, provision a fresh LXC 105
+(`MeterBots/docs/deployment.md`), unpack the archive into `/opt/meterbots`,
+and run `deploy.sh`. Restore the session only after making sure nothing else is
+running it. By hand: `vzdump-offsite.sh meterbots-state /tmp`.
 
 **Not backed up:** the Proxmox host OS itself. vzdump can't image it and it
 doesn't need to be imaged: a fresh Proxmox install plus the host config tarball

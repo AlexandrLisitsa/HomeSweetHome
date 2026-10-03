@@ -20,11 +20,12 @@ flowchart LR
         Z2M["Zigbee2MQTT"] -- MQTT --> HA
         CAM["ESP32-CAM<br/>gas meter"] -- "photos" --> MC["MeterCam<br/>Proxmox LXC"]
         MC -- "readings" --> HA
+        HA -- "monthly readings, on a tap" --> MB["MeterBots<br/>Proxmox LXC"]
         PVE["Proxmox"] -. "read-only API" .- TOOLS
     end
     HA -- "Google Assistant" --> GH["Google Home"]
     HA -. "outage schedule" .- DTEK["DTEK API"]
-    MC -. "monthly reading, on a tap" .-> GRMU["Gazmerezhi<br/>Telegram bot"]
+    MB -. "Telegram" .-> GRMU["Gazmerezhi<br/>Telegram bot"]
     TOOLS["tools in this repo<br/>(ssh, REST, WebSocket)"] -- "pull / push" --- HA
 ```
 
@@ -36,7 +37,8 @@ flowchart LR
 | [`PowerStation/`](PowerStation/README.md) | ESPHome firmware for an ESP32 that drives a PowMr hybrid inverter over UART and reads a JK BMS over BLE, with tariff- and grid-fault-aware power-priority logic, a night-tariff-only charging mode, and a pre-charge that fills the battery before a scheduled DTEK outage. |
 | [`IRBridge/`](IRBridge/README.md) | Android app that turns an old phone's IR blaster into an authenticated HTTP API, so Home Assistant can drive a "dumb" split A/C — including a protocol sweep to find which IR codec the unit speaks. |
 | [`FloorPlan/`](FloorPlan/README.md) | Tooling that renders a Sweet Home 3D model from above and turns it into the isometric **Home** dashboard, where each lamp lights its own room. |
-| [`MeterCam/`](MeterCam/README.md) | An ESP32-CAM that wakes every 30 minutes to photograph the gas meter's dial, and a service in a Proxmox LXC that reads the digits and hands Home Assistant a reading only when it can stand behind it. Once a month it files that reading with the gas operator through its Telegram bot, after a tap on the phone. |
+| [`MeterCam/`](MeterCam/README.md) | An ESP32-CAM that wakes every 30 minutes to photograph the gas meter's dial, and a service in a Proxmox LXC that reads the digits and hands Home Assistant a reading only when it can stand behind it. Cameras only: the water meter is next. |
+| [`MeterBots/`](MeterBots/README.md) | Files the monthly meter readings with the suppliers' Telegram bots as the household's own Telegram user, in its own Proxmox LXC, when someone taps *Submit* on the phone. Holds the Telegram session and nothing else. |
 | [`ElectricityMeter/`](ElectricityMeter/README.md) | A photodiode on the electricity meter's imp/kWh LED and an ESP8266 that counts its blinks, so Home Assistant gets the flat's power and consumption from the meter itself, split day / night. It is the Energy dashboard's grid source; the inverter alone misses the boiler's circuit. |
 | [`Proxmox/`](Proxmox/README.md) | The host and its guests, one doc each; read-only Proxmox API scripts that measure the Home Assistant guest's resource history; and the backup setup that keeps every guest and HA's backups on the host and, encrypted, on Google Drive ([`Proxmox/docs/backups.md`](Proxmox/docs/backups.md)). |
 
@@ -77,8 +79,9 @@ real ones.
 | `192.0.2.7` | taken by a device outside this repo | |
 | `192.0.2.8` | MeterCam service (CT 104) | `MeterCam/deploy/lxc.env` |
 | `192.0.2.9` | ElectricityMeter board | `STATIC_IP` in its `config.h` |
+| `192.0.2.10` | MeterBots service (CT 105) | `MeterBots/deploy/lxc.env` |
 
-**A new fixed address takes the next number after the block** (`.10` next),
+**A new fixed address takes the next number after the block** (`.11` next),
 after checking that nothing answers on it: no ping reply and no ARP entry.
 Then add it to this table. The router's DHCP pool has to stay clear of the
 block.
@@ -91,7 +94,7 @@ example next to it (or in [`HomeAssistant/examples/`](HomeAssistant/examples)):
 | Real file (never committed) | Template | Holds |
 | --- | --- | --- |
 | `HomeAssistant/secrets.env` | `HomeAssistant/secrets.env.example` | HA URL and long-lived token for the tools |
-| HA box `/config/secrets.yaml` | `HomeAssistant/examples/secrets.yaml.example` | IRBridge token and URLs, DTEK address |
+| HA box `/config/secrets.yaml` | `HomeAssistant/examples/secrets.yaml.example` | IRBridge token and URLs, DTEK address, the MeterBots tokens and URLs, MeterCam's URL |
 | HA box `/config/google_key.json` | — (a Google Cloud service-account key) | Google Assistant credentials |
 | `HomeAssistant/config/google_assistant.yaml` | `HomeAssistant/examples/google_assistant.example.yaml` | Google Home names and aliases in the household's language |
 | `HomeAssistant/config/packages/household_notify.yaml` | `HomeAssistant/examples/household_notify.example.yaml` | the phones behind `notify.household` |
@@ -99,6 +102,13 @@ example next to it (or in [`HomeAssistant/examples/`](HomeAssistant/examples)):
 | `Proxmox/secrets.env` | `Proxmox/secrets.env.example` | read-only Proxmox API token |
 | `IRBridge/local.properties` | `IRBridge/local.properties.example` | Android SDK path |
 | `ElectricityMeter/firmware/electricity-meter/include/config.h` | `config.h.example` next to it | Wi-Fi, OTA and MQTT passwords, the board's fixed address |
+| MeterCam LXC `/opt/metercam/.env` | `MeterCam/.env.example` | MeterCam's token, its Home Assistant token |
+| MeterCam LXC `/opt/metercam/config.json` | `MeterCam/service/config.example.json` | the meter's ROIs, Home Assistant's address |
+| `MeterCam/deploy/lxc.env` | `MeterCam/deploy/lxc.env.example` | the LXC's address and gateway |
+| `MeterCam/firmware/gas-cam/include/config.h` | `config.h.example` next to it | the camera's Wi-Fi and MeterCam's token |
+| MeterBots LXC `/opt/meterbots/.env` | `MeterBots/.env.example` | Telegram API credentials, the bots' tokens and account numbers |
+| MeterBots LXC `/opt/meterbots/data/telegram/telegram.session` | — (made by the login, [`MeterBots/docs/deployment.md`](MeterBots/docs/deployment.md)) | the household's logged-in Telegram account |
+| `MeterBots/deploy/lxc.env` | `MeterBots/deploy/lxc.env.example` | the LXC's address and gateway |
 | Proxmox host `/root/.config/rclone/rclone.conf` | — (see [`Proxmox/docs/backups.md`](Proxmox/docs/backups.md#credentials)) | Google Drive token and the crypt password for the off-site backups |
 
 See [SECURITY.md](SECURITY.md) for how this is enforced and how to report a leak.

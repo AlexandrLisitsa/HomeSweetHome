@@ -74,11 +74,10 @@ because a decrease of more than 10% is booked as a meter reset.
 
 The monthly bill goes the other way. On the 1st, Home Assistant fetches
 `/last_accepted.jpg` (the frame **and** its reading in one answer, so the two
-cannot disagree), asks on the phone, and on *Submit* calls `/gas/bot/submit`.
-MeterCam then files the number with the gas operator's Telegram bot
-([`gas-bot.md`](gas-bot.md)). MeterCam holds the bot client because it has what
-HAOS lacks: a persistent `/data` for the Telegram session, and a Python where
-packages can be installed.
+cannot disagree), asks on the phone, and on *Submit* hands the number to
+MeterBots, which files it with the gas operator's Telegram bot
+([`MeterBots/docs/gas-bot.md`](../../MeterBots/docs/gas-bot.md)). MeterCam
+reads meters and nothing else: the Telegram session lives in its own LXC.
 
 ## Why the deciding stays in the service
 

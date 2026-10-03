@@ -1,0 +1,11 @@
+# The real configuration; .env.example is the committed template.
+.env
+
+# The Telegram session (a logged-in account) and the QR login drawing.
+data/
+
+__pycache__/
+*.pyc
+
+# The LXC's real address; see deploy/lxc.env.example.
+deploy/lxc.env

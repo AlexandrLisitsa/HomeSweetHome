@@ -48,4 +48,5 @@ sh tools/pve_ssh.sh 'pct exec 104 -- docker ps'
 sh tools/pve_ssh.sh 'qm config 100'
 ```
 
-Its first consumer is `MeterCam/deploy/`, which creates and provisions LXC 104.
+Its consumers are `MeterCam/deploy/` and `MeterBots/deploy/`, which create
+and provision LXC 104 and 105.

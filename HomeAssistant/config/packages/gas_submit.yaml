@@ -14,10 +14,10 @@
 # 1st..5th.
 #
 # The reading goes to Gazmerezhi's Telegram bot, driven as the household's
-# own Telegram user by MeterCam (MeterCam/docs/gas-bot.md) -- every web
+# own Telegram user by MeterBots (MeterBots/docs/gas-bot.md) -- every web
 # channel for this operator is closed to code. Two halves:
 #
-#   rest_command.gas_bot_*         MeterCam's /gas/bot/status and /submit.
+#   rest_command.gas_bot_*         MeterBots' /gas/bot/status and /submit.
 #                                  Walking the bot takes up to a minute, past
 #                                  shell_command's fixed 60 s, so these are
 #                                  rest_commands with a 5-minute timeout.
@@ -26,10 +26,10 @@
 #
 # No entities: "already sent this month" lives in /config/gas/.state.json.
 #
-# secrets.yaml:  gasbot_token        MeterCam's GASBOT_TOKEN
-#                gasbot_status_url   http://<metercam-ip>:8770/gas/bot/status
-#                gasbot_submit_url   http://<metercam-ip>:8770/gas/bot/submit
-#                metercam_url        optional, http://<metercam-ip>:8770
+# secrets.yaml:  gasbot_token        MeterBots' GASBOT_TOKEN
+#                gasbot_status_url   http://<meterbots-ip>:8770/gas/bot/status
+#                gasbot_submit_url   http://<meterbots-ip>:8770/gas/bot/submit
+#                metercam_url        http://<metercam-ip>:8770 (the photo)
 #
 # Write-up: HomeAssistant/docs/gas-reading-submission.md.
 # ---------------------------------------------------------------------------
@@ -100,9 +100,9 @@ script:
             {{ st is defined and st.status == 200 and st.content is mapping
                and (st.content.ok | default(false)) }}
           bot_error: >-
-            {% if bot_ok %}{% elif st is not defined %}MeterCam did not answer, or refused (see the HA log)
+            {% if bot_ok %}{% elif st is not defined %}MeterBots did not answer, or refused (see the HA log)
             {%- elif st.content is mapping and st.content.error is defined %}Telegram bot: {{ st.content.error }}
-            {%- else %}MeterCam answered {{ st.status }}{% endif %}
+            {%- else %}MeterBots answered {{ st.status }}{% endif %}
           perv: >-
             {{ (st.content.previous | float(0)) | round(0, 'floor') | int
                if bot_ok and st.content.previous is not none else none }}
@@ -194,9 +194,9 @@ script:
             {{ sub is defined and sub.status == 200 and sub.content is mapping
                and (sub.content.ok | default(false)) }}
           error: >-
-            {% if ok %}{% elif sub is not defined %}No answer from MeterCam (see the HA log). Check the chat with @mygrmu_bot before trying again: it may have gone through.
+            {% if ok %}{% elif sub is not defined %}No answer from MeterBots (see the HA log). Check the chat with @mygrmu_bot before trying again: it may have gone through.
             {%- elif sub.content is mapping and sub.content.error is defined %}{{ sub.content.error }}
-            {%- else %}MeterCam answered {{ sub.status }}{% endif %}
+            {%- else %}MeterBots answered {{ sub.status }}{% endif %}
           reply: "{{ sub.content.reply if ok else '' }}"
       - if:
           - condition: template

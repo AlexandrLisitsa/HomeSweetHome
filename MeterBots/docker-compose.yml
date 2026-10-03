@@ -1,0 +1,23 @@
+services:
+  meterbots:
+    build: .
+    image: meterbots:local
+    container_name: meterbots
+    restart: unless-stopped
+    ports:
+      - "8770:8770"
+    volumes:
+      # data/telegram/telegram.session: the household's logged-in Telegram
+      # account. Written by the login, read by every bot. Never in git, never
+      # in two places at once (docs/deployment.md, "Moving the session").
+      - ./data:/data
+    environment:
+      TZ: "${TZ:-Europe/Kyiv}"
+      # All in .env (see .env.example): the account numbers are private and
+      # the repo is public.
+      TELEGRAM_API_ID: "${TELEGRAM_API_ID:-}"
+      TELEGRAM_API_HASH: "${TELEGRAM_API_HASH:-}"
+      # service/gasbot.py: the monthly gas reading via @mygrmu_bot.
+      GASBOT_TOKEN: "${GASBOT_TOKEN:-}"
+      GASBOT_ACCOUNT: "${GASBOT_ACCOUNT:-}"
+      GASBOT_COUNTER: "${GASBOT_COUNTER:-}"
