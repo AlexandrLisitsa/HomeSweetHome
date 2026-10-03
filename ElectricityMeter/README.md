@@ -19,10 +19,10 @@ login, flashing, mounting, and setting the meter reading.
 | 1. See what a blink looks like | **Done** (2026-10-01). The first [golden capture](data/golden/README.md) has a verified count of 163 blinks. |
 | 2. Count blinks | **Done** in code: [`include/detector.h`](firmware/electricity-meter/include/detector.h) counts all 163, tested on every push. On the meter since 2026-10-03: 156 boiler blinks in 42 s, 2.07 kW. |
 | 3. Report to Home Assistant | **Done** in code: MQTT discovery, the day/night [package](../HomeAssistant/config/packages/electricity_meter.yaml), deployed 2026-10-03. |
-| 4. Commission at the meter | **Done** (2026-10-03): 2.2.0 on its fixed address, levels 990 / 940, reading set to 47267.64 kWh, the Energy dashboard's grid source. Next: compare with the display over a day (roadmap step 7). [`docs/setup.md`](docs/setup.md). |
+| 4. Commission at the meter | **Done** (2026-10-03): 2.2.0 on its fixed address, levels 990 / 940, reading set to 47267.64 kWh, the Energy dashboard's grid source. [`docs/setup.md`](docs/setup.md). |
 
-[`docs/roadmap.md`](docs/roadmap.md) has what is left and what "done" means for
-each step.
+**Finished.** [`docs/roadmap.md`](docs/roadmap.md) has how it got here, and the
+two checks that were dropped.
 
 ## Hardware
 
@@ -201,5 +201,5 @@ first is 47 s of the boiler heating: 163 blinks, at 1.99 kW.
 
 - [`docs/setup.md`](docs/setup.md): from the parts on the desk to the meter on
   the Energy dashboard, step by step.
-- [`docs/roadmap.md`](docs/roadmap.md): what is left, and what "done" means for
-  each step.
+- [`docs/roadmap.md`](docs/roadmap.md): the steps it took, and the two checks
+  that were dropped.

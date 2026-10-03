@@ -1,7 +1,7 @@
 # Roadmap
 
-What is left before the meter is the Energy dashboard's grid source. Steps 1–3
-are written and tested on the PC. Everything from 4 on happens at the meter.
+How the meter became the Energy dashboard's grid source. **Finished
+2026-10-03**: steps 1–5 and 8 are done; 6 and 7 were dropped (below).
 
 ## Decisions taken
 
@@ -53,6 +53,10 @@ Energy tab shows the meter.
 
 ## 6. More golden data
 
+**Not needed** (2026-10-03). The counts at the meter matched the boiler and
+the inverter from the first night, so the extra captures were dropped. Kept
+here in case the count ever drifts.
+
 Record these with [`tools/capture.py`](../tools/capture.py), with the sensor
 mounted for good:
 
@@ -66,6 +70,9 @@ mounted for good:
 
 ## 7. Prove it against the register
 
+**Not needed** (2026-10-03), for the same reason. Run it if the Energy
+dashboard and the bill ever disagree.
+
 Compare HA with the display over at least a day: Δdisplay × 6400 should equal
 Δpulses.
 
@@ -74,6 +81,5 @@ Compare HA with the display over at least a day: Δdisplay × 6400 should equal
 
 ## 8. Merge
 
-Open a PR from `feature/electricity-meter` into `master`. Then move the project
-from the "unfinished" lists in the root `README.md` and `MANIFEST.md` to
-Modules.
+**Done** (2026-10-03): PR #22 merged, and the project moved from the
+"unfinished" lists in the root `README.md` and `MANIFEST.md` to Modules.
