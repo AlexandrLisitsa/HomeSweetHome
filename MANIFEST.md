@@ -129,7 +129,7 @@ and the content-hash `?v=` on floor-plan images.
 ## 8. Git
 
 - **`master` is the public branch.** A project that is not finished lives on its
-  own branch (currently `ledlamp` and `feature/electricity-meter`), built on
+  own branch (currently `ledlamp`), built on
   `master` and holding only that project on top, until it is merged.
 - Public history is authored with the GitHub noreply address.
 - Commit messages: an imperative summary line, a blank line, then the why.

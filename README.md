@@ -37,15 +37,14 @@ flowchart LR
 | [`IRBridge/`](IRBridge/README.md) | Android app that turns an old phone's IR blaster into an authenticated HTTP API, so Home Assistant can drive a "dumb" split A/C — including a protocol sweep to find which IR codec the unit speaks. |
 | [`FloorPlan/`](FloorPlan/README.md) | Tooling that renders a Sweet Home 3D model from above and turns it into the isometric **Home** dashboard, where each lamp lights its own room. |
 | [`MeterCam/`](MeterCam/README.md) | An ESP32-CAM that wakes every 30 minutes to photograph the gas meter's dial, and a service in a Proxmox LXC that reads the digits and hands Home Assistant a reading only when it can stand behind it. Once a month it files that reading with the gas operator through its Telegram bot, after a tap on the phone. |
+| [`ElectricityMeter/`](ElectricityMeter/README.md) | A photodiode on the electricity meter's imp/kWh LED and an ESP8266 that counts its blinks, so Home Assistant gets the flat's power and consumption from the meter itself, split day / night. It is the Energy dashboard's grid source; the inverter alone misses the boiler's circuit. |
 | [`Proxmox/`](Proxmox/README.md) | The host and its guests, one doc each; read-only Proxmox API scripts that measure the Home Assistant guest's resource history; and the backup setup that keeps every guest and HA's backups on the host and, encrypted, on Google Drive ([`Proxmox/docs/backups.md`](Proxmox/docs/backups.md)). |
 
 Unfinished projects live on branches of their own until they are:
 
 - [`ledlamp`](../../tree/ledlamp): **LedLamp**, a ceiling lamp rebuilt as a Zigbee
   tunable-white COB light, with its parts list, wiring and a printable guide.
-- [`feature/electricity-meter`](../../tree/feature/electricity-meter):
-  **ElectricityMeter**, a photodiode on an ESP8266 that counts the electricity
-  meter's imp/kWh LED.
+  Waiting for parts.
 
 ## Getting started
 
