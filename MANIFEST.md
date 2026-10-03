@@ -110,6 +110,7 @@ ships bumps at least one of them:
 | --- | --- | --- |
 | Lovelace cards in `HomeAssistant/config/www/` | `const VERSION` at the top of the card | The resource URL's `?v=`, and the banner the card logs to the browser console |
 | `IRBridge` app | `versionName` in `app/build.gradle.kts` | `"version"` in the bridge's `/health` reply |
+| `MeterBots` service | `VERSION` in `service/app.py` | `"version"` in its `/health` reply |
 
 For a card, the `?v=` is the version and nothing else: register it with
 `ha_dashboard.py --card <file>`, never by hand. Not ours, and left as they are:

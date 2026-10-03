@@ -15,6 +15,7 @@ it all from filling up is in [`docs/maintenance.md`](docs/maintenance.md).
 | 102 · LXC | Tailscale subnet router: private remote access | [`docs/102-tailscale.md`](docs/102-tailscale.md) |
 | 103 · LXC | Cloudflare Tunnel: lets Google Home and Gemini reach Home Assistant, without an open port | [`docs/103-cloudflare.md`](docs/103-cloudflare.md) |
 | 104 · LXC | MeterCam: reads the gas meter's dial for Home Assistant | [`docs/104-metercam.md`](docs/104-metercam.md) |
+| 105 · LXC | MeterBots: files the monthly meter readings with the suppliers' Telegram bots | [`docs/105-meterbots.md`](docs/105-meterbots.md) |
 
 The tooling began as a way to measure the HA guest's resource history rather
 than eyeball it off a graph ([the CPU case study](docs/cpu-growth-case-study.md)).
@@ -92,6 +93,7 @@ help".
 | [`docs/102-tailscale.md`](docs/102-tailscale.md) | LXC 102, Tailscale subnet router |
 | [`docs/103-cloudflare.md`](docs/103-cloudflare.md) | LXC 103, Cloudflare Tunnel |
 | [`docs/104-metercam.md`](docs/104-metercam.md) | LXC 104, MeterCam |
+| [`docs/105-meterbots.md`](docs/105-meterbots.md) | LXC 105, MeterBots |
 | [`docs/ssh-write-path.md`](docs/ssh-write-path.md) | the root SSH key that changes the host, and what the read/write split does and does not buy |
 | [`docs/backups.md`](docs/backups.md) | what is backed up, where, the retention, and how to restore |
 | [`docs/maintenance.md`](docs/maintenance.md) | housekeeping: what keeps the host and its guests from slowly filling up |

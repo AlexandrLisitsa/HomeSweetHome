@@ -73,10 +73,9 @@ host_config_tarball() {
 # What cannot be rebuilt is this, a few MB, carried in the same encrypted
 # upload as the LXC dumps:
 #
-#   .env              HA token, gas-bot token, Telegram api_id/api_hash
+#   .env              the HA token and MeterCam's own token
 #   config.json       the meter's ROIs (matched to data/ref)
 #   data/ref          the alignment reference frame
-#   data/telegram     the Telegram session (a logged-in account)
 #   data/firmware     what the camera is offered over OTA
 #   models            the digit models (no licence to re-download from git)
 #
@@ -87,10 +86,34 @@ metercam_tarball() {
     out="$1/metercam-state-$(date +%Y_%m_%d-%H_%M_%S).tar.zst"
     pct status "$METERCAM_VMID" 2>/dev/null | grep -q running || return 1
     pct exec "$METERCAM_VMID" -- tar -C "$METERCAM_DIR" -cf - --ignore-failed-read \
-        .env config.json docker-compose.yml data/ref data/telegram data/firmware models \
+        .env config.json docker-compose.yml data/ref data/firmware models \
         2>/dev/null | zstd -q -19 > "$out" || return 1
     # A tar that found nothing still writes a valid, tiny archive.
-    [ "$(zstd -dc "$out" | tar -tf - | grep -c -E '^(\./)?\.env$|gasbot\.session$')" -ge 1 ] || return 1
+    [ "$(zstd -dc "$out" | tar -tf - | grep -c -E '^(\./)?\.env$')" -ge 1 ] || return 1
+    chmod 600 "$out"
+    echo "$out"
+}
+
+# MeterBots (LXC 105) is not dumped either, for the same reason: its image
+# rebuilds from git. Its state is a few KB, and it is the most sensitive thing
+# on the host -- a logged-in Telegram account -- so it only ever travels inside
+# this encrypted upload:
+#
+#   .env              the Telegram api_id/api_hash, the bots' tokens and
+#                     account numbers
+#   data/telegram     the Telegram session
+#
+# The session may legitimately be missing (logged out), so only .env is
+# required for the archive to count.
+METERBOTS_VMID="${METERBOTS_VMID:-105}"
+METERBOTS_DIR="/opt/meterbots"
+meterbots_tarball() {
+    out="$1/meterbots-state-$(date +%Y_%m_%d-%H_%M_%S).tar.zst"
+    pct status "$METERBOTS_VMID" 2>/dev/null | grep -q running || return 1
+    pct exec "$METERBOTS_VMID" -- tar -C "$METERBOTS_DIR" -cf - --ignore-failed-read \
+        .env docker-compose.yml data/telegram \
+        2>/dev/null | zstd -q -19 > "$out" || return 1
+    [ "$(zstd -dc "$out" | tar -tf - | grep -c -E '^(\./)?\.env$')" -ge 1 ] || return 1
     chmod 600 "$out"
     echo "$out"
 }
@@ -100,6 +123,11 @@ metercam-state)
     # By hand: `vzdump-offsite.sh metercam-state /tmp` writes the archive
     # and prints its path, to check what goes off-site without a backup run.
     metercam_tarball "${2:-/tmp}" || { log "ERROR: MeterCam state archive failed"; exit 1; }
+    ;;
+
+meterbots-state)
+    # By hand, the same for MeterBots: `vzdump-offsite.sh meterbots-state /tmp`.
+    meterbots_tarball "${2:-/tmp}" || { log "ERROR: MeterBots state archive failed"; exit 1; }
     ;;
 
 job-start)
@@ -127,13 +155,16 @@ job-end)
         metercam_failed=0
         mcs=$(metercam_tarball "$tmp") || { metercam_failed=1; mcs=""; \
             log "ERROR: MeterCam state archive failed (is LXC $METERCAM_VMID running?)"; }
+        meterbots_failed=0
+        mbs=$(meterbots_tarball "$tmp") || { meterbots_failed=1; mbs=""; \
+            log "ERROR: MeterBots state archive failed (is LXC $METERBOTS_VMID running?)"; }
 
         for dest in weekly $(first_run_of_month && echo monthly); do
             for b in $lxc_bases; do
                 log "copy $b -> $dest/"
                 $RCLONE copy "$dumpdir" "${REMOTE}$dest/" --include "$b.*"
             done
-            for f in "$cfg" $mcs; do
+            for f in "$cfg" $mcs $mbs; do
                 log "copy $(basename "$f") -> $dest/"
                 $RCLONE copy "$f" "${REMOTE}$dest/"
             done
@@ -174,8 +205,8 @@ job-end)
 
     $RCLONE rmdirs "$REMOTE" --leave-root
     rm -f "$QUEUE" "$FORCE_MONTHLY"
-    if [ "${metercam_failed:-0}" -ne 0 ]; then
-        log "done, but WITHOUT the MeterCam state archive"
+    if [ "${metercam_failed:-0}" -ne 0 ] || [ "${meterbots_failed:-0}" -ne 0 ]; then
+        log "done, but WITHOUT the$([ "${metercam_failed:-0}" -ne 0 ] && echo " MeterCam")$([ "${meterbots_failed:-0}" -ne 0 ] && echo " MeterBots") state archive"
         exit 1
     fi
     log "done"

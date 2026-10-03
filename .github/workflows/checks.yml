@@ -47,6 +47,8 @@ jobs:
         run: python HomeAssistant/tools/test_battery_runtime.py
       - name: Day/night tariff switch
         run: python HomeAssistant/tools/test_tariff_switch.py
+      - name: Monthly gas reading, the local half
+        run: python HomeAssistant/tools/test_gas_submit.py
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -83,6 +85,28 @@ jobs:
       # g++: the golden captures, the commands, the discovery payloads.
       - name: Detector on the golden captures, MQTT behaviour and discovery
         run: python ElectricityMeter/tools/test_firmware.py
+
+  meterbots:
+    name: MeterBots and MeterCam services
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install flask
+      # Fake bots and a fake Telegram client: no network, no Telethon.
+      - name: The gas bot's walk
+        run: python MeterBots/tests/test_gasbot.py
+      - name: The shared Telegram walker and its lock
+        run: python MeterBots/tests/test_tgclient.py
+      - name: Routes and tokens
+        run: python MeterBots/tests/test_app.py
+      - name: Deploy scripts parse
+        run: for f in MeterBots/deploy/*.sh; do sh -n "$f"; done
+      # MeterCam stays a camera service: its routes, read without OpenCV.
+      - name: MeterCam has no bot routes
+        run: python MeterCam/tests/test_routes.py
 
   irbridge:
     name: IRBridge Android build

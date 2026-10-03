@@ -116,8 +116,8 @@ class FakeClient:
 
 
 def walk(bot, value=None):
-    from service import gasbot
-    gasbot.QUIET_S, gasbot.REPLY_TIMEOUT_S, gasbot.POLL_S = 0.05, 2, 0.01
+    from service import gasbot, tgclient
+    tgclient.QUIET_S, tgclient.REPLY_TIMEOUT_S, tgclient.POLL_S = 0.05, 2, 0.01
     cfg = {"account": ACCOUNT, "counter": COUNTER}
 
     async def go():

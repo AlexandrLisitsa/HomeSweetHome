@@ -1,0 +1,164 @@
+"""service/tgclient.py on its own: the walker every bot uses, the lock they
+share, and the JSON the routes get back whatever goes wrong. A fake client,
+no Telegram, no Telethon.
+
+    python tests/test_tgclient.py
+"""
+import asyncio
+import os
+import pathlib
+import sys
+import threading
+import time
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from service import tgclient  # noqa: E402
+
+tgclient.QUIET_S, tgclient.REPLY_TIMEOUT_S, tgclient.POLL_S = 0.05, 0.5, 0.01
+
+checks = 0
+
+
+def check(name, cond, got=""):
+    global checks
+    checks += 1
+    print("  %s %s %s" % ("ok  " if cond else "FAIL", name, "" if cond else got))
+    if not cond:
+        sys.exit(1)
+
+
+class Btn:
+    def __init__(self, text):
+        self.text = text
+
+
+class Msg:
+    def __init__(self, mid, text, rows=(), out=False):
+        self.id, self.raw_text, self.out = mid, text, out
+        self.buttons = [[Btn(t) for t in row] for row in rows] or None
+        self.clicked = []
+
+    async def click(self, text):
+        self.clicked.append(text)
+
+
+class FakeClient:
+    """A chat whose bot answers each text with `replies[text]`: a list of
+    (delay_s, text, rows) sent after the given delay."""
+
+    def __init__(self, replies):
+        self.msgs, self.next_id, self.replies, self.pending = [], 10, replies, []
+
+    def add(self, text, rows=(), out=False):
+        self.next_id += 1
+        self.msgs.append(Msg(self.next_id, text, rows, out))
+        return self.msgs[-1]
+
+    async def get_messages(self, entity, limit=20, min_id=0):
+        now = time.monotonic()
+        for due, text, rows in [p for p in self.pending if p[0] <= now]:
+            self.add(text, rows)
+        self.pending = [p for p in self.pending if p[0] > now]
+        got = [m for m in self.msgs if m.id > min_id]
+        return list(reversed(got))[:limit]
+
+    async def send_message(self, entity, text):
+        m = self.add(text, out=True)
+        now = time.monotonic()
+        for delay, reply, rows in self.replies.get(text, []):
+            self.pending.append((now + delay, reply, rows))
+        return m
+
+
+def walk(client):
+    w = tgclient.Walk(client, "bot")
+    asyncio.run(w.start())
+    return w
+
+
+print("the walker")
+c = FakeClient({"/start": [(0, "Menu", [["A"], ["B"]]), (0.02, "Second message", ())]})
+w = walk(c)
+got = asyncio.run(w.say("/start"))
+check("collects both messages of a two-part answer", [m.raw_text for m in got] ==
+      ["Menu", "Second message"], [m.raw_text for m in got])
+check("the transcript has what was said and the buttons",
+      w.transcript[0] == {"me": "/start"} and w.transcript[1]["buttons"] == ["A", "B"],
+      w.transcript)
+check("its own messages are not answers", all(not m.out for m in got))
+
+c = FakeClient({})
+w = walk(c)
+try:
+    asyncio.run(w.say("/start"))
+    check("silence raises", False)
+except tgclient.BotError as exc:
+    check("silence raises BotError, with the transcript so far",
+          "did not answer" in str(exc) and exc.transcript == [{"me": "/start"}])
+
+c = FakeClient({"/start": [(0, "Menu", [["📊 Передати показання"], ["Інше"]])]})
+w = walk(c)
+msgs = asyncio.run(w.say("/start"))
+try:
+    asyncio.run(w.press(msgs, "Видалити"))
+    check("a missing button raises", False)
+except tgclient.BotError as exc:
+    check("a missing button raises BotError naming it", "Видалити" in str(exc))
+msg, text = tgclient._find_button(msgs, "передати  ПОКАЗАННЯ")
+check("buttons match loosely: case, spacing, emoji", text == "📊 Передати показання")
+
+print("parsing")
+for raw, want in [("2245", 2245.0), ("2245,50", 2245.5), ("2 245,50", 2245.5),
+                  ("2 245.5", 2245.5)]:
+    check("_number(%r) == %r" % (raw, want), tgclient._number(raw) == want)
+
+print("configuration")
+for k in ("TELEGRAM_API_ID", "TELEGRAM_API_HASH"):
+    os.environ.pop(k, None)
+try:
+    tgclient.api_settings()
+    check("missing API credentials raise", False)
+except tgclient.BotError as exc:
+    check("missing API credentials raise, naming both",
+          "TELEGRAM_API_ID" in str(exc) and "TELEGRAM_API_HASH" in str(exc))
+
+print("blocking(): the lock and the JSON")
+
+
+async def boom():
+    raise tgclient.BotError("the bot changed", [{"me": "/start"}])
+
+
+async def crash():
+    raise RuntimeError("socket closed")
+
+
+r = tgclient.blocking(boom)
+check("a BotError becomes {ok: false, error, transcript}",
+      r == {"ok": False, "error": "the bot changed", "transcript": [{"me": "/start"}]}, r)
+r = tgclient.blocking(crash)
+check("anything else becomes {ok: false, error}",
+      r == {"ok": False, "error": "RuntimeError: socket closed"}, r)
+
+order = []
+
+
+async def slow(name):
+    order.append(name + " in")
+    await asyncio.sleep(0.2)
+    order.append(name + " out")
+    return {"ok": True}
+
+
+threads = [threading.Thread(target=tgclient.blocking, args=(slow, n)) for n in ("gas", "yasno")]
+for t in threads:
+    t.start()
+    time.sleep(0.02)
+for t in threads:
+    t.join()
+check("two bots never talk at once: one conversation ends before the next starts",
+      order == ["gas in", "gas out", "yasno in", "yasno out"], order)
+
+print("%d checks passed" % checks)
