@@ -1,7 +1,12 @@
-// ElectricityMeter, stage one: show what the photodiode sees.
+// ElectricityMeter: count the meter's imp/kWh LED and tell Home Assistant.
 //
-// Samples analogRead(A0) 100 times a second into a ring buffer, and
-// serves it two ways:
+// Samples analogRead(A0) 100 times a second. Each sample goes through the
+// blink detector (detector.h), which counts meter pulses into the register
+// (meterPulses) -- kept through restarts by persist.cpp and reported to Home
+// Assistant over MQTT by mqtt_link.cpp.
+//
+// Stage one's raw view is still here, for tuning at the meter. The samples go
+// into a ring buffer, served two ways:
 //
 //   http://<board>/          a live graph and log, sized for a phone held at
 //                            the meter
@@ -31,6 +36,9 @@
 #include <Ticker.h>
 
 #include "config.h"
+#include "meter.h"
+#include "mqtt_link.h"
+#include "persist.h"
 
 static const uint8_t SENSOR_PIN = A0;
 static const uint32_t BAUD = 115200;
@@ -43,9 +51,10 @@ static const uint32_t BAUD = 115200;
 // The meter (NIK 2102) is 6400 imp/kWh and the supply is limited to 6 kW, so
 // at most it blinks 10.7 times a second, one blink every 94 ms: nine samples a
 // period.
-// What 100 Hz cannot promise is a sample inside a flash shorter than 10 ms --
-// and how long the flash is is what this stage is here to find out.
-static const uint32_t SAMPLE_INTERVAL_MS = 10;
+// What 100 Hz cannot promise is a sample inside a flash shorter than 10 ms.
+// This meter's flash turned out to be about 30 ms, three samples (see
+// data/golden/README.md), so it can.
+// (SAMPLE_INTERVAL_MS itself lives in meter.h: it is the detector's clock.)
 
 // About forty seconds of history, 8 KB of the 80 KB there is. A phone polling
 // four times a second needs only the last quarter of a second; the rest is
@@ -61,7 +70,7 @@ static const uint16_t MAX_REPLY = 250;
 // holds exactly as long as no slot is missed, and missedSlots below is the
 // board's own proof that none was.
 static uint16_t ringValue[RING_SIZE];
-static uint32_t sampleCount = 0;   // samples taken since boot; the ring's seq
+uint32_t sampleCount = 0;          // samples taken since boot; the ring's seq
 static uint32_t printedCount = 0;  // how far the serial output has got
 
 // The proof that nothing was lost, kept by the board rather than inferred
@@ -69,8 +78,12 @@ static uint32_t printedCount = 0;  // how far the serial output has got
 // half slots since the previous one counts as missed slots.
 static Ticker sampler;
 static uint32_t lastSampleUs = 0;
-static uint32_t missedSlots = 0;
-static uint32_t longestGapUs = 0;
+uint32_t missedSlots = 0;
+uint32_t longestGapUs = 0;
+
+Detector detector;
+uint32_t meterPulses = 0;
+static Settings settings;
 
 static ESP8266WebServer server(80);
 static bool wifiWasUp = false;
@@ -86,6 +99,7 @@ static const char PAGE[] PROGMEM = R"HTML(<!doctype html>
 body{margin:0;padding:12px 16px;background:var(--bg);color:var(--fg);font:15px system-ui,sans-serif}
 h1{font-size:17px;margin:0 0 8px}
 #st{font-size:13px;color:var(--mut);margin-bottom:8px}
+#meter{font-size:15px;margin-bottom:6px;font-variant-numeric:tabular-nums}
 .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:8px}
 .stats div{background:var(--pane);border-radius:8px;padding:6px;text-align:center}
 .stats b{display:block;font-size:22px;font-variant-numeric:tabular-nums}
@@ -97,6 +111,7 @@ button{flex:1;padding:10px;font-size:15px;border-radius:8px;border:1px solid var
 font:12px ui-monospace,monospace;white-space:pre;margin:0}
 </style></head><body>
 <h1>ElectricityMeter &middot; raw A0</h1>
+<div id="meter"></div>
 <div id="st">connecting&hellip;</div>
 <div class="stats">
 <div><b id="now">&ndash;</b><span>now</span></div>
@@ -128,6 +143,7 @@ async function poll(){
     while(T.length&&T[0]<cut){T.shift();V.shift();}
     $('st').textContent='online · up '+Math.round(j.up/1000)+' s · WiFi '+j.rssi+' dBm · missed '+j.missed+' · longest gap '+(j.gap/1000).toFixed(1)+' ms';
     $('st').style.color=j.missed?'#d33':'';
+    $('meter').textContent=(j.pulses/6400).toFixed(4)+' kWh · '+j.watts+' W · levels on '+j.on+' / off '+j.off;
   }catch(e){more=false;$('st').textContent='offline, retrying…';}
   if(!paused)render();
   setTimeout(poll,more?0:250);
@@ -191,6 +207,14 @@ static void handleSamples() {
   body += longestGapUs;
   body += F(",\"interval\":");
   body += SAMPLE_INTERVAL_MS;
+  body += F(",\"pulses\":");
+  body += meterPulses;
+  body += F(",\"watts\":");
+  body += lroundf(meterWatts());
+  body += F(",\"on\":");
+  body += settings.onLevel;
+  body += F(",\"off\":");
+  body += settings.offLevel;
   body += F(",\"v\":[");
   for (uint32_t i = from; i < to; i++) {
     if (i != from) body += ',';
@@ -203,10 +227,11 @@ static void handleSamples() {
 }
 
 // Runs from the Ticker, in the system context. Short on purpose: one ADC
-// read and a few stores. No Serial, no allocation.
+// read, the detector and a few stores. No Serial, no allocation.
 static void sample() {
   uint32_t nowUs = micros();
   uint16_t value = analogRead(SENSOR_PIN);
+  uint32_t skipped = 0;
 
   if (sampleCount > 0) {
     uint32_t gapUs = nowUs - lastSampleUs;
@@ -215,10 +240,18 @@ static void sample() {
     }
     const uint32_t slotUs = SAMPLE_INTERVAL_MS * 1000;
     if (gapUs > slotUs + slotUs / 2) {
-      missedSlots += (gapUs + slotUs / 2) / slotUs - 1;
+      skipped = (gapUs + slotUs / 2) / slotUs - 1;
+      missedSlots += skipped;
     }
   }
   lastSampleUs = nowUs;
+
+  // sampleCount is this sample's index and missedSlots the slots lost so far:
+  // together, the slot this sample belongs to.
+  if (detector.feed(sampleCount + missedSlots, value, skipped)) {
+    meterPulses++;
+    persistPulse(meterPulses);
+  }
 
   ringValue[sampleCount % RING_SIZE] = value;
   sampleCount++;
@@ -263,8 +296,14 @@ static void reportWifi() {
 void setup() {
   Serial.begin(BAUD);
   Serial.println();
-  Serial.printf("# ElectricityMeter raw A0, one sample every %u ms\n",
+  Serial.printf("# ElectricityMeter %s, one sample every %u ms\n", FW_VERSION,
                 (unsigned)SAMPLE_INTERVAL_MS);
+
+  persistBegin(meterPulses, settings);
+  detector.onLevel = settings.onLevel;
+  detector.offLevel = settings.offLevel;
+  Serial.printf("# register %lu pulses, levels on %u off %u\n",
+                (unsigned long)meterPulses, settings.onLevel, settings.offLevel);
 
   // The radio disturbs the ADC whenever it transmits; that is the price of
   // watching from a phone. Modem sleep would make it quieter between
@@ -279,13 +318,18 @@ void setup() {
   // electricity-meter.local resolve; the web page is advertised alongside it.
   ArduinoOTA.setHostname(HOSTNAME);
   ArduinoOTA.setPassword(OTA_PASSWORD);
-  ArduinoOTA.onStart([]() { Serial.println(F("# OTA update starting")); });
+  ArduinoOTA.onStart([]() {
+    Serial.println(F("# OTA update starting"));
+    persistSaveNow(meterPulses, settings);
+  });
   ArduinoOTA.begin();
   MDNS.addService("http", "tcp", 80);
 
   server.on("/", []() { server.send_P(200, "text/html", PAGE); });
   server.on("/samples", handleSamples);
   server.begin();
+
+  mqttBegin(&settings);
 
   sampler.attach_ms(SAMPLE_INTERVAL_MS, sample);
 }
@@ -295,4 +339,6 @@ void loop() {
   reportWifi();
   ArduinoOTA.handle();
   server.handleClient();
+  mqttLoop();
+  persistLoop(meterPulses, settings);
 }

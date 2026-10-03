@@ -31,5 +31,16 @@ threshold near the midpoint (about 890) sits on the edge samples and miscounts.
 The 163 is believed exact because the intervals are so regular: one missed blink
 would leave a gap of about 560 ms, and the longest interval is 290 ms.
 
+The handling at the end starts a little before 59.6 s. From about seq 23180
+the baseline wanders between 760 and 960 as the sensor is lifted. The count
+is unaffected: the last flash, at 23188, still falls on the 28–29-slot
+rhythm, and 950/820 counts nothing after it. Lower levels do count something
+there (900/820 gives 165), which is one reason the "on" level stays at 950.
+A power reading taken at the very end of the stretch is not a load reading,
+though, so `tools/test_detector.cpp` measures power at seq 23150.
+
+[`tools/test_firmware.py`](../../tools/test_firmware.py) replays this stretch
+through the firmware's own detector on every push.
+
 The Home Assistant columns (`.ha.csv`) read 0 W grid power throughout. The
 inverter does not see the boiler's circuit, so they are no cross-check here.

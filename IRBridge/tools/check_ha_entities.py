@@ -140,6 +140,8 @@ EXTERNAL = {
     "sensor.0xa4c13858c97f07f8_humidity",
     "sensor.0x70b3d52b600fddcb_power",         # A/C energy meter, zigbee2mqtt
     "sensor.0x70b3d52b600fddcb_energy",
+    "sensor.electricity_meter_energy",         # ElectricityMeter board, MQTT discovery
+    "sensor.electricity_meter_power",
 
     # Created in the UI, so they exist in .storage/core.entity_registry and
     # nowhere in this repo. Listed one by one on purpose: they are few, and a

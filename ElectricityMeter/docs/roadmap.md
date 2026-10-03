@@ -1,94 +1,78 @@
 # Roadmap
 
-What is left between stage one (seeing the blinks, done) and an electricity
-meter Home Assistant can put on the Energy dashboard. The steps run in order.
-Each one says what "done" means, so it is clear when to move on.
+What is left before the meter is the Energy dashboard's grid source. Steps 1–3
+are written and tested on the PC. Everything from 4 on happens at the meter.
 
-What stage one established, which everything below builds on:
+## Decisions taken
 
-- The NIK 2102 blinks 6400 times per kWh. At the 6 kW supply limit that is at
-  most one blink every 94 ms.
-- At 10 ms sampling a flash is 3 samples (about 30 ms). The baseline between
-  flashes is about 760 and the peak about 1014.
-- Hysteresis counts the boiler capture exactly: **on above 950, off below 820**.
-  A single threshold near the midpoint sits on the edge samples and miscounts.
-- The board misses about 0.07% of slots while a phone is polling, plus a
-  ~0.9 s block while WiFi connects at boot. A counter must treat a reported
-  miss as "a blink may be missing here".
+- **Reporting: MQTT with Home Assistant discovery** (2026-10-03). It was
+  chosen over HA polling a REST endpoint and over the board pushing to HA's
+  REST API, because it gives one device, availability for free, retained
+  state, and commands back to the board (meter reading, levels, restart)
+  behind a broker login. The board never holds an HA admin token.
+- **Day/night by the clock in Home Assistant**, not on the board: a
+  `utility_meter` with `day` / `night` tariffs, switched at 07:00 and 23:00
+  like the inverter's. The board needs no clock.
+- **The meter replaces the inverter** as the Energy dashboard's grid source.
+  The inverter misses the boiler's circuit.
+- **Power from the inverter-backed socket**, so the board counts through
+  outages.
 
-## 1. Write the detector offline
+## Done in code
 
-Add `tools/detect.py`. It replays a golden CSV through the same hysteresis the
-firmware will use and prints the blink count. It also reports every `# MISSED`
-or `# HOLE` note it crosses, together with whether a blink could have been lost
-there.
+1. **Detector.** [`include/detector.h`](../firmware/electricity-meter/include/detector.h)
+   uses on > 950 / off < 820 hysteresis, uncertain gaps and power. It counts
+   the boiler capture's 163 exactly and reads about 2 kW on it.
+2. **Firmware.** It counts in the sampling timer, keeps the register in RTC,
+   flash and the broker, and reports over MQTT discovery. The energy sensor
+   stays unavailable until the meter reading is set.
+3. **Home Assistant.** [`electricity_meter.yaml`](../../HomeAssistant/config/packages/electricity_meter.yaml)
+   holds the day/night meters and the switch, tested with the inverter's in
+   `test_tariff_switch.py`.
 
-**Done when** it prints 163 for the clean stretch of
-`data/golden/2026-10-01-1441-boiler.csv` (seq 18613–23307). Every later
-capture gets its count checked the same way.
+`tools/test_firmware.py` covers 1 and 2 on every push. It replays the
+golden data, drives the MQTT commands, and parses the discovery payloads.
 
-## 2. Record more golden data
+## 4. Commission at the meter
 
-At the meter, with [`tools/capture.py`](../tools/capture.py):
+Follow [`setup.md`](setup.md) steps 1–8.
 
-- **Low load.** Only standby, so blinks come seconds apart. This checks that a
-  slowly drifting baseline does not trip the detector.
-- **High load.** Boiler, kettle and oven together, so blinks come towards the
-  94 ms limit. This checks that consecutive flashes stay separate.
-- **Room light.** Room lights on and off, and daylight, with the sensor
-  mounted. This checks the shielding.
+**Done when** the device is in Home Assistant, a torch flash counts exactly
+one, the blinks on the phone page clear both levels, and the meter reading is
+set.
 
-**Done when** each capture is in `data/golden/` and listed in its README with
-a verified count, and `detect.py` matches all of them.
+## 5. Deploy the Home Assistant side
 
-## 3. Stage-two firmware: count
+Copy the package to the box, run `ha core restart`, then swap the Energy
+dashboard's grid sources
+([`HomeAssistant/docs/electricity-meter.md`](../../HomeAssistant/docs/electricity-meter.md)).
 
-- Run the detector inside the sampling timer callback, so a count never waits
-  on WiFi.
-- Keep the running pulse total across restarts. Write it to RTC memory on every
-  pulse, and to flash rarely (every N pulses and before an OTA update) so
-  flash wear stays low.
-- Count missed slots that could have hidden a flash separately, as
-  "uncertain".
-- Add a `/count` endpoint returning pulses, kWh, the current W (from the
-  interval between the last two pulses), missed slots and uptime. Keep
-  `/samples` and the live page for debugging.
+**Done when** `select.electricity_meter_tariff` follows the clock and the
+Energy tab shows the meter.
 
-**Done when** the board's count over a timed run at the meter matches the
-blinks counted by hand or from a capture made at the same time.
+## 6. More golden data
 
-## 4. Report to Home Assistant
+Record these with [`tools/capture.py`](../tools/capture.py), with the sensor
+mounted for good:
 
-Two entities, and no more (see the repo's no-sensor-sprawl rule):
+- **Low load**, blinks seconds apart, to check that a drifting baseline
+  doesn't trip the detector.
+- **High load** (boiler, kettle and oven), blinks towards the 94 ms limit.
+- **Room light** on and off, plus daylight.
 
-- an energy sensor in kWh, `state_class: total_increasing`, for the Energy
-  dashboard's grid consumption;
-- a power sensor in W.
+**Done when** each one is in `data/golden/` with a verified count and
+`test_detector.cpp` checks it.
 
-Both get the area prefix the other devices use.
+## 7. Prove it against the register
 
-**Open decision:** how the numbers get to HA.
+Compare HA with the display over at least a day: Δdisplay × 6400 should equal
+Δpulses.
 
-- **HA polls `/count`** with a REST sensor. This is the recommendation:
-  nothing on the board needs the HA token, and the firmware stays dumb.
-- The board pushes to HA's REST API, the way MeterCam does.
-- MQTT.
+**Done when** a day's kWh agrees with the display to its last digit, and
+`uncertain` stays at or near 0.
 
-**Done when** the energy sensor is on the Energy dashboard and a board restart
-does not make it jump.
+## 8. Merge
 
-## 5. Calibrate and mount for good
-
-- Compare the count with the meter's register over at least a day:
-  Δregister × 6400 should equal Δpulses.
-- Mount the sensor and board permanently on a USB supply, with a fixed DHCP
-  lease.
-
-**Done when** a day's kWh from HA agrees with the register to within one
-displayed digit.
-
-## 6. Merge
-
-Open a PR from `feature/electricity-meter` into `master`. Then remove the
-project from the "unfinished" lists in the root `README.md` and
-`MANIFEST.md`, and list it under Modules.
+Open a PR from `feature/electricity-meter` into `master`. Then move the project
+from the "unfinished" lists in the root `README.md` and `MANIFEST.md` to
+Modules.

@@ -16,3 +16,12 @@
 // value to the ota build through the ELECTRICITY_METER_OTA_PASSWORD environment
 // variable; see platformio.ini.
 #define OTA_PASSWORD     "change-me"
+
+// --- MQTT: the Mosquitto add-on on Home Assistant ----------------------------
+// Log in as a Home Assistant user made for this board (Settings -> People ->
+// Users: not an administrator, local network only). Mosquitto accepts Home
+// Assistant's own users. See docs/setup.md.
+#define MQTT_HOST        "192.168.0.3"
+#define MQTT_PORT        1883
+#define MQTT_USER        "electricity-meter"
+#define MQTT_PASSWORD    "change-me"
