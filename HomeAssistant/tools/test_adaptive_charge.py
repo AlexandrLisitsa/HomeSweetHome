@@ -2,11 +2,11 @@
 
     python HomeAssistant/tools/test_adaptive_charge.py
 
-The plan is one Jinja template that decides, every hour of the night, the
+The plan is one Jinja template that decides, every 10 minutes of the night, the
 smallest Max AC Charge Current that still fills the pack before the night
 tariff ends at 07:00. `ha core check` only parses it, and a wrong branch shows
 up as a pack that is half empty at 07:00 or charged at 60 A for nothing. This
-proves the gating and the sizing, including the hourly re-size as the pack
+proves the gating and the sizing, including the 10-minute re-size as the pack
 fills or falls behind.
 
 Same approach as test_outage_precharge.py: just enough of Home Assistant's
@@ -79,13 +79,13 @@ def make_env(states, now):
     return env
 
 
-def plan_template():
+def plan_block():
     pkg = yaml.load(PKG.read_text(encoding="utf-8"), Loader=HaLoader)
-    block = pkg["template"][0]
-    return block["action"][0]["variables"]["plan"]
+    return pkg["template"][0]
 
 
-TEMPLATE = plan_template()
+BLOCK = plan_block()
+TEMPLATE = BLOCK["action"][0]["variables"]["plan"]
 
 
 # The ESP's release value: any past moment means "no pre-charge".
@@ -159,7 +159,16 @@ check("nearly full at 03:00: 5.75 Ah over 3.5 h -> 2 A trickle step",
 check("full (278 of 280 Ah) -> full, 2 A",
       state_current(plan(at(3, "01:00"), 278)), ("full", 2))
 
-print("the hourly re-size")
+print("the 10-minute re-size")
+check("the plan re-renders on a 10-minute time pattern",
+      [t.get("minutes") for t in BLOCK["trigger"]
+       if t.get("platform") == "time_pattern"], ["/10"])
+# 20 A for 10 min puts ~3.3 Ah in. Just over 10 A needed at 03:00, just under
+# at 03:10: hourly, 20 A would have held until 04:00.
+check("03:00 with 248.7 Ah: 36.0 Ah over 3.5 h = 10.3 A -> 20",
+      state_current(plan(at(3, "03:00"), 248.7)), ("charging", 20))
+check("03:10 with 251.7 Ah: 32.5 Ah over 3.33 h = 9.8 A -> 10",
+      state_current(plan(at(3, "03:10"), 251.7)), ("charging", 10))
 check("fell behind: 200 Ah at 05:00 needs 61 A -> 60, full current",
       state_current(plan(at(3, "05:00"), 200)), ("charging", 60))
 check("... and its reason says so",

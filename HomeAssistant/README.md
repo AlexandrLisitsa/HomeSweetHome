@@ -25,7 +25,7 @@ read before it goes live, and a `git revert` if it was wrong.
   to full before it starts, at the lowest current that makes it and at night
   rates when they suffice ([`docs/outage-precharge.md`](docs/outage-precharge.md)).
 - **Adaptive night charge**: the night-tariff charge runs at the lowest current
-  that still fills the pack by 07:00, re-sized every hour
+  that still fills the pack by 07:00, re-sized every 10 minutes
   ([`docs/adaptive-charge.md`](docs/adaptive-charge.md)).
 - **Load shedding**: during an outage, devices step down one by one as the
   battery drains, with a warning one step ahead and everything put back when
