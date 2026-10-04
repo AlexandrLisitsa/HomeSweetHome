@@ -6,7 +6,8 @@ the route refuses everyone: filing a reading as the household is not something
 a stray script on the LAN may do.
 
     GET  /health              alive, which bots are configured, the session
-    GET  /gas/bot/status      dry run of @mygrmu_bot, sends nothing
+    GET  /session             is the Telegram session still logged in
+    GET  /gas/bot/status     dry run of @mygrmu_bot, sends nothing
     POST /gas/bot/submit      {"value": 2262}
     GET  /yasno/bot/status    dry run of @Yasnoonlinebot, sends nothing
     POST /yasno/bot/submit    {"day": 38500, "night": 6450}
@@ -19,7 +20,7 @@ from flask import Flask, jsonify, request
 
 from . import gasbot, tgclient, yasnobot
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 APP = Flask(__name__)
 
@@ -45,6 +46,17 @@ def health():
                     "bots": {"gas": GASBOT_TOKEN is not None,
                              "yasno": YASNOBOT_TOKEN is not None},
                     "session": tgclient.session_present()})
+
+
+@APP.route("/session")
+def session():
+    """Whether the Telegram session is still logged in: one round trip to
+    Telegram, nothing sent to any bot. Either bot's token opens it. Home
+    Assistant asks weekly, so a logged-out session is found weeks before the
+    monthly ask instead of at it."""
+    if not (gasbot_authorised() or yasnobot_authorised()):
+        return deny()
+    return jsonify(tgclient.session_check())
 
 
 @APP.route("/gas/bot/status")
