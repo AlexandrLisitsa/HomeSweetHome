@@ -217,6 +217,22 @@ A backup nobody has restored is a hope. Results go here, newest first.
 
 <!-- restore-tests -->
 
+**2026-10-04, from Drive, on this host.** Off tonight's scheduled run (the
+first with the failure-tolerant hook, which logged `done, Drive 59% used`):
+
+- `vzdump-lxc-101-2026_10_04-03_30_08` (AdGuard) copied back from
+  `gdrive-crypt:weekly/`: byte-identical to the local dump, so the crypt
+  remote decrypts. `pct restore 901 … --unique 1`, `net0` deleted, started:
+  booted, Debian 13, `/opt/AdGuardHome` present. Stopped and destroyed.
+- `meterbots-state`, `metercam-state` and `pve-host-config` copied back and
+  listed (not extracted): the Telegram session and `.env`; MeterCam's `.env`,
+  `config.json` and `gas-cam-7.bin`; `/etc/pve/jobs.cfg` and the hook.
+
+Not tested: `qmrestore` of `monthly-vm/` (5 GB; needs a spare ID with 64 GB of
+thin space), and decrypting on a machine other than this host with the crypt
+password from the password manager. The second is the one that matters if the
+host itself is lost.
+
 ## Checks
 
 - **HA:** Settings → System → Backups shows both locations and the last
