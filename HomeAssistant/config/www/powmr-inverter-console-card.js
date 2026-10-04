@@ -73,7 +73,7 @@
  */
 
 const CARD = "powmr-inverter-console-card";
-const VERSION = "2.5.0";
+const VERSION = "2.8.0";
 
 /*
  * Brand colours stay literal: they identify a leg of the diagram (amber =
@@ -128,14 +128,22 @@ const DEFAULTS = {
   charge_current: "sensor.powmr_inverter_battery_charge_current",
   discharge_current: "sensor.powmr_inverter_battery_discharge_current",
   // Energy
-  tariff_day: "sensor.powmr_inverter_grid_real_tariff_day",
-  tariff_night: "sensor.powmr_inverter_grid_real_tariff_night",
-  total_energy: "sensor.powmr_inverter_total_energy_consumption",
+  // The flat's electricity meter (ElectricityMeter/, packages/
+  // electricity_meter.yaml): what the grid really delivers, the boiler's
+  // circuit included, which never passes through the inverter. Its power is
+  // the Meter tile under Grid; its tariff counters and their Energy-dashboard
+  // costs are the energy rows.
+  meter_power: "sensor.electricity_meter_power",
+  meter_day: "sensor.electricity_meter_tariff_day",
+  meter_night: "sensor.electricity_meter_tariff_night",
+  meter_day_cost: "sensor.electricity_meter_tariff_day_cost",
+  meter_night_cost: "sensor.electricity_meter_tariff_night_cost",
+  meter_total: "sensor.electricity_meter_energy",
+  meter_tariff: "select.electricity_meter_tariff",
   // Controls
   max_charge_current: "select.powmr_inverter_max_ac_charge_current",
   power_priority: "select.powmr_inverter_power_priority",
   ac_input_mode: "select.powmr_inverter_inverter_ac_input_mode",
-  tariff: "select.grid_real_tariff",
   // What the outage pre-charge intends (HomeAssistant/config/packages/
   // outage_precharge.yaml). Read only for the Pre-charge chip's sub-label.
   precharge_plan: "sensor.outage_pre_charge_plan",
@@ -148,6 +156,9 @@ const DEFAULTS = {
   max_grid_w: 2400,
   max_load_w: 2400,
   max_batt_w: 1600,
+  // The flat's breaker: the Meter tile's scale (the same 60/85 % bands as
+  // the load gauge) and its run's full speed.
+  max_meter_w: 6000,
   // grid_safe's delayed_off in PowerStation/power-station.yaml. Keep in step.
   grid_return_s: 300,
   device_label: "PowMr · Hybrid Inverter",
@@ -261,11 +272,16 @@ const SERIES = [
   { key: "bat_v", cfg: "battery_voltage", name: "Battery Voltage", short: "Battery voltage", unit: "V", dec: 1, color: BATT_C },
 ];
 
-/* Cumulative meters: a rising total charts as a ramp, so these are rows. */
+/*
+ * Cumulative meters: a rising total charts as a ramp, so these are rows. All
+ * from the electricity meter -- what YASNO bills -- not the inverter's
+ * estimate, which misses the boiler's circuit. The tariff rows are this
+ * month's, with their cost from the Energy dashboard when it has one.
+ */
 const ENERGY = [
-  { key: "tar_d", cfg: "tariff_day", short: "Tariff day", unit: "kWh", dec: 2, tariff: "day" },
-  { key: "tar_n", cfg: "tariff_night", short: "Tariff night", unit: "kWh", dec: 2, tariff: "night" },
-  { key: "total", cfg: "total_energy", short: "Total energy", unit: "kWh", dec: 3 },
+  { key: "mtr_d", cfg: "meter_day", cost: "meter_day_cost", short: "Day this month", unit: "kWh", dec: 2, tariff: "day" },
+  { key: "mtr_n", cfg: "meter_night", cost: "meter_night_cost", short: "Night this month", unit: "kWh", dec: 2, tariff: "night" },
+  { key: "mtr_t", cfg: "meter_total", short: "Meter total", unit: "kWh", dec: 1 },
 ];
 
 /*
@@ -470,25 +486,32 @@ ha-card {
 /* --- tiles -------------------------------------------------------------- */
 .flowrow, .battrun, .battwrap { display: grid; grid-template-columns: 1fr 64px 1fr 64px 1fr; gap: 10px; }
 .flowrow { align-items: center; }
-.battrun > *, .battwrap > * { grid-column: 3; }
+.battrun > *, .battwrap > * { grid-column: 3; grid-row: 1; }
+/* The Meter tile hangs under Grid the way Battery hangs under Inverter. */
+.battrun > .direct, .battwrap > .direct { grid-column: 1; }
+.direct[hidden] { display: none !important; }
 .tile { border-radius: 14px; padding: 16px; min-width: 0; cursor: pointer; transition: border-color .15s; }
 .tile:hover { border-color: #3A3F4A; }
 .tile.t-grid { border: 1px solid #241D14; background: #0F0D0A; }
 .tile.t-inv { border: 1px solid #23262E; background: #0E1014; box-shadow: 0 0 0 1px #101318, 0 18px 50px -30px #000; }
 .tile.t-load { border: 1px solid #131C2A; background: #0A0D12; }
 .tile.t-batt { border: 1px solid #12271E; background: #080F0C; }
+/* The meter is the grid's own figure: Grid's amber family, like the other tiles. */
+.tile.t-dir { border: 1px solid #241D14; background: #0F0D0A; }
 .t-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .t-name { font-family: var(--mono); font-size: calc(10px * var(--s)); letter-spacing: .18em; text-transform: uppercase; }
 .t-grid .t-name { color: #8A7550; }
 .t-inv .t-name { color: #6E737E; }
 .t-load .t-name { color: #5B7091; }
 .t-batt .t-name { color: #4E8C71; }
+.t-dir .t-name { color: #8A7550; }
 .t-state { font-family: var(--mono); font-size: calc(10px * var(--s)); letter-spacing: .14em; white-space: nowrap; }
 .t-val { font-size: calc(26px * var(--s)); font-weight: 600; margin-top: 8px; line-height: 1; }
 .t-val i { font-size: calc(13px * var(--s)); margin-left: 4px; font-style: normal; }
 .t-grid .t-val i { color: #8A7550; }
 .t-inv .t-val i { color: #6E737E; }
 .t-load .t-val i { color: #5B7091; }
+.t-dir .t-val i { color: #8A7550; }
 .t-batt .t-val { font-size: calc(34px * var(--s)); }
 .t-batt .t-val i { font-size: calc(14px * var(--s)); color: #4E8C71; margin-left: 3px; }
 .t-sub { font-family: var(--mono); font-size: calc(12px * var(--s)); color: #6E737E; margin-top: 6px; }
@@ -578,6 +601,7 @@ select:disabled { cursor: not-allowed; color: #5C616B; }
 .erow.on .en { color: #E8EAED; }
 .erow .tag { font-family: var(--mono); font-size: calc(9px * var(--s)); letter-spacing: .16em; text-transform: uppercase; color: ${LOAD_C}; }
 .erow .ev { font-family: var(--mono); font-size: calc(14px * var(--s)); color: ${LOAD_C}; white-space: nowrap; }
+.erow .ev small { font-size: calc(12px * var(--s)); color: #8A7550; margin-left: 6px; }
 
 /* --- history ------------------------------------------------------------ */
 .hhead { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px; }
@@ -651,7 +675,13 @@ svg.ch { width: 100%; height: ${CH_H}px; display: block; }
  */
 @container pmcard (max-width: 900px) {
   .flowrow, .battrun, .battwrap { grid-template-columns: 1fr; }
-  .battrun > *, .battwrap > * { grid-column: 1; }
+  .battrun > *, .battwrap > * { grid-column: 1; grid-row: auto; }
+  /* Stacked, Grid is three tiles up: a run from it would point at Load. The
+     Meter tile goes last, under Battery. */
+  .battrun > .direct { display: none; }
+  .battwrap { gap: 10px; }
+  .battwrap > .t-batt { order: 1; }
+  .battwrap > .direct { order: 2; }
   .flowrow > .run.x i { width: 2px; height: 28px; animation-name: flowY;
     background-image: repeating-linear-gradient(180deg, var(--c) 0 6px, transparent 6px ${DASH}px); }
   .title { font-size: calc(24px * var(--s)); }
@@ -718,7 +748,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
       throw new Error(CARD + ": unknown block(s) " + unknown.join(", ")
         + " -- expected " + BLOCKS.join(", "));
     }
-    ["max_grid_w", "max_load_w", "max_batt_w"].forEach((k) => {
+    ["max_grid_w", "max_load_w", "max_batt_w", "max_meter_w"].forEach((k) => {
       const n = Number(cfg[k]);
       if (!Number.isFinite(n) || n <= 0) {
         throw new Error(CARD + ": " + k + " must be a positive number, got " + cfg[k]);
@@ -1245,11 +1275,26 @@ ${ch.dots ? "" : `
         </div>
 
         <div class="battrun">
+          <div class="run y direct" data-ref="dirRun" style="--c:${GRID_C}" data-more="${c.meter_power}" role="button" tabindex="0"
+               title="Metered power"><i data-ref="runDir"></i></div>
           <div class="run y" style="--c:${BATT_C}" data-more="${c.battery_power}" role="button" tabindex="0"
                title="Battery power"><i data-ref="runBatt"></i></div>
         </div>
 
         <div class="battwrap">
+          <div class="tile t-dir direct" data-ref="dirTile" data-more="${c.meter_power}" role="button" tabindex="0"
+               title="What the electricity meter measures: the whole flat's grid power, the boiler's circuit included. The scale runs to the ${c.max_meter_w} W breaker.">
+            <div class="t-head">
+              <span class="t-name">Meter</span>
+              <span class="t-state" data-ref="dirState"></span>
+            </div>
+            <div class="t-val" data-ref="dirVal"></div>
+            <div class="t-sub" data-ref="dirSub"></div>
+            <div class="gauge load"><div class="mark" data-ref="dirMark"></div></div>
+            <div class="ticks">
+              <span class="l0">0</span><span style="left:60%">${Math.round(c.max_meter_w * 0.6)}</span><span class="r0">${c.max_meter_w}</span>
+            </div>
+          </div>
           <div class="tile t-batt" data-more="${c.battery_soc}" role="button" tabindex="0">
             <div class="t-head">
               <span class="t-name">Battery</span>
@@ -1444,8 +1489,8 @@ ${ch.dots ? "" : `
       c.ac_output_voltage, c.load_power, c.load_percentage, c.uptime,
       c.battery_power, c.battery_soc, c.battery_voltage,
       c.charge_current, c.discharge_current,
-      c.tariff_day, c.tariff_night, c.total_energy,
-      c.max_charge_current, c.power_priority, c.ac_input_mode, c.tariff,
+      c.meter_power, c.meter_day, c.meter_night, c.meter_day_cost, c.meter_night_cost, c.meter_total,
+      c.max_charge_current, c.power_priority, c.ac_input_mode, c.meter_tariff,
     ].concat(CHIPS.map((ch) => c[ch.cfg]), [c.chip_night_only, c.chip_precharge]);
     const plan = (this._stateObj(c.precharge_plan) || {}).attributes || {};
     const ad = (this._stateObj(c.adaptive_plan) || {}).attributes || {};
@@ -1467,6 +1512,7 @@ ${ch.dots ? "" : `
     this._setFlow(el.runGrid, gridW, c.max_grid_w, false);
     this._setFlow(el.runLoad, loadW, c.max_load_w, false);
     this._setFlow(el.runBatt, battW, c.max_batt_w, true);
+    this._setFlow(el.runDir, this._num(c.meter_power), c.max_meter_w, false);
 
     const print = this._fingerprint();
     if (print === this._print) return;
@@ -1511,6 +1557,21 @@ ${ch.dots ? "" : `
       el.gridSub.textContent = this._fmt(this._num(c.grid_frequency), 2) + " Hz · "
         + this._fmt(gridW, 0) + " W in";
       el.gridMark.style.left = this._pct(gv, V_LO, V_SPAN).toFixed(2) + "%";
+    }
+    if (el.dirTile) {
+      const has = !!this._stateObj(c.meter_power);
+      el.dirTile.hidden = !has;
+      if (el.dirRun) el.dirRun.hidden = !has;
+      const mw = this._num(c.meter_power);
+      const pct = mw === null ? null : mw / c.max_meter_w * 100;
+      const col = mw === null ? "#5C616B" : this._loadColor(pct);
+      el.dirVal.innerHTML = this._fmt(mw, 0) + "<i>W</i>";
+      el.dirVal.style.color = col;
+      el.dirState.textContent = this._loadLabel(pct);
+      el.dirState.style.color = col;
+      el.dirSub.textContent = pct === null ? "— % of the " + c.max_meter_w + " W breaker"
+        : pct.toFixed(1) + " % of the " + c.max_meter_w + " W breaker";
+      el.dirMark.style.left = (pct === null ? 0 : Math.max(0, Math.min(100, pct))).toFixed(2) + "%";
     }
 
     // --- inverter tile -----------------------------------------------------
@@ -1588,14 +1649,16 @@ ${ch.dots ? "" : `
     });
 
     // --- energy rows -------------------------------------------------------
-    const tariff = this._state(c.tariff);
+    const tariff = this._state(c.meter_tariff);
     ENERGY.forEach((e, i) => {
       const row = el["erow" + i];
       if (!row) return;
       const active = e.tariff && e.tariff === tariff;
       row.classList.toggle("on", !!active);
       el["etag" + i].textContent = active ? "active" : "";
-      el["eval" + i].textContent = this._fmt(this._num(c[e.cfg]), e.dec) + " " + e.unit;
+      const cost = e.cost ? this._num(c[e.cost]) : null;
+      el["eval" + i].innerHTML = this._esc(this._fmt(this._num(c[e.cfg]), e.dec) + " " + e.unit)
+        + (cost !== null ? "<small>" + this._esc(cost.toFixed(2)) + " ₴</small>" : "");
     });
 
     // A range or tab change is local, so redraw from cache; the state change
