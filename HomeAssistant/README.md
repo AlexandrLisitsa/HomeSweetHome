@@ -146,8 +146,7 @@ The one-shot IRBridge installer (`ha_preflight.sh` → `ha_deploy.sh` →
 needed again.
 
 Local checks worth running before any transfer, all read-only. CI
-(`.github/workflows/checks.yml`) runs every one of them except
-`check_ha_templates.py`:
+(`.github/workflows/checks.yml`) runs every one of them on each push:
 
 ```sh
 python ../IRBridge/tools/check_ha_entities.py config

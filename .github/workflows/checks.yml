@@ -39,6 +39,12 @@ jobs:
         run: python HomeAssistant/tools/check_shared_constants.py
       - name: Entity references across the config
         run: python IRBridge/tools/check_ha_entities.py HomeAssistant/config
+      - name: IR A/C energy templates
+        run: python IRBridge/tools/check_ha_templates.py
+      # A Python mirror of Codecs.kt against real protocol timings (the
+      # SmartIR real-frame checks skip without a checkout).
+      - name: IR codecs
+        run: python IRBridge/tools/verify_codecs.py
       - name: Outage pre-charge plan and automations
         run: python HomeAssistant/tools/test_outage_precharge.py
       - name: Adaptive night charge plan and automations
@@ -108,11 +114,18 @@ jobs:
         run: python MeterBots/tests/test_tgclient.py
       - name: Routes and tokens
         run: python MeterBots/tests/test_app.py
-      - name: Deploy scripts parse
-        run: for f in MeterBots/deploy/*.sh; do sh -n "$f"; done
+      # Every shell script in the repo, not just MeterBots': deploy scripts,
+      # MeterCam's model fetch, FloorPlan's render, the HA and Proxmox tools.
+      - name: Shell scripts parse
+        run: git ls-files -z '*.sh' | xargs -0 -n1 sh -n
       # MeterCam stays a camera service: its routes, read without OpenCV.
       - name: MeterCam has no bot routes
         run: python MeterCam/tests/test_routes.py
+      # The carry rule and the plausibility gate: the failure that cannot be
+      # undone is a misread that comes out as a decrease. Pure arithmetic; the
+      # OpenCV and model sections skip here and run in the container.
+      - name: MeterCam reading arithmetic
+        run: python MeterCam/tests/test_reader.py
 
   proxmox:
     name: Proxmox backup hook
