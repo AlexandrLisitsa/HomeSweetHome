@@ -117,10 +117,10 @@ sh tools/ha_get.sh /api/config
 | `tools/test_outage_precharge.py` | renders the outage pre-charge plan in `packages/outage_precharge.yaml` and runs its drive and started automations through the simulator | no — pure local |
 | `tools/test_adaptive_charge.py` | renders the adaptive night charge plan in `packages/adaptive_charge.yaml` and runs its drive, outage-off and guard automations through the simulator, DST included | no — pure local |
 | `tools/test_battery_runtime.py` | renders `packages/battery_runtime.yaml`: runtime remaining, time to full and its edge triggers, against idle, unavailable, flat and full packs | no — pure local |
-| `tools/test_tariff_switch.py` | runs the day/night tariff automation in `config/automations.yaml` at 07:00 / 23:00, on HA start and over DST weekends | no — pure local |
+| `tools/test_tariff_switch.py` | runs the day/night tariff automations (`automations.yaml`, `electricity_meter.yaml`) at 07:00 / 23:00, on HA start and over DST weekends, and the A/C meters' day/night/battery switch (`ac_tariffs.yaml`) with its 30 s hold; also pins the simulator's `for:` | no — pure local |
 | `tools/test_electricity_submit.py` | the monthly YASNO reading: `config/electricity/electricity_submit.py`'s window and month, the same window in `packages/electricity_submit.yaml` for every day of three years, and its button handler's parsing | no — pure local |
 | `tools/test_gas_submit.py` | `config/gas/gas_submit.py` against a fake MeterCam on localhost: where it finds MeterCam, the month, the photo, the state file | no — localhost only |
-| `tools/ha_automation_sim.py` | not a command: a small simulator the tests above use to run a package's `automation:` list against a fake house (limits in its docstring) | — |
+| `tools/ha_automation_sim.py` | not a command: a small simulator the tests above use to run a package's `automation:` list against a fake house, `for:` timers on state triggers included (limits in its docstring) | — |
 | `tools/test_power_cards.js` | render and logic tests for the inverter, battery and load-shedding cards against a fake `hass` and a small DOM | no — pure local |
 | `tools/test_load_shedding.py` | renders the load-shedding engine's templates in `packages/load_shedding.yaml` (decision, warnings, validator, stores, restore) against fake states | no — pure local |
 | `tools/test_climate_chart.js` | fixture tests for the climate card's chart and dial maths | no — no network |
