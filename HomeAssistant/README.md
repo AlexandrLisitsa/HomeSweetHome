@@ -16,8 +16,9 @@ read before it goes live, and a `git revert` if it was wrong.
 - **Custom Lovelace cards** in `config/www/`: the Power station (inverter and
   battery, [`docs/power-station-dashboard.md`](docs/power-station-dashboard.md)),
   Climate, Shutdowns (DTEK) and Home (floor plan, see
-  [`../FloorPlan`](../FloorPlan)) dashboards. Each card is versioned
-  (see [MANIFEST, Versions](../MANIFEST.md#6-versions)).
+  [`../FloorPlan`](../FloorPlan)) dashboards, plus `card-tip.js`, the tooltip
+  every card imports ([`docs/dashboard-tooltips.md`](docs/dashboard-tooltips.md)).
+  Each card is versioned (see [MANIFEST, Versions](../MANIFEST.md#6-versions)).
 - **The DTEK outage schedule**: a poller for the distributor's queue and hourly
   schedule, so a planned outage can be told apart from a fault
   ([`docs/dtek-outage-schedule.md`](docs/dtek-outage-schedule.md)).
@@ -125,6 +126,7 @@ sh tools/ha_get.sh /api/config
 | `tools/test_load_shedding.py` | renders the load-shedding engine's templates in `packages/load_shedding.yaml` (decision, warnings, validator, stores, restore) against fake states | no — pure local |
 | `tools/test_climate_chart.js` | fixture tests for the climate card's chart and dial maths | no — no network |
 | `tools/test_console_history.js` | the inverter and battery cards' history: raw states inside the recorder's window, hourly statistics past it | no — pure local |
+| `tools/test_card_tooltips.js` | renders every custom card and checks each meaningful element's tooltip against [the standard](docs/dashboard-tooltips.md); `tools/fake_dom.js` is the small DOM it and `test_power_cards.js` share | no — pure local |
 | `tools/ha_www_push.sh` | pushes `config/www/` (the custom cards) to the box over SSH; follow with `ha_dashboard.py --card` to bump the resource version — **changes the house** | yes, deliberately |
 
 `ha_pull.sh` extracts to a temp dir and swaps, so a failed pull leaves the old
@@ -209,6 +211,7 @@ job or a nearly full Drive to `notify.household`.
 | [`docs/electricity-reading-submission.md`](docs/electricity-reading-submission.md) | the monthly day/night electricity reading to YASNO's Telegram bot: the T21/T22 registers, calibrating them, the ask and the buttons |
 | [`docs/power-station-dashboard.md`](docs/power-station-dashboard.md) | the Power station dashboard: the inverter and battery cards, the grid-return countdown, the palette |
 | [`docs/climate-dashboard.md`](docs/climate-dashboard.md) | the climate dashboard and its checker |
+| [`docs/dashboard-tooltips.md`](docs/dashboard-tooltips.md) | the tooltip standard every custom card follows: format, scope, examples, the CI check |
 | [`docs/ac-features.md`](docs/ac-features.md) | the inventory of both A/C units' features the climate card is built from |
 | [`docs/renaming-entities.md`](docs/renaming-entities.md) | renaming entity ids across the registry, dashboards and YAML |
 | [`docs/remote-access-security.md`](docs/remote-access-security.md) | how HA is reached from the internet: the traffic flow, and how each request is accepted or denied |

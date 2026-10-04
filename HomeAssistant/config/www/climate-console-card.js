@@ -91,7 +91,9 @@
  */
 
 const CARD = "climate-console-card";
-const VERSION = "1.2.0";
+import { cardTip } from "./card-tip.js?v=1.0.0";
+
+const VERSION = "1.4.0";
 
 const TABS = ["rooms", "hall", "bedroom"];
 
@@ -450,6 +452,234 @@ const MISS_SHOWN = 30000;
  */
 const SENT_GRACE = 10000;
 
+/* --- tooltips --------------------------------------------------------------
+ *
+ * Lines 2-4 of every tooltip on the card, in the house format of
+ * docs/dashboard-tooltips.md. Line 1 -- the name and its live state -- is
+ * built by _tip() when the tab patches; everything here is static and keeps
+ * in step with docs/climate-dashboard.md, docs/ac-features.md and the three
+ * packages the numbers come from (irbridge_ac_energy.yaml,
+ * bedroom_ac_energy.yaml, ac_tariffs.yaml). Both A/C tabs share an entry
+ * wherever the two units really do mean the same thing.
+ */
+const HELP = {
+  // --- rooms tab ---
+  range: "Shows that window, ending now, on both room charts.\n"
+    + "E.g. 3 h and 24 h draw raw readings; 7 d and 30 d use hourly statistics.\n"
+    + "Tap: also brings a zoomed or panned chart back to live.",
+  comfort: "The room judged on temperature and humidity separately; both can complain.\n"
+    + "E.g. Cool under 20 °C, Warm over 26 °C, Hot from 32 °C; Dry under 40 %, Humid over 60 %.\n"
+    + "Very dry is under 30 %, Very humid over 70 %; Comfortable when neither complains.",
+  roomTemp: "Temperature from the Aqara sensor in that room, over Zigbee.\n"
+    + "E.g. 19.5 °C badges the room Cool; 26.5 °C badges it Warm.",
+  roomHum: "Relative humidity from the same Aqara sensor.\n"
+    + "E.g. 38 % badges the room Dry; 62 % badges it Humid.",
+  todayMinMax: "The lowest and highest temperature since midnight.\n"
+    + "E.g. 21.8 / 24.6 °C; it keeps its own window, so the range buttons do not change it.",
+  dew: "The temperature at which this air would start to condense.\n"
+    + "E.g. 50 % at 25 °C is a 13.8 °C dew point; 50 % at 19 °C only 8.3 °C.",
+  chart: "All three rooms over one shared window; drag to pan, scroll or pinch to zoom.\n"
+    + "E.g. scroll in on 03:00 and both charts zoom to the same minutes.\n"
+    + "Double-click, or pick a range, to go back to live.",
+  win: "The window on screen after a zoom or a pan; blank while a preset is live.\n"
+    + "E.g. \"last 8 minutes\" while it follows now, \"03:00:00 – 09:00:00\" once panned.",
+  statRoom: "This room's line on the chart, in the colour of its dot.\n"
+    + "E.g. the living room is blue, the bedroom yellow, the kitchen red.",
+  stat: "Now is the live reading; Min, Max and Mean cover only the window on screen.\n"
+    + "E.g. zoom into the last 3 h and Min and Max narrow to those three hours.",
+
+  // --- the A/C hero ---
+  hallUnit: "The living room A/C, driven by infrared through the IR bridge phone.\n"
+    + "E.g. a change made with the physical remote never reaches this card.",
+  bedUnit: "The bedroom A/C, on midea_ac_lan over the LAN, with two-way feedback.\n"
+    + "E.g. a change made with its own remote shows up here too.",
+  modeHall: "The mode last sent by infrared; the A/C cannot report it back.\n"
+    + "E.g. Cool means it was told to cool; the activity badge says whether it is.",
+  modeBed: "The mode the unit reports over the LAN.\n"
+    + "E.g. in Fan only the dial goes inert, because this unit ignores the setpoint.",
+  dialHall: "The temperature the A/C was last told to hold; drag the knob or tap the ring.\n"
+    + "E.g. drag from 23 to 25 °C and release: one infrared frame goes out, not two.\n"
+    + "18–30 °C in steps of 1 °C.",
+  dialBed: "The temperature the unit holds; drag the knob or tap the ring.\n"
+    + "E.g. a setpoint the unit drops is asked once more, then the banner says so.\n"
+    + "16–30 °C in steps of 0.5 °C; inert in Fan only.",
+  rmark: "Where the room is now, on the same ring as the setpoint knob.\n"
+    + "E.g. room 26 °C, knob 23 °C: the arc between them is the cooling still to do.\n"
+    + "A room past either end of the dial is pinned to that end.",
+  roomHall: "The living room sensor's reading; the A/C itself reports nothing back.\n"
+    + "E.g. room 26.0 °C with the dial at 23 is three degrees still to cool.",
+  indoorBed: "The unit's own indoor thermometer and humidity, over the LAN.\n"
+    + "E.g. it reads \"room\" instead when the unit is offline and the Aqara stands in.",
+  roomBed: "The bedroom Aqara sensor, standing in while the unit is not reporting.\n"
+    + "E.g. it reads \"indoor\" again as soon as the unit is back on the network.",
+  stepHall: "Moves the setpoint one degree; each tap is one infrared frame.\n"
+    + "E.g. two quick taps from 23 °C send 24 and then 25 °C.\n"
+    + "18–30 °C.",
+  stepBed: "Moves the setpoint half a degree; resent once if not taken within 6 s.\n"
+    + "E.g. two quick taps from 23.0 °C ask for 24.0 °C.\n"
+    + "16–30 °C; inert in Fan only, where the unit ignores the setpoint.",
+  powerHall: "Turns the A/C on or off by infrared.\n"
+    + "E.g. On resumes the last mode the bridge remembers, or Cool if it has none.",
+  powerBed: "Turns the unit on or off over the LAN; On resumes its last mode.\n"
+    + "E.g. Off stops the unit but leaves its plug on, so it stays on the network.",
+  activity: "What the unit is doing, measured from the watts its plug meter reads.\n"
+    + "E.g. Cooling at or above the compressor threshold, Idle — at setpoint below it.",
+  writeOnly: "Infrared goes one way: the card cannot read the unit's settings back.\n"
+    + "E.g. the mode and fan here are what was last sent, not what the unit shows.",
+  link: "Whether the unit answers over the LAN, which every reading on this tab needs.\n"
+    + "E.g. No link while its plug is off: the unit drops off the network.",
+  plug: "Switches the socket the A/C hangs off; its meter feeds every watt figure here.\n"
+    + "E.g. Plug off: the unit has no power and every command to it is lost.",
+  modeBtnHall: "Sends this mode to the A/C by infrared.\n"
+    + "E.g. Heat on a cold evening: one infrared frame, and the badge turns Heating.",
+  modeBtnBed: "Sets the unit's mode over the LAN; the unit confirms it.\n"
+    + "E.g. Fan only runs the fan alone and ignores the setpoint, so the dial goes inert.",
+  fanHall: "Sends this fan speed by infrared.\n"
+    + "E.g. Low for the night, High to pull a hot room down quickly.",
+  fanBed: "Sets one of the unit's named fan speeds; the slider below fine-tunes it.\n"
+    + "E.g. Silent for sleeping, Full to pull a hot room down, Auto to let it choose.",
+  fine: "The fan speed as a percentage, finer than the named speeds.\n"
+    + "E.g. drag to 40 % and let go: one command goes out, on release.",
+  swingHall: "Turns the vane's sweep on or off by infrared.\n"
+    + "E.g. if the vane disagrees with this, use Force swing toggle below.",
+  swingBed: "Sets which way the vanes sweep.\n"
+    + "E.g. Horizontal can switch Frost protect on; the card turns it off within 25 s.",
+  resend: "Sends the bridge's whole remembered state to the A/C again by infrared.\n"
+    + "E.g. after someone used the physical remote and State drift reads Stale.",
+  swingStep: "Moves the vane one position and stops, to park it; it wraps at the end.\n"
+    + "E.g. press it three times to move the vane three positions.",
+  swingForce: "Sends a swing toggle whatever the bridge believes the swing to be.\n"
+    + "E.g. the vane is still while the card says Swinging: press once.",
+  bannerPlug: "Switches the bedroom A/C's plug back on.\n"
+    + "E.g. the unit rejoins the LAN and the tab comes back to life.",
+  bannerAsk: "Sends the setpoint the unit did not take once more.\n"
+    + "E.g. asked for 16.5 °C and still on 17.0: one tap asks for 16.5 again.",
+  bannerCool: "Switches the unit to Cool, where it takes a setpoint again.\n"
+    + "E.g. from Fan only: the dial and the steps come back.",
+
+  // --- status rows and settings ---
+  bridge: "Whether the IR bridge phone answers its status poll, once a minute.\n"
+    + "E.g. Offline: commands from this card cannot reach the A/C.",
+  running: "Yes while the plug draws more than the standby threshold.\n"
+    + "E.g. a few watts is the plug's own idle draw; 25–60 W of fan alone is running.",
+  compressor: "Running while the plug draws at least the compressor threshold.\n"
+    + "E.g. the fan alone draws about 25–60 W; the compressor floors near 150 W.",
+  drift: "Whether the bridge's belief and the plug meter have disagreed for 15 minutes.\n"
+    + "E.g. Stale: drawing power while the bridge believes the A/C is off.",
+  assumed: "The mode the IR bridge phone believes it last sent, polled every 2 minutes.\n"
+    + "E.g. Off here while the compressor runs means the remote turned the unit on.",
+  standby: "At or below this draw the A/C counts as off.\n"
+    + "E.g. set it just above what the plug reads with the unit off at the remote.",
+  compThreshold: "At or above this draw the compressor counts as working; below, only the fan.\n"
+    + "E.g. 100 W sits between a 25–60 W fan and a compressor that floors near 150 W.",
+
+  // --- running cost ---
+  zone: "Which rate the A/C's energy is booked at right now.\n"
+    + "E.g. Night rate 23:00–07:00; On battery whenever the house runs off the pack.",
+  costToday: "Today's A/C energy, priced per zone: day kWh at the day rate, the rest at night.\n"
+    + "E.g. 3 kWh by day and 5 kWh at night at 4.32 / 2.16 UAH is 23.76 UAH.",
+  costMonth: "This month's A/C energy since the 1st, priced the same way per zone.\n"
+    + "E.g. the split under it shows how many kWh fell into day, night and battery.",
+  rateDay: "The price of a kWh used on grid power 07:00–23:00.\n"
+    + "E.g. 4.32 UAH/kWh, Ukraine's single household rate.",
+  rateNight: "The price of a kWh used on grid power 23:00–07:00.\n"
+    + "E.g. 2.16 UAH/kWh, half the day rate.",
+  rateBatt: "A kWh from the battery costs the night rate: the pack only charges at night.\n"
+    + "E.g. an outage at 14:00 still bills the A/C at 2.16 UAH/kWh.",
+
+  // --- meter tiles ---
+  powerNow: "The plug's live draw: the whole A/C circuit.\n"
+    + "E.g. a few watts when off, 25–60 W on fan alone, 150 W and up with the compressor.",
+  avgToday: "Today's energy divided by today's running time: the duty cycle in one number.\n"
+    + "E.g. 250 W over six hours costs the same as 750 W over two.",
+  energyToday: "kWh the plug has metered since midnight.\n"
+    + "E.g. the day, night and battery split under Cost today adds up to this.",
+  energyMonth: "kWh the plug has metered since the 1st of the month.\n"
+    + "E.g. Cost this month is this figure, priced per zone.",
+  runtime: "Hours today the plug drew more than the standby threshold, fan time included.\n"
+    + "E.g. on from 23:00 to 07:00 is 8.0 h.",
+  compHours: "Hours today at or above the compressor threshold; the rest of runtime is fan.\n"
+    + "E.g. 3 h of compressor in 8 h of runtime is a duty cycle of about 38 %.",
+  cycles: "Compressor starts since midnight; runs under 3 minutes are not counted.\n"
+    + "E.g. twenty starts in an hour is short-cycling on a setpoint it cannot hold.",
+  delta: "Room temperature minus the setpoint; positive means the room is above it.\n"
+    + "E.g. +2.0 °C in Cool is two degrees still to go.",
+  track: "The room (solid) against the setpoint (dashed) over the window.\n"
+    + "E.g. a step in the dashed line is a setpoint change made at that time.",
+
+  // --- bedroom: the plug ---
+  plugCurrent: "The current through the plug, in amperes.\n"
+    + "E.g. about 4.3 A for 1000 W at 230 V.",
+  plugVoltage: "Mains voltage at the plug.\n"
+    + "E.g. near 230 V on the grid; on battery it reads the inverter's output instead.",
+  plugEnergy: "The plug's lifetime kWh counter, which today's and this month's figures use.\n"
+    + "E.g. Energy today is how far this counter has climbed since midnight.",
+  childLock: "Locks the plug's own button so it cannot be switched by hand.\n"
+    + "E.g. On: pressing the plug does nothing, but this card still switches it.",
+  countdown: "Switches the plug off after this many seconds; Not set at 0.\n"
+    + "E.g. 3600 s cuts the A/C's socket an hour from now.",
+  outageMemory: "What the plug does when mains power comes back after a cut.\n"
+    + "E.g. Restore puts the A/C's socket back the way it was before the outage.",
+  indicator: "When the plug's own LED lights.\n"
+    + "E.g. Off keeps it dark at night, which matters in a bedroom.",
+
+  // --- bedroom: the unit's readouts ---
+  rIndoorTemp: "The unit's own indoor thermometer.\n"
+    + "E.g. the \"indoor\" figure under the dial, while the unit answers.",
+  rIndoorHum: "Humidity measured by the indoor unit.\n"
+    + "E.g. the percentage after the indoor temperature under the dial.",
+  rOutdoorTemp: "Outdoor temperature, as the unit reports it.\n"
+    + "E.g. the hotter it is outside, the harder the compressor works to hold 23 °C.",
+  rCompFreq: "How fast the inverter compressor is turning; 0 Hz means it is stopped.\n"
+    + "E.g. high just after switching on, lower once the room nears the setpoint.",
+  rFanRpm: "The indoor fan's speed, as the unit reports it.\n"
+    + "E.g. it climbs when the fan slider or a named speed is turned up.",
+  rError: "The unit's fault code; a dash means no fault.\n"
+    + "E.g. a code in red here is a fault to look up in the unit's manual.",
+  rIndoorAmbient: "Air temperature at the indoor unit's ambient sensor.\n"
+    + "E.g. it reads only while the unit answers; offline it shows a dash.",
+  rIndoorCoil: "Temperature of the indoor coil, the evaporator when cooling.\n"
+    + "E.g. well below the room while cooling; that cold coil is what dries the air.",
+  rOutdoorCoil: "Temperature of the outdoor coil, the condenser when cooling.\n"
+    + "E.g. above the outdoor air while cooling, since that is where the room's heat goes.",
+  rOutdoorAmbient: "Air temperature at the outdoor unit's own sensor.\n"
+    + "E.g. in direct sun it can read several degrees above the shade.",
+  rDischarge: "Temperature of the gas leaving the compressor, its hottest point.\n"
+    + "E.g. it climbs while the compressor works hard and falls back once it stops.",
+
+  // --- bedroom: the feature switches, by entity suffix ---
+  f_boost_mode: "Runs the unit flat out to reach the setpoint as fast as it can.\n"
+    + "E.g. on for a hot room at 18:00; off again once it is cool.\n"
+    + "Tap: toggles. Tap the name: opens the switch.",
+  f_eco_mode: "Caps the unit's power to save energy, at the cost of speed.\n"
+    + "E.g. on overnight, when the room only has to be held, not pulled down.\n"
+    + "Tap: toggles. Tap the name: opens the switch.",
+  f_sleep_mode: "The unit's night program: quieter, easing the setpoint over the night.\n"
+    + "E.g. on at bedtime instead of turning the fan down by hand.\n"
+    + "Tap: toggles. Tap the name: opens the switch.",
+  f_dry: "The unit's own Dry switch, separate from the Dry mode above.\n"
+    + "E.g. leave it as the unit set it unless the manual says otherwise.\n"
+    + "Tap: toggles. Tap the name: opens the switch.",
+  f_frost_protect: "Heats just enough to keep the room near 8 °C; FP on the panel.\n"
+    + "E.g. a swing command can switch it on; the card switches it back off.\n"
+    + "Tap: toggles. Tap the name: opens the switch.",
+  f_self_clean: "Runs the unit's coil-cleaning cycle.\n"
+    + "E.g. start it while nobody needs cooling; the unit runs the cycle by itself.\n"
+    + "Tap: toggles. Tap the name: opens the switch.",
+  f_anion: "The ionizer, which releases negative ions into the air it blows.\n"
+    + "E.g. it changes nothing about cooling; it only treats the air.\n"
+    + "Tap: toggles. Tap the name: opens the switch.",
+  f_screen_display: "The unit's front-panel display.\n"
+    + "E.g. off keeps the bedroom dark at night.\n"
+    + "Tap: toggles. Tap the name: opens the switch.",
+  f_screen_display_alternate: "The other display command midea_ac_lan has; some units take only this one.\n"
+    + "E.g. try it when Screen display does not change the panel.\n"
+    + "Tap: toggles. Tap the name: opens the switch.",
+  f_prompt_tone: "The beep the unit gives when it takes a command.\n"
+    + "E.g. off so a setpoint change at night does not wake anyone.\n"
+    + "Tap: toggles. Tap the name: opens the switch.",
+};
+
 /* --- charts --------------------------------------------------------------- */
 
 const RANGES = {
@@ -688,7 +918,7 @@ ha-card {
 .badge ha-icon { --mdc-icon-size: 14px; display: inline-flex; }
 /* The room card is its own container so its badges can tell when two of them
    no longer fit beside the name: each then shrinks to its icon, and the label
-   lives on in the title. A single badge always keeps its words. */
+   lives on in the tooltip. A single badge always keeps its words. */
 .room { container-type: inline-size; container-name: room; }
 @container room (max-width: 330px) {
   .badges:has(.badge + .badge) .badge-t { display: none; }
@@ -820,10 +1050,17 @@ ha-card {
 .dial[data-dead="1"] .knob { cursor: default; pointer-events: none; }
 .dial[data-frozen="1"] svg, .dial[data-frozen="1"] path,
 .dial[data-frozen="1"] .knob { cursor: default; pointer-events: none; }
-/* The room mark is a marking, not a control: it never takes a press, and a
-   drag passing over it must not stop on it -- it sits ON the ring now, so a
-   finger dragging the knob crosses it every time. */
-.rmark { pointer-events: none; }
+/* The room mark is a marking, not a control, but it does take the pointer:
+   its tooltip only shows over a shape that accepts pointer events, and
+   this one's tooltip is the room reading. That costs the drag nothing. The
+   dial's handlers sit on .dial and hit-test by coordinates, never by target,
+   so a press on the dot is a press on the ring under it -- and once a drag
+   starts the dial holds the pointer capture, so crossing the dot cannot
+   stop it. Hidden, it stops answering: an opacity-0 shape still hit-tests. */
+.rmark { pointer-events: auto; cursor: grab; }
+.rmark[opacity="0"] { pointer-events: none; }
+.dial.dragging .rmark { cursor: grabbing; }
+.dial[data-dead="1"] .rmark, .dial[data-frozen="1"] .rmark { cursor: default; }
 .steps { display: flex; align-items: center; gap: 10px; }
 .step { width: 46px; height: 46px; border-radius: 14px; border: 1px solid ${BTN_EDGE}; background: ${BTN_BG};
   display: flex; align-items: center; justify-content: center; font-size: 22px; cursor: pointer;
@@ -963,6 +1200,7 @@ class ClimateConsoleCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
+    cardTip(this, this.shadowRoot);
     this._hass = null;
     this._config = null;
     this._built = false;
@@ -1271,6 +1509,19 @@ class ClimateConsoleCard extends HTMLElement {
   _title(s) {
     const v = String(s || "");
     return v ? v.charAt(0).toUpperCase() + v.slice(1) : "—";
+  }
+
+  /**
+   * A tooltip in the house format: "<name> — <state>" (or the bare name for
+   * something with no state) over the HELP entry for `key`. Assigned, never
+   * appended, and only when it changed -- this runs on every patch, and a
+   * title is an attribute write like any other.
+   */
+  _tip(node, name, state, key) {
+    if (!node) return;
+    const head = state === null || state === undefined || state === "" ? name : name + " — " + state;
+    const text = head + "\n" + HELP[key];
+    if (node.getAttribute("data-tip") !== text) node.setAttribute("data-tip", text);
   }
 
   // --- derivation ----------------------------------------------------------
@@ -2055,7 +2306,8 @@ class ClimateConsoleCard extends HTMLElement {
         + "' id='" + id + "-" + k + "-" + r.key + "'>—</div>").join("")).join("");
 
     return "<div class='panel'>"
-      + "<div class='ch-h'><div class='panel-t'>" + this._esc(chart.title) + "</div>"
+      + "<div class='ch-h ch-name' id='" + id + "-head'><div class='panel-t'>"
+      + this._esc(chart.title) + "</div>"
       + "<div class='mono panel-n'>" + this._esc(chart.unit) + "</div>"
       + "<div class='grow'></div>"
       + "<div class='win' id='" + id + "-win'></div>"
@@ -2119,14 +2371,25 @@ class ClimateConsoleCard extends HTMLElement {
         const ts = Date.parse(st.last_updated);
         if (ts > newest) newest = ts;
       }
-      el.q("#rm-" + r.key + "-badge").innerHTML = this._comfort(t, h).map((cf) =>
-        "<span class='badge' title='" + this._esc(cf.label) + "' style='background:" + cf.bg
+      const badges = el.q("#rm-" + r.key + "-badge");
+      badges.innerHTML = this._comfort(t, h).map((cf) =>
+        "<span class='badge' data-label='" + this._esc(cf.label) + "' style='background:" + cf.bg
         + ";color:" + cf.fg + "'><ha-icon icon='" + cf.icon + "'></ha-icon>"
         + "<span class='badge-t'>" + this._esc(cf.label) + "</span></span>").join("");
-      el.q("#rm-" + r.key + "-t").textContent = this._fmt(t, 1);
-      el.q("#rm-" + r.key + "-h").textContent = this._fmt(h, 1);
+      // The title is what keeps a badge's word when a narrow card shrinks it
+      // to its icon.
+      badges.querySelectorAll(".badge").forEach((b) =>
+        this._tip(b, r.name, b.getAttribute("data-label"), "comfort"));
+      const tEl = el.q("#rm-" + r.key + "-t");
+      const hEl = el.q("#rm-" + r.key + "-h");
+      tEl.textContent = this._fmt(t, 1);
+      hEl.textContent = this._fmt(h, 1);
+      this._tip(tEl.parentNode, r.name + " temperature", t === null ? "—" : t.toFixed(1) + " °C", "roomTemp");
+      this._tip(hEl.parentNode, r.name + " humidity", h === null ? "—" : h.toFixed(1) + " %", "roomHum");
       const d = this._dew(t, h);
-      el.q("#rm-" + r.key + "-d").textContent = d === null ? "—" : d.toFixed(1) + " °C";
+      const dEl = el.q("#rm-" + r.key + "-d");
+      dEl.textContent = d === null ? "—" : d.toFixed(1) + " °C";
+      this._tip(dEl, r.name + " dew point", dEl.textContent, "dew");
 
       // Today's extremes come from their own midnight-to-now window, so the
       // range buttons above cannot quietly change what "today" means.
@@ -2139,11 +2402,44 @@ class ClimateConsoleCard extends HTMLElement {
       } else {
         mm.textContent = today ? (today.note || "no history yet") : "…";
       }
+      this._tip(mm, r.name + " today", mm.textContent === "…" ? "loading" : mm.textContent,
+        "todayMinMax");
     });
+    el.qa("[data-act='range']").forEach((n) => this._tip(n, n.textContent, null, "range"));
+    this._roomChartTips();
     el.q("#rm-sub").textContent = offline === rooms.length
       ? "Three room sensors — none reporting"
       : "Three room sensors, last updated " + this._hhmm(newest)
         + (offline ? " — " + offline + " not reporting" : "");
+  }
+
+  /**
+   * The room charts' tooltips: the header carries the gesture help, the
+   * window label says what it is, and every stat names its room and column.
+   * Called from the patch and again after each redraw, because the window
+   * and the stats change when a chart draws rather than when a state does.
+   */
+  _roomChartTips() {
+    const el = this._el;
+    const rooms = this._rooms();
+    CHARTS.forEach((chart) => {
+      const id = chart.id;
+      const win = el.q("#" + id + "-win");
+      const words = win ? win.textContent : "";
+      this._tip(el.q("#" + id + "-head"), chart.title, words || RANGES[this._range].label, "chart");
+      this._tip(win, "Window", words || "live, " + RANGES[this._range].label, "win");
+      el.qa("#" + id + "-stats .st-n").forEach((n, i) => {
+        const r = rooms[i];
+        const now = el.q("#" + id + "-now-" + r.key).textContent;
+        this._tip(n, r.name + " " + chart.title.toLowerCase(),
+          now === "—" ? now : now + " " + chart.unit, "statRoom");
+        ["now", "min", "max", "mean"].forEach((k) => {
+          const v = el.q("#" + id + "-" + k + "-" + r.key);
+          this._tip(v, r.name + " " + k, v.textContent === "—" ? "—" : v.textContent + " " + chart.unit,
+            "stat");
+        });
+      });
+    });
   }
 
   // --- the two A/C tabs share a hero --------------------------------------
@@ -2175,8 +2471,7 @@ class ClimateConsoleCard extends HTMLElement {
       + DIAL_W + "' stroke-linecap='round'></path>"
       + "<path id='" + pfx + "-arc' class='dial-arc' fill='none' stroke-width='"
       + DIAL_W + "' stroke-linecap='round'></path>"
-      + "<circle id='" + pfx + "-rmark' class='rmark' r='" + MARK_R + "' opacity='0'>"
-      + "<title id='" + pfx + "-rmark-t'></title></circle>"
+      + "<circle id='" + pfx + "-rmark' class='rmark' r='" + MARK_R + "' opacity='0'></circle>"
       + "<circle id='" + pfx + "-knob' class='knob' r='" + KNOB_R + "' fill='" + TXT
       + "' stroke='" + BG + "' stroke-width='3'></circle></svg>"
       + "<div class='dial-c'><div class='dial-k' id='" + pfx + "-mode'>—</div>"
@@ -2287,9 +2582,15 @@ class ClimateConsoleCard extends HTMLElement {
     zone.textContent = this._live(c.tariff_zone) ? look.label : "—";
     zone.style.background = look.bg;
     zone.style.color = look.fg;
+    this._tip(zone, "Tariff", zone.textContent, "zone");
 
-    [["-cost-today", today], ["-cost-month", month]].forEach(([suffix, ent]) => {
-      el.q("#" + pfx + suffix).textContent = this._sfmt(ent, 2);
+    [["-cost-today", today, "Cost today", "costToday"],
+      ["-cost-month", month, "Cost this month", "costMonth"]].forEach(([suffix, ent, name, key]) => {
+      const num = el.q("#" + pfx + suffix);
+      num.textContent = this._sfmt(ent, 2);
+      // The box, not the number: the split under it is part of the same claim.
+      this._tip(num.parentNode.parentNode, name,
+        num.textContent === "—" ? "—" : num.textContent + " UAH", key);
       // The split is an attribute of the cost sensor rather than three more
       // entities, because it is only ever read next to the total it explains.
       const d = Number(this._attr(ent, "day_kwh"));
@@ -2319,6 +2620,11 @@ class ClimateConsoleCard extends HTMLElement {
     // not a copy of it that could drift. There is no third tariff to set.
     const rb = el.q("#" + pfx + "-rate-batt");
     if (rb) rb.textContent = this._sfmt(c.tariff_night, 2);
+    [["day", "Day rate", "rateDay"], ["night", "Night rate", "rateNight"],
+      ["batt", "Battery rate", "rateBatt"]].forEach(([k, name, key]) => {
+      const b = el.q("#" + pfx + "-rate-" + k);
+      if (b) this._tip(b.parentNode, name, b.textContent === "—" ? "—" : b.textContent + " UAH/kWh", key);
+    });
   }
 
   /** The room-vs-target chart, used by both A/C tabs. */
@@ -2332,7 +2638,7 @@ class ClimateConsoleCard extends HTMLElement {
     }
     const ticks = [];
     for (let i = 0; i < TICKS; i++) ticks.push("<div id='" + id + "-t" + i + "'></div>");
-    return "<div class='panel'><div class='ch-h'>"
+    return "<div class='panel'><div class='ch-h ch-name' id='" + id + "-head'>"
       + "<div class='panel-t'>" + this._esc(title) + "</div>"
       + "<div class='panel-n' id='" + id + "-note'></div><div class='grow'></div>"
       + "<div class='key'><div><span class='solid' style='background:" + color + "'></span>"
@@ -2379,8 +2685,10 @@ class ClimateConsoleCard extends HTMLElement {
    * dial can show", which is true and is the thing you wanted to know.
    *
    * The number under the ring is the one that is exact, and it is right
-   * there; the dot has never been the place to read a value off. The title
-   * says which side it ran off, for anyone who hovers.
+   * there; the dot has never been the place to read a value off. Its
+   * tooltip carries the reading and which side it ran off, and the dot takes
+   * the pointer so that tooltip actually shows -- see .rmark in STYLE for why
+   * that does not get in the way of the drag.
    */
   _paintRoomMark(pfx, room, lo, hi, targetFrac, acc) {
     const el = this._el;
@@ -2414,7 +2722,9 @@ class ClimateConsoleCard extends HTMLElement {
      */
     const past = frac > targetFrac;
     const fill = past ? (acc && acc.c) || MUTED : BG;
-    const key = frac.toFixed(4) + "|" + fill + "|" + beyond;
+    // The reading is in the key as well as the position: a room pinned past
+    // the end sits still while its number keeps moving, and the title says it.
+    const key = frac.toFixed(4) + "|" + fill + "|" + beyond + "|" + room.toFixed(1);
     if (w[pfx] === key) return;
     w[pfx] = key;
 
@@ -2423,11 +2733,8 @@ class ClimateConsoleCard extends HTMLElement {
     mark.setAttribute("cy", at.y);
     mark.setAttribute("fill", fill);
     mark.setAttribute("opacity", "1");
-    const t = el.q("#" + pfx + "-rmark-t");
-    if (t) {
-      t.textContent = "Room " + room.toFixed(1) + " °C"
-        + (beyond ? " — " + beyond + " everything this dial shows" : "");
-    }
+    mark.setAttribute("data-tip", "Room — " + room.toFixed(1) + " °C"
+      + (beyond ? ", " + beyond + " the dial" : "") + "\n" + HELP.rmark);
   }
 
   _patchHero(pfx, ent, acc, ctl, dead, room) {
@@ -2497,6 +2804,19 @@ class ClimateConsoleCard extends HTMLElement {
       modeEl.setAttribute("data-more", ent);
     }
 
+    /*
+     * The hero's tooltips. The dial carries the setpoint's, which the number
+     * in its middle inherits; the mode word and the reading under it carry
+     * their own, and so does the room dot (_paintRoomMark).
+     */
+    const hall = pfx === "hall";
+    const modeWord = modeEl ? modeEl.textContent : "—";
+    const shown = has ? target.toFixed(step < 1 ? 1 : 0) + " °C" : "—";
+    this._tip(el.q("#" + pfx + "-h1"), el.q("#" + pfx + "-h1").textContent, modeWord,
+      hall ? "hallUnit" : "bedUnit");
+    this._tip(modeEl, "Mode", modeWord, hall ? "modeHall" : "modeBed");
+    this._tip(el.q("#" + pfx + "-dial"), "Setpoint", shown, hall ? "dialHall" : "dialBed");
+
     const on = !dead && this._state(ent) !== "off";
     const pwr = el.q("#" + pfx + "-pwr");
     pwr.setAttribute("data-ent", ent);
@@ -2508,6 +2828,7 @@ class ClimateConsoleCard extends HTMLElement {
       ? "0 0 0 1px " + hero.c + "33, 0 4px 14px " + hero.glow : "none";
     el.q("#" + pfx + "-pdot").style.background = on ? hero.c : "#555b61";
     el.q("#" + pfx + "-pwrl").textContent = dead ? "Offline" : on ? "On" : "Off";
+    this._tip(pwr, "Power", dead ? "offline" : on ? "on" : "off", hall ? "powerHall" : "powerBed");
 
     /*
      * The plug reads from the PLUG, and is deliberately not dimmed with the
@@ -2524,6 +2845,7 @@ class ClimateConsoleCard extends HTMLElement {
       el.q("#" + pfx + "-plug-dot").style.background = plugOn ? OK : "#555b61";
       el.q("#" + pfx + "-plug-l").textContent =
         !plugLive ? "Plug —" : plugOn ? "Plug on" : "Plug off";
+      this._tip(plug, "Plug", !plugLive ? "—" : plugOn ? "on" : "off", "plug");
     }
 
     /*
@@ -2537,6 +2859,7 @@ class ClimateConsoleCard extends HTMLElement {
       n.setAttribute("data-ent", ent);
       n.setAttribute("data-val", String(i === 0 ? -step : step));
       n.setAttribute("data-dead", dead || frozen || !has ? "1" : "0");
+      this._tip(n, i === 0 ? "Setpoint down" : "Setpoint up", shown, hall ? "stepHall" : "stepBed");
     });
   }
 
@@ -2618,9 +2941,12 @@ class ClimateConsoleCard extends HTMLElement {
     root.style.setProperty("--ctl-soft", acc.soft);
   }
 
-  _paintChoice(nodes, current, acc, pill) {
+  _paintChoice(nodes, current, acc, pill, key, onWord) {
     nodes.forEach((n) => {
       const on = n.getAttribute("data-val") === current;
+      // The lit one says so on line 1: "last sent" on the hall, where it is
+      // a record, "current" on the bedroom, where it is a reading.
+      if (key) this._tip(n, n.textContent, on ? onWord : null, key);
       if (pill) {
         n.style.background = on ? acc.soft : "#191d20";
         n.style.color = on ? acc.c : TXT2;
@@ -2662,7 +2988,7 @@ class ClimateConsoleCard extends HTMLElement {
       + "'>Force swing toggle</div>"
       + "</div>";
     const badges = "<span class='badge' id='hall-act-badge'>—</span>"
-      + "<span class='badge' style='background:#2a1f0c;color:" + WARN + "'>Write-only</span>";
+      + "<span class='badge' id='hall-wo' style='background:#2a1f0c;color:" + WARN + "'>Write-only</span>";
     const blurb = "Infrared control. Every setting below is what we last sent, not a confirmed "
       + "reading — the unit cannot be read back. The activity is the exception: it is "
       + "measured, off the plug meter on the A/C's own circuit.";
@@ -2746,7 +3072,7 @@ class ClimateConsoleCard extends HTMLElement {
     const subEl = el.q("#hall-room");
     subEl.setAttribute("data-more", c.living_temp);
     this._setText(subEl, sub);
-    subEl.title = "From the living room sensor — the A/C reports nothing back.";
+    this._tip(subEl, "Room", Number.isFinite(room) ? sub.replace(/^room /, "") : "no reading", "roomHall");
 
     const badge = el.q("#hall-act-badge");
     badge.textContent = this._live(c.hall_activity) ? this._state(c.hall_activity) : "Unknown";
@@ -2754,9 +3080,12 @@ class ClimateConsoleCard extends HTMLElement {
     const hall = this._heroAcc(ent, acc, ctl, dead);
     badge.style.background = hall.soft;
     badge.style.color = hall.c;
+    this._tip(badge, "Activity", badge.textContent, "activity");
+    this._tip(el.q("#hall-wo"), "Write-only", null, "writeOnly");
 
-    this._paintChoice(el.qa("#hall-modes .pill"), this._state(ent), ctl, true);
-    this._paintChoice(el.qa("#hall-fans .tick"), this._attr(ent, "fan_mode"), ctl, false);
+    this._paintChoice(el.qa("#hall-modes .pill"), this._state(ent), ctl, true, "modeBtnHall", "last sent");
+    this._paintChoice(el.qa("#hall-fans .tick"), this._attr(ent, "fan_mode"), ctl, false,
+      "fanHall", "last sent");
     // The scripts below take the same accent, through CSS rather than a paint
     // call: nothing about them changes per button, so one property on the
     // root beats three style writes on every patch.
@@ -2773,6 +3102,13 @@ class ClimateConsoleCard extends HTMLElement {
     const swl = el.q("#hall-swing-l");
     swl.textContent = swing ? "Swinging" : "Fixed";
     swl.style.color = swing ? ctl.c : MUTED;
+    this._tip(sw, "Swing", swl.textContent, "swingHall");
+    [[c.hall_script_resend, "resend"], [c.hall_script_swing_step, "swingStep"],
+      [c.hall_script_swing_toggle, "swingForce"]].forEach(([script, key]) => {
+      const b = el.q(".act[data-ent='" + script + "']");
+      if (b) this._tip(b, b.textContent, null, key);
+    });
+    this._trackTip("hallch");
 
     const set = (id, v) => { el.q("#" + id).textContent = v; };
     set("hall-m-now", this._sfmt(c.hall_power_now, 0));
@@ -2785,6 +3121,12 @@ class ClimateConsoleCard extends HTMLElement {
     set("hall-m-sd", this._sfmt(c.hall_setpoint_delta, 1));
     set("hall-c-standby", this._sfmt(c.hall_standby_watts, 0));
     set("hall-c-comp", this._sfmt(c.hall_compressor_watts, 0));
+    this._boxTips({
+      "hall-m-now": "powerNow", "hall-m-avg": "avgToday", "hall-m-et": "energyToday",
+      "hall-m-em": "energyMonth", "hall-m-rt": "runtime", "hall-m-ch": "compHours",
+      "hall-m-cc": "cycles", "hall-m-sd": "delta",
+      "hall-c-standby": "standby", "hall-c-comp": "compThreshold",
+    });
     this._patchCost("hall", c.hall_cost_today, c.hall_cost_month);
 
     /*
@@ -2816,6 +3158,10 @@ class ClimateConsoleCard extends HTMLElement {
     row("hall-s-assumed",
       this._live(c.hall_assumed) ? (MODE_LABEL[assumed] || this._title(assumed)) : "—",
       MUTED);
+    this._rowTips({
+      "hall-s-bridge": "bridge", "hall-s-run": "running", "hall-s-comp": "compressor",
+      "hall-s-drift": "drift", "hall-s-assumed": "assumed",
+    });
 
     // --- the drift banner, which is the point of this tab --------------------
     const banner = el.q("#hall-banner");
@@ -2833,6 +3179,7 @@ class ClimateConsoleCard extends HTMLElement {
       act.textContent = "Resend state";
       act.setAttribute("data-act", "script");
       act.setAttribute("data-ent", c.hall_script_resend);
+      this._tip(act, "Resend state", null, "resend");
     } else {
       banner.style.display = "none";
       act.style.display = "none";
@@ -2862,7 +3209,7 @@ class ClimateConsoleCard extends HTMLElement {
       + "<div><div class='ctl-hd'><div class='ctl-l'>Fan speed</div>"
       + "<div class='mono' style='font-size:12px;color:" + MUTED + "' id='bed-fan-fine'>—</div></div>"
       + "<div id='bed-fans'>" + this._barHTML("fan", ent, fans, FAN_LABEL, true) + "</div>"
-      + "<div class='fine' id='bed-fine' title='Drag to set the fan percentage'>"
+      + "<div class='fine' id='bed-fine'>"
       + "<div class='fine-t'><div id='bed-fine-bar'></div></div>"
       + "<div class='fine-k' id='bed-fine-knob'></div></div></div>"
       + "<div><div class='ctl-l'>Swing direction</div><div id='bed-swings'>"
@@ -3010,9 +3357,9 @@ class ClimateConsoleCard extends HTMLElement {
     this._setText(subEl, room === null ? "no reading"
       : (unitTemp === null ? "room " : "indoor ") + room.toFixed(1) + " °C"
         + (rh === null ? "" : " · " + rh.toFixed(0) + " %"));
-    subEl.title = unitTemp === null
-      ? "From the bedroom sensor — the unit is not reporting."
-      : "Reported by the unit.";
+    this._tip(subEl, unitTemp === null ? "Room" : "Indoor",
+      room === null ? "no reading" : subEl.textContent.replace(/^(room|indoor) /, ""),
+      unitTemp === null ? "roomBed" : "indoorBed");
 
     /*
      * The badge prefers the MEASURED activity over the unit's own hvac_action,
@@ -3035,10 +3382,14 @@ class ClimateConsoleCard extends HTMLElement {
     link.textContent = dead ? "No link" : "Live feedback";
     link.style.background = dead ? "#3a1414" : "#14321f";
     link.style.color = dead ? BAD : OK;
+    this._tip(badge, "Activity", badge.textContent, "activity");
+    this._tip(link, "Link", link.textContent, "link");
 
-    this._paintChoice(el.qa("#bed-modes .pill"), this._state(ent), ctl, true);
-    this._paintChoice(el.qa("#bed-fans .tick"), this._attr(ent, "fan_mode"), ctl, false);
-    this._paintChoice(el.qa("#bed-swings .tick"), this._attr(ent, "swing_mode"), ctl, false);
+    this._paintChoice(el.qa("#bed-modes .pill"), this._state(ent), ctl, true, "modeBtnBed", "current");
+    this._paintChoice(el.qa("#bed-fans .tick"), this._attr(ent, "fan_mode"), ctl, false,
+      "fanBed", "current");
+    this._paintChoice(el.qa("#bed-swings .tick"), this._attr(ent, "swing_mode"), ctl, false,
+      "swingBed", "current");
 
     /*
      * The fan trim. A drag in progress owns the number the same way the dial
@@ -3060,6 +3411,10 @@ class ClimateConsoleCard extends HTMLElement {
     fineKnob.style.left = pct + "%";
     fineKnob.style.opacity = fine === null ? "0" : "1";
     el.q("#bed-fine").setAttribute("data-dead", this._live(c.bed_fan_fine) ? "0" : "1");
+    // The readout above the slider says the same thing, so it says it alike.
+    const fineWords = el.q("#bed-fan-fine").textContent;
+    this._tip(el.q("#bed-fine"), "Fan percentage", fineWords, "fine");
+    this._tip(el.q("#bed-fan-fine"), "Fan percentage", fineWords, "fine");
 
     /*
      * The feature switches. Two states on the switch and a third on the tile:
@@ -3083,6 +3438,9 @@ class ClimateConsoleCard extends HTMLElement {
       tr.style.background = isOn ? ctl.c : "#3a4146";
       lab.style.color = isOn ? TXT : MUTED;
       lab.textContent = label + (live ? "" : " · offline");
+      // On the tile; the label inside it inherits, since it names the same
+      // switch -- its other tap is the tooltip's last line.
+      this._tip(node, label, live ? (isOn ? "on" : "off") : "offline", "f_" + slug);
     });
     el.q("#bed-feat-count").textContent = dead
       ? "unit offline — nothing to report"
@@ -3140,6 +3498,24 @@ class ClimateConsoleCard extends HTMLElement {
     errEl.textContent = clean ? "—" : err;
     errEl.style.color = !errLive ? TXT2 : clean ? OK : BAD;
 
+    this._boxTips({
+      "bed-p-w": "powerNow", "bed-p-a": "plugCurrent", "bed-p-v": "plugVoltage",
+      "bed-p-e": "plugEnergy",
+      "bed-m-now": "powerNow", "bed-m-avg": "avgToday", "bed-m-et": "energyToday",
+      "bed-m-em": "energyMonth", "bed-m-rt": "runtime", "bed-m-ch": "compHours",
+      "bed-m-cc": "cycles", "bed-m-sd": "delta",
+      "bed-c-standby": "standby", "bed-c-comp": "compThreshold",
+      "bed-r-it": "rIndoorTemp", "bed-r-ih": "rIndoorHum", "bed-r-ot": "rOutdoorTemp",
+      "bed-r-cf": "rCompFreq", "bed-r-fs": "rFanRpm", "bed-r-ec": "rError",
+      "bed-r-ia": "rIndoorAmbient", "bed-r-ic": "rIndoorCoil", "bed-r-oc": "rOutdoorCoil",
+      "bed-r-oa": "rOutdoorAmbient", "bed-r-dp": "rDischarge",
+    });
+    this._rowTips({
+      "bed-ps-lock": "childLock", "bed-ps-cd": "countdown",
+      "bed-ps-mem": "outageMemory", "bed-ps-ind": "indicator",
+    });
+    this._trackTip("bedch");
+
     // --- the offline banner --------------------------------------------------
     const banner = el.q("#bed-banner");
     const act = el.q("#bed-bact");
@@ -3156,6 +3532,7 @@ class ClimateConsoleCard extends HTMLElement {
         act.style.color = OK;
         act.setAttribute("data-act", "switch");
         act.setAttribute("data-ent", c.plug_switch);
+        this._tip(act, act.textContent, null, "bannerPlug");
       } else {
         act.style.display = "none";
       }
@@ -3180,6 +3557,7 @@ class ClimateConsoleCard extends HTMLElement {
       act.setAttribute("data-act", "resend");
       act.setAttribute("data-ent", c.bed_climate);
       act.setAttribute("data-val", String(miss.want));
+      this._tip(act, act.textContent, miss.want.toFixed(1) + " °C", "bannerAsk");
     } else if (this._setpointFrozen(c.bed_climate, "bed")) {
       /*
        * The one state where a control is drawn and does nothing, said out
@@ -3199,6 +3577,7 @@ class ClimateConsoleCard extends HTMLElement {
       act.setAttribute("data-act", "mode");
       act.setAttribute("data-ent", c.bed_climate);
       act.setAttribute("data-val", "cool");
+      this._tip(act, act.textContent, null, "bannerCool");
     } else {
       banner.style.display = "none";
       act.style.display = "none";
@@ -4017,6 +4396,7 @@ class ClimateConsoleCard extends HTMLElement {
     el.q("#" + id + "-note").textContent = have.length && have.length < rooms.length
       ? (rooms.length - have.length) + " of 3 without history"
       : "";
+    this._roomChartTips();
 
     /*
      * _hideHover is not called here, and the readout is put back instead.
@@ -4178,6 +4558,42 @@ class ClimateConsoleCard extends HTMLElement {
     el.q("#" + id + "-note").textContent =
       ends && t1 - ends > (t1 - t0) / 20 && this._state(ent) === "off"
         ? "target ends where the unit went off" : "";
+  }
+
+  /**
+   * Tooltips for a run of tiles or wells, each named by its own label and
+   * stated as its own number and unit, so the two can never disagree.
+   * `keys` maps the number's id to its HELP entry.
+   */
+  _boxTips(keys) {
+    Object.keys(keys).forEach((id) => {
+      const n = this._el.q("#" + id);
+      if (!n) return;
+      const box = n.parentNode.parentNode;
+      const lbl = box.querySelector(".lbl");
+      const unit = box.querySelector(".well-u");
+      const v = n.textContent;
+      const u = unit ? unit.textContent : "";
+      this._tip(box, lbl ? lbl.textContent : id, v === "—" || !u ? v : v + " " + u, keys[id]);
+    });
+  }
+
+  /** The same for the status rows: label on the left, state on the right. */
+  _rowTips(keys) {
+    Object.keys(keys).forEach((id) => {
+      const n = this._el.q("#" + id);
+      if (!n) return;
+      const row = n.parentNode;
+      const lbl = row.querySelector(".row-l");
+      this._tip(row, lbl ? lbl.textContent : id, n.textContent, keys[id]);
+    });
+  }
+
+  /** The room-vs-target chart's header, named after its window. */
+  _trackTip(id) {
+    const head = this._el.q("#" + id + "-head");
+    if (!head) return;
+    this._tip(head, head.querySelector(".panel-t").textContent, RANGES[this._range].label, "track");
   }
 }
 

@@ -26,7 +26,9 @@
  */
 
 const CARD = "dtek-shutdowns-card";
-const VERSION = "1.3.0";
+import { cardTip } from "./card-tip.js?v=1.0.0";
+
+const VERSION = "1.5.1";
 
 /*
  * The grid shows the NORMAL condition, not the exception: a cell is green when
@@ -114,6 +116,64 @@ const WITHHELD = {
 const WILL_RETURN = ["plan_off", "table_off", "empty_preset",
                      "emergency_no_schedule"];
 
+/*
+ * Lines 2-4 of every tooltip on the card (docs/dashboard-tooltips.md). Line 1
+ * is the live name and state, built by tip() at render time. Repeated items
+ * share one entry: all 168 grid cells are `cell`, all seven totals `day_total`.
+ * Keep in step with docs/dtek-outage-schedule.md.
+ */
+const HELP = {
+  now: "The dot and the bar: red with no mains, orange for a DTEK notice only, else green.\n"
+    + "E.g. green and pulsing: mains present and no outage recorded for this address.",
+  ident: "The street and house as DTEK spells them, and the outage queue DTEK puts us in.\n"
+    + "E.g. comes from secrets.yaml on the box, so the address is never typed into git.",
+  headline: "Mains as the inverter measures it; DTEK's notice counts only while mains is up.\n"
+    + "E.g. mains present but DTEK lists an outage: “DTEK reports an outage.”, in orange.",
+  reason: "DTEK's own words for why the power is off; “Not reported” outside an outage.\n"
+    + "E.g. on 29.09.2026 DTEK gave emergency repairs, in Ukrainian as DTEK writes it.",
+  started: "When DTEK says this outage began, in DTEK's own notation.\n"
+    + "E.g. the 29.09.2026 emergency started at 11:05.",
+  expected: "DTEK's estimate of when the power returns, and the countdown to it.\n"
+    + "E.g. 29.09.2026: by 15:25; once that time passes it reads “overdue”.",
+  scope: "How many houses on our street DTEK lists an outage for.\n"
+    + "E.g. 29.09.2026: only this building of 288, so a fault here, not on the line.",
+  updated: "DTEK's own “information updated” stamp, normally only minutes old.\n"
+    + "E.g. 14:01 29.09.2026, during the emergency that had started at 11:05.",
+  next: "The next dark stretch: DTEK's applied schedule if any, else the weekly table.\n"
+    + "E.g. 19:30–02:30+1 runs from 19:30 until 02:30 the next day.\n"
+    + "A dash: DTEK publishes no table to forecast from.",
+  week_off: "Dark hours in this week's recurring table, possible outages counted as off.\n"
+    + "E.g. 16 dark hours every day come to 112h, 67% of the 168-hour week.\n"
+    + "A dash: DTEK publishes no table to count.",
+  feed: "Whether the DTEK poller still gets fresh, readable answers every 5 minutes.\n"
+    + "E.g. Stale: the last poll failed, so the card shows the last good answer.\n"
+    + "Drift: DTEK answered, but sent a field or format the poller cannot read.",
+  cell: "One hour of DTEK's recurring weekly table; it repeats until DTEK publishes anew.\n"
+    + "E.g. grey on top, green below: a possible outage until :30, then power.",
+  day_total: "Dark hours that day in the weekly table, possible outages counted as off.\n"
+    + "E.g. 16 grey hours plus two half-hour splits make 17h.",
+  legend_on: "DTEK says the power stays on for the whole hour.\n"
+    + "E.g. Mo 07:00 green: no outage of any kind is planned 07:00–08:00.",
+  legend_maybe: "DTEK may cut the power that hour; the totals and the alerts count it as off.\n"
+    + "E.g. most of this queue's week is grey: DTEK hedges rather than commits.",
+  legend_out: "DTEK commits to the power being off for the whole hour.\n"
+    + "E.g. red at Mo 19:00: no grid from 19:00 to 20:00, for certain.",
+  legend_half: "A split cell: the green half is the half hour DTEK says the power is on.\n"
+    + "E.g. green on top, grey below: power until :30, then a possible outage.",
+  legend_now: "The outlined cell is the current hour, in today's highlighted column.\n"
+    + "E.g. at 14:20 on a Monday the Mo 14:00 cell is outlined.",
+  last_poll: "When the poller last got a good answer from DTEK; it asks every 5 minutes.\n"
+    + "E.g. 14:05 still shown at 14:30 means five polls in a row have failed.",
+  drift: "Something in DTEK's answer the poller could not read, shown as DTEK wrote it.\n"
+    + "E.g. “unreadable end_date”: DTEK changed its date format, as on 29.09.2026.",
+  published: "When DTEK last published a stabilisation schedule, not when it last answered.\n"
+    + "E.g. 24.07.2026 08:30 has stood since DTEK suspended the schedules that day.",
+  table: "Whether DTEK itself draws the weekly table; the grid on this page follows it.\n"
+    + "E.g. hidden (plan_off): DTEK stopped drawing it, so a note replaces the grid.",
+  interval: "How often Home Assistant runs the DTEK poller.\n"
+    + "E.g. 5 min, the same cadence DTEK's own page uses to re-check itself.",
+};
+
 const DAY_SHORT = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
 const DAY_LONG = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
                   "Saturday", "Sunday"];
@@ -156,6 +216,18 @@ const esc = (v) => String(v === null || v === undefined ? "" : v)
   .replace(/[&<>"']/g, (c) => ESCAPES[c]);
 
 const pad2 = (n) => String(n).padStart(2, "0");
+
+/**
+ * A ` data-tip="..."` attribute: "<name> — <state>" (or just the name), then
+ * HELP[key]. Line 1 is clipped at 90 characters, because a reason or a drift
+ * warning is free text off DTEK's site and a tooltip box is not a page.
+ */
+function tip(name, state, key) {
+  let first = state === null || state === undefined || state === ""
+    ? name : name + " " + MDASH + " " + state;
+  if (first.length > 90) first = first.slice(0, 89) + "…";
+  return ' data-tip="' + esc(first + "\n" + HELP[key]) + '"';
+}
 
 /** 17 -> "17h", 16.5 -> "16.5h". Half-hour states make the fractions real. */
 const fmtHours = (h) =>
@@ -246,6 +318,7 @@ class DtekShutdownsCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
+    cardTip(this, this.shadowRoot);
     this._fingerprint = null;
     this._timer = null;
   }
@@ -436,7 +509,8 @@ class DtekShutdownsCard extends HTMLElement {
           if (!wantCells) continue;
           cells.push({
             cls: st.cls + (di === todayIdx && h === now.getHours() ? " now" : ""),
-            title: DAY_SHORT[di] + " " + pad2(h) + ":00 " + MDASH + " " + st.label,
+            name: DAY_SHORT[di] + " " + pad2(h) + ":00",
+            label: st.label,
           });
         }
         weekOff += off;
@@ -551,23 +625,25 @@ class DtekShutdownsCard extends HTMLElement {
     const notice = [];
     if (dtekOutage) {
       const startText = fmtStamp(outageStart) || a.outage_start_raw;
-      if (startText) notice.push(["Started", startText]);
+      // [label, value, HELP key]
+      if (startText) notice.push(["Started", startText, "started"]);
       const end = parseDate(outageEnd);
       if (end) {
         const mins = Math.round((end.getTime() - now.getTime()) / 60000);
         notice.push(["Expected back", "by " + fmtStamp(outageEnd) + " " + MIDDOT
-          + " " + (mins >= 0 ? fmtIn(mins) : "overdue " + fmtIn(-mins).slice(3))]);
+          + " " + (mins >= 0 ? fmtIn(mins) : "overdue " + fmtIn(-mins).slice(3)),
+          "expected"]);
       } else if (a.outage_end_raw) {
-        notice.push(["Expected back", "by " + a.outage_end_raw]);
+        notice.push(["Expected back", "by " + a.outage_end_raw, "expected"]);
       }
       // The answer lists every house on the street, so this separates a fault
       // in this building from one on the line.
       const n = a.street_outages;
       if (typeof n === "number" && n > 0 && typeof a.street_houses === "number") {
         notice.push(["Scope", n === 1 ? "Only this building on the street"
-          : n + " of " + a.street_houses + " houses on the street"]);
+          : n + " of " + a.street_houses + " houses on the street", "scope"]);
       }
-      if (a.updated_at) notice.push(["Information updated", a.updated_at]);
+      if (a.updated_at) notice.push(["Information updated", a.updated_at, "updated"]);
     }
     if (reason) {
       reasonText = reason + ", " + queue;
@@ -608,6 +684,9 @@ class DtekShutdownsCard extends HTMLElement {
     return {
       // Orange when only DTEK says it is off: a claim, not a measurement.
       accent: gridDown ? RED : dtekOutage ? ORANGE : GREEN,
+      // The accent in words, for the eyebrow's tooltip.
+      nowWord: gridDown ? "power off"
+        : dtekOutage ? "DTEK outage notice, mains present" : "power on",
       identity,
       headline, lede, note, queue, week, days, win,
       weekLive, hiddenReason,
@@ -655,8 +734,10 @@ class DtekShutdownsCard extends HTMLElement {
   }
 
   _hero(d) {
-    const tile = (k, v, s, color) =>
-      '<div class="tile"><span class="k">' + esc(k) + "</span>"
+    // One tooltip per tile; the label, value and sub-line inherit it.
+    const tile = (k, v, s, key, color) =>
+      '<div class="tile"' + tip(k, v === null ? s : v + " " + MIDDOT + " " + s, key)
+      + '><span class="k">' + esc(k) + "</span>"
       + '<span class="v' + (v === null ? " dim" : "") + '"'
       + (color ? ' style="color:' + color + '"' : "") + ">"
       + esc(v === null ? MDASH : v) + "</span>"
@@ -664,17 +745,24 @@ class DtekShutdownsCard extends HTMLElement {
 
     return '<ha-card class="hero"><div class="pad">'
       + '<div class="hero-left">'
-      + '<div class="eyebrow"><span class="dot"></span><span class="lbl">Right now</span>'
-      + (d.identity ? '<span class="ident">' + esc(d.identity) + "</span>" : "")
+      // The eyebrow's tooltip covers the dot and "Right now"; the address chip
+      // means something else and carries its own.
+      + '<div class="eyebrow"' + tip("Right now", d.nowWord, "now") + '>'
+      + '<span class="dot"></span><span class="lbl">Right now</span>'
+      + (d.identity ? '<span class="ident"' + tip("Address and queue", d.identity, "ident")
+        + ">" + esc(d.identity) + "</span>" : "")
       + "</div>"
-      + "<h1>" + esc(d.headline) + "</h1>"
+      + "<h1" + tip("Headline", d.headline.replace(/\.$/, ""), "headline") + ">"
+      + esc(d.headline) + "</h1>"
       + '<p class="lede">' + esc(d.lede) + "</p>"
       + '<p class="note">' + esc(d.note) + "</p>"
-      + '<div class="reason"><span class="k">Reason</span>'
+      + '<div class="reason"' + tip("Reason", d.reasonText, "reason") + '>'
+      + '<span class="k">Reason</span>'
       + '<span class="v' + (d.reasonKnown ? "" : " dim") + '">'
       + esc(d.reasonText) + "</span></div>"
-      + d.notice.map(([k, v]) => '<div class="reason sub"><span class="k">'
-        + esc(k) + '</span><span class="v">' + esc(v) + "</span></div>").join("")
+      + d.notice.map(([k, v, key]) => '<div class="reason sub"' + tip(k, v, key) + '>'
+        + '<span class="k">' + esc(k) + '</span><span class="v">' + esc(v)
+        + "</span></div>").join("")
       + "</div>"
       + '<div class="tiles">'
       // Both of these are read off the recurring pattern. When DTEK withdraws
@@ -682,10 +770,10 @@ class DtekShutdownsCard extends HTMLElement {
       // be a claim about a week nobody has scheduled.
       + tile("Next window", d.win ? d.win.label : d.weekLive ? "none" : null,
              d.win ? d.win.when
-               : d.weekLive ? "nothing in the table" : "no schedule published")
+               : d.weekLive ? "nothing in the table" : "no schedule published", "next")
       + tile("Off this week", d.weekOff,
-             d.weekShare ? d.weekShare + " of the week" : "not published")
-      + tile("Feed", d.feedLabel, "Last poll " + d.lastPoll, d.feedColor)
+             d.weekShare ? d.weekShare + " of the week" : "not published", "week_off")
+      + tile("Feed", d.feedLabel, "Last poll " + d.lastPoll, "feed", d.feedColor)
       + "</div></div></ha-card>";
   }
 
@@ -715,31 +803,34 @@ class DtekShutdownsCard extends HTMLElement {
       d.days.forEach((day) => {
         let cells = '<div class="cells">';
         day.cells.forEach((c) => {
-          cells += '<div class="c ' + c.cls + '" title="' + esc(c.title) + '"></div>';
+          cells += '<div class="c ' + c.cls + '"' + tip(c.name, c.label, "cell") + "></div>";
         });
         cells += "</div>";
         cols += '<div class="day ' + day.cls + '">'
           + '<div class="dhead"><span class="dname">' + esc(day.name) + "</span>"
           + '<span class="dsub">' + esc(day.sub) + "</span></div>"
           + cells
-          + '<div class="dtot" title="' + esc(day.total)
-          + ' off, possible outages included">' + esc(day.total)
-          + "</div></div>";
+          + '<div class="dtot"' + tip(day.name + " total", day.total + " off", "day_total")
+          + ">" + esc(day.total) + "</div></div>";
       });
 
+      // The swatch inherits its item's tooltip.
+      const item = (cls, text, key) => "<span" + tip(text, null, key) + ">"
+        + '<span class="sw ' + cls + '"></span>' + esc(text) + "</span>";
       inner = '<div class="grid">' + hours + cols + "</div>"
         + '<div class="legend">'
-        + '<span><span class="sw on"></span>Power on</span>'
-        + '<span><span class="sw maybe"></span>Possible outage</span>'
-        + '<span><span class="sw out"></span>Scheduled outage</span>'
-        + '<span><span class="sw maybe-2"></span>On for half the hour</span>'
-        + '<span><span class="sw nowsw"></span>Now</span>'
+        + item("on", "Power on", "legend_on")
+        + item("maybe", "Possible outage", "legend_maybe")
+        + item("out", "Scheduled outage", "legend_out")
+        + item("maybe-2", "On for half the hour", "legend_half")
+        + item("nowsw", "Now", "legend_now")
         + "</div>";
     }
 
     return '<ha-card class="week"><div class="pad">'
       + '<div class="head"><h2>Recurring weekly schedule</h2>'
-      + '<span class="stamp">Published ' + esc(d.published) + "</span></div>"
+      + '<span class="stamp"' + tip("Schedule published", d.published, "published")
+      + ">Published " + esc(d.published) + "</span></div>"
       + (blurb === null ? ""
          : '<p class="blurb">The pattern DTEK last published for '
            + esc(d.queue) + ". Today and tomorrow are highlighted; every other "
@@ -750,24 +841,29 @@ class DtekShutdownsCard extends HTMLElement {
   }
 
   _sourceCard(d) {
-    const kv = (k, v) => '<div><span class="k">' + esc(k) + "</span>"
+    // `tipState` is line 1's state where the shown value would not read as one.
+    const kv = (k, v, key, tipState) => "<div" + tip(k, tipState || v, key) + ">"
+      + '<span class="k">' + esc(k) + "</span>"
       + '<span class="v">' + esc(v) + "</span></div>";
     return '<ha-card><div class="pad">'
       + "<h2>Where this comes from</h2>"
       + '<p class="blurb">' + esc(d.feedSentence) + "</p>"
       + '<div class="kv">'
-      + kv("Last poll", d.lastPoll)
+      + kv("Last poll", d.lastPoll, "last_poll")
       // DTEK's own freshness stamp, minutes old. Distinct from the one below,
       // which stamps the last schedule DTEK published and has read 24.07.2026
       // since the day they suspended them -- reading only that one makes a
       // live feed look six weeks dead.
-      + kv("Information updated", d.updatedAt || "not reported")
-      + d.warnings.map((w) => '<div class="warn"><span class="k">Format drift</span>'
+      + kv("Information updated", d.updatedAt || "not reported", "updated")
+      + d.warnings.map((w) => '<div class="warn"' + tip("Format drift", w, "drift") + ">"
+        + '<span class="k">Format drift</span>'
         + '<span class="v">' + esc(w) + "</span></div>").join("")
-      + kv("Schedule published", d.published)
+      + kv("Schedule published", d.published, "published")
       + kv("Schedule table", d.weekLive ? "shown"
-             : "hidden" + (d.hiddenReason ? " " + MDASH + " " + d.hiddenReason : ""))
-      + kv("Poll interval", this._config.poll_interval + " min")
+             : "hidden" + (d.hiddenReason ? " " + MDASH + " " + d.hiddenReason : ""),
+           "table", d.weekLive ? "shown"
+             : "hidden" + (d.hiddenReason ? " (" + d.hiddenReason + ")" : ""))
+      + kv("Poll interval", this._config.poll_interval + " min", "interval")
       + "</div>"
       + '<div class="foot"><code>/config/dtek/dtek_poll.py</code> reads the AJAX '
       + 'endpoint behind <a href="https://www.dtek-dnem.com.ua/ua/shutdowns" '

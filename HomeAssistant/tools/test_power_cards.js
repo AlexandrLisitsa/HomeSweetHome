@@ -15,7 +15,7 @@
  * somewhere else: in which class lands on which chip, which sub-label a plan
  * state prints, which service a tap calls, and what a card full of
  * `unavailable` draws. That lives in _build/_patch and the click handlers, so
- * this file carries a small DOM -- an HTML parser good enough for the cards'
+ * this file drives a small DOM (fake_dom.js) -- an HTML parser good enough for the cards'
  * own templates, classList, style, dataset, querySelector, and event bubbling
  * through a shadow root -- and drives the real setConfig / `set hass` /
  * click / change paths. The card files are loaded as-is, no build step, and
@@ -32,489 +32,9 @@
 
 const fs = require("fs");
 const path = require("path");
-const vm = require("vm");
-
-const WWW = path.join(__dirname, "..", "config", "www");
-
-/* ========================================================================== */
-/* A small DOM                                                                */
-/* ========================================================================== */
-
-const VOID = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link",
-  "meta", "param", "source", "track", "wbr"]);
-const RAW = new Set(["style", "script", "textarea"]);
-
-function decode(s) {
-  return s.replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (m, e) => {
-    const k = e.toLowerCase();
-    if (k[0] === "#") {
-      return String.fromCodePoint(k[1] === "x" ? parseInt(k.slice(2), 16) : parseInt(k.slice(1), 10));
-    }
-    return { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: "\u00a0" }[k];
-  });
-}
-
-function escText(s) {
-  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-class Node0 {
-  constructor(type) {
-    this.nodeType = type;
-    this.parentNode = null;
-    this.childNodes = [];
-    this._listeners = {};
-  }
-  appendChild(n) {
-    if (n.parentNode) n.parentNode.removeChild(n);
-    n.parentNode = this;
-    this.childNodes.push(n);
-    return n;
-  }
-  removeChild(n) {
-    const i = this.childNodes.indexOf(n);
-    if (i >= 0) this.childNodes.splice(i, 1);
-    n.parentNode = null;
-    return n;
-  }
-  get children() { return this.childNodes.filter((n) => n.nodeType === 1); }
-  get firstElementChild() { return this.children[0] || null; }
-  get textContent() { return this.childNodes.map((c) => c.textContent).join(""); }
-  set textContent(v) {
-    this.childNodes.forEach((c) => { c.parentNode = null; });
-    this.childNodes = [];
-    const s = v === null || v === undefined ? "" : String(v);
-    if (s) this.appendChild(new TextNode(s));
-  }
-  get innerHTML() { return this.childNodes.map(serialize).join(""); }
-  set innerHTML(html) {
-    this.childNodes.forEach((c) => { c.parentNode = null; });
-    this.childNodes = [];
-    if (this._selIdx !== undefined) delete this._selIdx;
-    parseHTML(String(html), this);
-  }
-  addEventListener(type, fn) { (this._listeners[type] = this._listeners[type] || []).push(fn); }
-  removeEventListener(type, fn) {
-    const l = this._listeners[type] || [];
-    const i = l.indexOf(fn);
-    if (i >= 0) l.splice(i, 1);
-  }
-  /** Every element under this node, in document order. */
-  _all() {
-    const out = [];
-    const walk = (n) => n.childNodes.forEach((c) => {
-      if (c.nodeType === 1) { out.push(c); walk(c); }
-    });
-    walk(this);
-    return out;
-  }
-  querySelectorAll(sel) {
-    const groups = parseSelector(sel);
-    return this._all().filter((el) => groups.some((g) => matchComplex(el, g)));
-  }
-  querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
-}
-
-class TextNode extends Node0 {
-  constructor(data) { super(3); this.data = data; }
-  get textContent() { return this.data; }
-  set textContent(v) { this.data = String(v); }
-}
-
-function makeClassList(el) {
-  const get = () => (el.getAttribute("class") || "").split(/\s+/).filter(Boolean);
-  const put = (arr) => el.setAttribute("class", arr.join(" "));
-  return {
-    contains: (c) => get().indexOf(c) >= 0,
-    add: (...cs) => { const a = get(); cs.forEach((c) => { if (a.indexOf(c) < 0) a.push(c); }); put(a); },
-    remove: (...cs) => put(get().filter((c) => cs.indexOf(c) < 0)),
-    toggle: (c, force) => {
-      const has = get().indexOf(c) >= 0;
-      const want = force === undefined ? !has : !!force;
-      if (want && !has) put(get().concat([c]));
-      if (!want && has) put(get().filter((x) => x !== c));
-      return want;
-    },
-    get length() { return get().length; },
-    toString: () => get().join(" "),
-  };
-}
-
-function makeStyle() {
-  const props = {};
-  const style = {
-    setProperty: (k, v) => { props[k] = String(v); },
-    getPropertyValue: (k) => {
-      if (k in props) return props[k];
-      const camel = k.replace(/-([a-z])/g, (_m, ch) => ch.toUpperCase());
-      return style[camel] !== undefined && typeof style[camel] !== "function" ? String(style[camel]) : "";
-    },
-    removeProperty: (k) => { delete props[k]; },
-    _props: props,
-  };
-  return style;
-}
-
-function datasetProxy(el) {
-  const attr = (k) => "data-" + String(k).replace(/[A-Z]/g, (ch) => "-" + ch.toLowerCase());
-  return new Proxy({}, {
-    get: (_t, k) => (typeof k === "string" && el.hasAttribute(attr(k)) ? el.getAttribute(attr(k)) : undefined),
-    set: (_t, k, v) => { el.setAttribute(attr(k), v); return true; },
-    has: (_t, k) => el.hasAttribute(attr(k)),
-    deleteProperty: (_t, k) => { el.removeAttribute(attr(k)); return true; },
-  });
-}
-
-class Element extends Node0 {
-  constructor(tag) {
-    super(1);
-    this.localName = String(tag || "div").toLowerCase();
-    this.tagName = this.localName.toUpperCase();
-    this._attrs = new Map();
-    this.classList = makeClassList(this);
-    this.style = makeStyle();
-    this.dataset = datasetProxy(this);
-  }
-  getAttribute(n) { return this._attrs.has(n) ? this._attrs.get(n) : null; }
-  hasAttribute(n) { return this._attrs.has(n); }
-  removeAttribute(n) { this._attrs.delete(n); }
-  setAttribute(n, v) {
-    this._attrs.set(n, String(v));
-    if (n === "style") {
-      String(v).split(";").forEach((decl) => {
-        const i = decl.indexOf(":");
-        if (i > 0) this.style.setProperty(decl.slice(0, i).trim(), decl.slice(i + 1).trim());
-      });
-    }
-  }
-  get id() { return this.getAttribute("id") || ""; }
-  get className() { return this.getAttribute("class") || ""; }
-  get title() { return this.getAttribute("title") || ""; }
-  set title(v) { this.setAttribute("title", v); }
-  get hidden() { return this.hasAttribute("hidden"); }
-  set hidden(v) { if (v) this.setAttribute("hidden", ""); else this.removeAttribute("hidden"); }
-  get disabled() { return this.hasAttribute("disabled"); }
-  set disabled(v) { if (v) this.setAttribute("disabled", ""); else this.removeAttribute("disabled"); }
-  get checked() { return this._checked !== undefined ? this._checked : this.hasAttribute("checked"); }
-  set checked(v) { this._checked = !!v; }
-  get options() { return this.querySelectorAll("option"); }
-  get value() {
-    if (this.localName === "select") {
-      const opts = this.options;
-      if (this._selIdx !== undefined) return this._selIdx >= 0 && opts[this._selIdx] ? opts[this._selIdx].value : "";
-      const sel = opts.find((o) => o.hasAttribute("selected")) || opts[0];
-      return sel ? sel.value : "";
-    }
-    if (this.localName === "option") {
-      return this.hasAttribute("value") ? this.getAttribute("value") : this.textContent.replace(/\s+/g, " ").trim();
-    }
-    if (this._value !== undefined) return this._value;
-    if (this.localName === "textarea") return this.textContent;
-    return this.getAttribute("value") || "";
-  }
-  set value(v) {
-    if (this.localName === "select") {
-      this._selIdx = this.options.findIndex((o) => o.value === String(v));
-      return;
-    }
-    this._value = String(v);
-  }
-  click() { this._clicked = (this._clicked || 0) + 1; }
-}
-
-class ShadowRoot0 extends Node0 {
-  constructor(host) { super(11); this.host = host; this.activeElement = null; }
-}
-
-class HostElement extends Element {
-  constructor() { super("host-element"); this.shadowRoot = null; this.dispatched = []; }
-  attachShadow() { this.shadowRoot = new ShadowRoot0(this); return this.shadowRoot; }
-  dispatchEvent(ev) {
-    this.dispatched.push(ev);
-    (this._listeners[ev.type] || []).forEach((fn) => fn(ev));
-    return true;
-  }
-}
-
-function serialize(n) {
-  if (n.nodeType === 3) return escText(n.data);
-  const attrs = Array.from(n._attrs.entries())
-    .map(([k, v]) => " " + k + '="' + String(v).replace(/&/g, "&amp;").replace(/"/g, "&quot;") + '"').join("");
-  if (VOID.has(n.localName)) return "<" + n.localName + attrs + ">";
-  return "<" + n.localName + attrs + ">" + n.childNodes.map(serialize).join("") + "</" + n.localName + ">";
-}
-
-/** Enough HTML for the cards' own templates: tags, quoted attributes, raw text, implied </option>. */
-function parseHTML(html, parent) {
-  const stack = [parent];
-  const top = () => stack[stack.length - 1];
-  const len = html.length;
-  let i = 0;
-  while (i < len) {
-    if (html[i] === "<" && html.startsWith("<!--", i)) {
-      const e = html.indexOf("-->", i);
-      i = e < 0 ? len : e + 3;
-      continue;
-    }
-    if (html[i] === "<" && html[i + 1] === "/") {
-      const e = html.indexOf(">", i);
-      const name = html.slice(i + 2, e).trim().toLowerCase();
-      for (let k = stack.length - 1; k > 0; k--) {
-        if (stack[k].localName === name) { stack.length = k; break; }
-      }
-      i = e + 1;
-      continue;
-    }
-    if (html[i] === "<" && /[a-zA-Z]/.test(html[i + 1] || "")) {
-      let j = i + 1;
-      while (j < len && !/[\s/>]/.test(html[j])) j++;
-      const name = html.slice(i + 1, j).toLowerCase();
-      const el = new Element(name);
-      let selfClose = false;
-      for (;;) {
-        while (j < len && /\s/.test(html[j])) j++;
-        if (j >= len) break;
-        if (html[j] === ">") { j++; break; }
-        if (html[j] === "/" && html[j + 1] === ">") { selfClose = true; j += 2; break; }
-        if (html[j] === "/") { j++; continue; }
-        let k = j;
-        while (k < len && !/[\s=/>]/.test(html[k])) k++;
-        const an = html.slice(j, k);
-        j = k;
-        while (j < len && /\s/.test(html[j])) j++;
-        let av = "";
-        if (html[j] === "=") {
-          j++;
-          while (j < len && /\s/.test(html[j])) j++;
-          const q = html[j];
-          if (q === '"' || q === "'") {
-            const e = html.indexOf(q, j + 1);
-            av = html.slice(j + 1, e);
-            j = e + 1;
-          } else {
-            let e = j;
-            while (e < len && !/[\s>]/.test(html[e])) e++;
-            av = html.slice(j, e);
-            j = e;
-          }
-        }
-        if (an) el.setAttribute(an, decode(av));
-      }
-      if (name === "option" && top().localName === "option") stack.pop();
-      top().appendChild(el);
-      if (RAW.has(name) && !selfClose) {
-        const close = html.toLowerCase().indexOf("</" + name, j);
-        const end = close < 0 ? len : close;
-        const raw = html.slice(j, end);
-        if (raw) el.appendChild(new TextNode(name === "textarea" ? decode(raw) : raw));
-        i = close < 0 ? len : html.indexOf(">", close) + 1;
-        continue;
-      }
-      if (!VOID.has(name) && !selfClose) stack.push(el);
-      i = j;
-      continue;
-    }
-    let e = html.indexOf("<", i + 1);
-    if (e < 0) e = len;
-    top().appendChild(new TextNode(decode(html.slice(i, e))));
-    i = e;
-  }
-}
-
-/* --- selectors: tag, .class, #id, [attr], [attr="v"], descendant, comma ---- */
-
-function parseCompound(s) {
-  const out = { tag: null, classes: [], id: null, attrs: [] };
-  const re = /^([a-zA-Z][\w-]*|\*)|\.([\w-]+)|#([\w-]+)|\[([\w-]+)(?:=(?:"([^"]*)"|'([^']*)'|([^\]]*)))?\]/g;
-  let m;
-  let pos = 0;
-  while ((m = re.exec(s)) && m.index === pos) {
-    pos = re.lastIndex;
-    if (m[1]) out.tag = m[1] === "*" ? null : m[1].toLowerCase();
-    else if (m[2]) out.classes.push(m[2]);
-    else if (m[3]) out.id = m[3];
-    else if (m[4]) out.attrs.push([m[4], m[5] !== undefined ? m[5] : m[6] !== undefined ? m[6] : m[7]]);
-    if (pos >= s.length) break;
-  }
-  if (pos !== s.length) throw new Error("test DOM: unsupported selector part " + JSON.stringify(s));
-  return out;
-}
-
-function parseSelector(sel) {
-  return sel.split(",").map((g) => {
-    const parts = [];
-    let cur = "";
-    let q = null;
-    let br = 0;
-    for (const ch of g.trim()) {
-      if (q) { cur += ch; if (ch === q) q = null; continue; }
-      if (ch === '"' || ch === "'") { q = ch; cur += ch; continue; }
-      if (ch === "[") br++;
-      if (ch === "]") br--;
-      if (/\s/.test(ch) && !br) { if (cur) parts.push(cur); cur = ""; continue; }
-      cur += ch;
-    }
-    if (cur) parts.push(cur);
-    return parts.map(parseCompound);
-  });
-}
-
-function matchCompound(el, c) {
-  if (!el || el.nodeType !== 1) return false;
-  if (c.tag && el.localName !== c.tag) return false;
-  if (c.id && el.id !== c.id) return false;
-  if (c.classes.some((k) => !el.classList.contains(k))) return false;
-  return c.attrs.every(([n, v]) => el.hasAttribute(n) && (v === undefined || el.getAttribute(n) === v));
-}
-
-function matchComplex(el, parts) {
-  if (!matchCompound(el, parts[parts.length - 1])) return false;
-  let node = el.parentNode;
-  for (let i = parts.length - 2; i >= 0; i--) {
-    while (node && !matchCompound(node, parts[i])) node = node.parentNode;
-    if (!node) return false;
-    node = node.parentNode;
-  }
-  return true;
-}
-
-/* --- events --------------------------------------------------------------- */
-
-class CustomEvent0 {
-  constructor(type, init) {
-    init = init || {};
-    this.type = type;
-    this.detail = init.detail;
-    this.bubbles = !!init.bubbles;
-    this.composed = !!init.composed;
-  }
-}
-class Event0 extends CustomEvent0 {}
-
-/**
- * Fire an event at `node` and bubble it out through the shadow root to the
- * host, as a composed UI event does. Returns the event, with `stopped` and
- * `defaultPrevented` readable.
- */
-function fire(node, type, extra) {
-  const pathArr = [];
-  let n = node;
-  while (n) {
-    pathArr.push(n);
-    n = n.nodeType === 11 ? n.host : n.parentNode;
-  }
-  const ev = Object.assign({
-    type: type,
-    target: node,
-    stopped: false,
-    defaultPrevented: false,
-    composedPath: () => pathArr.slice(),
-    stopPropagation() { this.stopped = true; },
-    preventDefault() { this.defaultPrevented = true; },
-  }, extra || {});
-  for (const p of pathArr) {
-    ev.currentTarget = p;
-    (p._listeners[type] || []).slice().forEach((fn) => fn(ev));
-    if (ev.stopped) break;
-  }
-  return ev;
-}
-
-/* ========================================================================== */
-/* Loading a card                                                             */
-/* ========================================================================== */
-
-function loadCard(file) {
-  let Klass = null;
-  const timers = [];
-  const clipboard = [];
-  const created = [];
-  const sandbox = {
-    HTMLElement: HostElement,
-    CustomEvent: CustomEvent0,
-    Event: Event0,
-    customElements: { get: () => undefined, define: (_n, k) => { Klass = k; } },
-    window: {
-      customCards: [],
-      setInterval: () => 0,
-      clearInterval: () => {},
-      setTimeout: (fn) => { timers.push(fn); return timers.length; },
-      clearTimeout: () => {},
-    },
-    document: {
-      head: null,
-      getElementById: () => null,
-      createElement: (t) => { const e = new Element(t); created.push(e); return e; },
-    },
-    navigator: { clipboard: { writeText: (t) => { clipboard.push(t); return Promise.resolve(); } } },
-    Blob: class { constructor(parts, opts) { this.parts = parts; this.type = opts && opts.type; } },
-    URL: { createObjectURL: () => "blob:test", revokeObjectURL: () => {} },
-    console: { info: () => {} },
-    Math: Math, Date: Date, Number: Number, JSON: JSON,
-  };
-  sandbox.globalThis = sandbox;
-  vm.createContext(sandbox);
-  vm.runInContext(fs.readFileSync(path.join(WWW, file), "utf8"), sandbox, { filename: file });
-  if (!Klass) throw new Error(file + " did not define a custom element");
-  return {
-    Card: Klass,
-    sandbox: sandbox,
-    timers: timers,
-    clipboard: clipboard,
-    created: created,
-    flushTimers: () => { while (timers.length) timers.shift()(); },
-  };
-}
-
-/** A fake hass: states map, a service-call recorder, and a websocket stub. */
-function mkHass(states, opts) {
-  opts = opts || {};
-  const calls = [];
-  const raw = [];
-  const ws = [];
-  return {
-    states: states,
-    calls: calls,
-    raw: raw,
-    ws: ws,
-    services: opts.services || {},
-    localize: opts.localize,
-    callService: function (domain, service, data) {
-      calls.push([domain, service, data]);
-      raw.push(Array.from(arguments));
-      return opts.svc ? opts.svc(domain, service, data, arguments) : Promise.resolve();
-    },
-    callWS: async (msg) => {
-      ws.push(msg);
-      return opts.callWS ? opts.callWS(msg) : {};
-    },
-  };
-}
-
-/** A state object; `id` fills entity_id, which the load-shedding picker needs. */
-function S(state, attributes, extra) {
-  return Object.assign({ state: String(state), attributes: attributes || {},
-    last_changed: new Date().toISOString(), last_updated: new Date().toISOString() }, extra || {});
-}
-
-function withIds(states) {
-  Object.keys(states).forEach((k) => { if (states[k]) states[k].entity_id = k; });
-  return states;
-}
-
-const flush = () => new Promise((r) => setImmediate(r));
-
-/** HH:MM as the cards print it, in whatever locale this machine runs. */
-function hm(iso) {
-  return new Date(Date.parse(iso)).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-}
-
-/** An ISO stamp for a local wall-clock time today. */
-function localIso(h, m) {
-  const d = new Date();
-  d.setHours(h, m, 0, 0);
-  return d.toISOString();
-}
+const {
+  WWW, Element, fire, loadCard, mkHass, S, withIds, flush, hm, localIso,
+} = require("./fake_dom");
 
 /* ========================================================================== */
 /* Runner                                                                     */
@@ -842,9 +362,9 @@ async function inverterSuite() {
     eq("AC charge on", el.chip2.classList.contains("on"), true);
     eq("Night only unavailable is off", el.chipNt2.classList.contains("on"), false);
     eq("Pre-charge missing is off", el.chipPc2.classList.contains("on"), false);
-    eq("title from friendly_name", head(el.chip0.title), "Auto tariff mode — on");
-    eq("icon title for unavailable", head(el.chipNt2.title), "Night charging only — unavailable");
-    eq("icon title for a missing entity is the label", head(el.chipPc2.title), "Pre-charge — unknown");
+    eq("title from friendly_name", head(el.chip0.dataset.tip), "Auto tariff mode — on");
+    eq("icon title for unavailable", head(el.chipNt2.dataset.tip), "Night charging only — unavailable");
+    eq("icon title for a missing entity is the label", head(el.chipPc2.dataset.tip), "Pre-charge — unknown");
     rerender(r, (s) => { s[E.night] = S("on", { friendly_name: "Night charging only" }); });
     check("Night only on lights its icon, not the chip's own", el.chipNt2.classList.contains("on"));
     rerender(r, (s) => { s[E.acc] = S("off", { friendly_name: "AC charging" }); });
@@ -854,23 +374,23 @@ async function inverterSuite() {
     // The print reads states, not attributes: a friendly_name change alone
     // waits for the next state change, which is fine for a name.
     rerender(r, (s) => { s[E.prot] = S("on", {}); });
-    eq("attribute-only change does not re-patch", head(el.chip1.title), "Auto grid protection — on");
+    eq("attribute-only change does not re-patch", head(el.chip1.dataset.tip), "Auto grid protection — on");
     rerender(r, (s) => { s[E.prot] = S("off", {}); });
-    eq("title without friendly_name falls back to label", head(el.chip1.title), "Protect — off");
+    eq("title without friendly_name falls back to label", head(el.chip1.dataset.tip), "Protect — off");
     check("no chip is live while the pack idles", [0, 1, 2].every((i) => !el["chip" + i].classList.contains("live")));
     // Every toggle's tooltip says what it does, with an example, after the state line.
     const tips = { chip0: "SBU Battery", chip1: "185–250 V", chip2: "BMS charge switch",
       chipNt2: "night tariff", chipAd2: "lowest current", chipPc2: "DTEK outage" };
     Object.keys(tips).forEach((k) => {
-      const t = el[k].title.split("\n");
-      check(k + ": a description after the state line", t.length >= 3 && t[1].indexOf(tips[k]) >= 0, el[k].title);
-      check(k + ": with an example", t.some((l) => l.indexOf("E.g.") === 0), el[k].title);
+      const t = el[k].dataset.tip.split("\n");
+      check(k + ": a description after the state line", t.length >= 3 && t[1].indexOf(tips[k]) >= 0, el[k].dataset.tip);
+      check(k + ": with an example", t.some((l) => l.indexOf("E.g.") === 0), el[k].dataset.tip);
     });
     check("the chip's own icon and dot inherit its description (no title of their own)",
-      el.chip2.querySelector(".ic").getAttribute("title") === null
-      && el.chip0.querySelector(".dw").getAttribute("title") === null);
+      el.chip2.querySelector(".ic").getAttribute("data-tip") === null
+      && el.chip0.querySelector(".dw").getAttribute("data-tip") === null);
     rerender(r, (s) => { s[E.ad] = S("on"); });
-    eq("a re-patch does not stack descriptions", el.chipAd2.title.split("E.g.").length, 2);
+    eq("a re-patch does not stack descriptions", el.chipAd2.dataset.tip.split("E.g.").length, 2);
   }
 
   group = "inverter/live: ";
@@ -992,7 +512,7 @@ async function inverterSuite() {
     let el = plan("charging", { current: 30, until: until, reason: "outage at 10:00" });
     eq("charging", el.chipPcSub2.textContent, "30 A → " + hm(until));
     check("time is HH:MM", /^\d\d:\d\d$/.test(hm(until)), hm(until));
-    eq("tooltip carries state and reason", head(el.chipPc2.title), "Outage pre-charge — on · charging: outage at 10:00");
+    eq("tooltip carries state and reason", head(el.chipPc2.dataset.tip), "Outage pre-charge — on · charging: outage at 10:00");
     check("switch on lights the Pre-charge icon", el.chipPc2.classList.contains("on"));
     el = plan("waiting_night", { until: until, reason: "night will do" });
     eq("waiting_night", el.chipPcSub2.textContent, "at night → " + hm(until));
@@ -1002,16 +522,16 @@ async function inverterSuite() {
     eq("full", el.chipPcSub2.textContent, "full");
     el = plan("idle", { reason: "" });
     eq("idle prints nothing", el.chipPcSub2.textContent, "");
-    eq("empty reason adds nothing to the tooltip", head(el.chipPc2.title), "Outage pre-charge — on");
+    eq("empty reason adds nothing to the tooltip", head(el.chipPc2.dataset.tip), "Outage pre-charge — on");
     el = plan("charging", { current: 30, until: until, reason: "x" }, "off");
     eq("switch off: nothing, whatever the plan", el.chipPcSub2.textContent, "");
-    eq("switch off: reason still explains", head(el.chipPc2.title), "Outage pre-charge — off · charging: x");
+    eq("switch off: reason still explains", head(el.chipPc2.dataset.tip), "Outage pre-charge — off · charging: x");
     check("switch off: icon dark", !el.chipPc2.classList.contains("on"));
     el = plan("charging", { current: 30, until: until }, "unavailable");
     eq("switch unavailable: nothing", el.chipPcSub2.textContent, "");
     el = plan(null);
     eq("plan sensor missing: nothing", el.chipPcSub2.textContent, "");
-    eq("plan sensor missing: plain tooltip", head(el.chipPc2.title), "Outage pre-charge — on");
+    eq("plan sensor missing: plain tooltip", head(el.chipPc2.dataset.tip), "Outage pre-charge — on");
     el = plan("unavailable", {});
     eq("plan unavailable: nothing", el.chipPcSub2.textContent, "");
 
@@ -1022,7 +542,7 @@ async function inverterSuite() {
     const r = mk(st);
     rerender(r, (s) => { s[E.pplan] = S("charging", { current: 40, until: until, reason: "r" }); });
     eq("re-patched sub-label", r.el.chipPcSub2.textContent, "40 A → " + hm(until));
-    eq("tooltip carries the reason once", head(r.el.chipPc2.title), "P — on · charging: r");
+    eq("tooltip carries the reason once", head(r.el.chipPc2.dataset.tip), "P — on · charging: r");
 
     el = plan("charging", { until: until });
     eq("charging plan with no `current` does not print \"undefined A\"", el.chipPcSub2.textContent, "charging → " + hm(until));
@@ -1054,10 +574,10 @@ async function inverterSuite() {
     check("on: lit, not dimmed", on(el) && !dis(el));
     el = run({ [E.ad]: "off", [E.auto]: "off", [E.night]: "off" });
     check("off, neither Auto nor Night only: dimmed", dis(el) && !on(el));
-    eq("...with the why", head(el.chipAd2.title), NEEDS);
+    eq("...with the why", head(el.chipAd2.dataset.tip), NEEDS);
     el = run({ [E.ad]: "off", [E.auto]: "on", [E.acc]: "on", [E.night]: "off" });
     check("off, Auto with charger on: usable", !dis(el));
-    eq("...tooltip says off", head(el.chipAd2.title), "Adaptive night charge — off · off: switched off");
+    eq("...tooltip says off", head(el.chipAd2.dataset.tip), "Adaptive night charge — off · off: switched off");
     el = run({ [E.ad]: "off", [E.auto]: "on", [E.acc]: "off", [E.night]: "off" });
     check("off, Auto but charger off, no Night only: dimmed", dis(el));
     el = run({ [E.ad]: "off", [E.auto]: "off", [E.acc]: "off", [E.night]: "on" });
@@ -1069,7 +589,7 @@ async function inverterSuite() {
     ["waiting_night", "charging", "full"].forEach((p) => {
       el = run({ [E.ad]: "off", [E.night]: "on", [E.pplan]: p });
       check("off, pre-charge " + p + ": dimmed", dis(el));
-      eq("off, pre-charge " + p + ": outage tooltip", head(el.chipAd2.title), OUTAGE);
+      eq("off, pre-charge " + p + ": outage tooltip", head(el.chipAd2.dataset.tip), OUTAGE);
       el = run({ [E.ad]: "on", [E.night]: "on", [E.pplan]: p });
       check("ON, pre-charge " + p + ": not dimmed, so it can be turned off", !dis(el) && on(el));
     });
@@ -1083,7 +603,7 @@ async function inverterSuite() {
     check("unavailable and unusable: dimmed, not lit", dis(el) && !on(el));
     el = run({ [E.ad]: null });
     check("boolean missing, usable: neither lit nor dimmed", !dis(el) && !on(el));
-    eq("...tooltip says unknown", head(el.chipAd2.title), "Adaptive night charge — unknown · off: switched off");
+    eq("...tooltip says unknown", head(el.chipAd2.dataset.tip), "Adaptive night charge — unknown · off: switched off");
     // An ON dot under unusable switches is still not dimmed.
     el = run({ [E.ad]: "on", [E.auto]: "off", [E.night]: "off" });
     check("on while unusable: still clickable", !dis(el) && on(el));
@@ -1105,9 +625,9 @@ async function inverterSuite() {
     eq("boolean off hides a charging plan", sub("off", "charging", { current: 20, until: seven }), "");
     eq("boolean unavailable hides it too", sub("unavailable", "day", {}), "");
     el = run({ [E.ad]: "on", [E.aplan]: S("charging", { current: 20, until: seven, reason: "needs 18.2 A" }) });
-    eq("tooltip with plan reason", head(el.chipAd2.title), "Adaptive night charge — on · charging: needs 18.2 A");
+    eq("tooltip with plan reason", head(el.chipAd2.dataset.tip), "Adaptive night charge — on · charging: needs 18.2 A");
     el = run({ [E.ad]: "on", [E.aplan]: S("charging", { current: 20, until: seven }) });
-    eq("tooltip without a reason", head(el.chipAd2.title), "Adaptive night charge — on");
+    eq("tooltip without a reason", head(el.chipAd2.dataset.tip), "Adaptive night charge — on");
   }
 
   /* --- acting icons pulse --------------------------------------------------- */
@@ -1256,7 +776,7 @@ async function inverterSuite() {
     const r = mk(st, { chip_auto: "switch.my_auto", chip_ac_charge: "input_boolean.my_ac",
       adaptive_charge: "input_boolean.other_adaptive" });
     eq("overridden chip reads its own entity", r.el.chip0.classList.contains("on"), true);
-    eq("overridden chip title", head(r.el.chip0.title), "My auto — on");
+    eq("overridden chip title", head(r.el.chip0.dataset.tip), "My auto — on");
     eq("icon data-ent", r.el.chip0.querySelector(".ic").getAttribute("data-ent"), "switch.my_auto");
     eq("label data-more", r.el.chip0.querySelector(".lbl").getAttribute("data-more"), "switch.my_auto");
     fire(r.el.chip0.querySelector(".ic"), "click");
@@ -1483,7 +1003,7 @@ async function inverterSuite() {
     rerender(r, (s) => { s[E.aplan] = S("charging", { current: 25, until: seven, reason: "a" }); });
     eq("an attribute-only change reaches the sub-label", r.el.chipAdSub2.textContent, "25 A → 07:00");
     rerender(r, (s) => { s[E.aplan] = S("charging", { current: 25, until: seven, reason: "behind" }); });
-    eq("a reason-only change reaches the tooltip", head(r.el.chipAd2.title), "Adaptive night charge — on · charging: behind");
+    eq("a reason-only change reaches the tooltip", head(r.el.chipAd2.dataset.tip), "Adaptive night charge — on · charging: behind");
 
     // The pre-charge reason is in the print too.
     rerender(r, (s) => {
@@ -1492,7 +1012,7 @@ async function inverterSuite() {
     });
     rerender(r, (s) => { s[E.pplan] = S("charging", { current: 30, until: seven, reason: "outage moved to 11:00" }); });
     check("a pre-charge reason-only change refreshes the Pre-charge tooltip",
-      r.el.chipPc2.title.indexOf("outage moved to 11:00") >= 0, "title still " + JSON.stringify(r.el.chipPc2.title));
+      r.el.chipPc2.dataset.tip.indexOf("outage moved to 11:00") >= 0, "title still " + JSON.stringify(r.el.chipPc2.dataset.tip));
   }
 
   /* --- nothing reporting ------------------------------------------------------ */
@@ -1581,6 +1101,9 @@ async function inverterSuite() {
     eq("points: Now is the live state", stats[0], "Now230.0 V");
     eq("points: Min", stats[1], "Min228.0 V");
     eq("points: Max", stats[2], "Max231.0 V");
+    eq("points: a stat's tooltip names it and its value",
+      head(r.el.stats.querySelectorAll(".stat")[1].getAttribute("data-tip")), "Min — 228.0 V");
+    eq("points: the window's tooltip follows its label", head(r.el.chWin.dataset.tip), "Window — last 30 minutes");
     eq("points: line in the band colour", r.el.chLine.getAttribute("stroke"), OK_C);
 
     r = mk(base(), {}, { callWS: () => { throw new Error("boom"); } });
@@ -1812,8 +1335,17 @@ async function batterySuite() {
     eq("temp colour", el.tVal0.style.color, OK);
     check("chips on", [0, 1, 2].every((i) => el["chip" + i].classList.contains("on")));
     check("no activity while idle and level", [0, 1, 2].every((i) => !el["dot" + i].classList.contains("live")));
-    eq("charge chip title", el.chip0.title, "AC charging — on · enabled, not charging");
-    eq("balancer chip title", el.chip2.title, "Balancer — on · enabled, cells level (2.0 mV)");
+    eq("charge chip title", el.chip0.dataset.tip.split("\n")[0], "AC charging — on · enabled, not charging");
+    eq("balancer chip title", el.chip2.dataset.tip.split("\n")[0], "Balancer — on · enabled, cells level (2.0 mV)");
+    check("chip title carries a description and an example",
+      el.chip2.dataset.tip.split("\n").length >= 3 && el.chip2.dataset.tip.split("\n")[2].indexOf("E.g. ") === 0, el.chip2.dataset.tip);
+    check("chip icon and dot inherit the chip's title, and keep their aria-labels",
+      ["ic", "dw"].every((k) => {
+        const n = el.chip0.querySelector("." + k);
+        return n.getAttribute("data-tip") === null && n.getAttribute("aria-label") === "Toggle Charging";
+      }));
+    eq("meter tooltip line 1", el.meter0.dataset.tip.split("\n")[0], "Capacity — 55 % · MODERATE");
+    eq("deviation bar tooltip line 1", el.cvBar0.dataset.tip.split("\n")[0], "C1 — +0.0 mV from the mean");
     eq("rails idle", [el.railBus.style._props["--play"], el.railPack.style._props["--play"]], ["paused", "paused"]);
   }
 
@@ -1834,7 +1366,7 @@ async function batterySuite() {
     eq("time to full grey while draining", el.ttf.style.color, MUTED);
     eq("no 'full at' clock while draining", el.ttfAt.textContent, "");
     eq("discharge chip lit", el.dot1.classList.contains("live"), true);
-    eq("discharge chip title", el.chip1.title, "Discharging — on · discharging now");
+    eq("discharge chip title", el.chip1.dataset.tip.split("\n")[0], "Discharging — on · discharging now");
 
     rerender(r, (s) => { s[E.a] = S("60"); s[E.w] = S("1600"); s[E.cc] = S("57"); });
     eq("charging meter", [el.mState1.textContent, el.mState1.style.color], ["CHG", OK]);
@@ -1861,7 +1393,7 @@ async function batterySuite() {
 
     rerender(r, (s) => { s[E.swc] = S("off", { friendly_name: "AC charging" }); s[E.prio] = S("unavailable"); });
     eq("bus sub with charger off", el.busSub.textContent, "unavailable · AC charge off");
-    eq("chip off title", el.chip0.title, "AC charging — off · switched off");
+    eq("chip off title", el.chip0.dataset.tip.split("\n")[0], "AC charging — off · switched off");
   }
 
   group = "battery/soc: ";
@@ -1903,7 +1435,7 @@ async function batterySuite() {
     eq("green label prints in text colour", el.cvVolt0.style.color, TXT);
     eq("delta red", [el.cvDelta.textContent, el.cvDelta.style.color], ["200.0 mV", BAD]);
     eq("balancer amber", [el.dot2.classList.contains("live"), el.dot2.style._props["--dc"]], [true, WARN]);
-    eq("cell tooltip", el.pcellWrap3.title, "C4 — 3.500 V");
+    eq("cell tooltip", el.pcellWrap3.dataset.tip.split("\n")[0], "C4 — 3.500 V");
 
     // Out of band entirely.
     r = mk(base([3.30, 3.30, 3.30, 3.70, 3.30, 3.30, 2.85, 3.30]));
@@ -1916,7 +1448,7 @@ async function batterySuite() {
     r = mk(base([3.30, 3.30, null, 3.30, 3.30, 3.30, 3.30, 3.30]));
     el = r.el;
     eq("an unavailable cell is not counted", el.packSub.textContent, "8 cells in series · all within tolerance");
-    eq("its tooltip", el.pcellWrap2.title, "C3 — — V");
+    eq("its tooltip", el.pcellWrap2.dataset.tip.split("\n")[0], "C3 — no reading");
     eq("its bars are empty and muted", [el.cvUp2.style.height, el.cvDown2.style.height, el.cvUp2.style.background],
       ["0.00%", "0.00%", MUTED]);
     eq("its label", el.cvVolt2.textContent, "—");
@@ -2021,7 +1553,7 @@ async function batterySuite() {
     eq(v + "timing", [el.ttf.textContent, el.rtl.textContent], variant === "empty states" ? ["unknown", "unknown"] : ["unavailable", "unavailable"]);
     eq(v + "temps", el.tVal1.textContent, "— °C");
     check(v + "chips off", [0, 1, 2].every((i) => !el["chip" + i].classList.contains("on")));
-    eq(v + "balancer title", el.chip2.title, "Balancer — " + (variant === "empty states" ? "unknown" : "unavailable") + " · switched off");
+    eq(v + "balancer title", el.chip2.dataset.tip.split("\n")[0], "Balancer — " + (variant === "empty states" ? "unknown" : "unavailable") + " · switched off");
   }
 
   group = "battery/blocks: ";

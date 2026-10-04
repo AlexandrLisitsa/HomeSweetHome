@@ -68,6 +68,8 @@ jobs:
         run: node HomeAssistant/tools/test_console_history.js
       - name: Inverter, battery and load-shedding cards
         run: node HomeAssistant/tools/test_power_cards.js
+      - name: Dashboard tooltips
+        run: node HomeAssistant/tools/test_card_tooltips.js
 
   power-station:
     name: PowerStation firmware logic
