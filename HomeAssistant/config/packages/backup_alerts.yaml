@@ -1,0 +1,40 @@
+# ---------------------------------------------------------------------------
+# Off-site backup alerts from the Proxmox host, to the household's phones
+#
+# The vzdump hook (Proxmox/tools/vzdump-offsite.sh) posts one line here when
+# an upload fails, a job is aborted, or Google Drive is past 90 % full. Before
+# this, a failed off-site copy was a red row in Datacenter -> Backup that
+# nobody looks at, and a full Drive would stop the copies for weeks.
+#
+#   POST /api/webhook/<backup_alert_webhook_id>   {"message": "..."}
+#
+# The webhook takes no login, so its id is the secret: a long random string
+# in secrets.yaml, and the same URL in the host's /etc/default/vzdump-offsite
+# as HA_WEBHOOK_URL. local_only keeps it to the LAN.
+#
+# secrets.yaml:  backup_alert_webhook_id   a long random string
+#
+# Write-up: Proxmox/docs/backups.md.
+# ---------------------------------------------------------------------------
+
+automation:
+  - id: backup_offsite_alert
+    alias: 'Backups: off-site backup alert from the Proxmox host'
+    mode: queued
+    max: 5
+    trigger:
+      - platform: webhook
+        webhook_id: !secret backup_alert_webhook_id
+        allowed_methods:
+          - POST
+        local_only: true
+    action:
+      - service: notify.household
+        data:
+          title: '💾 Off-site backup'
+          message: >-
+            {{ (trigger.json.message if trigger.json is mapping
+                and trigger.json.message is defined else 'The backup hook sent an alert with no message')
+               | string | truncate(500) }}
+          data:
+            channel: Backups

@@ -57,7 +57,8 @@ sh tools/pve_ssh.sh pveversion     # write
 | `tools/pve_ssh.sh` | run a command on the host as **root**, over SSH — the write path ([`docs/ssh-write-path.md`](docs/ssh-write-path.md)) | **yes** |
 | `tools/_pve_env.sh` | not a command: sourced by `pve_get.sh` and `pve_ssh.sh` to load `secrets.env` | — |
 | `tools/pct-fstrim.service` + `.timer` | **installed on the host**: trims every running container weekly so freed space returns to the thin pool ([`docs/maintenance.md`](docs/maintenance.md)) | no |
-| `tools/vzdump-offsite.sh` | **runs on the host**, as the vzdump hook of both backup jobs: uploads the dumps to Google Drive through rclone crypt and prunes the off-site copies | changes Drive, not the host |
+| `tools/vzdump-offsite.sh` | **runs on the host**, as the vzdump hook of both backup jobs: uploads the dumps to Google Drive through rclone crypt, prunes the off-site copies, and alerts Home Assistant when something fails | changes Drive, not the host |
+| `tools/test_vzdump_offsite.sh` | runs the hook's `job-end` and `job-abort` against a fake Drive, a fake Proxmox and a fake HA, in a throwaway Debian container (needs Docker) | no |
 
 ```sh
 python tools/cpu_trend.py        # weekly, the whole year
