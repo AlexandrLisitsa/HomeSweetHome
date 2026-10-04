@@ -2877,7 +2877,21 @@ async function loadSheddingSuite() {
 /* Report                                                                     */
 /* ========================================================================== */
 
+/*
+ * Every card file is plain text. A literal NUL byte (one sat in the inverter
+ * card's select signature until 2026-10-04) makes grep and ripgrep treat the
+ * whole file as binary and silently skip it in every search.
+ */
+function filesSuite() {
+  group = "files: ";
+  fs.readdirSync(WWW).filter((f) => f.endsWith(".js")).forEach((f) => {
+    const b = fs.readFileSync(path.join(WWW, f));
+    check(f + " has no NUL byte (write it as \\u0000)", b.indexOf(0) < 0, "at byte " + b.indexOf(0));
+  });
+}
+
 (async () => {
+  filesSuite();
   await inverterSuite();
   await batterySuite();
   await loadSheddingSuite();
