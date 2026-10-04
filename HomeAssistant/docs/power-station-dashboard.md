@@ -31,9 +31,32 @@ Blocks, top to bottom (`blocks:` in the card config chooses and orders them):
 | Block | Shows |
 | --- | --- |
 | `header` | the device name and lifetime uptime, and a status pill: **Grid connected** (green), **Grid down** (red), or **Grid returning** with a countdown (amber) |
-| `flow` | a live flow diagram: grid → inverter → house, plus the battery leg, each run's speed scaled to its power |
-| `controls` | the inverter's switches as three chips (**Auto** tariff, **Protect** grid, **AC charge**, which also carries **Night only**, adaptive charge and **Pre-charge** as icons) and its three selects (power priority, AC input mode, max AC charge current), plus the day and night tariff meters |
+| `flow` | a live flow diagram: grid → inverter → house, plus the battery leg under the inverter and the **Meter** under the grid, each run's speed scaled to its power |
+| `controls` | the inverter's switches as three chips (**Auto** tariff, **Protect** grid, **AC charge**, which also carries **Night only**, adaptive charge and **Pre-charge** as icons) and its three selects (power priority, AC input mode, max AC charge current), plus the electricity meter's day and night kWh this month with their cost, and its lifetime total |
 | `history` | grid, load and battery power over 30 min, 1 h, 24 h, 7 or 14 days, from the recorder |
+
+**The electricity meter** ([electricity-meter.md](electricity-meter.md)) is
+the truth about the grid; the inverter's `grid_real_power_calculated` is an
+estimate (load + 30 W + charging) and only sees what goes through the inverter.
+
+- **The Meter tile** hangs under Grid, as Battery hangs under Inverter: the
+  meter's real power, the whole flat, the boiler's circuit included. Its scale
+  runs to the 6000 W breaker (`max_meter_w`) with the load gauge's bands and
+  words: **NORMAL** to 3600 W (green), **ELEVATED** to 5100 W (amber),
+  **HEAVY** above (red), **OVERLOAD** past the breaker; the sub-label gives the
+  share of the breaker. Its run reaches full speed at the same 6000 W. The tile
+  is styled like Grid, whose own figure it is. Without a `meter_power` entity
+  it is hidden.
+- **The Grid tile** keeps the voltage, frequency and the inverter's grid input
+  (`… W in`, the inverter's estimate, so it does not repeat the meter).
+- **The energy rows** are the meter's this-month day and night kWh, each with
+  its cost in ₴ from the Energy dashboard, and the meter's lifetime total. The
+  row of the current tariff (`select.electricity_meter_tariff`) is marked
+  **active**. The month counters started on 2026-10-04, so October reads low.
+
+On a phone (under ~900 px) the tiles stack: Grid, Inverter, House load,
+Battery, then Meter last, without its run (stacked, a run from Grid would
+point at the wrong tile).
 
 **The grid-return countdown.** After an outage the firmware waits for five minutes
 of stable voltage before it trusts the grid again (`delayed_off: 300s` on

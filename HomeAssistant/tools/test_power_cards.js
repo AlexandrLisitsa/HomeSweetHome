@@ -588,13 +588,16 @@ async function inverterSuite() {
     bv: "sensor.powmr_inverter_battery_voltage_inverter",
     cc: "sensor.powmr_inverter_battery_charge_current",
     dc: "sensor.powmr_inverter_battery_discharge_current",
-    td: "sensor.powmr_inverter_grid_real_tariff_day",
-    tn: "sensor.powmr_inverter_grid_real_tariff_night",
-    tot: "sensor.powmr_inverter_total_energy_consumption",
+    td: "sensor.electricity_meter_tariff_day",
+    tn: "sensor.electricity_meter_tariff_night",
+    tdc: "sensor.electricity_meter_tariff_day_cost",
+    tnc: "sensor.electricity_meter_tariff_night_cost",
+    tot: "sensor.electricity_meter_energy",
+    mw: "sensor.electricity_meter_power",
     maxc: "select.powmr_inverter_max_ac_charge_current",
     prio: "select.powmr_inverter_power_priority",
     mode: "select.powmr_inverter_inverter_ac_input_mode",
-    tariff: "select.grid_real_tariff",
+    tariff: "select.electricity_meter_tariff",
     pplan: "sensor.outage_pre_charge_plan",
     ad: "input_boolean.adaptive_night_charge",
     aplan: "sensor.adaptive_charge_plan",
@@ -1324,13 +1327,75 @@ async function inverterSuite() {
     check("day row active", r.el.erow0.classList.contains("on") && !r.el.erow1.classList.contains("on"));
     eq("day tag", [r.el.etag0.textContent, r.el.etag1.textContent, r.el.etag2.textContent], ["active", "", ""]);
     eq("values and decimals", [r.el.eval0.textContent, r.el.eval1.textContent, r.el.eval2.textContent],
-      ["123.46 kWh", "78.90 kWh", "202.346 kWh"]);
+      ["123.46 kWh", "78.90 kWh", "202.3 kWh"]);
+    check("labelled as this month's, from the meter",
+      r.c.shadowRoot.querySelectorAll(".erow .en").map((n) => n.textContent).join("|") === "Day this month|Night this month|Meter total");
+    eq("rows open the meter's entities", [0, 1, 2].map((i) => r.el["erow" + i].getAttribute("data-more")), [E.td, E.tn, E.tot]);
+    rerender(r, (s) => { s[E.tdc] = S("12.3456"); s[E.tnc] = S("5.263"); });
+    eq("with costs", [r.el.eval0.textContent, r.el.eval1.textContent], ["123.46 kWh12.35 ₴", "78.90 kWh5.26 ₴"]);
+    eq("cost is its own element", r.el.eval0.innerHTML, "123.46 kWh<small>12.35 ₴</small>");
+    rerender(r, (s) => { s[E.tdc] = S("unavailable"); });
+    eq("an unavailable cost is left out", r.el.eval0.textContent, "123.46 kWh");
     rerender(r, (s) => { s[E.tariff] = S("night"); });
     check("night row active", !r.el.erow0.classList.contains("on") && r.el.erow1.classList.contains("on"));
     rerender(r, (s) => { s[E.tariff] = S("unavailable"); s[E.td] = S("unknown"); });
     check("unknown tariff: no row active", [0, 1, 2].every((i) => !r.el["erow" + i].classList.contains("on")));
     eq("unknown meter", r.el.eval0.textContent, "— kWh");
+    check("the total never shows a cost", r.el.eval2.innerHTML.indexOf("<small>") < 0);
     check("the total is never 'active'", !r.el.erow2.classList.contains("on"));
+  }
+
+  /* --- the Meter tile ------------------------------------------------------------ */
+  group = "inverter/meter: ";
+  {
+    // base(): grid input (calculated) 300 W, no meter entity at all.
+    let r = mk(base());
+    check("no meter entity: the Meter tile and run are hidden", r.el.dirTile.hidden && r.el.dirRun.hidden);
+    eq("the Grid tile shows the inverter's grid input", r.el.gridSub.textContent, "50.00 Hz · 300 W in");
+
+    r = mk(Object.assign(base(), { [E.mw]: S("2450") }));
+    check("meter present: shown", !r.el.dirTile.hidden && !r.el.dirRun.hidden);
+    eq("the Grid tile does not repeat the meter", r.el.gridSub.textContent, "50.00 Hz · 300 W in");
+    eq("named Meter", r.el.dirTile.querySelector(".t-name").textContent, "Meter");
+    eq("big number: the meter's real power", r.el.dirVal.textContent, "2450W");
+    eq("sub: share of the breaker", r.el.dirSub.textContent, "40.8 % of the 6000 W breaker");
+    eq("normal under 60 %", [r.el.dirState.textContent, r.el.dirVal.style.color], ["NORMAL", OK_C]);
+    eq("the scale's marker", r.el.dirMark.style.left, "40.83%");
+    eq("ticks: 0 · 3600 · 6000 (the breaker)",
+      r.el.dirTile.querySelectorAll(".ticks span").map((n) => n.textContent), ["0", "3600", "6000"]);
+    eq("the run flows", r.el.runDir.style._props["--play"], "running");
+    eq("opens the meter", r.el.dirTile.getAttribute("data-more"), E.mw);
+    check("no bypass arithmetic anywhere", r.el.dirTile.textContent.indexOf("inverter") < 0);
+    const css0 = r.c.shadowRoot.querySelector("style").textContent;
+    check("styled like the Grid tile: solid border, same amber family",
+      css0.indexOf(".tile.t-dir { border: 1px solid #241D14; background: #0F0D0A; }") >= 0
+      && css0.indexOf(".tile.t-grid { border: 1px solid #241D14; background: #0F0D0A; }") >= 0);
+
+    rerender(r, (s) => { s[E.mw] = S("4200"); });
+    eq("over 60 %: elevated, amber", [r.el.dirState.textContent, r.el.dirVal.style.color], ["ELEVATED", WARN_C]);
+    rerender(r, (s) => { s[E.mw] = S("5400"); });
+    eq("over 85 %: heavy, red", [r.el.dirState.textContent, r.el.dirVal.style.color], ["HEAVY", BAD_C]);
+    rerender(r, (s) => { s[E.mw] = S("6600"); });
+    eq("past the breaker: overload, marker pinned", [r.el.dirState.textContent, r.el.dirMark.style.left], ["OVERLOAD", "100.00%"]);
+    rerender(r, (s) => { s[E.mw] = S("0"); });
+    eq("grid down, 0 W: the run stands still", r.el.runDir.style._props["--play"], "paused");
+    rerender(r, (s) => { s[E.mw] = S("unavailable"); });
+    check("meter unavailable: still shown, no data", !r.el.dirTile.hidden && r.el.dirState.textContent === "NO DATA");
+    eq("...dash and marker at 0", [r.el.dirVal.textContent, r.el.dirMark.style.left], ["—W", "0.00%"]);
+
+    const r3 = mk(Object.assign(base(), { [E.mw]: S("1000") }), { max_meter_w: 4000 });
+    eq("max_meter_w moves the scale", r3.el.dirTile.querySelectorAll(".ticks span").map((n) => n.textContent), ["0", "2400", "4000"]);
+    eq("...and the share", r3.el.dirSub.textContent, "25.0 % of the 4000 W breaker");
+    throws("max_meter_w validated", () => r3.c.setConfig({ max_meter_w: 0 }), /max_meter_w must be a positive/);
+
+    // Layout: under Grid on a wide card; stacked last, with no run, on a phone.
+    const css = r.c.shadowRoot.querySelector("style").textContent;
+    check("wide: Meter in column 1, under Grid", css.indexOf(".battrun > .direct, .battwrap > .direct { grid-column: 1; }") >= 0);
+    const narrow = css.slice(css.indexOf("@container pmcard (max-width: 900px)"));
+    check("narrow: its run is dropped", narrow.indexOf(".battrun > .direct { display: none; }") >= 0);
+    check("narrow: Meter comes after Battery",
+      narrow.indexOf(".battwrap > .t-batt { order: 1; }") >= 0 && narrow.indexOf(".battwrap > .direct { order: 2; }") >= 0);
+    check("narrow: no fixed grid row", narrow.indexOf("grid-row: auto;") >= 0);
   }
 
   /* --- battery tile ----------------------------------------------------------- */
