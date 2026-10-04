@@ -35,6 +35,8 @@ jobs:
         run: python HomeAssistant/tools/check_dtek_templates.py
       - name: Automations and IR bridge scripts
         run: python HomeAssistant/tools/check_automations.py
+      - name: Tariff hours, pack size and charge steps agree with their sources
+        run: python HomeAssistant/tools/check_shared_constants.py
       - name: Entity references across the config
         run: python IRBridge/tools/check_ha_entities.py HomeAssistant/config
       - name: IR A/C energy templates
