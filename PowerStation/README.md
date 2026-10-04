@@ -47,7 +47,7 @@ For the full list of sensors and controls exposed to HA see [§13 of the archite
 
 - `.esphome/` (build cache) and `secrets.yaml` are gitignored.
 - The ESP32 toolchain lives in a named Docker volume (`powerstation_esphome-platformio`) mounted at `/root/.platformio`. Without it, `run --rm` discards the toolchain and re-downloads it on every build; adding it took a warm rebuild from 152 s to 78 s. Wipe it with `docker volume rm powerstation_esphome-platformio` if a toolchain install ever goes bad.
-- The previous WiFi password lived in the YAML and is therefore in git history — rotate the WiFi password once you've confirmed the new build flashes successfully.
+- Every credential is behind `!secret`. A WiFi password once lived in the YAML, but only in the private history before this repository started fresh; no commit here contains it.
 
 ## Tools
 

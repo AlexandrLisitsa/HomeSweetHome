@@ -73,7 +73,9 @@ Whoever has `telegram.session` can read and send as the household. So:
 
 - It stays on the box (`chmod 600`, directory `700`) and is git-ignored with
   the rest of `data/`.
-- It goes off-site only inside the **encrypted** weekly LXC dump
+- It goes off-site only inside the **encrypted** weekly upload, as a few-KB
+  `meterbots-state-*.tar.zst` archive (`.env`, `docker-compose.yml`,
+  `data/telegram`). LXC 105 itself is not dumped: its image rebuilds from git
   ([`Proxmox/docs/backups.md`](../../Proxmox/docs/backups.md)).
 - It shows up in Telegram → Settings → Devices under the API app's name.
   Ending it there logs MeterBots out, and every call answers

@@ -35,7 +35,8 @@ Two ways in, for two jobs:
   config and metric and change nothing. Setup steps and the privilege-separation
   trap are in `secrets.env.example`. The measuring tools below use only this.
 - **SSH as root** with a dedicated key, for everything that writes: creating and
-  deploying MeterCam's container (see [`docs/ssh-write-path.md`](docs/ssh-write-path.md)),
+  deploying MeterCam's and MeterBots' containers, LXC 104 and 105 (see
+  [`docs/ssh-write-path.md`](docs/ssh-write-path.md)),
   and host administration — installing packages, the backup hook, the backup
   jobs. The hook is installed by hand (see [`docs/backups.md`](docs/backups.md)).
   Changes made this way are written up in the docs, since there is no mirror of

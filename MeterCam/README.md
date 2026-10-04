@@ -103,7 +103,7 @@ frames, which must never be accepted. Both must pass before a deploy.
 | [`docs/architecture.md`](docs/architecture.md) | The wake cycle, who decides what, and how Home Assistant is wired |
 | [`docs/api.md`](docs/api.md) | The service's HTTP endpoints |
 | [`docs/firmware.md`](docs/firmware.md) | The board: wiring, building, the first USB flash, publishing an update, rolling back |
-| [`docs/deployment.md`](docs/deployment.md) | LXC 104: creating it, first setup, deploying code, frame retention, the gas bot's keys |
+| [`docs/deployment.md`](docs/deployment.md) | LXC 104: creating it, first setup, its tokens, deploying code, frame retention |
 | [`docs/operations.md`](docs/operations.md) | Day to day: checking reads, the camera moved, a reading went wrong |
 | [`docs/guardrails.md`](docs/guardrails.md) | Each guard against a bad reading, and what it is worth |
 | [`docs/pitfalls.md`](docs/pitfalls.md) | The things that are easy to get wrong when reading a dial |
