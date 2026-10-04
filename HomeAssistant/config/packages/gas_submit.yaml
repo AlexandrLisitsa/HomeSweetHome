@@ -30,6 +30,7 @@
 #                gasbot_status_url   http://<meterbots-ip>:8770/gas/bot/status
 #                gasbot_submit_url   http://<meterbots-ip>:8770/gas/bot/submit
 #                metercam_url        http://<metercam-ip>:8770 (the photo)
+#                metercam_token      MeterCam's METERCAM_TOKEN
 #
 # Write-up: HomeAssistant/docs/gas-reading-submission.md.
 # ---------------------------------------------------------------------------

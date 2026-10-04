@@ -58,7 +58,12 @@ Then, in `/opt/metercam/` on the box:
    Assistant's address.
 3. `.env`: `METERCAM_HA_TOKEN=<a long-lived token>`. Mint one for MeterCam alone
    so it can be revoked on its own. Add `METERCAM_TOKEN=` to turn auth on, and
-   put the same value in the firmware's `config.h`.
+   put the same value in the firmware's `config.h` and in Home Assistant's
+   `secrets.yaml` as `metercam_token` (the gas submission's photo). Turn it on
+   in that order: HA's secret first, then a firmware build with the token, and
+   the service's `.env` only once the board reports that build. The board
+   fetches new firmware from this service, so a service that demands the
+   token before the board has it locks the board out until a USB flash.
 4. `data/ref/gas.jpg` and the ROIs: see "The camera moved" in
    [`operations.md`](operations.md).
 
