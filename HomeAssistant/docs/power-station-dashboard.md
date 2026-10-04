@@ -32,7 +32,7 @@ Blocks, top to bottom (`blocks:` in the card config chooses and orders them):
 | --- | --- |
 | `header` | the device name and lifetime uptime, and a status pill: **Grid connected** (green), **Grid down** (red), or **Grid returning** with a countdown (amber) |
 | `flow` | a live flow diagram: grid → inverter → house, plus the battery leg, each run's speed scaled to its power |
-| `controls` | the inverter's switches as chips (**Auto** tariff, **Protect** grid, **AC charge**, **Night only**, **Pre-charge**) and its three selects (power priority, AC input mode, max AC charge current), plus the day and night tariff meters |
+| `controls` | the inverter's switches as three chips (**Auto** tariff, **Protect** grid, **AC charge**, which also carries **Night only**, adaptive charge and **Pre-charge** as icons) and its three selects (power priority, AC input mode, max AC charge current), plus the day and night tariff meters |
 | `history` | grid, load and battery power over 30 min, 1 h, 24 h, 7 or 14 days, from the recorder |
 
 **The grid-return countdown.** After an outage the firmware waits for five minutes
@@ -43,23 +43,49 @@ voltage is back, so while it is on and the safe sensor is still unsafe, the pill
 counts down from its `last_changed`. It is shown only in that window. The delay
 is the card option `grid_return_s` (default 300) and must match the firmware.
 
-**The Pre-charge chip** toggles `switch.powmr_inverter_outage_pre_charge`, the
-on/off for charging the pack before a scheduled DTEK outage
-([outage-precharge.md](outage-precharge.md)). ON only arms it. While the plan
-has something to do, a sub-label from `sensor.outage_pre_charge_plan` shows
-what: **30 A → 09:30** while charging, **at night → 09:30** while the night
-tariff will cover it, or **full**. Tapping the sub-label opens the plan, and the
-chip's tooltip gives the reason.
+**The AC charge chip carries the charger's features, as small icons.**
+Everything that shapes AC charging sits on that one chip, so the header has
+three chips, not five. The chip's own icon on the left is the main switch, the
+charger itself (`switch.powmr_inverter_ac_charging_enabled`, the BMS charge
+MOSFET): it pulses while the pack is taking current from the grid, and the
+chip's label opens its dialog. After the label come the features, each its own
+switch: dark when off, lit in its colour when on, whatever the others are
+doing. A tap toggles it, and its tooltip names it and its state. In order:
 
-**The AC charge chip has a second dot** for adaptive night charge
-(`input_boolean.adaptive_night_charge`, see [adaptive-charge.md](adaptive-charge.md)).
-It sits after the chip's own dot and lights orange when it is on, whatever the
-BMS charger switch is doing. A sub-label from `sensor.adaptive_charge_plan`
-shows **20 A → 07:00** while it is sizing the night charge, **tonight** by day,
-or **full**. Switching the charger off switches adaptive off with it, and so
-does a DTEK outage window, which hands the night to pre-charge. The dot is
-dimmed and a tap on it does nothing in any of these cases: Auto and Night only
-both off, the charger off under Auto, or an outage window pending.
+| Icon | Toggles | Lit |
+| --- | --- | --- |
+| `mdi:weather-night` | **Night only**, `switch.powmr_inverter_night_charging_only` | blue |
+| `mdi:tune-variant` | **adaptive night charge**, `input_boolean.adaptive_night_charge` | amber |
+| `mdi:battery-clock` | **Pre-charge**, `switch.powmr_inverter_outage_pre_charge` | amber |
+
+**An icon pulses while it acts**, not merely while it is on: the charger while
+the pack takes grid current, Night only while the pack charges under its night
+window, adaptive while its plan reads `charging` (it is sizing the current),
+Pre-charge while its plan reads `charging` (it is filling the pack for an
+outage). On and idle is lit and still.
+
+The card options `chip_night_only` and `chip_precharge` still override the two
+switches that used to be chips.
+
+**Every tooltip explains its toggle.** Hovering a chip or an icon shows its name
+and state, then what it does and an example (`HELP` in the card), e.g. Night
+only: "charging stops at 07:00 and starts again at 23:00". The card options `chip_night_only` and `chip_precharge`
+still override the two switches that used to be chips.
+
+**Adaptive** ([adaptive-charge.md](adaptive-charge.md)) has a sub-label from
+`sensor.adaptive_charge_plan`: **20 A → 07:00** while it is sizing the night
+charge, **tonight** by day, or **full**. Switching the charger off switches
+adaptive off with it, and so does a DTEK outage window, which hands the night
+to pre-charge. Its icon is dimmed and a tap on it does nothing in any of these
+cases: Auto and Night only both off, the charger off under Auto, or an outage
+window pending.
+
+**Pre-charge** ([outage-precharge.md](outage-precharge.md)) only arms the
+feature when it is on. While the plan has something to do, a sub-label from
+`sensor.outage_pre_charge_plan` shows what: **30 A → 09:30** while charging,
+**at night → 09:30** while the night tariff will cover it, or **full**. The
+icon's tooltip gives the plan's reason. Tapping either sub-label opens its
+plan.
 
 Two firmware quirks the card handles:
 

@@ -3,14 +3,15 @@
 When DTEK publishes a schedule with an outage in it, the house makes sure the
 battery is full before that outage starts. It switches the inverter to grid and
 charges, at the lowest AC charge current that still finishes in time, and it
-uses the cheap night tariff when that is enough on its own. A **Pre-charge**
-chip on the Power station dashboard turns the whole thing on or off.
+uses the cheap night tariff when that is enough on its own. The **Pre-charge**
+icon on the Power station dashboard's AC charge chip turns the whole thing on
+or off.
 
 | File | What it holds |
 | --- | --- |
 | `config/packages/outage_precharge.yaml` | the plan sensor and the two automations |
 | [`../PowerStation/power-station.yaml`](../../PowerStation/power-station.yaml) | the override itself, as rule 1b ([architecture §11](../../PowerStation/docs/architecture.md#11-outage-pre-charge)) |
-| `config/www/powmr-inverter-console-card.js` | the chip ([power-station-dashboard.md](power-station-dashboard.md)) |
+| `config/www/powmr-inverter-console-card.js` | the icon ([power-station-dashboard.md](power-station-dashboard.md)) |
 | `tools/test_outage_precharge.py` | renders the plan against fake states |
 
 ## What counts as an outage
@@ -58,7 +59,7 @@ night. If it disappears, the override is released straight away.
 
 | State | Meaning |
 | --- | --- |
-| `off` | the chip is off |
+| `off` | the icon is off |
 | `idle` | no scheduled outage ahead, or no battery reading |
 | `full` | the pack is within 1 % of full |
 | `waiting_night` | it is daytime, and the night tariff before the outage can fill the pack at 60 A |
