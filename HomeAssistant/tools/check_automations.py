@@ -18,6 +18,7 @@ template picks the right branch -- and every one of those was wrong once
   * the meter-reading sends refuse a second reading in a month, and the
     two monthly asks never start at the same minute
   * the gas camera alert fires after 6 h without an accepted reading
+  * every A/C call reports a failure; the meter's tariff switch is verified
 
 Same approach as check_dtek_templates.py: just enough of HA's template
 environment to render these templates, not an HA emulator.
@@ -273,6 +274,52 @@ m = render(msg, trigger={"id": "stale"}, hours=hours)
 check("stale message names the hours", "No accepted gas reading for 6.6 h." in " ".join(m.split()), True)
 m = render(msg, trigger={"id": "down"}, hours="0")
 check("down message says MeterCam is silent", m.startswith("MeterCam has not answered for an hour"), True)
+
+# --- no silent failures ---------------------------------------------------------
+print("\n11. A/C commands and the meter's tariff switch: a failure is reported")
+pkg = yaml.load((CONFIG / "packages" / "irbridge_ac.yaml").read_text(encoding="utf-8"), HaLoader)
+seqs = [(a["id"], a["action"]) for a in pkg["automation"]]
+seqs += [(k, v["sequence"]) for k, v in pkg["script"].items() if k != "irbridge_ac_command_failed"]
+calls = 0
+for name, seq in seqs:
+    for i, step in enumerate(seq):
+        if not str(step.get("service", "")).startswith("rest_command.irbridge_ac"):
+            continue
+        calls += 1
+        nxt = seq[i + 1] if i + 1 < len(seq) else {}
+        guarded = (step.get("response_variable") == "resp" and step.get("continue_on_error") is True
+                   and "if" in nxt and nxt["then"][0]["service"] == "script.irbridge_ac_command_failed")
+        check(name + ": its A/C call is checked", guarded, True)
+check("every A/C call in the package is covered (7)", calls, 7)
+step = next(a for a in pkg["automation"] if a["id"] == "irbridge_ac_temperature")["action"][1]
+cond, why = step["if"][0]["value_template"], step["then"][0]["data"]["why"]
+check("200: no report", render(cond, resp={"status": 200, "content": {}}), "False")
+check("no answer: reported", render(cond), "True")
+check("400: reported", render(cond, resp={"status": 400, "content": {"error": "unknown fan 'x'"}}), "True")
+check("why, no answer", render(why), "no answer from the IR phone")
+check("why, a refusal with its reason",
+      " ".join(render(why, resp={"status": 400, "content": {"error": "unknown fan 'x'"}}).split()),
+      "IR phone answered 400: unknown fan 'x'")
+check("why, an error page", " ".join(render(why, resp={"status": 502, "content": "Bad Gateway"}).split()),
+      "IR phone answered 502")
+rep = pkg["script"]["irbridge_ac_command_failed"]
+check("one tag, so a burst replaces one notification",
+      rep["sequence"][0]["data"]["data"]["tag"], "irbridge-ac-failed")
+msg = render(rep["sequence"][0]["data"]["message"], what="Temperature 24 °C", why="no answer from the IR phone")
+check("the report says what and why", " ".join(msg.split()).startswith(
+      "Temperature 24 °C did not reach the A/C: no answer from the IR phone."), True)
+
+em = yaml.load((CONFIG / "packages" / "electricity_meter.yaml").read_text(encoding="utf-8"), HaLoader)
+acts = next(a for a in em["automation"] if a["id"] == "electricity_meter_tariff_switch")["actions"]
+retry, final = acts[2], acts[3]
+landed = {"select.electricity_meter_tariff": "night", "select.electricity_meter_register": "night"}
+half = {"select.electricity_meter_tariff": "night", "select.electricity_meter_register": "day"}
+check("both selects on the zone: no retry", render(retry["if"][0]["value_template"], states=landed, zone="night"), "False")
+check("one select behind: retry", render(retry["if"][0]["value_template"], states=half, zone="night"), "True")
+check("the retry waits 30 s, then switches again",
+      (retry["then"][0], retry["then"][1]["action"]), ({"delay": "00:00:30"}, "select.select_option"))
+check("still behind after the retry: notify", (render(final["if"][0]["value_template"], states=half, zone="night"),
+      final["then"][0]["action"]), ("True", "notify.household"))
 
 print("\n%s" % ("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed"))
 sys.exit(1 if FAILED else 0)

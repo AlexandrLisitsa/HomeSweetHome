@@ -150,6 +150,19 @@ automation:
       - service: rest_command.irbridge_ac_mode
         data:
           mode: "{{ trigger.payload }}"
+        response_variable: resp
+        continue_on_error: true
+      - if:
+          - condition: template
+            value_template: "{{ resp is not defined or resp.status != 200 }}"
+        then:
+          - service: script.irbridge_ac_command_failed
+            data:
+              what: "Mode {{ trigger.payload }}"
+              why: >-
+                {{ 'no answer from the IR phone' if resp is not defined
+                   else 'IR phone answered ' ~ resp.status ~ (': ' ~ resp.content.error
+                        if resp.content is mapping and resp.content.error is defined else '') }}
 
   - id: irbridge_ac_temperature
     alias: "IR Bridge: A/C temperature changed"
@@ -162,6 +175,19 @@ automation:
       - service: rest_command.irbridge_ac_temp
         data:
           temp: "{{ trigger.payload | float | round(0) | int }}"
+        response_variable: resp
+        continue_on_error: true
+      - if:
+          - condition: template
+            value_template: "{{ resp is not defined or resp.status != 200 }}"
+        then:
+          - service: script.irbridge_ac_command_failed
+            data:
+              what: "Temperature {{ trigger.payload | float | round(0) | int }} °C"
+              why: >-
+                {{ 'no answer from the IR phone' if resp is not defined
+                   else 'IR phone answered ' ~ resp.status ~ (': ' ~ resp.content.error
+                        if resp.content is mapping and resp.content.error is defined else '') }}
 
   - id: irbridge_ac_fan_mode
     alias: "IR Bridge: A/C fan changed"
@@ -174,6 +200,19 @@ automation:
       - service: rest_command.irbridge_ac_fan
         data:
           fan: "{{ trigger.payload }}"
+        response_variable: resp
+        continue_on_error: true
+      - if:
+          - condition: template
+            value_template: "{{ resp is not defined or resp.status != 200 }}"
+        then:
+          - service: script.irbridge_ac_command_failed
+            data:
+              what: "Fan {{ trigger.payload }}"
+              why: >-
+                {{ 'no answer from the IR phone' if resp is not defined
+                   else 'IR phone answered ' ~ resp.status ~ (': ' ~ resp.content.error
+                        if resp.content is mapping and resp.content.error is defined else '') }}
 
   # mode: single here, unlike the three above. Swing is a toggle, and the
   # thermostat card cannot emit a meaningful burst of swing changes the way a
@@ -189,6 +228,19 @@ automation:
       - service: rest_command.irbridge_ac_swing
         data:
           swing_on: "{{ trigger.payload == 'on' }}"
+        response_variable: resp
+        continue_on_error: true
+      - if:
+          - condition: template
+            value_template: "{{ resp is not defined or resp.status != 200 }}"
+        then:
+          - service: script.irbridge_ac_command_failed
+            data:
+              what: "Swing {{ trigger.payload }}"
+              why: >-
+                {{ 'no answer from the IR phone' if resp is not defined
+                   else 'IR phone answered ' ~ resp.status ~ (': ' ~ resp.content.error
+                        if resp.content is mapping and resp.content.error is defined else '') }}
 
   # The one automation here that flows inward. Every other one turns a card
   # interaction into a bridge call; this one feeds a real measurement back so
@@ -240,11 +292,51 @@ automation:
                   retain: true
 
 script:
+  # Every A/C call above checks its answer and comes here when it got none.
+  # The IR phone is the only path to the unit, and before this a dead phone,
+  # a moved address or a refused frame failed silently: the thermostat card
+  # showed a state the unit never received. One tag, so a burst of failures
+  # (a dragged slider while the phone is off) replaces one notification
+  # instead of stacking them.
+  irbridge_ac_command_failed:
+    alias: "A/C: report a command the IR phone did not take"
+    mode: queued
+    max: 10
+    fields:
+      what:
+        description: The command, in words
+      why:
+        description: What went wrong
+    sequence:
+      - service: notify.household
+        data:
+          title: "❄️ A/C command not sent"
+          message: >-
+            {{ what }} did not reach the A/C: {{ why }}. The thermostat card
+            now shows a state the unit may not have. Check the IR phone
+            (IRBridge), then use "A/C: resend current state".
+          data:
+            channel: A/C
+            tag: irbridge-ac-failed
+
   irbridge_ac_resend:
     alias: "A/C: resend current state"
     mode: single
     sequence:
       - service: rest_command.irbridge_ac_resend
+        response_variable: resp
+        continue_on_error: true
+      - if:
+          - condition: template
+            value_template: "{{ resp is not defined or resp.status != 200 }}"
+        then:
+          - service: script.irbridge_ac_command_failed
+            data:
+              what: "Resend"
+              why: >-
+                {{ 'no answer from the IR phone' if resp is not defined
+                   else 'IR phone answered ' ~ resp.status ~ (': ' ~ resp.content.error
+                        if resp.content is mapping and resp.content.error is defined else '') }}
 
   # For parking the vane rather than sweeping it. Each run moves it one step
   # and wraps around, so it is a "press until it looks right" control.
@@ -253,6 +345,19 @@ script:
     mode: single
     sequence:
       - service: rest_command.irbridge_ac_swing_step
+        response_variable: resp
+        continue_on_error: true
+      - if:
+          - condition: template
+            value_template: "{{ resp is not defined or resp.status != 200 }}"
+        then:
+          - service: script.irbridge_ac_command_failed
+            data:
+              what: "Vane step"
+              why: >-
+                {{ 'no answer from the IR phone' if resp is not defined
+                   else 'IR phone answered ' ~ resp.status ~ (': ' ~ resp.content.error
+                        if resp.content is mapping and resp.content.error is defined else '') }}
 
   # The escape hatch for a stale swing belief: press regardless of what the
   # bridge thinks. Use it when the vane is visibly out of step with the card.
@@ -265,3 +370,16 @@ script:
           swing_on: >-
             {{ not (state_attr('sensor.a_c_assumed_state', 'swing') | default(false, true)) }}
           force: true
+        response_variable: resp
+        continue_on_error: true
+      - if:
+          - condition: template
+            value_template: "{{ resp is not defined or resp.status != 200 }}"
+        then:
+          - service: script.irbridge_ac_command_failed
+            data:
+              what: "Swing toggle"
+              why: >-
+                {{ 'no answer from the IR phone' if resp is not defined
+                   else 'IR phone answered ' ~ resp.status ~ (': ' ~ resp.content.error
+                        if resp.content is mapping and resp.content.error is defined else '') }}
