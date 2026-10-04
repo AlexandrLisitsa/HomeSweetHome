@@ -68,7 +68,7 @@ def settings():
     return {**tgclient.api_settings(),
             "account": env["GASBOT_ACCOUNT"].strip(),
             "counter": env["GASBOT_COUNTER"].strip(),
-            "bot": env.get("GASBOT_BOT", "mygrmu_bot").lstrip("@")}
+            "bot": (env.get("GASBOT_BOT") or "mygrmu_bot").lstrip("@")}
 
 
 async def _to_value_prompt(walk, cfg):
