@@ -15,6 +15,13 @@ bot said.
 | `@mygrmu_bot` | Gazmerezhi (gas distribution) | the gas meter, whole m³ | [`docs/gas-bot.md`](docs/gas-bot.md) |
 | `@Yasnoonlinebot` | YASNO (electricity supply) | the electricity meter's day and night registers, whole kWh | [`docs/yasno-bot.md`](docs/yasno-bot.md) |
 
+Gas is proven: a real reading has gone through the bot. **YASNO is not yet.**
+Its walk is tested against a fake of the bot as it was on 2026-10-04, but what
+the real bot answers to the two numbers takes a real submission to see. The
+first chance is the 30 Oct – 3 Nov 2026 window; until then a YASNO submission
+may come back as "it may or may not have been taken, check the chat"
+([`docs/yasno-bot.md`](docs/yasno-bot.md)).
+
 ```
 Home Assistant ── rest_command, a token per bot ──► MeterBots :8770 ── Telethon ──► Telegram ──► the bots
 ```

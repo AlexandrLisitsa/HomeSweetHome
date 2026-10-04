@@ -496,7 +496,7 @@ sensor:
     delta_cell_voltage:
       name: "BMS Delta Cell Voltage"
 
-    # --- Individual voltage for each of the 16 cells ---
+    # --- Individual voltage for each of the 8 cells (8S pack) ---
     cell_voltage_1:
       name: "BMS Cell 1"
     cell_voltage_2:

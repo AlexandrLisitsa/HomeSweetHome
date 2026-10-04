@@ -109,6 +109,7 @@ sh tools/ha_get.sh /api/config
 | `tools/ha_call.sh` | calls a service — **changes the house** | yes, deliberately |
 | `tools/ha_dashboard.py` | create / push / reorder Lovelace dashboards over the WebSocket API — **changes the house** | yes, deliberately |
 | `tools/ha_registry.py` | lists orphaned registry rows and open repairs; `--remove` / `--clear-stats` **change the house** | reads: no. writes: yes |
+| `tools/check_automations.py` | renders and shape-checks `automations.yaml` and the packages' automations: the tariff on start, the grid and battery alerts, the leak alarm, the kitchen helpers, the IR phone's charging, the weekly MeterBots session check | no — pure local |
 | `tools/check_dtek_templates.py` | renders every Jinja template in `packages/dtek_shutdowns.yaml` and the DTEK dashboard against fake states | no — pure local |
 | `tools/check_climate_card.py` | cross-references every entity `climate-console-card.js` names against `/api/states` | no — GET-only |
 | `tools/test_dtek_schedule.py` | fixture tests for `config/dtek/dtek_poll.py`'s schedule maths | no — no network |
@@ -122,6 +123,8 @@ sh tools/ha_get.sh /api/config
 | `tools/test_power_cards.js` | render and logic tests for the inverter, battery and load-shedding cards against a fake `hass` and a small DOM | no — pure local |
 | `tools/test_load_shedding.py` | renders the load-shedding engine's templates in `packages/load_shedding.yaml` (decision, warnings, validator, stores, restore) against fake states | no — pure local |
 | `tools/test_climate_chart.js` | fixture tests for the climate card's chart and dial maths | no — no network |
+| `tools/test_console_history.js` | the inverter and battery cards' history: raw states inside the recorder's window, hourly statistics past it | no — pure local |
+| `tools/ha_www_push.sh` | pushes `config/www/` (the custom cards) to the box over SSH; follow with `ha_dashboard.py --card` to bump the resource version — **changes the house** | yes, deliberately |
 
 `ha_pull.sh` extracts to a temp dir and swaps, so a failed pull leaves the old
 mirror intact, and a file deleted on the box shows up as a deletion in git
@@ -141,11 +144,14 @@ The one-shot IRBridge installer (`ha_preflight.sh` → `ha_deploy.sh` →
 2026-08-23 and has since been removed; it is in git history if it is ever
 needed again.
 
-Local checks worth running before any transfer, all read-only:
+Local checks worth running before any transfer, all read-only. CI
+(`.github/workflows/checks.yml`) runs every one of them except
+`check_ha_templates.py`:
 
 ```sh
 python ../IRBridge/tools/check_ha_entities.py config
 python ../IRBridge/tools/check_ha_templates.py
+python tools/check_automations.py
 python tools/check_dtek_templates.py
 python tools/test_dtek_schedule.py
 python tools/test_outage_precharge.py
@@ -156,6 +162,8 @@ python tools/test_gas_submit.py
 python tools/test_electricity_submit.py
 python tools/test_load_shedding.py
 node tools/test_power_cards.js
+node tools/test_console_history.js
+node tools/test_climate_chart.js
 ```
 
 The DTEK, pre-charge, adaptive-charge and load-shedding ones need `python -m pip install -r tools/requirements.txt`;

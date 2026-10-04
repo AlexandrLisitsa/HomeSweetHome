@@ -17,8 +17,8 @@ only through a `POST` that a tap on the phone caused.
 A Telegram session is a logged-in account. It can read and send as the
 household, so it deserves a small box of its own:
 
-- its own backups, as a small encrypted LXC dump rather than files inside a
-  camera's state;
+- its own backups, as a small encrypted state archive (`.env` and the
+  session, not the whole container) rather than files inside a camera's state;
 - nothing else running next to it that could read `/data`;
 - MeterCam can be rebuilt, resized or moved without touching the session.
 

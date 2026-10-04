@@ -44,7 +44,7 @@ It is designed to keep running with no internet and no Home Assistant. WiFi loss
 
 The BMS MAC comes from `secrets.yaml`. Replacing the battery means changing `bms_mac_address`.
 
-The battery is **8S** (8 cells in series, ~25.6 V nominal). The YAML reads `cell_voltage_1` through `cell_voltage_8`. Despite an inline comment saying "16 cells", only 8 are exposed.
+The battery is **8S** (8 cells in series, ~25.6 V nominal). The YAML reads `cell_voltage_1` through `cell_voltage_8`.
 
 ---
 

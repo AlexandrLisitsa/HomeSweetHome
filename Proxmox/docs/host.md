@@ -47,7 +47,7 @@ memory on the host first.
 
 Read-only through the API token (`tools/pve_get.sh`), and SSH as root for
 administration, as described in the [README](../README.md#access). MeterCam's
-deployment goes over the same [SSH write path](ssh-write-path.md). Installed on
+and MeterBots' deployments go over the same [SSH write path](ssh-write-path.md). Installed on
 the host from this repository: the backup hook ([backups.md](backups.md)) and
 the weekly `pct fstrim` timer ([maintenance.md](maintenance.md)).
 

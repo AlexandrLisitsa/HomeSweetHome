@@ -39,7 +39,7 @@ flowchart LR
 | [`IRBridge/`](IRBridge/README.md) | Android app that turns an old phone's IR blaster into an authenticated HTTP API, so Home Assistant can drive a "dumb" split A/C — including a protocol sweep to find which IR codec the unit speaks. |
 | [`FloorPlan/`](FloorPlan/README.md) | Tooling that renders a Sweet Home 3D model from above and turns it into the isometric **Home** dashboard, where each lamp lights its own room. |
 | [`MeterCam/`](MeterCam/README.md) | An ESP32-CAM that wakes every 30 minutes to photograph the gas meter's dial, and a service in a Proxmox LXC that reads the digits and hands Home Assistant a reading only when it can stand behind it. Cameras only: the water meter is next. |
-| [`MeterBots/`](MeterBots/README.md) | Files the monthly meter readings (gas to Gazmerezhi, electricity day/night to YASNO) with the suppliers' Telegram bots as the household's own Telegram user, in its own Proxmox LXC, when someone taps *Submit* on the phone. Holds the Telegram session and nothing else. |
+| [`MeterBots/`](MeterBots/README.md) | Files the monthly meter readings (gas to Gazmerezhi, electricity day/night to YASNO) with the suppliers' Telegram bots as the household's own Telegram user, in its own Proxmox LXC, when someone taps *Submit* on the phone. Holds the Telegram session and nothing else. Gas has gone in for real; YASNO's first real submission is the 30 Oct – 3 Nov 2026 window. |
 | [`ElectricityMeter/`](ElectricityMeter/README.md) | A photodiode on the electricity meter's imp/kWh LED and an ESP8266 that counts its blinks, so Home Assistant gets the flat's power and consumption from the meter itself, split day / night. It is the Energy dashboard's grid source; the inverter alone misses the boiler's circuit. |
 | [`Proxmox/`](Proxmox/README.md) | The host and its guests, one doc each; read-only Proxmox API scripts that measure the Home Assistant guest's resource history; and the backup setup that keeps every guest and HA's backups on the host and, encrypted, on Google Drive ([`Proxmox/docs/backups.md`](Proxmox/docs/backups.md)). |
 
@@ -95,7 +95,7 @@ example next to it (or in [`HomeAssistant/examples/`](HomeAssistant/examples)):
 | Real file (never committed) | Template | Holds |
 | --- | --- | --- |
 | `HomeAssistant/secrets.env` | `HomeAssistant/secrets.env.example` | HA URL and long-lived token for the tools |
-| HA box `/config/secrets.yaml` | `HomeAssistant/examples/secrets.yaml.example` | IRBridge token and URLs, DTEK address, the MeterBots tokens and URLs, MeterCam's URL |
+| HA box `/config/secrets.yaml` | `HomeAssistant/examples/secrets.yaml.example` | IRBridge token and URLs, DTEK address, the MeterBots tokens and URLs, MeterCam's URL and token, the backup alert's webhook id |
 | HA box `/config/google_key.json` | — (a Google Cloud service-account key) | Google Assistant credentials |
 | `HomeAssistant/config/google_assistant.yaml` | `HomeAssistant/examples/google_assistant.example.yaml` | Google Home names and aliases in the household's language |
 | `HomeAssistant/config/packages/household_notify.yaml` | `HomeAssistant/examples/household_notify.example.yaml` | the phones behind `notify.household` |
@@ -111,6 +111,7 @@ example next to it (or in [`HomeAssistant/examples/`](HomeAssistant/examples)):
 | MeterBots LXC `/opt/meterbots/data/telegram/telegram.session` | — (made by the login, [`MeterBots/docs/deployment.md`](MeterBots/docs/deployment.md)) | the household's logged-in Telegram account |
 | `MeterBots/deploy/lxc.env` | `MeterBots/deploy/lxc.env.example` | the LXC's address and gateway |
 | Proxmox host `/root/.config/rclone/rclone.conf` | — (see [`Proxmox/docs/backups.md`](Proxmox/docs/backups.md#credentials)) | Google Drive token and the crypt password for the off-site backups |
+| Proxmox host `/etc/default/vzdump-offsite` | — (see [`Proxmox/docs/backups.md`](Proxmox/docs/backups.md#how-it-works)) | the Home Assistant webhook URL the backup hook alerts through |
 
 See [SECURITY.md](SECURITY.md) for how this is enforced and how to report a leak.
 
