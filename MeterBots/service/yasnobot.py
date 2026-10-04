@@ -56,7 +56,7 @@ def settings(need_account=True):
         raise BotError("not configured: YASNOBOT_ACCOUNT missing in .env")
     return {**tgclient.api_settings(),
             "account": env.get("YASNOBOT_ACCOUNT", "").strip(),
-            "bot": env.get("YASNOBOT_BOT", "Yasnoonlinebot").lstrip("@")}
+            "bot": (env.get("YASNOBOT_BOT") or "Yasnoonlinebot").lstrip("@")}
 
 
 # The bot's words, as of 2026-10-04. Matched loosely (case, emoji, spacing).

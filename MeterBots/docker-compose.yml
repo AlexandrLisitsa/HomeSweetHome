@@ -21,6 +21,10 @@ services:
       GASBOT_TOKEN: "${GASBOT_TOKEN:-}"
       GASBOT_ACCOUNT: "${GASBOT_ACCOUNT:-}"
       GASBOT_COUNTER: "${GASBOT_COUNTER:-}"
+      # The bot's username; the default is the real one. Set it in .env only
+      # if the operator ever moves the bot.
+      GASBOT_BOT: "${GASBOT_BOT:-mygrmu_bot}"
       # service/yasnobot.py: the monthly electricity reading via @Yasnoonlinebot.
       YASNOBOT_TOKEN: "${YASNOBOT_TOKEN:-}"
       YASNOBOT_ACCOUNT: "${YASNOBOT_ACCOUNT:-}"
+      YASNOBOT_BOT: "${YASNOBOT_BOT:-Yasnoonlinebot}"

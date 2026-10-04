@@ -263,4 +263,22 @@ check("numbers in one message, yes/no in the next: confirmed", r["ok"] and b.acc
 b = FakeBot(prev=("38 108", "6 384"))
 check("'38 108' parses", walk(b)["previous"]["day"] == 38108)
 
+print("the bot's name from the environment")
+import os
+from service import yasnobot as _m
+os.environ.update({"TELEGRAM_API_ID": "1", "TELEGRAM_API_HASH": "h", "YASNOBOT_ACCOUNT": "1"})
+os.environ.pop("YASNOBOT_BOT", None)
+check("unset: the real bot", _m.settings()["bot"] == "Yasnoonlinebot")
+os.environ["YASNOBOT_BOT"] = ""
+check("empty (an `YASNOBOT_BOT=` line, or compose passing nothing): still the real bot",
+      _m.settings()["bot"] == "Yasnoonlinebot")
+os.environ["YASNOBOT_BOT"] = "@other_bot"
+check("set: that bot, without the @", _m.settings()["bot"] == "other_bot")
+os.environ.pop("YASNOBOT_BOT")
+# The image carries no compose file: this check is for the repo and CI.
+if (ROOT / "docker-compose.yml").exists():
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    check("docker-compose.yml passes YASNOBOT_BOT into the container, with the real default",
+          'YASNOBOT_BOT: "${YASNOBOT_BOT:-Yasnoonlinebot}"' in compose)
+
 print("%d checks passed" % checks)

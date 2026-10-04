@@ -188,4 +188,22 @@ check("a value below the previous one is never typed", not r["ok"] and "2200" no
 b = FakeBot(prev="2 245,50")
 check("'2 245,50' parses", walk(b)["previous"] == 2245.5)
 
+print("the bot's name from the environment")
+import os
+from service import gasbot as _m
+os.environ.update({"TELEGRAM_API_ID": "1", "TELEGRAM_API_HASH": "h", "GASBOT_ACCOUNT": "1", "GASBOT_COUNTER": "1"})
+os.environ.pop("GASBOT_BOT", None)
+check("unset: the real bot", _m.settings()["bot"] == "mygrmu_bot")
+os.environ["GASBOT_BOT"] = ""
+check("empty (an `GASBOT_BOT=` line, or compose passing nothing): still the real bot",
+      _m.settings()["bot"] == "mygrmu_bot")
+os.environ["GASBOT_BOT"] = "@other_bot"
+check("set: that bot, without the @", _m.settings()["bot"] == "other_bot")
+os.environ.pop("GASBOT_BOT")
+# The image carries no compose file: this check is for the repo and CI.
+if (ROOT / "docker-compose.yml").exists():
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    check("docker-compose.yml passes GASBOT_BOT into the container, with the real default",
+          'GASBOT_BOT: "${GASBOT_BOT:-mygrmu_bot}"' in compose)
+
 print("%d checks passed" % checks)
