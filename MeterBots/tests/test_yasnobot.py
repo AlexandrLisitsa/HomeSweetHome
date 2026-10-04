@@ -104,11 +104,20 @@ class FakeBot:
                 day = "99999"
             if self.after == "confirm":
                 self.state = "confirm"
-                self.add("Перевірте показання:\nДень: %s\nНіч: %s\nПідтверджуєте?"
-                         % (day, night), [["✅ Так", "❌ Ні"]])
+                if self.quirk == "split_confirm":
+                    self.add("Перевірте показання:\nДень: %s\nНіч: %s" % (day, night))
+                    self.add("Підтверджуєте?", [["✅ Так", "❌ Ні"]])
+                else:
+                    self.add("Перевірте показання:\nДень: %s\nНіч: %s\nПідтверджуєте?"
+                             % (day, night), [["✅ Так", "❌ Ні"]])
             else:
                 self.state, self.accepted = "menu", self.quirk not in ("rejected",)
                 self.add(self.verdict(), [["🏠 Головне меню"]])
+            if self.quirk == "menu_alongside":
+                # A menu keyboard after the answer: "так" is inside
+                # "Контакти", "ні" inside "Ніч". Pressing either does nothing.
+                self.add("Оберіть послугу:", [["📞 Контакти"], ["🌙 Показання за ніч"],
+                                              ["🏠 Головне меню"]])
 
 
 class FakeClient:
@@ -226,6 +235,30 @@ check("a prompt that is not two-zone stops before any number",
 b = FakeBot(quirk="menu_changed")
 r = walk(b, 38500, 6450)
 check("a changed menu stops before any number", not r["ok"] and typed_numbers(b) == [])
+
+print("which button is yes")
+from service import yasnobot as yb
+for label, want in [("✅ Так", "confirm"), ("Так", "confirm"), ("Так, підтверджую", "confirm"),
+                    ("✔️ Підтвердити", "confirm"), ("❌ Ні", "cancel"), ("Скасувати", "cancel"),
+                    ("📞 Контакти", None), ("🌙 Показання за ніч", None), ("Ніч", None),
+                    ("Інші питання", None), ("🏠 Головне меню", None), ("", None)]:
+    got = ("confirm" if yb._is(label, yb.BTN_CONFIRM)
+           else "cancel" if yb._is(label, yb.BTN_CANCEL) else None)
+    check("%r -> %s" % (label, want), got == want)
+
+b = FakeBot(after="direct", quirk="menu_alongside")
+r = walk(b, 38500, 6450)
+check("a menu sent with the verdict is not a question: accepted, nothing pressed",
+      r["ok"] and "📞 Контакти" not in b.clicked and "🌙 Показання за ніч" not in b.clicked)
+
+b = FakeBot(after="confirm", quirk="menu_alongside")
+r = walk(b, 38500, 6450)
+check("a menu sent after the question: the question's yes is pressed, not Контакти",
+      r["ok"] and b.accepted and "✅ Так" in b.clicked and "📞 Контакти" not in b.clicked)
+
+b = FakeBot(after="confirm", quirk="split_confirm")
+r = walk(b, 38500, 6450)
+check("numbers in one message, yes/no in the next: confirmed", r["ok"] and b.accepted)
 
 b = FakeBot(prev=("38 108", "6 384"))
 check("'38 108' parses", walk(b)["previous"]["day"] == 38108)

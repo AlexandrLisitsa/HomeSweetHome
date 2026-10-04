@@ -41,7 +41,13 @@ real submission. So the code is strict in both directions:
 
 - If the answer asks a question (a **Так** / **Підтверд…** button), the
   question must repeat **both** numbers, or the walk presses **Ні** /
-  **Скасув…** and fails.
+  **Скасув…** and fails. The confirm button is pressed on that question's own
+  message (or, when the numbers come in one message and the yes/no in the
+  next, on the only yes/no in the answer).
+- A button counts as yes or no only by the **first word** of its label, with
+  emoji and punctuation stripped. A substring match would take a menu sent
+  with the answer for a question: "так" is inside **Контакти** and "ні" is
+  inside **Ніч**.
 - The answer counts as accepted only if it contains a success word
   (`прийнят`, `успішн`, `збережен`) and no refusal word (`помилк`,
   `не прийнят`, `некоректн`, `неможлив`, `менш`).
