@@ -39,8 +39,11 @@ esp32:
 
 # --- EXTERNAL COMPONENTS ---
 external_components:
-  # Fetch the required component for JKBMS via Bluetooth
-  - source: github://syssi/esphome-jk-bms@main
+  # Fetch the required component for JKBMS via Bluetooth. Pinned to a commit,
+  # not @main: the firmware leans on its internals (docs/architecture.md cites
+  # jk_bms_ble.cpp), and @main would change them on any rebuild. This is the
+  # commit the 2026-10-04 build ran on; bump it on purpose and re-test.
+  - source: github://syssi/esphome-jk-bms@59c994e726c34b123e43eb0090736fd94706f0db
 
 # --- WIFI & SYSTEM ---
 wifi:
