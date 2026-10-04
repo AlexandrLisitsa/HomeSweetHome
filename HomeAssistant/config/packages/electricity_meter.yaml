@@ -110,11 +110,50 @@ automation:
       - trigger: homeassistant
         event: start
     actions:
+      - variables:
+          zone: "{{ 'night' if now().hour >= 23 or now().hour < 7 else 'day' }}"
       - action: select.select_option
         target:
           entity_id:
             - select.electricity_meter_tariff
             - select.electricity_meter_register
         data:
-          option: >-
-            {{ 'night' if now().hour >= 23 or now().hour < 7 else 'day' }}
+          option: "{{ zone }}"
+        continue_on_error: true
+      # The split YASNO bills on: a switch that did not land books a whole
+      # tariff period to the wrong register, and nothing else would say so.
+      # One retry after 30 s first -- on an HA start the selects can still be
+      # coming up -- so only a switch that really failed gets a notification.
+      - if:
+          - condition: template
+            value_template: >-
+              {{ states('select.electricity_meter_tariff') != zone
+                 or states('select.electricity_meter_register') != zone }}
+        then:
+          - delay: "00:00:30"
+          - action: select.select_option
+            target:
+              entity_id:
+                - select.electricity_meter_tariff
+                - select.electricity_meter_register
+            data:
+              option: "{{ zone }}"
+            continue_on_error: true
+      - if:
+          - condition: template
+            value_template: >-
+              {{ states('select.electricity_meter_tariff') != zone
+                 or states('select.electricity_meter_register') != zone }}
+        then:
+          - action: notify.household
+            data:
+              title: "⚡ Electricity meter: tariff did not switch"
+              message: >-
+                It should be {{ zone }} now, but the month counter reads
+                {{ states('select.electricity_meter_tariff') }} and the register
+                {{ states('select.electricity_meter_register') }}. Energy is being
+                booked to the wrong tariff until it is set by hand
+                (HomeAssistant/docs/electricity-meter.md).
+              data:
+                channel: Electricity meter
+                tag: electricity-tariff-switch
