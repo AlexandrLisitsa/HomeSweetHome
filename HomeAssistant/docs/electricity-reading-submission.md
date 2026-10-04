@@ -64,8 +64,8 @@ registers:
 
 | When | What happens |
 | --- | --- |
-| Last day of the month, 21:00 | `automation.electricity_reading_monthly_ask` runs `script.electricity_submit_ask` |
-| 1st–3rd, 21:00 | The same again, until this month's reading has gone in |
+| Last day of the month, 21:10 (10 min after the gas ask, so the two never walk a bot at once) | `automation.electricity_reading_monthly_ask` runs `script.electricity_submit_ask` |
+| 1st–3rd, 21:10 | The same again, until this month's reading has gone in |
 | The second-to-last day | Inside YASNO's window too, but not asked; send by hand if needed |
 
 `script.electricity_submit_ask`:
