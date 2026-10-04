@@ -170,6 +170,11 @@ script:
             min: 0
             max: 99999
             mode: box
+      force:
+        description: Send even if this month's reading already went in
+        required: false
+        selector:
+          boolean:
     sequence:
       - if:
           - condition: template
@@ -183,6 +188,30 @@ script:
                 channel: Gas meter
                 tag: gas-submit
           - stop: "outside the window"
+      # Never twice in one month. The ask checks this, but a send can also
+      # come from a second tap on an old notification, or "Try again" after
+      # a success: it re-reads the state file here. `force: true` overrides,
+      # for a deliberate correction. A prepare that fails does not block.
+      - service: shell_command.gas_submit_prepare
+        response_variable: run
+      - variables:
+          p: "{{ run.stdout | from_json if (run.stdout | default('')) | length else {'ok': false} }}"
+      - if:
+          - condition: template
+            value_template: >-
+              {{ (p.ok | default(false)) and (p.already_submitted | default(false))
+                 and not (force | default(false)) }}
+        then:
+          - service: notify.meter_readings
+            data:
+              title: "Gas reading NOT sent ❌"
+              message: >-
+                This month's reading already went in ({{ p.submitted_value ~ ' m³' if p.submitted_value is not none else 'recorded' }}). To send another
+                on purpose, run script.gas_submit_send with force: true.
+              data:
+                channel: Gas meter
+                tag: gas-submit
+          - stop: "already submitted this month"
       - service: notify.meter_readings
         data:
           title: "Gas reading"

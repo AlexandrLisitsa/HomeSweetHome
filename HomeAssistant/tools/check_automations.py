@@ -15,6 +15,8 @@ template picks the right branch -- and every one of those was wrong once
   * the IR phone charges below 21% on every path, and is re-checked
   * irbridge_send_candidate honours idx 0
   * the weekly MeterBots session check says why whenever it fails
+  * the meter-reading sends refuse a second reading in a month, and the
+    two monthly asks never start at the same minute
 
 Same approach as check_dtek_templates.py: just enough of HA's template
 environment to render these templates, not an HA emulator.
@@ -211,6 +213,42 @@ check("no answer at all -> not ok", render(ok_tpl), "False")
 check("no answer at all -> why",
       render(why_tpl, ok=False), "MeterBots did not answer, or refused (see the HA log)")
 check("only a failure notifies", notify_step["if"][0]["value_template"], "{{ not ok }}")
+
+# --- meter-reading sends ------------------------------------------------------
+print("\n9. meter-reading sends: never twice a month, and never both at once")
+for kind, pkgfile, script, sub, want_msg in (
+        ("electricity", "electricity_submit.yaml", "electricity_submit_send",
+         {"ok": True, "already_submitted": True, "submitted": {"day": 38500, "night": 6450}},
+         "This month's reading already went in (day 38500, night 6450 kWh)."),
+        ("gas", "gas_submit.yaml", "gas_submit_send",
+         {"ok": True, "already_submitted": True, "submitted_value": 2262},
+         "This month's reading already went in (2262 m³).")):
+    pkg = yaml.load((CONFIG / "packages" / pkgfile).read_text(encoding="utf-8"), HaLoader)
+    seq = pkg["script"][script]["sequence"]
+    prep = next(i for i, st in enumerate(seq) if st.get("service") == "shell_command.%s_submit_prepare" % kind)
+    send = next(i for i, st in enumerate(seq) if str(st.get("service", "")).endswith("_bot_submit"))
+    check(kind + ": the state is read before anything is sent", prep < send, True)
+    guard = seq[prep + 2]["if"][0]["value_template"]
+    stop = seq[prep + 2]["then"]
+    g = lambda p, **kw: render(guard, p=p, **kw)  # noqa: E731
+    check(kind + ": already sent -> stop", g(sub), "True")
+    check(kind + ": already sent, force -> send", g(sub, force=True), "False")
+    check(kind + ": not sent yet -> send", g({"ok": True, "already_submitted": False}), "False")
+    check(kind + ": prepare failed -> send anyway", g({"ok": False}), "False")
+    check(kind + ": empty prepare output -> send anyway", g({}), "False")
+    msg = render(stop[0]["data"]["message"], p=sub).split(" To send")[0]
+    check(kind + ": the stop says what went in", " ".join(msg.split()), want_msg)
+    check(kind + ": and stops", stop[-1], {"stop": "already submitted this month"})
+    check(kind + ": `force` is a field", "force" in pkg["script"][script]["fields"], True)
+
+asks = {}
+for kind, pkgfile, aid in (("gas", "gas_submit.yaml", "gas_submit_monthly"),
+                           ("electricity", "electricity_submit.yaml", "electricity_submit_monthly")):
+    pkg = yaml.load((CONFIG / "packages" / pkgfile).read_text(encoding="utf-8"), HaLoader)
+    auto = next(a for a in pkg["automation"] if a["id"] == aid)
+    asks[kind] = [t["at"] for t in auto["trigger"] if t.get("platform") == "time"]
+check("gas asks at 21:00, electricity 10 minutes later", (asks["gas"], asks["electricity"]),
+      (["21:00:00"], ["21:10:00"]))
 
 print("\n%s" % ("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed"))
 sys.exit(1 if FAILED else 0)
