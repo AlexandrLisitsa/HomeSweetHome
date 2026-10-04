@@ -11,7 +11,7 @@ to Gazmerezhi's Telegram bot, `@mygrmu_bot`.
 | the calls to the bot | `rest_command.gas_bot_status` / `gas_bot_submit` in the same package, 5-minute timeout |
 | the Telegram conversation | MeterBots `service/gasbot.py`, routes `/gas/bot/status` and `/gas/bot/submit` ([`MeterBots/docs/gas-bot.md`](../../MeterBots/docs/gas-bot.md)) |
 | the photo | MeterCam `GET /last_accepted.jpg?meter=gas` |
-| secrets | `gasbot_token` (MeterBots' `GASBOT_TOKEN`), `gasbot_status_url`, `gasbot_submit_url` (MeterBots), `metercam_url` (the photo) in `secrets.yaml` |
+| secrets | `gasbot_token` (MeterBots' `GASBOT_TOKEN`), `gasbot_status_url`, `gasbot_submit_url` (MeterBots), `metercam_url` and `metercam_token` (the photo; MeterCam's `METERCAM_TOKEN`) in `secrets.yaml` |
 
 ## Why a Telegram bot
 

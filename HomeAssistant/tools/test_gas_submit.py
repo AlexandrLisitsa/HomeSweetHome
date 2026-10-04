@@ -54,9 +54,11 @@ check("no metercam_url anywhere: a clear failure, no guessed address",
       run("prepare"), {"ok": False, "error": "metercam_url is not set in secrets.yaml"})
 (TMP / "secrets.yaml").write_text('gasbot_token: "x"\nmetercam_url: "http://192.0.2.8:8770/"\n',
                                   encoding="utf-8")
-check("from secrets.yaml, trailing slash dropped", gs.config(), {"metercam": "http://192.0.2.8:8770"})
+check("from secrets.yaml, trailing slash dropped", gs.config(),
+      {"metercam": "http://192.0.2.8:8770", "metercam_token": None})
 os.environ["METERCAM_URL"] = "http://192.0.2.9:8770"
-check("METERCAM_URL wins over secrets.yaml", gs.config(), {"metercam": "http://192.0.2.9:8770"})
+check("METERCAM_URL wins over secrets.yaml", gs.config(),
+      {"metercam": "http://192.0.2.9:8770", "metercam_token": None})
 os.environ.pop("METERCAM_URL")
 
 print("the month a reading is for")
@@ -68,8 +70,13 @@ for day, want in [(datetime(2026, 11, 1), "2026-10"), (datetime(2026, 11, 5), "2
 class FakeMeterCam(http.server.BaseHTTPRequestHandler):
     value = "2290.47"
     at = time.time() - 600
+    token = None  # set: answer 401 without it, as MeterCam with auth on
 
     def do_GET(self):
+        if FakeMeterCam.token and self.headers.get("X-Auth-Token") != FakeMeterCam.token:
+            self.send_response(401)
+            self.end_headers()
+            return
         if not self.path.startswith("/last_accepted.jpg"):
             self.send_response(404)
             self.end_headers()
@@ -101,6 +108,18 @@ check("the photo is saved under www, with a random name",
       True)
 FakeMeterCam.at = time.time() - 7 * 3600
 check("seven hours old is stale", run("prepare")["camera_stale"], True)
+
+print("MeterCam with auth on")
+FakeMeterCam.token = "s3cret"
+p = run("prepare")
+check("no metercam_token: no value, and the reason says why",
+      (p["ok"], p["value_floor"], "401" in p.get("camera_error", "")), (True, None, True))
+(TMP / "secrets.yaml").write_text('metercam_url: "http://127.0.0.1:%d"\nmetercam_token: "s3cret"\n'
+                                  % server.server_port, encoding="utf-8")
+check("metercam_token is read", gs.config()["metercam_token"], "s3cret")
+check("with metercam_token: the photo and its value", run("prepare")["value_raw"], 2290.47)
+FakeMeterCam.token = None
+check("a token MeterCam does not ask for is harmless", run("prepare")["value_raw"], 2290.47)
 server.shutdown()
 p = run("prepare")
 check("MeterCam down: ok, but no value and a reason",
