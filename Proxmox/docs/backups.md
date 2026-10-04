@@ -89,14 +89,34 @@ flowchart LR
      apt sources, `vzdump.conf`, the hook itself), copies the dumps (with their
      `.log` and `.notes`) and the tarball to `weekly/`, and on the month's first
      run (day 1–7) to `monthly/` as well; then deletes files older than 29 days
-     from `weekly/` and older than 93 days from `monthly/`;
+     from `weekly/` and older than 93 days from `monthly/`, but **not from a
+     folder that missed an upload this run** (that would trade an old copy for
+     nothing);
   2. for the VM run, only on the month's first run: copies the dump to
      `monthly-vm/`, then **lists the remote to confirm the new `.vma` is really
      there**, and only then deletes the previous month's copy, so there is
      always one complete copy. rclone's exit status alone is not proof: a
      `copy --include` that matches nothing uploads nothing and still exits 0.
-- Any failed upload makes the hook exit non-zero, and **vzdump marks the whole
-  job as failed**: it shows red in Datacenter → Backup and in the task log.
+- **A failed upload doesn't stop the others.** Every guest, the host config
+  and both state archives are still tried; only then does the hook exit
+  non-zero, and **vzdump marks the whole job as failed** (red in Datacenter →
+  Backup and in the task log). A VM copy that didn't land leaves the previous
+  month's copy in place.
+- **The household hears about it.** A failure, an aborted job, or a Drive past
+  90 % full goes to Home Assistant's `notify.household`, through a webhook
+  ([`HomeAssistant/config/packages/backup_alerts.yaml`](../../HomeAssistant/config/packages/backup_alerts.yaml)).
+  The hook reads the webhook URL from `/etc/default/vzdump-offsite` on the host
+  (root-only, not in git):
+
+  ```sh
+  HA_WEBHOOK_URL=http://<ha-ip>:8123/api/webhook/<backup_alert_webhook_id>
+  DRIVE_WARN_PCT=90     # optional, the default
+  ```
+
+  The id is the webhook's only protection: a long random string, also in HA's
+  `secrets.yaml` as `backup_alert_webhook_id`. Without the file the hook works
+  as before, just silently. Drive is shared with Gmail and Photos, so "full" is
+  measured as total minus free, not by what rclone uploaded.
 - Retention on Drive is by file age, so a run that fails doesn't delete
   anything extra; the next successful run catches up.
 
@@ -163,7 +183,10 @@ rclone copy gdrive-crypt:weekly/ /var/lib/vz/dump/ --include "vzdump-lxc-101-<da
 pct restore 101 /var/lib/vz/dump/vzdump-lxc-101-<date>.tar.zst --storage local-lvm
 ```
 
-Test a restore on a spare ID (for example 901), start it, then remove it.
+To test one: restore to a spare ID with `--unique 1`, **delete its network
+before starting it** (`pct set 901 --delete net0`: the copy has the original's
+static address), start it, look inside, then `pct destroy 901 --purge`. The
+record of the last test is under [Restore tests](#restore-tests).
 
 ### Home Assistant, from Drive
 
@@ -188,10 +211,36 @@ top of it, since that one is at most a day old.
    `/etc/pve` over wholesale: it holds the old node's keys.
 4. Restore the guests as above.
 
+## Restore tests
+
+A backup nobody has restored is a hope. Results go here, newest first.
+
+<!-- restore-tests -->
+
+**2026-10-04, from Drive, on this host.** Off tonight's scheduled run (the
+first with the failure-tolerant hook, which logged `done, Drive 59% used`):
+
+- `vzdump-lxc-101-2026_10_04-03_30_08` (AdGuard) copied back from
+  `gdrive-crypt:weekly/`: byte-identical to the local dump, so the crypt
+  remote decrypts. `pct restore 901 … --unique 1`, `net0` deleted, started:
+  booted, Debian 13, `/opt/AdGuardHome` present. Stopped and destroyed.
+- `meterbots-state`, `metercam-state` and `pve-host-config` copied back and
+  listed (not extracted): the Telegram session and `.env`; MeterCam's `.env`,
+  `config.json` and `gas-cam-7.bin`; `/etc/pve/jobs.cfg` and the hook.
+
+Not tested: `qmrestore` of `monthly-vm/` (5 GB; needs a spare ID with 64 GB of
+thin space), and decrypting on a machine other than this host with the crypt
+password from the password manager. The second is the one that matters if the
+host itself is lost.
+
 ## Checks
 
 - **HA:** Settings → System → Backups shows both locations and the last
   successful automatic backup; Drive's `Home Assistant` folder has at most 14.
+- **Alerts:** `sh Proxmox/tools/test_vzdump_offsite.sh` runs the hook against
+  a fake Drive and a fake Proxmox in Docker (CI runs it too). To send one real
+  alert: `. /etc/default/vzdump-offsite; curl -X POST -H 'Content-Type:
+  application/json' -d '{"message": "test"}' "$HA_WEBHOOK_URL"` on the host.
 - **Proxmox:** Datacenter → Backup shows the last run of each job; on the host,
   `rclone lsf -R gdrive-crypt:` lists the off-site files by their real names,
   and `rclone lsf -R gdrive:proxmox` only by encrypted ones.

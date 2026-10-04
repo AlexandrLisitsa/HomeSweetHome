@@ -181,6 +181,10 @@ The mirror in `config/` is not a backup: it leaves out the database,
 restore HA onto a fresh VM, is in
 [`../Proxmox/docs/backups.md`](../Proxmox/docs/backups.md).
 
+The Proxmox host's off-site backups report here: `packages/backup_alerts.yaml`
+takes a webhook from the backup hook and passes a failed upload, an aborted
+job or a nearly full Drive to `notify.household`.
+
 ## Docs
 
 | Doc | About |

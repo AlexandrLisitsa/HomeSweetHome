@@ -112,6 +112,18 @@ jobs:
       - name: MeterCam has no bot routes
         run: python MeterCam/tests/test_routes.py
 
+  proxmox:
+    name: Proxmox backup hook
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host scripts parse
+        run: for f in Proxmox/tools/*.sh; do sh -n "$f"; done
+      # The hook deletes off-site copies: its failure paths, against a fake
+      # Drive and a fake Proxmox in a throwaway Debian container.
+      - name: The off-site hook, failures included
+        run: sh Proxmox/tools/test_vzdump_offsite.sh
+
   irbridge:
     name: IRBridge Android build
     runs-on: ubuntu-latest
