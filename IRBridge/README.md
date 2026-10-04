@@ -15,6 +15,12 @@ Mi A2 Lite : 8765          ← this app
 
 ---
 
+> **Status for this unit:** done. The sweep found its protocol (candidate
+> index 0, SmartIR set 1380, Midea/Coolix), and the bridge now runs it as a
+> stateful A/C with a thermostat in Home Assistant
+> ([docs/stateful-climate.md](docs/stateful-climate.md)). What follows is how
+> to get there with your own unit.
+
 ## Read this before you write any more code
 
 Two facts shape the whole project, and both are worth knowing on day one.
@@ -207,4 +213,4 @@ Host-side Python 3. `check_ha_entities.py` and `check_ha_templates.py` also need
 | [`docs/protocol-sweep.md`](docs/protocol-sweep.md) | finding which IR code set your A/C answers to |
 | [`docs/api.md`](docs/api.md) | the bridge's HTTP API |
 | [`docs/verification.md`](docs/verification.md) | what the tests and hardware runs prove, and what is assumed |
-| [`docs/stateful-climate.md`](docs/stateful-climate.md) | what a real `climate` entity needs on top of the stateless bridge |
+| [`docs/stateful-climate.md`](docs/stateful-climate.md) | how the bridge keeps an assumed A/C state, builds Coolix frames, and why swing is separate |
