@@ -1,0 +1,65 @@
+# ---------------------------------------------------------------------------
+# Is the gas camera still being heard? An alert when it is not.
+#
+# The ESP32-CAM wakes every 30 min and MeterCam (LXC 104) writes each reading
+# it accepts to input_number.gas_meter_camera_reading. When the board stops
+# waking (a hung wake, a flat battery pack, WiFi), or every frame gets refused
+# (the camera moved, fog on the glass), nothing says so: the helper just keeps
+# its last value, which is also what an unused gas meter looks like.
+#
+#   sensor.gas_camera_last_accepted   minutes since MeterCam last ACCEPTED a
+#                                     reading (its /health, every 10 min;
+#                                     refused reads do not reset it)
+#
+# Alert after 6 hours without one: twelve wakes, the same line gas_submit.py
+# draws for a stale photo. And after an hour of MeterCam not answering at all.
+#
+# secrets.yaml:  metercam_health_url   http://<metercam-ip>:8770/health
+#                                      (/health is open; no token)
+#
+# Write-up: MeterCam/docs/operations.md.
+# ---------------------------------------------------------------------------
+
+rest:
+  - resource: !secret metercam_health_url
+    scan_interval: 600
+    timeout: 15
+    sensor:
+      - name: "Gas camera last accepted"
+        unique_id: metercam_gas_last_accepted
+        icon: mdi:camera-timer
+        unit_of_measurement: "min"
+        device_class: duration
+        value_template: >-
+          {% set s = (value_json.last_accepted_s_ago | default({})).gas | default(none) %}
+          {{ (s / 60) | round(0) | int if s is number else none }}
+
+automation:
+  - id: metercam_gas_stale
+    alias: 'Gas camera: no accepted reading for hours'
+    mode: single
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.gas_camera_last_accepted
+        above: 360
+        id: stale
+      - platform: state
+        entity_id: sensor.gas_camera_last_accepted
+        to: unavailable
+        for: "01:00:00"
+        id: down
+    action:
+      - variables:
+          hours: "{{ ((states('sensor.gas_camera_last_accepted') | float(0)) / 60) | round(1) }}"
+      - service: notify.household
+        data:
+          title: '📷 Gas camera'
+          message: >-
+            {% if trigger.id == 'down' %}MeterCam has not answered for an hour, so no gas
+            readings are coming in. Check LXC 104 (MeterCam/docs/operations.md).
+            {%- else %}No accepted gas reading for {{ hours }} h. The camera may have
+            stopped waking, or every frame is being refused: see its last photo and
+            the refused frames (MeterCam/docs/operations.md).{% endif %}
+          data:
+            channel: Gas meter
+            tag: metercam-stale

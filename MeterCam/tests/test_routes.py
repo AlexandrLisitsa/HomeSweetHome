@@ -79,4 +79,26 @@ check("a prefix of the token: refused", not authorised("s3cret", header="s3c"))
 check("empty header: refused", not authorised("s3cret", header=""))
 check("non-ASCII token compares without raising", not authorised("s3cret", header="тест"))
 
+print("health: age of the last accepted reading")
+fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_accepted_ages")
+src_ages = ast.get_source_segment(APP.read_text(encoding="utf-8"), fn)
+
+
+def ages(records, now=1000000.0, meters=("gas",)):
+    import types
+    env = {"time": types.SimpleNamespace(time=lambda: now),
+           "last_accepted_record": lambda name: records.get(name)}
+    exec(src_ages, env)
+    return env["_accepted_ages"](list(meters))
+
+
+check("an hour-old accept reads 3600", ages({"gas": {"value": 2262.5, "at_epoch": 1000000.0 - 3600}}) == {"gas": 3600})
+check("no file yet: the meter is absent, not 0", ages({}) == {})
+check("a file without at_epoch: absent", ages({"gas": {"value": 1}}) == {})
+check("garbage at_epoch: absent, no exception", ages({"gas": {"at_epoch": "x"}}) == {})
+check("a clock behind the file: 0, never negative", ages({"gas": {"at_epoch": 1000050.0}}) == {"gas": 0})
+check("each meter its own", ages({"gas": {"at_epoch": 999990.0}, "water": {"at_epoch": 999000.0}},
+                                meters=("gas", "water")) == {"gas": 10, "water": 1000})
+check("/health reports it", '"last_accepted_s_ago": _accepted_ages(meters)' in APP.read_text(encoding="utf-8"))
+
 print("%d checks passed" % checks)

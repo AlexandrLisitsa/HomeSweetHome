@@ -310,7 +310,23 @@ def health():
         "firmware": _firmware_version(),
         "uptime_s": int(time.time() - _STARTED),
         "last_read_s_ago": {k: int(time.time() - v) for k, v in _LAST_READ.items()},
+        # Since the last ACCEPTED reading, per meter, from last_accepted.json:
+        # survives a restart, unlike last_read_s_ago, and a read that was
+        # refused does not reset it. Home Assistant alerts on this
+        # (packages/metercam_watch.yaml). A meter that never had one is absent.
+        "last_accepted_s_ago": _accepted_ages(meters),
     })
+
+
+def _accepted_ages(meters):
+    out = {}
+    for name in meters:
+        rec = last_accepted_record(name) or {}
+        try:
+            out[name] = max(0, int(time.time() - float(rec["at_epoch"])))
+        except (KeyError, TypeError, ValueError):
+            pass
+    return out
 
 
 def pushed_frames():
