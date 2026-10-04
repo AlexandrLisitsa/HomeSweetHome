@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # Gas reading to Gazmerezhi (@mygrmu_bot), once a month, confirmed from the phone
 #
-# On the 1st at 21:00 the Pixel gets the meter photo MeterCam last accepted,
+# On the 1st at 21:00 the phone gets the meter photo MeterCam last accepted,
 # stamped with when it was taken, and the number that would be sent -- the
 # camera's reading rounded DOWN to whole m3 (the operator takes whole m3; the
 # remainder carries into next month). Two buttons:
@@ -23,6 +23,11 @@
 #                                  rest_commands with a 5-minute timeout.
 #   shell_command.gas_submit_*     /config/gas/gas_submit.py: the photo, and
 #                                  remembering which month went in. Seconds.
+#
+# The phone is notify.meter_readings: a group with ONE phone, in the
+# git-ignored household_notify.yaml (it names the device). One phone, because
+# the notification carries the Submit buttons: on two phones, two presses
+# could send the reading twice.
 #
 # No entities: "already sent this month" lives in /config/gas/.state.json.
 #
@@ -78,7 +83,7 @@ script:
           - condition: template
             value_template: "{{ not p.ok }}"
         then:
-          - service: notify.mobile_app_pixel_10_pro_xl
+          - service: notify.meter_readings
             data:
               title: "Gas reading — could not prepare"
               message: "{{ p.error }}"
@@ -142,7 +147,7 @@ script:
           actions: >-
             {{ ([submit_button] if ready else [])
                + ([edit_button] if (not bot_error and p.window_open) else []) }}
-      - service: notify.mobile_app_pixel_10_pro_xl
+      - service: notify.meter_readings
         data:
           title: "Gas reading {{ p.taken_at }}"
           message: "{{ message }}"
@@ -170,7 +175,7 @@ script:
           - condition: template
             value_template: "{{ now().day > 5 }}"
         then:
-          - service: notify.mobile_app_pixel_10_pro_xl
+          - service: notify.meter_readings
             data:
               title: "Gas reading NOT sent ❌"
               message: "Readings are taken on the 1st..5th only."
@@ -178,7 +183,7 @@ script:
                 channel: Gas meter
                 tag: gas-submit
           - stop: "outside the window"
-      - service: notify.mobile_app_pixel_10_pro_xl
+      - service: notify.meter_readings
         data:
           title: "Gas reading"
           message: "Sending {{ value | int }} m³ to @mygrmu_bot… (up to a minute)"
@@ -207,7 +212,7 @@ script:
             data:
               value: "{{ value | int }}"
             continue_on_error: true
-      - service: notify.mobile_app_pixel_10_pro_xl
+      - service: notify.meter_readings
         data:
           title: "{{ 'Gas reading sent ✅' if ok else 'Gas reading NOT sent ❌' }}"
           message: "{{ ((value | int) ~ ' m³ — ' ~ reply) if ok else error }}"
@@ -278,7 +283,7 @@ automation:
                       value: "{{ typed | float | int }}"
                 else:
                   # Rejected here, before the bot is asked anything.
-                  - service: notify.mobile_app_pixel_10_pro_xl
+                  - service: notify.meter_readings
                     data:
                       title: "Gas reading — not sent"
                       message: >-

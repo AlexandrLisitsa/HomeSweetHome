@@ -2,7 +2,7 @@
 # Electricity reading to YASNO (@Yasnoonlinebot), once a month, confirmed
 # from the phone
 #
-# On the last day of the month at 21:00 the Pixel gets the meter's day (T1)
+# On the last day of the month at 21:00 the phone gets the meter's day (T1)
 # and night (T2) registers as Home Assistant counts them
 # (sensor.electricity_meter_register_day / _night, electricity_meter.yaml),
 # rounded DOWN to whole kWh -- YASNO takes "all digits before the comma" --
@@ -24,6 +24,9 @@
 #                                      walking the bot takes up to a minute.
 #   shell_command.electricity_submit_* /config/electricity/electricity_submit.py:
 #                                      the window, and which month went in.
+#
+# The phone is notify.meter_readings, the one-phone group in the git-ignored
+# household_notify.yaml (see gas_submit.yaml for why one).
 #
 # No entities of its own: "already sent this month" lives in
 # /config/electricity/.state.json.
@@ -79,7 +82,7 @@ script:
           - condition: template
             value_template: "{{ not p.ok }}"
         then:
-          - service: notify.mobile_app_pixel_10_pro_xl
+          - service: notify.meter_readings
             data:
               title: "Electricity reading — could not prepare"
               message: "{{ p.error }}"
@@ -147,7 +150,7 @@ script:
           actions: >-
             {{ ([submit_button] if ready else [])
                + ([edit_button] if (not bot_error and p.window_open) else []) }}
-      - service: notify.mobile_app_pixel_10_pro_xl
+      - service: notify.meter_readings
         data:
           title: "Electricity reading for {{ p.period }}"
           message: "{{ message }}"
@@ -185,7 +188,7 @@ script:
             value_template: >-
               {{ not (now().day <= 3 or (now() + timedelta(days=2)).month != now().month) }}
         then:
-          - service: notify.mobile_app_pixel_10_pro_xl
+          - service: notify.meter_readings
             data:
               title: "Electricity reading NOT sent ❌"
               message: "YASNO takes readings in the last 2 days of a month and the first 3 of the next only."
@@ -193,7 +196,7 @@ script:
                 channel: Electricity meter
                 tag: electricity-submit
           - stop: "outside the window"
-      - service: notify.mobile_app_pixel_10_pro_xl
+      - service: notify.meter_readings
         data:
           title: "Electricity reading"
           message: "Sending day {{ day | int }}, night {{ night | int }} kWh to @Yasnoonlinebot… (up to a minute)"
@@ -224,7 +227,7 @@ script:
               day: "{{ day | int }}"
               night: "{{ night | int }}"
             continue_on_error: true
-      - service: notify.mobile_app_pixel_10_pro_xl
+      - service: notify.meter_readings
         data:
           title: "{{ 'Electricity reading sent ✅' if ok else 'Electricity reading NOT sent ❌' }}"
           message: "{{ ('day ' ~ (day | int) ~ ', night ' ~ (night | int) ~ ' kWh — ' ~ reply) if ok else error }}"
@@ -301,7 +304,7 @@ automation:
                       night: "{{ parts[1] | int }}"
                 else:
                   # Rejected here, before the bot is asked anything.
-                  - service: notify.mobile_app_pixel_10_pro_xl
+                  - service: notify.meter_readings
                     data:
                       title: "Electricity reading — not sent"
                       message: >-

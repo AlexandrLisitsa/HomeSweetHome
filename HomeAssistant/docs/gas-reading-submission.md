@@ -33,7 +33,7 @@ Telegram login and what to do when the bot's menu changes.
      It walks to the reading prompt, reads the previous reading and backs out,
      so nothing is sent. This takes about 45 s, which is why the notification
      comes about a minute after 21:00.
-2. **The Pixel** (`notify.mobile_app_pixel_10_pro_xl`, tag `gas-submit`) shows:
+2. **The phone** (`notify.meter_readings`, tag `gas-submit`) shows:
    - the title `Gas reading 2026-11-01 20-57`, which is when the photo was
      taken
    - the photo
