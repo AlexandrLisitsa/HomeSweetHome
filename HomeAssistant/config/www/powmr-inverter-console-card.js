@@ -73,7 +73,7 @@
  */
 
 const CARD = "powmr-inverter-console-card";
-const VERSION = "2.8.0";
+const VERSION = "2.8.1";
 
 /*
  * Brand colours stay literal: they identify a leg of the diagram (amber =
@@ -1630,7 +1630,7 @@ ${ch.dots ? "" : `
       const sel = el[ref];
       if (!sel) return;
       const opts = this._opts(ent);
-      const sig = opts.join(" ");
+      const sig = opts.join("\u0000");
       // Only rebuild the option list when it actually changes -- rebuilding it
       // while the dropdown is open would close it.
       if (sel.dataset.sig !== sig) {
