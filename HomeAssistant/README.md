@@ -44,6 +44,9 @@ read before it goes live, and a `git revert` if it was wrong.
   shows the meter's day and night readings, and one button sends them through
   YASNO's Telegram bot
   ([`docs/electricity-reading-submission.md`](docs/electricity-reading-submission.md)).
+  Every Monday `packages/meterbots_session.yaml` asks MeterBots whether its
+  Telegram session is still logged in, and notifies if not, so a dead session
+  is found before the month-end ask.
 - **Two air conditioners**: an infrared one through [`../IRBridge`](../IRBridge)
   and a networked one ([`docs/climate-dashboard.md`](docs/climate-dashboard.md)).
 - **Google Home and Gemini**: entities exposed through the Google Assistant

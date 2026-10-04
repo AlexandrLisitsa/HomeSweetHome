@@ -209,6 +209,30 @@ async def conversation(api, bot_name, watch_edits=False):
         await client.disconnect()
 
 
+async def _session_check():
+    from telethon import TelegramClient
+
+    api = api_settings()
+    client = TelegramClient(str(SESSION), api["api_id"], api["api_hash"])
+    await client.connect()
+    try:
+        if not await client.is_user_authorized():
+            raise BotError("Telegram session is not logged in -- run the login steps")
+        return {"ok": True, "authorized": True}
+    finally:
+        await client.disconnect()
+
+
+def session_check():
+    """Is the session still logged in? A real round trip to Telegram, unlike
+    session_present(): a session ended in Telegram -> Settings -> Devices, or
+    by Telegram's own "terminate inactive sessions", still leaves its file.
+    Takes the lock like any conversation, so it waits out a running walk."""
+    if not session_present():
+        return {"ok": False, "error": "no session file -- run the login steps"}
+    return blocking(_session_check)
+
+
 def blocking(coro_fn, *args):
     """Run one conversation from a Flask route: locked, always JSON back."""
     with LOCK:
