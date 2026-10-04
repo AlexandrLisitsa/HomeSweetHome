@@ -11,14 +11,19 @@ decodes, and that all 315 bundled frames survive `IrTransmitter.sanitise`
 (odd length, no non-positive durations, under 2 s, under 1024 marks).
 
 ```bash
-python3 tools/verify_codecs.py     # 19/19 pass
+python3 tools/verify_codecs.py     # 19/19 pass with a SmartIR checkout
 ```
+
+The checks against real SmartIR frames need a checkout at `/tmp/SmartIR` (see
+below); without one they are skipped and the rest (9) still run.
 
 Both Home Assistant YAML files are parse-checked.
 
-The Kotlin **has been type-checked**, though not by Gradle: the sandbox this
-was written in has no Android SDK and no Maven access, so all eleven `.kt`
-files were compiled with a real `kotlinc` 2.0.21 against the actual
+The Kotlin is built by Gradle in CI: the `IRBridge Android build` job runs
+`./gradlew :app:assembleDebug` on every push, so a change that does not
+compile does not merge. Before Gradle was available, the sandbox this was
+first written in had no Android SDK and no Maven access, so the eleven `.kt`
+files of the time (twelve now, with `AcController.kt`) were compiled with a real `kotlinc` 2.0.21 against the actual
 `kotlinx-coroutines-core-jvm` jar plus stubs transcribed from the tagged Ktor
 2.3.12, androidx and AOSP sources. Clean under `-Werror`. That pass caught four
 real defects, all now fixed:
@@ -53,7 +58,8 @@ python3 tools/extract_codes.py     # writes app/src/main/assets/candidates.json
 
 Once the sweep has found your unit's set, `tools/extract_ac_codes.py` keeps that
 one set's whole mode × fan × temperature matrix instead of a single on/off pair
-— the table a stateful `climate` entity needs (see the next section). Patterns
+— the table a stateful `climate` entity needs
+([stateful-climate.md](stateful-climate.md)). Patterns
 are stored as microsecond arrays, identical ones pooled by index:
 
 ```bash
