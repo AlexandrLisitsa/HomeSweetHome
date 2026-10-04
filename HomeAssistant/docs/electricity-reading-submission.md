@@ -73,7 +73,7 @@ registers:
    whether the window is open, and whether it's already been sent.
 2. Asks the bot for a dry run (`rest_command.yasno_bot_status`), which returns
    the previous readings and sends nothing.
-3. Sends a sticky notification to the Pixel: "Send day D, night N kWh? Last on
+3. Sends a sticky notification to the phone (`notify.meter_readings`): "Send day D, night N kWh? Last on
    record d / n (date)", with two buttons:
 
    | Button | Action id | Sends |

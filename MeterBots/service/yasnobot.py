@@ -67,8 +67,13 @@ TXT_ENTER = "Введіть показання ДЕНЬ пробіл НІЧ"
 TXT_TWO_ZONES = "Зонність лічильника: 2"
 # After the numbers: the button that confirms, the one that backs out, and
 # the words that mean taken / not taken. Refusals are checked first.
-BTN_CONFIRM = ("Так", "Підтверд")
-BTN_CANCEL = ("Ні", "Скасув")
+# A button is a confirm (cancel) button when its label's FIRST WORD, emoji
+# and punctuation stripped, is one of these exactly or starts with one of the
+# stems. Never a substring anywhere: "так" is inside "Контакти" and "ні" is
+# inside "Ніч", and a menu keyboard sent alongside the answer must not be
+# taken for "yes".
+BTN_CONFIRM = {"words": ("так",), "stems": ("підтверд",)}
+BTN_CANCEL = {"words": ("ні",), "stems": ("скасув",)}
 TXT_REFUSED = ("помилк", "не прийнят", "некоректн", "неможлив", "менш")
 TXT_ACCEPTED = ("прийнят", "успішн", "збережен")
 
@@ -119,11 +124,24 @@ async def _leave(walk, msgs):
         pass
 
 
-def _button(msgs, labels):
-    for label in labels:
-        if tgclient._find_button(msgs, label)[0] is not None:
-            return label
-    return None
+def _first_word(label):
+    """'✅ Так' -> 'так', '❌ Скасувати' -> 'скасувати', '📞 Контакти' -> 'контакти'."""
+    words = re.findall(r"[^\W\d_]+", _norm(label))
+    return words[0] if words else ""
+
+
+def _is(label, kind):
+    w = _first_word(label)
+    return w in kind["words"] or any(w.startswith(s) for s in kind["stems"])
+
+
+def _button_on(msg, kind):
+    """The label of `msg`'s confirm (or cancel) button, or None."""
+    return next((t for t in tgclient._buttons(msg) if _is(t, kind)), None)
+
+
+def _names_both(text, day, night):
+    return all(re.search(r"(?<!\d)%d(?!\d)" % v, text or "") for v in (day, night))
 
 
 async def _submit(walk, msgs, day, night, prev):
@@ -137,18 +155,26 @@ async def _submit(walk, msgs, day, night, prev):
     msgs = await walk.say(typed)
     text = _text(msgs)
 
-    confirm = _button(msgs, BTN_CONFIRM)
-    if confirm is not None and not _has(text, TXT_REFUSED):
-        # A question first: it must repeat both of OUR numbers.
-        mine = all(re.search(r"(?<!\d)%d(?!\d)" % v, text) for v in (day, night))
-        if not mine:
-            cancel = _button(msgs, BTN_CANCEL)
+    # A question first? It is a message carrying a confirm button, and it is
+    # pressed only on the message that repeats both of OUR numbers.
+    asking = [m for m in msgs if _button_on(m, BTN_CONFIRM) is not None]
+    if asking and not _has(text, TXT_REFUSED):
+        question = next((m for m in reversed(asking) if _names_both(m.raw_text, day, night)),
+                        None)
+        # The numbers in one message and the yes/no in the next: fine while
+        # that is the only yes/no in the answer.
+        if question is None and len(asking) == 1 and _names_both(text, day, night):
+            question = asking[0]
+        if question is None:
+            other = asking[-1]
+            cancel = _button_on(other, BTN_CANCEL)
             if cancel is not None:
-                await walk.press(msgs, cancel)
+                await walk.press([other], cancel)
             else:
                 await _leave(walk, msgs)
-            walk.fail("the confirmation names other numbers: %s" % text.strip()[:300])
-        msgs = await walk.press(msgs, confirm)
+            walk.fail("the confirmation names other numbers: %s"
+                      % (other.raw_text or "").strip()[:300])
+        msgs = await walk.press([question], _button_on(question, BTN_CONFIRM))
         text = _text(msgs)
 
     await _leave(walk, msgs)

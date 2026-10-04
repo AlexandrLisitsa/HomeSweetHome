@@ -36,6 +36,7 @@ the LAN that asks.
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import pathlib
@@ -75,8 +76,9 @@ def load_config():
 def authorised():
     if TOKEN is None:
         return True
-    supplied = request.headers.get("X-Auth-Token") or request.args.get("token")
-    return supplied == TOKEN
+    supplied = request.headers.get("X-Auth-Token") or request.args.get("token") or ""
+    # Constant time: a plain == leaks how many leading characters matched.
+    return hmac.compare_digest(supplied.encode("utf-8"), TOKEN.encode("utf-8"))
 
 
 def deny():
