@@ -110,6 +110,7 @@ sh tools/ha_get.sh /api/config
 | `tools/ha_dashboard.py` | create / push / reorder Lovelace dashboards over the WebSocket API — **changes the house** | yes, deliberately |
 | `tools/ha_registry.py` | lists orphaned registry rows and open repairs; `--remove` / `--clear-stats` **change the house** | reads: no. writes: yes |
 | `tools/check_automations.py` | renders and shape-checks `automations.yaml` and the packages' automations: the tariff on start, the grid and battery alerts, the leak alarm, the kitchen helpers, the IR phone's charging, the weekly MeterBots session check | no — pure local |
+| `tools/check_shared_constants.py` | the night tariff hours, the 280 Ah pack and the charge-current steps, in every file that repeats them, against their sources (the firmware's substitutions and select, `battery_runtime.yaml`) | no — pure local |
 | `tools/check_dtek_templates.py` | renders every Jinja template in `packages/dtek_shutdowns.yaml` and the DTEK dashboard against fake states | no — pure local |
 | `tools/check_climate_card.py` | cross-references every entity `climate-console-card.js` names against `/api/states` | no — GET-only |
 | `tools/test_dtek_schedule.py` | fixture tests for `config/dtek/dtek_poll.py`'s schedule maths | no — no network |
@@ -152,6 +153,7 @@ Local checks worth running before any transfer, all read-only. CI
 python ../IRBridge/tools/check_ha_entities.py config
 python ../IRBridge/tools/check_ha_templates.py
 python tools/check_automations.py
+python tools/check_shared_constants.py
 python tools/check_dtek_templates.py
 python tools/test_dtek_schedule.py
 python tools/test_outage_precharge.py
