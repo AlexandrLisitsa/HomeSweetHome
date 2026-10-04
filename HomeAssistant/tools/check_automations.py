@@ -14,6 +14,7 @@ template picks the right branch -- and every one of those was wrong once
   * the two kitchen helpers cannot both drive the relay
   * the IR phone charges below 21% on every path, and is re-checked
   * irbridge_send_candidate honours idx 0
+  * the weekly MeterBots session check says why whenever it fails
 
 Same approach as check_dtek_templates.py: just enough of HA's template
 environment to render these templates, not an HA emulator.
@@ -184,6 +185,32 @@ check("idx 0 is sent as 0", render(tpl, states=held, idx=0), "0")
 check("idx 12 is sent as 12", render(tpl, states=held, idx=12), "12")
 check("no idx -> the input_number", render(tpl, states=held), "47")
 check("empty idx -> the input_number", render(tpl, states=held, idx=""), "47")
+
+# --- MeterBots session -------------------------------------------------------
+print("\n8. MeterBots session: weekly, and every failure says why")
+pkg = yaml.load((CONFIG / "packages" / "meterbots_session.yaml").read_text(encoding="utf-8"),
+                HaLoader)
+auto = pkg["automation"][0]
+check("Mondays at 12:00",
+      (auto["trigger"][0]["at"], auto["condition"][0]["weekday"]), ("12:00:00", "mon"))
+call, var_step, notify_step = auto["action"]
+check("a MeterBots that is down does not stop the run", call.get("continue_on_error"), True)
+ok_tpl, why_tpl = var_step["variables"]["ok"], var_step["variables"]["why"]
+cases = [
+    ("logged in", {"status": 200, "content": {"ok": True, "authorized": True}}, "True", ""),
+    ("logged out", {"status": 200, "content": {"ok": False,
+                                               "error": "Telegram session is not logged in"}},
+     "False", "Telegram session is not logged in"),
+    ("wrong token", {"status": 401, "content": {"error": "unauthorised"}}, "False", "unauthorised"),
+    ("not JSON", {"status": 502, "content": "Bad Gateway"}, "False", "MeterBots answered 502"),
+]
+for label, sess, want_ok, want_why in cases:
+    check("%s -> ok %s" % (label, want_ok), render(ok_tpl, sess=sess), want_ok)
+    check("%s -> why" % label, render(why_tpl, sess=sess, ok=want_ok == "True"), want_why)
+check("no answer at all -> not ok", render(ok_tpl), "False")
+check("no answer at all -> why",
+      render(why_tpl, ok=False), "MeterBots did not answer, or refused (see the HA log)")
+check("only a failure notifies", notify_step["if"][0]["value_template"], "{{ not ok }}")
 
 print("\n%s" % ("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed"))
 sys.exit(1 if FAILED else 0)

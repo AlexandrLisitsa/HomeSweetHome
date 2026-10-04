@@ -1,0 +1,70 @@
+# ---------------------------------------------------------------------------
+# Is MeterBots' Telegram session still logged in? Asked every Monday at 12:00.
+#
+# Both monthly readings (gas_submit.yaml, electricity_submit.yaml) go out
+# through one logged-in Telegram user in MeterBots (LXC 105). That session
+# can end without anyone noticing: terminated in Telegram -> Settings ->
+# Devices, revoked by Telegram, or ended by Telegram's own "terminate
+# inactive sessions" for a session that is used about once a month. Its file
+# stays behind, so MeterBots' /health keeps saying "session: true".
+#
+# Without this, the first sign is the monthly ask on the 1st, with three or
+# four days of the window left to log in again with a phone code. Asked
+# weekly, it is found days or weeks earlier. The check is also an authorised
+# request, which counts as the session being used.
+#
+#   rest_command.meterbots_session   MeterBots' GET /session (the gas token
+#                                    opens it); one round trip to Telegram,
+#                                    nothing sent to any bot
+#
+# secrets.yaml:  meterbots_session_url   http://<meterbots-ip>:8770/session
+#                gasbot_token            MeterBots' GASBOT_TOKEN (shared with
+#                                        gas_submit.yaml)
+#
+# Logging in again: MeterBots/docs/deployment.md.
+# ---------------------------------------------------------------------------
+
+rest_command:
+  meterbots_session:
+    url: !secret meterbots_session_url
+    method: GET
+    headers:
+      X-Gasbot-Token: !secret gasbot_token
+    # It waits out a running bot walk (one conversation at a time).
+    timeout: 300
+
+automation:
+  - id: meterbots_session_check
+    alias: 'MeterBots: is the Telegram session still logged in'
+    mode: single
+    trigger:
+      - platform: time
+        at: "12:00:00"
+    condition:
+      - condition: time
+        weekday: mon
+    action:
+      - service: rest_command.meterbots_session
+        response_variable: sess
+        continue_on_error: true
+      - variables:
+          ok: >-
+            {{ sess is defined and sess.status == 200 and sess.content is mapping
+               and (sess.content.ok | default(false)) }}
+          why: >-
+            {% if ok %}{% elif sess is not defined %}MeterBots did not answer, or refused (see the HA log)
+            {%- elif sess.content is mapping and sess.content.error is defined %}{{ sess.content.error }}
+            {%- else %}MeterBots answered {{ sess.status }}{% endif %}
+      - if:
+          - condition: template
+            value_template: "{{ not ok }}"
+        then:
+          - service: notify.household
+            data:
+              title: '🤖 MeterBots cannot reach Telegram'
+              message: >-
+                {{ why }}. The monthly gas and electricity readings go out
+                through this session, so log MeterBots in again before the
+                1st (MeterBots/docs/deployment.md).
+              data:
+                channel: MeterBots

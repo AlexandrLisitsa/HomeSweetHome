@@ -50,4 +50,33 @@ check("no Telegram anywhere in the app",
 req = (APP.parent.parent / "requirements.txt").read_text(encoding="utf-8")
 check("telethon is not a dependency", "telethon" not in req)
 
+print("auth")
+# authorised() lifted out of the module and run against a fake request: the
+# same function, without the OpenCV import.
+fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "authorised")
+src = ast.get_source_segment(APP.read_text(encoding="utf-8"), fn)
+
+
+class FakeRequest:
+    def __init__(self, header=None, query=None):
+        self.headers = {"X-Auth-Token": header} if header is not None else {}
+        self.args = {"token": query} if query is not None else {}
+
+
+def authorised(token, **req):
+    import hmac
+    env = {"hmac": hmac, "TOKEN": token, "request": FakeRequest(**req)}
+    exec(src, env)
+    return env["authorised"]()
+
+
+check("no METERCAM_TOKEN: open", authorised(None))
+check("token set, none supplied: refused", not authorised("s3cret"))
+check("right header: let in", authorised("s3cret", header="s3cret"))
+check("right ?token= (the board's firmware download): let in", authorised("s3cret", query="s3cret"))
+check("wrong token: refused", not authorised("s3cret", header="s3cres"))
+check("a prefix of the token: refused", not authorised("s3cret", header="s3c"))
+check("empty header: refused", not authorised("s3cret", header=""))
+check("non-ASCII token compares without raising", not authorised("s3cret", header="тест"))
+
 print("%d checks passed" % checks)

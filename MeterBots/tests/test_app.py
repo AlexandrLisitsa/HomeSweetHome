@@ -44,6 +44,8 @@ def load(gas_token, yasno_token=None):
         return run
     gasbot.run = stub("gas")
     yasnobot.run = stub("yasno")
+    appmod.tgclient.session_check = lambda: calls.append(("session",)) or {"ok": True,
+                                                                         "authorized": True}
     return appmod.create_app().test_client(), calls
 
 
@@ -52,7 +54,7 @@ client, _ = load(TOKEN)
 r = client.get("/health")
 body = r.get_json()
 check("200 and ok", r.status_code == 200 and body["status"] == "ok")
-check("carries the version", body.get("version") == "1.1.0", body)
+check("carries the version", body.get("version") == "1.2.0", body)
 check("says which bots are configured", body.get("bots") == {"gas": True, "yasno": False}, body)
 check("no secret in it", TOKEN not in r.get_data(as_text=True))
 
@@ -110,6 +112,24 @@ client, calls = load(TOKEN, None)
 check("YASNO token unset: refused even with an empty header",
       client.post("/yasno/bot/submit", json={"day": 1, "night": 1},
                   headers={"X-Yasnobot-Token": ""}).status_code == 401 and calls == [])
+
+print("session")
+client, calls = load(TOKEN, "yasno-token")
+check("no token -> 401", client.get("/session").status_code == 401 and calls == [])
+check("wrong token -> 401",
+      client.get("/session", headers={"X-Gasbot-Token": "nope"}).status_code == 401)
+r = client.get("/session", headers={"X-Gasbot-Token": TOKEN})
+check("the gas token opens it, and it asks Telegram",
+      r.status_code == 200 and r.get_json() == {"ok": True, "authorized": True}
+      and calls == [("session",)], (r.get_json(), calls))
+calls.clear()
+r = client.get("/session", headers={"X-Yasnobot-Token": "yasno-token"})
+check("so does the YASNO token", r.status_code == 200 and calls == [("session",)])
+check("and no bot is ever walked", all(c == ("session",) for c in calls))
+client, calls = load(None, None)
+check("both tokens unset: refused even with empty headers",
+      client.get("/session", headers={"X-Gasbot-Token": "", "X-Yasnobot-Token": ""})
+      .status_code == 401 and calls == [])
 
 print("yasno submit: what reaches the bot")
 client, calls = load(TOKEN, "yasno-token")

@@ -11,7 +11,7 @@ to Gazmerezhi's Telegram bot, `@mygrmu_bot`.
 | the calls to the bot | `rest_command.gas_bot_status` / `gas_bot_submit` in the same package, 5-minute timeout |
 | the Telegram conversation | MeterBots `service/gasbot.py`, routes `/gas/bot/status` and `/gas/bot/submit` ([`MeterBots/docs/gas-bot.md`](../../MeterBots/docs/gas-bot.md)) |
 | the photo | MeterCam `GET /last_accepted.jpg?meter=gas` |
-| secrets | `gasbot_token` (MeterBots' `GASBOT_TOKEN`), `gasbot_status_url`, `gasbot_submit_url` (MeterBots), `metercam_url` (the photo) in `secrets.yaml` |
+| secrets | `gasbot_token` (MeterBots' `GASBOT_TOKEN`), `gasbot_status_url`, `gasbot_submit_url` (MeterBots), `metercam_url` and `metercam_token` (the photo; MeterCam's `METERCAM_TOKEN`) in `secrets.yaml` |
 
 ## Why a Telegram bot
 
@@ -33,7 +33,7 @@ Telegram login and what to do when the bot's menu changes.
      It walks to the reading prompt, reads the previous reading and backs out,
      so nothing is sent. This takes about 45 s, which is why the notification
      comes about a minute after 21:00.
-2. **The Pixel** (`notify.mobile_app_pixel_10_pro_xl`, tag `gas-submit`) shows:
+2. **The phone** (`notify.meter_readings`, tag `gas-submit`) shows:
    - the title `Gas reading 2026-11-01 20-57`, which is when the photo was
      taken
    - the photo

@@ -117,6 +117,8 @@ filters:
 - **5 s on**: the UART polls every 3 s, so 5 s is roughly two clean polls. Filters out single corrupt packets that survive the EMI sanity check.
 - **300 s off**: brownouts can pulse — voltage drops, recovers for 10 s, drops again. Switching back to Utility prematurely would slam the inverter through repeated mode changes. Five minutes of stable grid is required before trusting it.
 
+A grid voltage of `NAN` means the inverter link is dead (§14): both sensors then return no value, which holds their last state. `NAN` compares false against both bounds and would otherwise read as a healthy grid.
+
 The 300 s wait is invisible from outside the filter, so a second, unfiltered sensor — `Grid Voltage In Range` — publishes the raw bounds check. While it is ON and `Grid Condition Safe` is still ON (unsafe), the delay is running, and its `last_changed` is when it started; the dashboard counts down from that. The power logic never reads it.
 
 ### Why `trigger_on_initial_state: true` is mandatory here
@@ -417,6 +419,8 @@ The 30 W is the empirically-measured idle draw of the inverter's control board.
 
 A second sensor (`Grid Real Energy Consumption`) integrates this with the ESPHome `integration` platform → kWh, marked as `total_increasing` so HA's Energy Dashboard sees it correctly.
 
+When the inverter link is dead (§14) the lambda returns `NAN`. Neither energy total integrates its power sensor directly: each reads an internal `*_energy_feed` sensor that passes the value through, or 0 W while it is `NAN`. The `integration` platform skips a `NAN` and then, with the left rule, books the whole gap at the last value it saw once readings return. 0 W for the gap books nothing.
+
 ---
 
 ## 13. Home Assistant interface
@@ -461,7 +465,8 @@ All `select`, `switch` and `datetime` entities use `optimistic: true` and `resto
 | Home Assistant offline | Same as above — HA is a consumer, not a controller. |
 | Internet (NTP) drops mid-day | Tariff rule 2 fires: fall back to **Utility First**. The charge gate fails open and allows charging (§10). Grid protection (rule 1) still works because it doesn't need time. |
 | Internet (NTP) drops at boot | Boot proceeds after the 2-minute wait (§7). `evaluate_power_mode` falls back to **Utility First**; `evaluate_charge_window` fails open and allows charging. |
-| Inverter UART silent | All inverter sensors stay in "unknown" state. Decision logic refuses to run because `sns_grid_v.has_state()` is false (the very first guard in the script). |
+| Inverter UART silent from boot | All inverter sensors stay in "unknown" state. Decision logic refuses to run because `sns_grid_v.has_state()` is false (the very first guard in the script). |
+| Inverter UART goes silent later | After 20 s without a clean `QPIGS` reply, the link watchdog (a `5s` interval) publishes `NAN` on all eight inverter sensors, so HA shows `unknown` instead of numbers frozen at the last reading. `grid_safe` and `Grid Voltage In Range` hold their last state rather than judge a `NAN` (§4); `Grid Real Power` goes `NAN` too (§12). `evaluate_power_mode` keeps running (it reads `grid_safe` and the clock), so a tariff boundary inside the gap is still queued. The energy totals add 0 W for the gap. The next clean reply restores everything. |
 | Inverter NAKs a command | Tries left are cut to 2. If it still fails, it is dropped with an error log. The next command in the queue gets its own 20-try budget; queuing a new command never refills the tries of the one in front (§6). |
 | Inverter silent after a command | Retried up to 20 times, with a `QPIGS` poll between tries, then dropped with an error log. |
 | BMS BLE link drops | BMS sensors go stale, and `sns_grid_real_power` returns `NAN` while BMS power is unavailable. `evaluate_power_mode` is unaffected — it reads no BMS data. The night-charging gate **is** affected: the charge MOSFET cannot be written, so the 5-minute re-assertion keeps retrying until BLE returns (§10). Inverter control over UART continues throughout. |

@@ -78,3 +78,20 @@ Whoever has `telegram.session` can read and send as the household. So:
 - It shows up in Telegram → Settings → Devices under the API app's name.
   Ending it there logs MeterBots out, and every call answers
   `Telegram session is not logged in` until someone logs in again.
+
+## Keeping it logged in
+
+The session is used about once a month, and Telegram ends sessions that sit
+unused. Two things keep that from surfacing at the monthly ask:
+
+- **Telegram's own timer.** In the household account, Telegram → Settings →
+  Privacy and Security → Devices → *Automatically terminate old sessions*: set
+  it to the longest period (1 year). With 1 month, a quiet session can be
+  ended between two monthly readings.
+- **The weekly check.** Every Monday at 12:00 Home Assistant calls `GET
+  /session` (`HomeAssistant/config/packages/meterbots_session.yaml`). It asks
+  Telegram whether the session is still authorised, which is also a use of the
+  session, and notifies the household if it is not, or if MeterBots does not
+  answer. `/health` cannot tell: a session ended in Telegram leaves its file.
+
+To check by hand: `curl -H "X-Gasbot-Token: <token>" http://<meterbots-ip>:8770/session`.

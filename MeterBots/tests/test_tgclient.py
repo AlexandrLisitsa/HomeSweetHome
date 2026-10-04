@@ -215,4 +215,49 @@ for t in threads:
 check("two bots never talk at once: one conversation ends before the next starts",
       order == ["gas in", "gas out", "yasno in", "yasno out"], order)
 
+print("session_check")
+import tempfile
+import types
+
+events = []
+
+
+class FakeTelegramClient:
+    authorized = True
+
+    def __init__(self, session, api_id, api_hash):
+        events.append(("new", api_id))
+
+    async def connect(self):
+        events.append("connect")
+
+    async def is_user_authorized(self):
+        return FakeTelegramClient.authorized
+
+    async def disconnect(self):
+        events.append("disconnect")
+
+
+sys.modules["telethon"] = types.SimpleNamespace(TelegramClient=FakeTelegramClient)
+os.environ["TELEGRAM_API_ID"], os.environ["TELEGRAM_API_HASH"] = "12345", "hash"
+tmp = pathlib.Path(tempfile.mkdtemp())
+tgclient.SESSION = tmp / "telegram"
+check("no session file: says so, Telegram not asked",
+      tgclient.session_check() == {"ok": False, "error": "no session file -- run the login steps"}
+      and events == [])
+(tmp / "telegram.session").write_bytes(b"x")
+check("logged in: authorized", tgclient.session_check() == {"ok": True, "authorized": True})
+check("connected once and disconnected", events == [("new", 12345), "connect", "disconnect"],
+      events)
+FakeTelegramClient.authorized = False
+events.clear()
+r = tgclient.session_check()
+check("logged out: a failure that says to log in",
+      not r["ok"] and "not logged in" in r["error"], r)
+check("and it still disconnects", events[-1] == "disconnect", events)
+os.environ.pop("TELEGRAM_API_ID")
+r = tgclient.session_check()
+check("no API credentials: a failure, not an exception",
+      not r["ok"] and "TELEGRAM_API_ID" in r["error"], r)
+
 print("%d checks passed" % checks)

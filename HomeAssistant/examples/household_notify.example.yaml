@@ -7,9 +7,18 @@
 #
 # A phone's service is notify.mobile_app_<device name>, as the Companion app
 # registered it (Developer Tools -> Actions lists them).
+#
+# meter_readings is the ONE phone that gets the monthly gas and electricity
+# asks (gas_submit.yaml, electricity_submit.yaml). One, on purpose: those
+# notifications carry the Submit buttons, and on two phones two presses could
+# send a reading twice.
 notify:
   - platform: group
     name: household
     services:
       - action: mobile_app_phone_one
       - action: mobile_app_phone_two
+  - platform: group
+    name: meter_readings
+    services:
+      - action: mobile_app_phone_one
