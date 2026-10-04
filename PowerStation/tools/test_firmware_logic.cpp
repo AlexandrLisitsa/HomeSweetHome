@@ -1078,6 +1078,116 @@ TEST(grid, real_power) {
   CHECK_EQ(*sns_grid_real_power_lambda(), 930.0f);
 }
 
+// ============================================================================
+// Inverter link watchdog
+// ============================================================================
+static bool all_inverter_nan() {
+  return std::isnan(id(sns_grid_v).state) && std::isnan(id(sns_grid_f).state) &&
+         std::isnan(id(sns_out_v).state) && std::isnan(id(sns_watt).state) &&
+         std::isnan(id(sns_batt_v).state) && std::isnan(id(sns_load_pct).state) &&
+         std::isnan(id(sns_batt_charge_a).state) && std::isnan(id(sns_batt_discharge_a).state);
+}
+
+TEST(link, frame_stamps_the_clock) {
+  fake_millis_value = 123456;
+  rx(qpigs_reply("231.5", "230.1", "0161", "27.10"));
+  CHECK_EQ(id(inverter_last_frame_ms), 123456u);
+}
+
+TEST(link, no_frame_yet_watchdog_does_nothing) {
+  id(sns_grid_v).reset();
+  fake_millis_value = 600000;
+  interval_5s();
+  CHECK(!id(sns_grid_v).has_state());
+  CHECK(!grid_safe_lambda().has_value());
+}
+
+TEST(link, readings_go_unknown_after_20s_of_silence) {
+  fake_millis_value = 1000;
+  rx(qpigs_reply("231.5", "230.1", "0161", "27.10"));
+  fake_millis_value = 1000 + 19999;
+  interval_5s();
+  CHECK_EQ(id(sns_grid_v).state, 231.5f);  // still fresh
+  CHECK_EQ(id(sns_watt).state, 161.0f);
+  fake_millis_value = 1000 + 20000;
+  interval_5s();
+  CHECK(all_inverter_nan());
+  CHECK(id(sns_grid_v).has_state());  // published NAN, i.e. `unknown` in HA
+}
+
+TEST(link, stale_grid_holds_grid_safe_instead_of_judging) {
+  fake_millis_value = 1000;
+  rx(qpigs_reply("170.0", "230.1", "0161", "27.10"));
+  CHECK_EQ(*grid_safe_lambda(), true);
+  fake_millis_value += 30000;
+  interval_5s();
+  // NAN would compare false both ways and read as a safe grid.
+  CHECK(!grid_safe_lambda().has_value());
+  CHECK(!grid_in_range_lambda().has_value());
+}
+
+TEST(link, stale_link_still_lets_the_tariff_decide) {
+  fake_millis_value = 1000;
+  rx(qpigs_reply("231.5", "230.1", "0161", "27.10"));
+  fake_millis_value += 30000;
+  interval_5s();
+  clear_effects();
+  at(23, 0);  // tariff boundary inside the blip
+  power_mode();
+  CHECK_EQ(prio(), std::string("Utility First"));
+  at(7, 0, 0, 3);
+  power_mode();
+  CHECK_EQ(prio(), std::string("SBU Battery"));
+  CHECK(!queue().empty());
+}
+
+TEST(link, stale_link_makes_grid_power_unknown_and_energy_feeds_zero) {
+  id(sns_bms_power).publish_state(0);
+  fake_millis_value = 1000;
+  rx(qpigs_reply("231.5", "230.1", "0400", "27.10"));
+  CHECK_EQ(*sns_watt_energy_feed_lambda(), 400.0f);
+  id(sns_grid_real_power).publish_state(*sns_grid_real_power_lambda());
+  CHECK_EQ(*sns_grid_real_power_energy_feed_lambda(), id(sns_grid_real_power).state);
+  fake_millis_value += 30000;
+  interval_5s();
+  CHECK(std::isnan(*sns_grid_real_power_lambda()));
+  id(sns_grid_real_power).publish_state(*sns_grid_real_power_lambda());
+  CHECK_EQ(*sns_watt_energy_feed_lambda(), 0.0f);
+  CHECK_EQ(*sns_grid_real_power_energy_feed_lambda(), 0.0f);
+}
+
+TEST(link, energy_feeds_zero_before_first_reading) {
+  id(sns_watt).reset();
+  id(sns_grid_real_power).reset();
+  CHECK_EQ(*sns_watt_energy_feed_lambda(), 0.0f);
+  CHECK_EQ(*sns_grid_real_power_energy_feed_lambda(), 0.0f);
+}
+
+TEST(link, frames_resume_after_silence) {
+  fake_millis_value = 1000;
+  rx(qpigs_reply("231.5", "230.1", "0161", "27.10"));
+  fake_millis_value += 30000;
+  interval_5s();
+  CHECK(all_inverter_nan());
+  rx(qpigs_reply("229.0", "230.1", "0150", "27.00"));
+  CHECK_EQ(id(sns_grid_v).state, 229.0f);
+  CHECK_EQ(id(sns_watt).state, 150.0f);
+  CHECK_EQ(*grid_safe_lambda(), false);
+  interval_5s();  // the fresh frame re-armed the watchdog
+  CHECK_EQ(id(sns_grid_v).state, 229.0f);
+}
+
+TEST(link, watchdog_survives_millis_wrap) {
+  fake_millis_value = 0xFFFFFFFFu - 5000u;
+  rx(qpigs_reply("231.5", "230.1", "0161", "27.10"));
+  fake_millis_value += 10000u;  // wrapped, only 10 s later
+  interval_5s();
+  CHECK_EQ(id(sns_grid_v).state, 231.5f);
+  fake_millis_value += 15000u;
+  interval_5s();
+  CHECK(std::isnan(id(sns_grid_v).state));
+}
+
 TEST(uptime, accumulates_with_carry_and_survives_millis_wrap) {
   // The lambda keeps static state between calls: sync once, then measure deltas.
   fake_millis_value = 1000000;

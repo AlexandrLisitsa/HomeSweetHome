@@ -141,6 +141,11 @@ globals:
   - id: restore_replay_done
     type: bool
     initial_value: 'false'
+  # millis() of the last clean QPIGS reply. The link watchdog interval turns
+  # the inverter sensors to NAN when this falls too far behind.
+  - id: inverter_last_frame_ms
+    type: uint32_t
+    initial_value: '0'
   # Cumulative seconds the ESP has run, across reboots and OTA updates.
   # RestoringGlobalsComponent only writes NVS when the value actually changed, and
   # update_interval caps how often that check runs - so this costs one small NVS
@@ -353,9 +358,21 @@ sensor:
     unit_of_measurement: "A"
     icon: "mdi:battery-minus"
     state_class: measurement
+  # What the two energy totals integrate: the power reading, or 0 W while it
+  # is NAN. The integration skips a NAN and then, with the left rule, books
+  # the whole gap at the last value it saw once readings return -- a dead
+  # link would come back as minutes of phantom energy. 0 W books nothing.
+  # Polled at 3 s, the inverter's own poll rate.
+  - platform: template
+    id: sns_watt_energy_feed
+    internal: true
+    update_interval: 3s
+    lambda: |-
+      float w = id(sns_watt).state;
+      return (id(sns_watt).has_state() && !std::isnan(w)) ? w : 0.0f;
   - platform: integration
     name: "Total Energy Consumption"
-    sensor: sns_watt
+    sensor: sns_watt_energy_feed
     time_unit: h
     unit_of_measurement: "kWh"
     device_class: energy
@@ -394,6 +411,11 @@ sensor:
       if (!id(sns_watt).has_state() || !id(sns_bms_power).has_state() || !id(sns_batt_charge_a).has_state() || !id(sns_grid_v).has_state()) {
         return NAN;
       }
+      // A dead inverter link (the watchdog interval) leaves the inverter
+      // readings NAN: no grid figure either.
+      if (std::isnan(id(sns_watt).state) || std::isnan(id(sns_batt_charge_a).state) || std::isnan(id(sns_grid_v).state)) {
+        return NAN;
+      }
       
       float load = id(sns_watt).state;
       float bms_power = id(sns_bms_power).state; 
@@ -421,9 +443,17 @@ sensor:
       
       return grid_power;
 
+  # See sns_watt_energy_feed.
+  - platform: template
+    id: sns_grid_real_power_energy_feed
+    internal: true
+    update_interval: 3s
+    lambda: |-
+      float p = id(sns_grid_real_power).state;
+      return (id(sns_grid_real_power).has_state() && !std::isnan(p)) ? p : 0.0f;
   - platform: integration
     name: "Grid Real Energy Consumption"
-    sensor: sns_grid_real_power
+    sensor: sns_grid_real_power_energy_feed
     time_unit: h
     unit_of_measurement: "kWh"
     device_class: energy
@@ -754,8 +784,10 @@ binary_sensor:
     # never runs - grid protection stays dormant on a bad grid.
     trigger_on_initial_state: true
     lambda: |-
-      if (!id(sns_grid_v).has_state()) {
-        return {}; 
+      // NAN is a dead inverter link (the watchdog interval): hold the last
+      // state. NAN compares false both ways and would read as a safe grid.
+      if (!id(sns_grid_v).has_state() || std::isnan(id(sns_grid_v).state)) {
+        return {};
       }
       // Return TRUE (Unsafe) if voltage is OUT of strict bounds (185V - 250V)
       return (id(sns_grid_v).state <= 185.0 || id(sns_grid_v).state >= 250.0);
@@ -783,7 +815,7 @@ binary_sensor:
     id: grid_in_range
     device_class: power
     lambda: |-
-      if (!id(sns_grid_v).has_state()) {
+      if (!id(sns_grid_v).has_state() || std::isnan(id(sns_grid_v).state)) {
         return {};
       }
       return (id(sns_grid_v).state > 185.0 && id(sns_grid_v).state < 250.0);
@@ -877,6 +909,32 @@ interval:
             id(uart_0).write_array(qpigs.data(), qpigs.size());
           }
 
+  # Inverter link watchdog. A template sensor keeps its last value forever, so
+  # a dead UART used to leave grid voltage and power frozen at their last
+  # reading: grid_safe judged a grid it could no longer see, and HA showed
+  # numbers that were minutes old. With no clean QPIGS reply for 20 s (a poll
+  # goes out every 3 s, every 6 s while commands queue), the readings become
+  # NAN -- `unknown` in HA. grid_safe and grid_in_range hold their last state
+  # on NAN rather than judge it; evaluate_power_mode still runs (it reads
+  # grid_safe and the clock, not the voltage), so a tariff boundary that falls
+  # inside a link blip is still queued. The energy totals count 0 W meanwhile
+  # (the *_energy_feed sensors). Before the first frame after boot nothing
+  # changes: the sensors have no state yet and the guards already wait.
+  - interval: 5s
+    then:
+      - lambda: |-
+          if (!id(sns_grid_v).has_state() || std::isnan(id(sns_grid_v).state)) return;
+          if ((uint32_t) (millis() - id(inverter_last_frame_ms)) < 20000) return;
+          ESP_LOGE("uart_rx", "❌ No reply from the inverter for 20 s: readings now unknown.");
+          id(sns_grid_v).publish_state(NAN);
+          id(sns_grid_f).publish_state(NAN);
+          id(sns_out_v).publish_state(NAN);
+          id(sns_watt).publish_state(NAN);
+          id(sns_batt_v).publish_state(NAN);
+          id(sns_load_pct).publish_state(NAN);
+          id(sns_batt_charge_a).publish_state(NAN);
+          id(sns_batt_discharge_a).publish_state(NAN);
+
   - interval: 50ms
     then:
       - lambda: |-
@@ -952,6 +1010,10 @@ interval:
                   }
 
                   // IF DATA IS CLEAN, PUBLISH TO HOME ASSISTANT
+                  if (id(sns_grid_v).has_state() && std::isnan(id(sns_grid_v).state)) {
+                    ESP_LOGI("uart_rx", "✅ Inverter link back, readings resume.");
+                  }
+                  id(inverter_last_frame_ms) = millis();
                   id(sns_grid_v).publish_state(grid_v);
                   id(sns_grid_f).publish_state(atof(parts[1].c_str()));
                   id(sns_out_v).publish_state(out_v);
