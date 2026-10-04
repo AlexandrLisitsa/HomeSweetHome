@@ -73,7 +73,9 @@
  */
 
 const CARD = "powmr-inverter-console-card";
-const VERSION = "2.8.1";
+import { cardTip } from "./card-tip.js?v=1.0.0";
+
+const VERSION = "2.10.0";
 
 /*
  * Brand colours stay literal: they identify a leg of the diagram (amber =
@@ -200,32 +202,107 @@ CHIPS.forEach((c) => { DEFAULTS[c.cfg] = c.ent; });
  * the keys they had as chips, so an existing override still works.
  */
 /*
- * What each toggle does, with an example, for the tooltips. The first line of
- * a tooltip stays "<name> — <state>" (plus the plan's reason); this follows
- * on the next lines. Keep it in step with PowerStation/docs/architecture.md
- * (§3, §10, §11) and the two HA packages.
+ * Lines 2-4 of every tooltip on the card, in the house format
+ * (HomeAssistant/docs/dashboard-tooltips.md): what the element means, then
+ * "E.g." with this house's numbers, then at most a limit or a tap hint. Line
+ * 1, "<name> — <state>", is built when the card patches; tip() joins the two.
+ * Keep it in step with PowerStation/docs/architecture.md (§3, §4, §10, §11),
+ * the two charge packages and electricity_meter.yaml.
  */
 const HELP = {
-  chip_auto: "Spends the battery by day and buys from the grid at night: SBU Battery "
-    + "07:00–23:00, Utility First 23:00–07:00.\nE.g. at 22:59 the house runs on the pack; "
-    + "at 23:00 it switches to the grid.\nCannot be on together with Night only.",
-  chip_protect: "Moves the house to the battery when the grid leaves 185–250 V for 5 s, "
-    + "and back after 5 min of stable grid. Beats every other rule.\nE.g. a brownout "
-    + "to 170 V: SBU Battery within 5 s.",
-  chip_ac_charge: "Lets the battery charge from the grid at all (the BMS charge switch). "
-    + "Off: no grid charging, whatever else is on.\nE.g. switch it off to keep a full "
-    + "pack from topping up. It pulses while the pack is charging.",
-  chip_night_only: "Opens the charger only in the night tariff (23:00–07:00) and leaves "
-    + "the power priority alone: the pack is a UPS that only buys cheap power.\nE.g. on: "
-    + "charging stops at 07:00 and starts again at 23:00.\nCannot be on together with Auto.",
-  adaptive_charge: "Charges at night at the lowest current that still fills the pack by "
-    + "06:30, re-sized every 10 min.\nE.g. a half-full pack at 23:00 needs ~21 A, so it "
-    + "charges at 30 A instead of a fixed 60 A.\nNeeds Auto or Night only; goes off when "
-    + "an outage is scheduled.",
-  chip_precharge: "Arms filling the pack before a scheduled DTEK outage. Nothing happens "
-    + "until an outage is published.\nE.g. outage at 10:00: charges overnight on the "
-    + "night tariff, or by day at the current it needs to be full by 10:00.",
+  // Header
+  uptime: "How long the PowerStation controller has run in total, across reboots and updates."
+    + "\nE.g. up 41d 6h; a hard power cut loses at most the last 5 min of it.",
+  pill: "Whether the inverter trusts the grid, with its AC input mode and the clock."
+    + "\nE.g. Grid down after 5 s under 185 V; back in range, Grid returning counts 5:00.",
+  ret: "Time left until the firmware trusts the grid again: 5 min of stable voltage."
+    + "\nE.g. voltage back at 14:02: it counts down from 5:00 and the grid is trusted at 14:07.",
+  // Chips and the AC charge chip's icons
+  chip_auto: "Runs the house on the pack by day and on the grid at night: SBU Battery 07:00–23:00."
+    + "\nE.g. at 22:59 the house runs on the pack; at 23:00 it switches to Utility First."
+    + "\nCannot be on together with Night only.",
+  chip_protect: "Moves the house to the battery when the grid leaves 185–250 V; beats every rule."
+    + "\nE.g. a brownout to 170 V: SBU Battery within 5 s, back after 5 min of stable grid.",
+  chip_ac_charge: "The BMS charge switch: lets the pack charge from the grid at all; pulses while it does."
+    + "\nE.g. off at 23:30 under Auto: the house still runs on the grid, the pack stays as it is."
+    + "\nNight only and a running Pre-charge take it over and switch it back on.",
+  chip_night_only: "Opens the charger only in the night tariff, 23:00–07:00; the pack is a cheap UPS."
+    + "\nE.g. on: charging stops at 07:00 and starts again at 23:00."
+    + "\nCannot be on together with Auto.",
+  adaptive_charge: "Charges at night at the lowest current that still fills the pack by 06:30."
+    + "\nE.g. half full at 23:00 needs ~21 A, so 30 A, not 60 A; re-sized every 10 min."
+    + "\nNeeds Auto with the charger on, or Night only; an outage window switches it off.",
+  chip_precharge: "Arms a full pack before each scheduled DTEK outage; idle until DTEK publishes one."
+    + "\nE.g. outage at 10:00: fills overnight at night rates, or by day at the amps it needs.",
+  adaptive_plan: "What adaptive night charge is doing: the current it set and when the charge ends."
+    + "\nE.g. 20 A → 07:00 at night, tonight by day, full within 1 % of a full pack.",
+  precharge_plan: "What pre-charge is doing for the next DTEK outage: the amps and the outage start."
+    + "\nE.g. 30 A → 10:00 while charging; at night → 10:00 when the night tariff will do.",
+  // Flow tiles and their status words
+  tile_grid: "Mains voltage at the inverter input, its frequency and the inverter's estimated draw."
+    + "\nE.g. 231.4 V · 50.00 Hz · 640 W in; Protect trips outside 185–250 V for 5 s.",
+  tile_inv: "The inverter's output voltage to the house, with its AC input mode and power priority."
+    + "\nE.g. 230.0 V out · APL · SBU Battery: by day under Auto the house runs on the pack.",
+  tile_load: "What the house draws from the inverter's output, against its 2400 W rating."
+    + "\nE.g. 1500 W is 62.5 % of 2400 W: ELEVATED, amber from 1440 W.",
+  tile_meter: "What the flat's electricity meter measures: all grid power, the boiler's circuit too."
+    + "\nE.g. 2450 W is 40.8 % of the 6000 W breaker; the inverter's figure misses the boiler.",
+  tile_batt: "The 8S 280 Ah pack's state of charge, as the BMS reports it."
+    + "\nE.g. 87 %: green from 70 %, amber below, red under 20 %.",
+  volt_state: "The voltage band: NOMINAL 220–240 V, LOW or HIGH out to 200 or 250 V, then UNDER/OVER."
+    + "\nE.g. 243.0 V reads HIGH in amber; on Grid, NO GRID once the inverter calls it unsafe.",
+  load_state: "How hard the circuit is worked: NORMAL to 60 %, ELEVATED to 85 %, HEAVY, OVERLOAD."
+    + "\nE.g. House load 2100 W of 2400 W is 87.5 %: HEAVY; Meter reads HEAVY above 5100 W.",
+  batt_state: "Whether the pack charges, discharges or idles (within ±2 W), then its charge band."
+    + "\nE.g. DIS · MODERATE: discharging at 45 %; CRITICAL under 20 %, FULL from 95 %.",
+  batt_sub: "Pack voltage at the inverter, the BMS's signed power, and the current while one flows."
+    + "\nE.g. 26.8 V · 1450 W in · 54.0 A on a night charge at the 60 A maximum."
+    + "\nTap: opens the current while one flows, the voltage otherwise.",
+  // Flow runs
+  run_grid: "The inverter's draw from the grid; the dashes run faster with the watts, to 2400 W."
+    + "\nE.g. 0 W on SBU Battery by day; load + 30 W + charging on Utility First at night.",
+  run_load: "Power from the inverter to the house; the dashes run faster with the watts, to 2400 W."
+    + "\nE.g. 640 W: a steady stream; under 5 W the run dims and stops.",
+  run_batt: "The BMS's signed pack power: the dashes flow into the pack charging, out discharging."
+    + "\nE.g. 1450 W in on a night charge, 380 W out by day under Auto; full speed at 1600 W.",
+  run_meter: "The meter's whole-flat power from the grid; the dashes reach full speed at 6000 W."
+    + "\nE.g. 2450 W while the boiler heats, though the inverter itself draws far less.",
+  // Controls
+  sel_max_charge: "The most current the charger may push into the pack from the grid: 2, 10 … 60 A."
+    + "\nE.g. adaptive sets 30 A at 23:00 and puts your own value back at 07:00."
+    + "\nAdaptive and Pre-charge overwrite a hand choice while they run.",
+  sel_priority: "Which source runs the house: Utility First (grid) or SBU Battery (pack, then grid)."
+    + "\nE.g. Auto picks SBU Battery at 07:00 and Utility First at 23:00."
+    + "\nAuto, Protect and Pre-charge overwrite a hand choice at their next decision.",
+  sel_ac_mode: "How wide a mains voltage the inverter accepts: APL ~90–280 V, UPS ~170–280 V."
+    + "\nE.g. a brownout to 160 V: UPS moves to the battery by itself, APL rides it out.",
+  // Energy rows
+  erow_day: "Grid energy the meter counted on the day tariff, 07:00–23:00, this month."
+    + "\nE.g. 123.46 kWh at 4.32 ₴/kWh is 533.35 ₴; marked active from 07:00 to 23:00.",
+  erow_night: "Grid energy the meter counted on the night tariff, 23:00–07:00, this month."
+    + "\nE.g. 78.90 kWh at 2.16 ₴/kWh is 170.42 ₴; marked active from 23:00 to 07:00.",
+  erow_total: "The meter's own register: the whole flat's lifetime grid energy, both tariffs."
+    + "\nE.g. 15234.6 kWh, the same figure as the total on the meter's display.",
+  // History
+  range: "Shows this span on the chart, ending now, and keeps it live as readings arrive."
+    + "\nE.g. 24h on SOC shows the night charge as the 23:00–07:00 climb."
+    + "\nPast 36 h (7d, 14d) it draws hourly statistics, not every reading.",
+  tab: "Picks the series the chart draws; one with bands takes its tile's colour."
+    + "\nE.g. Grid voltage at 243 V draws the line amber, like the Grid tile's HIGH.",
+  ch_name: "The series on the chart: drag to pan, pinch or scroll to zoom, double-click for live."
+    + "\nE.g. zoom 24h down to the minute a brownout began; a range button goes back to live."
+    + "\nTap: opens the series' own entity.",
+  ch_win: "The span the chart covers, and how many readings ran off the scale."
+    + "\nE.g. last 24 hours · 3 readings off-scale: spikes clipped so the rest stays readable.",
+  stat: "Now is the live value; Min, Max and the time-weighted Mean cover the window drawn."
+    + "\nE.g. Grid Voltage, 24h: Min 214.2 V, Max 246.0 V, Mean 229.8 V.",
 };
+
+/** A whole tooltip: line 1 (clipped to the 90-character line) and the HELP lines. */
+function tip(head, key) {
+  const h = String(head);
+  return (h.length > 90 ? h.slice(0, 89) + "…" : h) + (HELP[key] ? "\n" + HELP[key] : "");
+}
 const AC_DOTS = [
   { ref: "Nt", label: "Night only", cfg: "chip_night_only", ent: "switch.powmr_inverter_night_charging_only", icon: "mdi:weather-night", color: LOAD_C },
   { ref: "Ad", label: "Adaptive night charge", cfg: "adaptive_charge", icon: "mdi:tune-variant", color: GRID_C },
@@ -279,9 +356,9 @@ const SERIES = [
  * month's, with their cost from the Energy dashboard when it has one.
  */
 const ENERGY = [
-  { key: "mtr_d", cfg: "meter_day", cost: "meter_day_cost", short: "Day this month", unit: "kWh", dec: 2, tariff: "day" },
-  { key: "mtr_n", cfg: "meter_night", cost: "meter_night_cost", short: "Night this month", unit: "kWh", dec: 2, tariff: "night" },
-  { key: "mtr_t", cfg: "meter_total", short: "Meter total", unit: "kWh", dec: 1 },
+  { key: "mtr_d", cfg: "meter_day", cost: "meter_day_cost", short: "Day this month", unit: "kWh", dec: 2, tariff: "day", help: "erow_day" },
+  { key: "mtr_n", cfg: "meter_night", cost: "meter_night_cost", short: "Night this month", unit: "kWh", dec: 2, tariff: "night", help: "erow_night" },
+  { key: "mtr_t", cfg: "meter_total", short: "Meter total", unit: "kWh", dec: 1, help: "erow_total" },
 ];
 
 /*
@@ -705,6 +782,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
+    cardTip(this, this.shadowRoot);
     this._hass = null;
     this._config = null;
     this._built = false;
@@ -1034,15 +1112,16 @@ class PowmrInverterConsoleCard extends HTMLElement {
 
   /**
    * One of AC charge's switch dots: lit while its switch is on, and a tooltip
-   * from the entity's friendly_name, the same words a chip's title uses.
-   * Returns the state.
+   * from the entity's friendly_name, the same words a chip's title uses, then
+   * `more` (a plan's reason) and HELP[key]. Returns the state.
    */
-  _patchSwitchDot(dot, ent, label) {
+  _patchSwitchDot(dot, ent, label, key, more) {
     const st = this._state(ent);
     if (!dot) return st;
     dot.classList.toggle("on", st === "on");
     const o = this._stateObj(ent);
-    dot.title = ((o && o.attributes && o.attributes.friendly_name) || label) + " — " + st;
+    dot.dataset.tip = tip(((o && o.attributes && o.attributes.friendly_name) || label) + " — " + st
+      + (more || ""), key);
     return st;
   }
 
@@ -1052,9 +1131,10 @@ class PowmrInverterConsoleCard extends HTMLElement {
    * nothing to charge for, which is most of the time.
    */
   _patchPlan(node, sub) {
-    const st = this._patchSwitchDot(node, this._config.chip_precharge, "Pre-charge");
     const plan = this._stateObj(this._config.precharge_plan);
     const a = (plan && plan.attributes) || {};
+    const st = this._patchSwitchDot(node, this._config.chip_precharge, "Pre-charge", "chip_precharge",
+      plan && a.reason ? " · " + plan.state + ": " + a.reason : "");
     const t = Date.parse(a.until || "");
     const at = Number.isFinite(t)
       ? new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })
@@ -1065,9 +1145,11 @@ class PowmrInverterConsoleCard extends HTMLElement {
       else if (plan.state === "waiting_night") text = at ? "at night → " + at : "at night";
       else if (plan.state === "full") text = "full";
     }
-    if (sub) sub.textContent = text;
+    if (sub) {
+      sub.textContent = text;
+      sub.dataset.tip = tip("Pre-charge plan — " + (text || (plan ? plan.state : "unknown")), "precharge_plan");
+    }
     if (node) node.classList.toggle("act", st === "on" && !!plan && plan.state === "charging");
-    if (node && plan && a.reason) node.title += " · " + plan.state + ": " + a.reason;
   }
 
   /**
@@ -1116,12 +1198,16 @@ class PowmrInverterConsoleCard extends HTMLElement {
       dot.classList.toggle("on", st === "on");
       dot.classList.toggle("act", st === "on" && !!plan && plan.state === "charging");
       dot.classList.toggle("dis", !usable && st !== "on");
-      dot.title = !usable && st !== "on"
+      dot.dataset.tip = tip(!usable && st !== "on"
         ? (outage ? "Adaptive night charge — off while an outage is scheduled (pre-charge)"
           : "Adaptive night charge — needs Auto or Night only, and the AC charger on")
-        : "Adaptive night charge — " + st + (plan && a.reason ? " · " + plan.state + ": " + a.reason : "");
+        : "Adaptive night charge — " + st + (plan && a.reason ? " · " + plan.state + ": " + a.reason : ""),
+      "adaptive_charge");
     }
-    if (sub) sub.textContent = text;
+    if (sub) {
+      sub.textContent = text;
+      sub.dataset.tip = tip("Adaptive charge plan — " + (text || (plan ? plan.state : "unknown")), "adaptive_plan");
+    }
   }
 
   /** The header pill: grid word, dot colour and the return countdown. */
@@ -1133,12 +1219,19 @@ class PowmrInverterConsoleCard extends HTMLElement {
     const word = left !== null ? "Grid returning" : down ? "Grid down" : "Grid connected";
     if (el.mode) el.mode.textContent = word + " · " + this._state(c.ac_input_mode);
     if (el.livedot) el.livedot.style.background = left !== null ? WARN : down ? BAD : OK;
+    let count = "";
     if (el.ret) {
       el.ret.hidden = el.retsep.hidden = left === null;
       if (left !== null) {
         const s = Math.ceil(left);
-        el.ret.textContent = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+        count = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+        el.ret.textContent = count;
       }
+      el.ret.dataset.tip = tip("Grid return — " + (count ? count + " left" : "not counting"), "ret");
+    }
+    if (el.pill) {
+      el.pill.dataset.tip = tip("Grid — " + (left !== null ? "returning" + (count ? ", " + count + " left" : "")
+        : down ? "down" : "connected") + " · " + this._state(c.ac_input_mode), "pill");
     }
   }
 
@@ -1188,13 +1281,11 @@ class PowmrInverterConsoleCard extends HTMLElement {
           </div>
           <div class="title">${this._esc(c.title)}</div>
         </div>
-        <div class="pill" data-more="${c.grid_safe}" role="button" tabindex="0"
-             title="Grid condition">
+        <div class="pill" data-ref="pill" data-more="${c.grid_safe}" role="button" tabindex="0">
           <div class="livedot" data-ref="livedot"></div>
           <span class="mono" data-ref="mode"></span>
           <span class="vsep" data-ref="retsep" hidden></span>
-          <span class="mono ret" data-ref="ret" hidden
-                title="Grid is back in range. The inverter trusts it after 5 minutes of stable voltage."></span>
+          <span class="mono ret" data-ref="ret" hidden></span>
           <span class="vsep"></span>
           <span class="mono" data-ref="clock"></span>
         </div>
@@ -1213,7 +1304,7 @@ ${ch.dots ? "" : `
                   aria-label="Toggle ${this._esc(ch.label)}"><span class="dot"></span></span>`}${
               ch.dots ? AC_DOTS.map((d) => `
             <span class="dw i" data-ref="chip${d.ref}${i}" data-act="toggle" data-ent="${c[d.cfg]}" role="button" tabindex="0"
-                  style="--dc:${d.color};--ds:${d.color}99" title="Toggle ${this._esc(d.label)}"><ha-icon icon="${d.icon}"></ha-icon></span>`).join("") + `
+                  style="--dc:${d.color};--ds:${d.color}99" aria-label="Toggle ${this._esc(d.label)}"><ha-icon icon="${d.icon}"></ha-icon></span>`).join("") + `
             <span class="sub" data-ref="chipAdSub${i}" data-more="${c.adaptive_plan}" role="button" tabindex="0"></span>
             <span class="sub" data-ref="chipPcSub${i}" data-more="${c.precharge_plan}" role="button" tabindex="0"></span>` : ""}
           </div>`).join("")}
@@ -1226,7 +1317,7 @@ ${ch.dots ? "" : `
         <div class="plabel">Live power flow</div>
 
         <div class="flowrow">
-          <div class="tile t-grid" data-more="${c.grid_voltage}" role="button" tabindex="0">
+          <div class="tile t-grid" data-ref="gridTile" data-more="${c.grid_voltage}" role="button" tabindex="0">
             <div class="t-head">
               <span class="t-name">Grid</span>
               <span class="t-state" data-ref="gridState"></span>
@@ -1240,10 +1331,10 @@ ${ch.dots ? "" : `
             </div>
           </div>
 
-          <div class="run x" style="--c:${GRID_C}" data-more="${c.grid_power}" role="button" tabindex="0"
-               title="Grid power"><i data-ref="runGrid"></i></div>
+          <div class="run x" data-ref="gridRun" style="--c:${GRID_C}" data-more="${c.grid_power}" role="button" tabindex="0"
+               ><i data-ref="runGrid"></i></div>
 
-          <div class="tile t-inv" data-more="${c.ac_output_voltage}" role="button" tabindex="0">
+          <div class="tile t-inv" data-ref="invTile" data-more="${c.ac_output_voltage}" role="button" tabindex="0">
             <div class="t-head">
               <span class="t-name">Inverter</span>
               <span class="t-state" data-ref="invState"></span>
@@ -1257,10 +1348,10 @@ ${ch.dots ? "" : `
             </div>
           </div>
 
-          <div class="run x" style="--c:${LOAD_C}" data-more="${c.load_power}" role="button" tabindex="0"
-               title="Load power"><i data-ref="runLoad"></i></div>
+          <div class="run x" data-ref="loadRun" style="--c:${LOAD_C}" data-more="${c.load_power}" role="button" tabindex="0"
+               ><i data-ref="runLoad"></i></div>
 
-          <div class="tile t-load" data-more="${c.load_power}" role="button" tabindex="0">
+          <div class="tile t-load" data-ref="loadTile" data-more="${c.load_power}" role="button" tabindex="0">
             <div class="t-head">
               <span class="t-name">House load</span>
               <span class="t-state" data-ref="loadState"></span>
@@ -1276,14 +1367,13 @@ ${ch.dots ? "" : `
 
         <div class="battrun">
           <div class="run y direct" data-ref="dirRun" style="--c:${GRID_C}" data-more="${c.meter_power}" role="button" tabindex="0"
-               title="Metered power"><i data-ref="runDir"></i></div>
-          <div class="run y" style="--c:${BATT_C}" data-more="${c.battery_power}" role="button" tabindex="0"
-               title="Battery power"><i data-ref="runBatt"></i></div>
+               ><i data-ref="runDir"></i></div>
+          <div class="run y" data-ref="battRun" style="--c:${BATT_C}" data-more="${c.battery_power}" role="button" tabindex="0"
+               ><i data-ref="runBatt"></i></div>
         </div>
 
         <div class="battwrap">
-          <div class="tile t-dir direct" data-ref="dirTile" data-more="${c.meter_power}" role="button" tabindex="0"
-               title="What the electricity meter measures: the whole flat's grid power, the boiler's circuit included. The scale runs to the ${c.max_meter_w} W breaker.">
+          <div class="tile t-dir direct" data-ref="dirTile" data-more="${c.meter_power}" role="button" tabindex="0">
             <div class="t-head">
               <span class="t-name">Meter</span>
               <span class="t-state" data-ref="dirState"></span>
@@ -1295,7 +1385,7 @@ ${ch.dots ? "" : `
               <span class="l0">0</span><span style="left:60%">${Math.round(c.max_meter_w * 0.6)}</span><span class="r0">${c.max_meter_w}</span>
             </div>
           </div>
-          <div class="tile t-batt" data-more="${c.battery_soc}" role="button" tabindex="0">
+          <div class="tile t-batt" data-ref="battTile" data-more="${c.battery_soc}" role="button" tabindex="0">
             <div class="t-head">
               <span class="t-name">Battery</span>
               <span class="t-state" data-ref="battState"></span>
@@ -1320,7 +1410,7 @@ ${ch.dots ? "" : `
         ${[["Max AC charge current", c.max_charge_current, "maxChg"],
            ["Power priority", c.power_priority, "prio"],
            ["AC input mode", c.ac_input_mode, "acMode"]].map(([label, ent, ref]) => `
-        <div class="field">
+        <div class="field" data-ref="${ref}Field">
           <span class="flabel" data-more="${ent}" role="button" tabindex="0">${label}</span>
           <div class="selwrap">
             <select data-ent="${ent}" data-ref="${ref}" aria-label="${label}"></select>
@@ -1354,16 +1444,17 @@ ${ch.dots ? "" : `
             <div class="plabel">History</div>
             <div class="hname">
               <span class="n" data-ref="chName" role="button" tabindex="0"></span>
-              <span class="w" data-ref="chWin"></span>
+              <span class="w" data-ref="chWin" data-tip="${this._esc(tip("Window", "ch_win"))}"></span>
             </div>
           </div>
           <div class="segs" data-ref="ranges">${Object.keys(RANGES).map((r) => `
-            <button class="seg" data-act="range" data-val="${r}" aria-pressed="false">${r}</button>`).join("")}
+            <button class="seg" data-act="range" data-val="${r}" aria-pressed="false"
+                    data-tip="${this._esc(tip(RANGES[r].label.charAt(0).toUpperCase() + RANGES[r].label.slice(1), "range"))}">${r}</button>`).join("")}
           </div>
         </div>
         <div class="tabs" data-ref="tabs">${SERIES.map((s) => `
             <button class="tab" data-act="tab" data-val="${s.key}" aria-pressed="false"
-                    style="--tc:${s.color}">${s.short}</button>`).join("")}
+                    style="--tc:${s.color}" data-tip="${this._esc(tip(s.name, "tab"))}">${s.short}</button>`).join("")}
         </div>
         <div class="chart">
           <div class="yax" data-ref="yax"></div>
@@ -1522,8 +1613,21 @@ ${ch.dots ? "" : `
     const down = this._gridDown();
 
     // --- header ------------------------------------------------------------
-    if (el.uptime) el.uptime.textContent = this._uptime();
+    if (el.uptime) {
+      el.uptime.textContent = this._uptime();
+      el.uptime.dataset.tip = tip("Uptime — " + this._uptime(), "uptime");
+    }
     this._patchGrid();
+
+    // --- flow runs: the speed is set above on every call, the words here ---
+    const w = (v) => this._fmt(v, 0) + " W";
+    if (el.gridRun) el.gridRun.dataset.tip = tip("Grid power — " + w(gridW), "run_grid");
+    if (el.loadRun) el.loadRun.dataset.tip = tip("Load power — " + w(loadW), "run_load");
+    if (el.battRun) {
+      el.battRun.dataset.tip = tip("Battery power — " + (battW === null ? "— W"
+        : battW > 2 ? w(battW) + " in" : battW < -2 ? w(-battW) + " out" : "idle"), "run_batt");
+    }
+    if (el.dirRun) el.dirRun.dataset.tip = tip("Metered power — " + w(this._num(c.meter_power)), "run_meter");
 
     const acCharging = !down && battW !== null && battW > 2;
     CHIPS.forEach((ch, i) => {
@@ -1532,17 +1636,14 @@ ${ch.dots ? "" : `
       const st = this._state(c[ch.cfg]);
       node.classList.toggle("on", st === "on");
       node.classList.toggle("live", !!ch.live && acCharging);
-      node.title = ((this._stateObj(c[ch.cfg]) || {}).attributes
+      node.dataset.tip = tip((this._stateObj(c[ch.cfg]) || {}).attributes
         ? ((this._stateObj(c[ch.cfg]).attributes.friendly_name || ch.label) + " — " + st)
-        : ch.label) + (HELP[ch.cfg] ? "\n" + HELP[ch.cfg] : "");
+        : ch.label, ch.cfg);
       if (ch.dots) {
-        const nt = this._patchSwitchDot(el["chipNt" + i], c.chip_night_only, "Night only");
+        const nt = this._patchSwitchDot(el["chipNt" + i], c.chip_night_only, "Night only", "chip_night_only");
         if (el["chipNt" + i]) el["chipNt" + i].classList.toggle("act", nt === "on" && acCharging);
         this._patchAdaptive(el["chipAd" + i], el["chipAdSub" + i]);
         this._patchPlan(el["chipPc" + i], el["chipPcSub" + i]);
-        // The description goes after whatever state line each one wrote.
-        [["chipNt", "chip_night_only"], ["chipAd", "adaptive_charge"], ["chipPc", "chip_precharge"]]
-          .forEach(([ref, key]) => { if (el[ref + i]) el[ref + i].title += "\n" + HELP[key]; });
       }
     });
 
@@ -1557,6 +1658,8 @@ ${ch.dots ? "" : `
       el.gridSub.textContent = this._fmt(this._num(c.grid_frequency), 2) + " Hz · "
         + this._fmt(gridW, 0) + " W in";
       el.gridMark.style.left = this._pct(gv, V_LO, V_SPAN).toFixed(2) + "%";
+      if (el.gridTile) el.gridTile.dataset.tip = tip("Grid — " + this._fmt(gv, 1) + " V · " + el.gridState.textContent, "tile_grid");
+      el.gridState.dataset.tip = tip("Grid status — " + el.gridState.textContent, "volt_state");
     }
     if (el.dirTile) {
       const has = !!this._stateObj(c.meter_power);
@@ -1572,6 +1675,8 @@ ${ch.dots ? "" : `
       el.dirSub.textContent = pct === null ? "— % of the " + c.max_meter_w + " W breaker"
         : pct.toFixed(1) + " % of the " + c.max_meter_w + " W breaker";
       el.dirMark.style.left = (pct === null ? 0 : Math.max(0, Math.min(100, pct))).toFixed(2) + "%";
+      el.dirTile.dataset.tip = tip("Meter — " + this._fmt(mw, 0) + " W · " + el.dirState.textContent, "tile_meter");
+      el.dirState.dataset.tip = tip("Meter status — " + el.dirState.textContent, "load_state");
     }
 
     // --- inverter tile -----------------------------------------------------
@@ -1583,6 +1688,8 @@ ${ch.dots ? "" : `
       el.invState.style.color = this._vColor(av);
       el.invSub.textContent = this._state(c.ac_input_mode) + " · " + this._state(c.power_priority);
       el.invMark.style.left = this._pct(av, V_LO, V_SPAN).toFixed(2) + "%";
+      if (el.invTile) el.invTile.dataset.tip = tip("Inverter — " + this._fmt(av, 1) + " V out · " + el.invState.textContent, "tile_inv");
+      el.invState.dataset.tip = tip("Output status — " + el.invState.textContent, "volt_state");
     }
 
     // --- house load tile ---------------------------------------------------
@@ -1594,6 +1701,8 @@ ${ch.dots ? "" : `
       el.loadState.style.color = this._loadColor(lp);
       el.loadSub.textContent = this._fmt(lp, 1) + " % of " + c.max_load_w + " W";
       el.loadMark.style.left = (lp === null ? 0 : Math.max(0, Math.min(100, lp))).toFixed(2) + "%";
+      if (el.loadTile) el.loadTile.dataset.tip = tip("House load — " + this._fmt(loadW, 0) + " W · " + el.loadState.textContent, "tile_load");
+      el.loadState.dataset.tip = tip("Load status — " + el.loadState.textContent, "load_state");
     }
 
     // --- battery tile ------------------------------------------------------
@@ -1622,13 +1731,22 @@ ${ch.dots ? "" : `
       // Link to what the line actually shows: a current only when one is on it.
       el.battSub.setAttribute("data-more",
         amps ? (dischg ? c.discharge_current : c.charge_current) : c.battery_voltage);
+      if (el.battTile) el.battTile.dataset.tip = tip("Battery — " + this._fmt(soc, 0) + " % · " + el.battState.textContent, "tile_batt");
+      el.battState.dataset.tip = tip("Battery status — " + el.battState.textContent, "batt_state");
+      el.battSub.dataset.tip = tip("Battery detail — " + el.battSub.textContent, "batt_sub");
     }
 
     // --- selects -----------------------------------------------------------
-    [[c.max_charge_current, "maxChg", " A"], [c.power_priority, "prio", ""],
-     [c.ac_input_mode, "acMode", ""]].forEach(([ent, ref, suffix]) => {
+    [[c.max_charge_current, "maxChg", " A", "Max AC charge current", "sel_max_charge"],
+     [c.power_priority, "prio", "", "Power priority", "sel_priority"],
+     [c.ac_input_mode, "acMode", "", "AC input mode", "sel_ac_mode"]].forEach(([ent, ref, suffix, label, key]) => {
       const sel = el[ref];
       if (!sel) return;
+      // On the field, so its label and the select share one tooltip.
+      const st = this._state(ent);
+      if (el[ref + "Field"]) {
+        el[ref + "Field"].dataset.tip = tip(label + " — " + (this._opts(ent).indexOf(st) >= 0 ? st + suffix : st), key);
+      }
       const opts = this._opts(ent);
       const sig = opts.join("\u0000");
       // Only rebuild the option list when it actually changes -- rebuilding it
@@ -1659,6 +1777,8 @@ ${ch.dots ? "" : `
       const cost = e.cost ? this._num(c[e.cost]) : null;
       el["eval" + i].innerHTML = this._esc(this._fmt(this._num(c[e.cfg]), e.dec) + " " + e.unit)
         + (cost !== null ? "<small>" + this._esc(cost.toFixed(2)) + " ₴</small>" : "");
+      row.dataset.tip = tip(e.short + " — " + this._fmt(this._num(c[e.cfg]), e.dec) + " " + e.unit
+        + (cost !== null ? " · " + cost.toFixed(2) + " ₴" : "") + (active ? " · active" : ""), e.help);
     });
 
     // A range or tab change is local, so redraw from cache; the state change
@@ -2352,6 +2472,7 @@ ${ch.dots ? "" : `
     this._syncSegs();
 
     el.chName.textContent = spec.name;
+    el.chName.dataset.tip = tip(spec.name, "ch_name");
     // Clicking the chart's title opens the entity the chart is drawing.
     el.chName.setAttribute("data-more", this._config[spec.cfg]);
 
@@ -2390,6 +2511,7 @@ ${ch.dots ? "" : `
     this._dom = d;
     const pts = this._slice(rec.pts, d.t0, d.t1);
     el.chWin.textContent = this._winLabel(d);
+    el.chWin.dataset.tip = tip("Window — " + el.chWin.textContent, "ch_win");
 
     if (!pts.length) {
       el.chLine.setAttribute("d", "");
@@ -2423,6 +2545,7 @@ ${ch.dots ? "" : `
       el.chWin.textContent += " · " + p.off
         + (p.off === 1 ? " reading" : " readings") + " off-scale";
     }
+    el.chWin.dataset.tip = tip("Window — " + el.chWin.textContent, "ch_win");
 
     const now = this._num(this._config[spec.cfg]);
     const mean = this._mean(pts);
@@ -2430,7 +2553,8 @@ ${ch.dots ? "" : `
       ["Now", now === null ? pts[pts.length - 1][1] : now],
       ["Min", p.min], ["Max", p.max], ["Mean", mean],
     ].map(([label, v]) =>
-      "<div class='stat'><b>" + label + "</b><span>"
+      "<div class='stat' data-tip=\"" + this._esc(tip(label + " — " + v.toFixed(spec.dec) + " " + spec.unit, "stat"))
+      + "\"><b>" + label + "</b><span>"
       + v.toFixed(spec.dec) + " " + spec.unit + "</span></div>").join("");
 
     /*

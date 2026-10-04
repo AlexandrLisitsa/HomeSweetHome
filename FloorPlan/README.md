@@ -52,7 +52,9 @@ station their readings. While an A/C runs, its air streams out of the unit into
 the room in the colour of its mode (`flow` in `rooms.py` names its piece in the
 model; `make_dashboard.py` projects the streams and keeps what the walls do not
 hide). Tap toggles what can be toggled and opens the dialog for
-the rest; holding always opens the dialog.
+the rest; holding always opens the dialog. Every icon, number, badge, chip, switch
+and slider explains itself on hover, in the house tooltip format
+([`dashboard-tooltips.md`](../HomeAssistant/docs/dashboard-tooltips.md)).
 
 On a phone (card under 600 px wide) the whole flat would be a thumbnail, so a row
 of room chips picks what to show: a room zooms the picture to it and lists only its

@@ -95,7 +95,7 @@
     };
     await wait(300);
     const spots = [...R.querySelectorAll(".plane .spot")];
-    const byTitle = (t) => spots.find((s) => (s.querySelector(".lamp").title || "").startsWith(t));
+    const byTitle = (t) => spots.find((s) => (s.querySelector(".lamp").title || "").split(String.fromCharCode(10))[0].startsWith(t));
     log.push("--- tap each thing on the plan once");
     for (const s of spots) await press(s.querySelector(".lamp"), 30);
     log.push("--- hold the first lamp"); await press(spots[0].querySelector(".lamp"), 700);

@@ -65,7 +65,9 @@
  */
 
 const CARD = "floorplan-card";
-const VERSION = "1.5.0";
+import { cardTip } from "./card-tip.js?v=1.0.0";
+
+const VERSION = "1.7.0";
 
 // Glow colour for a lamp that reports none: the warm white it was rendered in.
 const WARM = [255, 180, 107];
@@ -98,10 +100,46 @@ const DEFAULT_ICON = {
   media_player: "mdi:television", sensor: "mdi:router-wireless", fan: "mdi:fan",
 };
 
+// Lines 2-4 of every tooltip (HomeAssistant/docs/dashboard-tooltips.md); line 1,
+// the name and its state, is built as the card renders. Keep in step with the
+// header above and FloorPlan/README.md.
+const PRESS = "Tap the icon: on or off. Hold it for 500 ms: opens its dialog.";
+const HELP = {
+  lamp: "A lamp; its room on the plan lights up with it, dimmer at a lower brightness.\n"
+    + "E.g. the LED strip at 25 %: the kitchen glows faintly and its ring is a quarter full.\n"
+    + PRESS,
+  screen: "The TV; while it is on, its screen lights the living room on the plan.\n"
+    + "E.g. On while it plays or sits idle; Off or standby leaves the room dark.\n"
+    + PRESS,
+  slider: "Sets the lamp's brightness; the room on the plan glows to match as you drag.\n"
+    + "E.g. drag the LED strip to 25 % for a soft kitchen light; at 0 % it turns off.\n"
+    + "The level is sent once, when you let go.",
+  switch: "Switches it on or off, the same as a tap on its icon.\n"
+    + "E.g. off on a lamp darkens its room on the plan; off on an A/C plug cuts that A/C.",
+  ac: "The room's A/C: its mode and target; while it runs, air streams out in the mode's colour.\n"
+    + "E.g. Cool 23°: cooling to 23 °C in blue streams; Heat is orange, Off is grey and still.\n"
+    + "The living room unit is infrared: its mode is what was last sent, not read back.",
+  plug: "A switched device; with a meter on it, the power it draws right now.\n"
+    + "E.g. an A/C plug at 25–60 W: the A/C's fan alone; from about 150 W, its compressor.\n"
+    + PRESS,
+  reading: "A live reading from the device pinned here.\n"
+    + "E.g. Battery: the 8S 280 Ah pack's charge in %; Router: its current download speed.",
+  badge: "Temperature and humidity from the room's Aqara sensor.\n"
+    + "E.g. comfortable at 20–26 °C and 40–60 %; the kitchen reaches 31 °C while someone cooks.\n"
+    + "Tap: opens the temperature's dialog.",
+  chip: "Zooms the plan to this room and lists only its controls below it.\n"
+    + "E.g. Bedroom: its A/C, the A/C plug, the router and the room's climate.\n"
+    + "This phone remembers the choice.",
+  all: "Shows the whole flat, with every control listed below under its room.\n"
+    + "E.g. 5 lights and 7 devices across six rooms, each room under its own heading.\n"
+    + "This phone remembers the choice.",
+};
+
 class FloorplanCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
+    cardTip(this, this.shadowRoot);
     this._fingerprint = null;
     this._dragging = null;
     this._narrow = false;
@@ -391,7 +429,7 @@ class FloorplanCard extends HTMLElement {
       sw.setAttribute("role", "switch");
       sw.addEventListener("click", () => this._call("homeassistant", "toggle", { entity_id: item.entity }));
     }
-    return { row, rowLamp: b.btn, rowIcon: b.icon, name, value, sw };
+    return { row, head, rowLamp: b.btn, rowIcon: b.icon, name, value, sw };
   }
 
   _build() {
@@ -421,6 +459,7 @@ class FloorplanCard extends HTMLElement {
     this._chips = [{ id: "all", name: "All" }].concat(cfg.rooms).map((r) => {
       const c = this._el("button", "chip", chips);
       c.textContent = r.name || r.id;
+      c.dataset.tip = (r.name || r.id) + "\n" + HELP[r.id === "all" ? "all" : "chip"];
       c.addEventListener("click", () => this._selectRoom(r.id));
       return { id: r.id, el: c };
     });
@@ -514,7 +553,7 @@ class FloorplanCard extends HTMLElement {
       const rowValue = this._el("div", "value", row);
       row.addEventListener("click", () => this._moreInfo(b.entities[0]));
       group(b.room).appendChild(row);
-      return { cfg: b, el, rowName, rowValue };
+      return { cfg: b, el, row, rowName, rowValue };
     });
 
     this._card = card;
@@ -611,11 +650,18 @@ class FloorplanCard extends HTMLElement {
       L.rowIcon.setAttribute("icon", icon);
       L.name.textContent = name;
       L.sw.setAttribute("aria-label", name);
-      for (const el of [L.btn, L.rowLamp]) {
-        el.title = name;
-        el.setAttribute("aria-label", name);
-      }
+      for (const el of [L.btn, L.rowLamp]) el.setAttribute("aria-label", name);
       const unavailable = !st || st.state === "unavailable";
+      // One tooltip for the plan icon, its number and the row head (icon, name, value);
+      // the switch and the sliders mean something else and carry their own.
+      const on = this._isOn(st);
+      const pct = Math.round(this._level(st) * 100);
+      const state = unavailable ? "Unavailable" : !on ? "Off" : this._dimmable(st) ? "On " + pct + " %" : "On";
+      const kind = this._domain(L.cfg.entity) === "media_player" ? "screen" : "lamp";
+      L.btn.dataset.tip = L.pct.dataset.tip = L.head.dataset.tip = name + " — " + state + "\n" + HELP[kind];
+      L.sw.dataset.tip = name + " — " + (on ? "On" : "Off") + "\n" + HELP.switch;
+      L.slider.dataset.tip = L.rowSlider.dataset.tip = name + " brightness — " + (on ? pct + " %" : "Off")
+        + "\n" + HELP.slider;
       L.btn.classList.toggle("unavailable", unavailable);
       L.row.classList.toggle("unavailable", unavailable);
       const dimmable = this._dimmable(st) && this._domain(L.cfg.entity) === "light";
@@ -633,8 +679,10 @@ class FloorplanCard extends HTMLElement {
       D.icon.setAttribute("icon", icon);
       D.rowIcon.setAttribute("icon", icon);
       D.name.textContent = name;
+      const domain = this._domain(D.cfg.entity);
+      const kind = domain === "climate" ? "ac" : TOGGLES.indexOf(domain) >= 0 ? "plug" : "reading";
+      D.btn.dataset.tip = D.label.dataset.tip = D.head.dataset.tip = name + " — " + spaced(look.text) + "\n" + HELP[kind];
       for (const el of [D.btn, D.rowLamp]) {
-        el.title = name + ": " + look.text;
         el.setAttribute("aria-label", name);
         el.classList.toggle("on", look.active);
         el.classList.toggle("unavailable", !st || st.state === "unavailable");
@@ -658,6 +706,7 @@ class FloorplanCard extends HTMLElement {
         D.sw.classList.toggle("on", look.active);
         D.sw.setAttribute("aria-checked", look.active ? "true" : "false");
         D.sw.setAttribute("aria-label", name);
+        D.sw.dataset.tip = name + " — " + (look.active ? "On" : "Off") + "\n" + HELP.switch;
       }
     });
 
@@ -666,8 +715,16 @@ class FloorplanCard extends HTMLElement {
       B.el.textContent = text;
       B.rowValue.textContent = text;
       B.rowName.textContent = B.cfg.name || "Climate";
+      const room = this._config.rooms.find((r) => r.id === B.cfg.room);
+      const label = room ? (room.name || room.id) + " climate" : B.cfg.name || "Climate";
+      B.el.dataset.tip = B.row.dataset.tip = label + " — " + spaced(text) + "\n" + HELP.badge;
     });
   }
+}
+
+/** "48%" as the tooltips write it, "48 %"; the plan keeps the tighter form. */
+function spaced(text) {
+  return text.replace(/(\d)%/g, "$1 %");
 }
 
 const STYLE = `

@@ -31,7 +31,9 @@
  */
 
 const CARD = "load-shedding-card";
-const VERSION = "3.1.2";
+import { cardTip } from "./card-tip.js?v=1.0.0";
+
+const VERSION = "3.3.0";
 
 const RED = "var(--error-color, #db4437)";
 const GREEN = "var(--success-color, #43a047)";
@@ -81,6 +83,114 @@ const ADJUST = {
     selector: { number: { min: -10, max: 10, step: 0.5, unit_of_measurement: "°" } } } },
 };
 
+/*
+ * Lines 2-4 of every tooltip (docs/dashboard-tooltips.md); line 1, the name
+ * and its live state, is built as the card renders. The examples are the
+ * seeded rules in packages/load_shedding.yaml; keep them in step with it and
+ * with docs/load-shedding.md.
+ */
+const HELP = {
+  state: "Whether the rules can act now: Armed only when they are on and the grid is down.\n"
+    + "E.g. Standing by with the grid up: nothing changes even at 20 % battery.",
+  master: "Arms the rules; even armed, they act only while the inverter reports the grid unsafe.\n"
+    + "E.g. on, in an outage: the hall A/C goes off when the battery reaches 80 %.",
+  tile_soc: "The pack's charge from the BMS; each step applies when it falls to the step's %.\n"
+    + "E.g. at 50 % in an outage, LED ambient is switched off.",
+  tile_grid: "Whether the inverter reports the grid as unsafe; only then do the steps apply.\n"
+    + "E.g. down in a brownout too, because the inverter is on battery then.",
+  tile_runtime: "How long the battery lasts at the current draw.\n"
+    + "E.g. about 7 h with an A/C running, a day and a half at idle.",
+  tile_shed: "Devices stepped down or held this outage, out of all in the rules.\n"
+    + "E.g. 2 / 3 at 75 %: the hall A/C is off and LED ambient is at 30 %.\n"
+    + "Back to 0 when the grid returns.",
+  mark: "One step of an enabled device on the battery bar; red once the device has taken it.\n"
+    + "E.g. the amber line at 50 % is LED ambient's switch-off, still ahead.",
+  up_device: "An enabled device with steps; the one closest to its next step is listed first.\n"
+    + "E.g. at 85 %: the hall A/C (80 %) is listed above the bedroom A/C (60 %).",
+  up_row: "The device's next step, the battery % it applies at, and how far away that is.\n"
+    + "E.g. At 60 %, In 2 %: the battery is at 62 %.\n"
+    + "Highlighted within the warning margin, 1 % by default.",
+  up_next: "There is no step left below the battery for this device.\n"
+    + "E.g. nothing left at 45 %: LED ambient's last step, at 50 %, is behind it.",
+  up_status: "What the device is doing now, as far as load shedding goes.\n"
+    + "E.g. about to step down: within 1 % of its next step; the phones are warned once.",
+  keep_on: "Holds the device: its steps wait until the battery falls the override step further.\n"
+    + "E.g. kept on at 81 %: the hall A/C's 80 % step waits until 71 %.\n"
+    + "Works only during an outage, while the device is on.",
+  put_back: "Restores the device the way it was before its first step, then holds it.\n"
+    + "E.g. put back at 78 %: the hall A/C steps down again at 68 %.\n"
+    + "Works only during an outage.",
+  release: "Ends the hold; the deepest step reached applies at the next check, within a minute.\n"
+    + "E.g. released at 70 %: the hall A/C, still on, is switched off again by its 80 % step.",
+  dev_name: "The device's name in the table, on the bar and in the phone warnings.\n"
+    + "E.g. \"Hall A/C\" reads better than climate.daewoo_a_c in a notification.",
+  dev_entity: "The entity this device's steps act on, and its state now.\n"
+    + "E.g. climate.daewoo_a_c: every step must be a climate action.",
+  dev_status: "What the device is doing now, or the step it is at during an outage.\n"
+    + "E.g. at its 80 % step since 14:05 (battery 79 %) · back when the grid returns.",
+  dev_enable: "Includes this device in the rules; off keeps its steps but never applies them.\n"
+    + "E.g. off for the bedroom A/C: it stays as it is through the whole outage.\n"
+    + "Takes effect on Save.",
+  dev_remove: "Drops this device and its steps from the rules.\n"
+    + "E.g. remove LED ambient: it is no longer dimmed or switched off in an outage.\n"
+    + "Takes effect on Save; Discard brings it back.",
+  add_step: "Adds a step 10 % below the device's lowest one, at least 5 %; a first step is 80 %.\n"
+    + "E.g. LED ambient has 80 % and 50 %: the new step is at 40 %.",
+  guard: "Shows the guard: a plug to cut when an off step does not take.\n"
+    + "E.g. the hall A/C is infrared, so its \"off\" may never arrive.",
+  guard_plug: "The smart plug the device hangs on; cut when its off step does not take.\n"
+    + "E.g. the hall A/C's plug; if it was cut, it is switched on first when the grid returns.",
+  guard_running: "A sensor that says the device is really running.\n"
+    + "E.g. binary_sensor.a_c_running still on 2 min after the off step: the plug is cut.",
+  guard_online: "A sensor that says the remote that sends the \"off\" is reachable.\n"
+    + "E.g. the IR bridge offline at an off step: the plug is cut 30 s after it.",
+  step_soc: "The battery % at which this step applies, 1–100; the deepest step reached wins.\n"
+    + "E.g. 80: when an outage takes the pack down to 80 %, the hall A/C goes off.\n"
+    + "One device cannot have two steps at the same %.",
+  step_action: "What the step does: any action of the device's own domain.\n"
+    + "E.g. Set HVAC mode to off, or Change temperature by 3° from where it was.",
+  step_field: "One setting of the step's action, from Home Assistant's own description of it.\n"
+    + "E.g. brightness 30 % on LED ambient's 80 % step; * marks a required one.",
+  step_json: "The data of an action Home Assistant does not list, as one JSON object.\n"
+    + "E.g. {\"hvac_mode\": \"off\"} for climate.set_hvac_mode.",
+  step_adv: "Shows or hides the action's advanced fields.\n"
+    + "E.g. a light's transition; a field that has a value stays shown either way.",
+  step_remove: "Drops this step from the device.\n"
+    + "E.g. remove LED ambient's 80 % step: it stays at full brightness until 50 %.\n"
+    + "Takes effect on Save.",
+  picker: "Opens a list of the house's devices that can be switched, to add one.\n"
+    + "E.g. pick a lamp: it joins the rules with no steps yet.",
+  pick_query: "Narrows the list by name or entity id; at most 40 are shown.\n"
+    + "E.g. \"light.\" lists only the lamps.",
+  pick_item: "A device not in the rules yet.\n"
+    + "E.g. tap it: it joins the rules under its own name, with no steps until you add one.",
+  ostep: "How far the battery must fall before a device you changed back is stepped down again.\n"
+    + "E.g. 10: the hall A/C switched back on at 75 % goes off again at 65 %.",
+  margin: "How close to a step the phones get one warning, with a Keep it on button.\n"
+    + "E.g. 1: a step at 50 % warns at 51 %; 0 turns the warnings off.",
+  export: "Shows or hides the saved rules as JSON, to read or copy by hand.\n"
+    + "E.g. override_step 10, warn_margin 1, then each device with its steps.",
+  export_json: "The saved rules, read-only; select and copy any part of them.\n"
+    + "E.g. \"override_step\": 10, \"warn_margin\": 1, then the devices and their steps.",
+  copy: "Copies the saved rules as JSON to the clipboard.\n"
+    + "E.g. paste them into a note before you rework the steps.\n"
+    + "Copies what is saved, not unsaved edits.",
+  download: "Saves the saved rules as the file load-shedding.json.\n"
+    + "E.g. keep that file to Import after a fresh Home Assistant install.\n"
+    + "Unsaved edits are not in it.",
+  import: "Reads the JSON pasted below into the editor as unsaved changes.\n"
+    + "E.g. paste an exported file, check the steps, then Save.\n"
+    + "A text without a devices list is refused with an error.",
+  import_text: "Where to paste exported rules before Load into editor.\n"
+    + "E.g. {\"override_step\": 10, \"warn_margin\": 1, \"devices\": [...]}",
+  save: "Sends the draft to Home Assistant, which checks it before storing it.\n"
+    + "E.g. two steps at 50 % on one device are refused, and the draft stays.",
+  discard: "Throws the draft away and shows the saved rules again.\n"
+    + "E.g. after a bad Import, Discard brings back the rules as they were.",
+  dismiss: "Hides the error; there are no unsaved changes to lose.\n"
+    + "E.g. after a refused Import, the message goes and the saved rules stay.",
+};
+
 const clone = (o) => JSON.parse(JSON.stringify(o === undefined ? null : o));
 
 /*
@@ -104,6 +214,7 @@ class LoadSheddingCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
+    cardTip(this, this.shadowRoot);
     this._print = null;
     this._pending = false;
     this._ui = { picker: false, query: "", adv: {}, guard: {}, exportOpen: false, importText: "" };
@@ -493,9 +604,16 @@ class LoadSheddingCard extends HTMLElement {
       : "";
   }
 
-  _toggle(on, attrs, label) {
-    return `<button class="sw ${on ? "on" : ""}" ${attrs} role="switch" aria-checked="${on}"
-      title="${this._esc(label)}"><i></i></button>`;
+  /** A data-tip attribute (the tooltip, see cardTip): line 1 is `name — state` (or just `name`), then HELP[key]. */
+  _tip(name, state, key) {
+    let head = state === undefined || state === null || state === "" ? name : name + " — " + state;
+    // A long status ("at its 80 % step since … · plug cut · back when …") must not wrap.
+    if (head.length > 90) head = head.slice(0, 89) + "…";
+    return ` data-tip="${this._esc(head + "\n" + HELP[key])}"`;
+  }
+
+  _toggle(on, attrs, tip) {
+    return `<button class="sw ${on ? "on" : ""}" ${attrs} role="switch" aria-checked="${on}"${tip}><i></i></button>`;
   }
 
   _render(force) {
@@ -560,7 +678,8 @@ class LoadSheddingCard extends HTMLElement {
     }
 
     const marks = this._marks(rules, shed).map((m, i) => `
-      <div class="mark ${m.done ? "done" : ""} ${i % 2 ? "alt" : ""}" style="left:${m.soc}%">
+      <div class="mark ${m.done ? "done" : ""} ${i % 2 ? "alt" : ""}" style="left:${m.soc}%"${
+        this._tip(m.name + " at " + Math.round(m.soc) + " %", m.done ? "taken" : "ahead", "mark")}>
         <span>${this._esc(m.name)} · ${Math.round(m.soc)}%</span></div>`).join("");
 
     return `
@@ -571,22 +690,25 @@ class LoadSheddingCard extends HTMLElement {
               <span class="dot"></span>
               <span class="lbl">Load shedding</span>
             </div>
-            <h1>${word}</h1>
+            <h1${this._tip("Load shedding", word, "state")}>${word}</h1>
             <p class="lede">${lede}</p>
             <div class="arm">
-              ${this._toggle(master, 'data-act="master"', "Load shedding")}
+              ${this._toggle(master, 'data-act="master"', this._tip("Load shedding", master ? "on" : "off", "master"))}
               <span>${master ? "Rules armed" : "Rules off"}</span>
             </div>
           </div>
           <div class="tiles">
-            <div class="tile"><span class="k">Battery</span>
+            <div class="tile"${this._tip("Battery", soc === null ? "unknown" : Math.round(soc) + " %", "tile_soc")}>
+              <span class="k">Battery</span>
               <span class="v">${soc === null ? "—" : Math.round(soc) + "%"}</span></div>
-            <div class="tile"><span class="k">Grid</span>
+            <div class="tile"${this._tip("Grid", gridDown ? "down" : "up", "tile_grid")}><span class="k">Grid</span>
               <span class="v" style="color:${gridDown ? RED : GREEN}">${gridDown ? "down" : "up"}</span></div>
-            <div class="tile"><span class="k">Runtime left</span>
+            <div class="tile"${this._tip("Runtime left", runtime === null ? "unknown" : runtime.toFixed(1) + " h",
+              "tile_runtime")}><span class="k">Runtime left</span>
               <span class="v ${runtime === null ? "dim" : ""}">${runtime === null ? "—" : runtime.toFixed(1) + " h"}</span>
               <span class="s">at the current draw</span></div>
-            <div class="tile"><span class="k">Stepped down</span>
+            <div class="tile"${this._tip("Stepped down", count + " / " + rules.devices.length, "tile_shed")}>
+              <span class="k">Stepped down</span>
               <span class="v" style="color:${count ? AMBER : "inherit"}">${count} / ${rules.devices.length}</span>
               <span class="s">devices</span></div>
           </div>
@@ -655,27 +777,38 @@ class LoadSheddingCard extends HTMLElement {
     const armed = this._state(this._config.master) === "on";
     const margin = this._stored().warn_margin;
     const rows = this._upcoming();
+    // The status word's own text is its state: "Now — kept on by you".
+    const word = (cls, text) => `<span class="st ${cls}"${
+      this._tip("Now", text.replace(/(\d)%/g, "$1 %"), "up_status")}>${this._esc(text)}</span>`;
     const body = rows.map((r) => {
       let state;
       let btn = "";
+      const id = this._esc(r.d.id);
       if (r.held) {
-        state = `<span class="st warn">kept on by you</span>`;
-        btn = `<button class="btn small" data-act="release" data-id="${this._esc(r.d.id)}">Release</button>`;
+        state = word("warn", "kept on by you");
+        btn = `<button class="btn small" data-act="release" data-id="${id}"${
+          this._tip("Release", r.d.name, "release")}>Release</button>`;
       } else if (r.applied) {
-        state = `<span class="st bad">stepped down at ${Math.round(r.rec.step_soc)}%</span>`;
-        btn = `<button class="btn small" data-act="hold" data-id="${this._esc(r.d.id)}"
+        state = word("bad", "stepped down at " + Math.round(r.rec.step_soc) + "%");
+        btn = `<button class="btn small" data-act="hold" data-id="${id}"${this._tip("Put back", r.d.name, "put_back")}
           ${outage ? "" : "disabled"}>Put back</button>`;
       } else {
-        state = r.on ? (r.soon ? `<span class="st warn">about to step down</span>` : `<span class="st">on</span>`)
-          : `<span class="st dim">off — left alone</span>`;
-        btn = `<button class="btn small" data-act="hold" data-id="${this._esc(r.d.id)}"
+        state = r.on ? (r.soon ? word("warn", "about to step down") : word("", "on"))
+          : word("dim", "off — left alone");
+        btn = `<button class="btn small" data-act="hold" data-id="${id}"${this._tip("Keep on", r.d.name, "keep_on")}
           ${outage && r.on && r.next ? "" : "disabled"}>Keep on</button>`;
       }
       const at = r.next ? Math.round(r.next.at) + "%" : "—";
       const away = r.away === null ? "—" : r.away > 0 ? Math.round(r.away * 10) / 10 + "%" : "now";
-      return `<tr class="${r.soon && !r.held ? "soon" : ""}">
-        <td><span class="name" data-act="more" data-ent="${r.d.entity}">${this._esc(r.d.name)}</span></td>
-        <td>${r.next ? this._esc(this._stepLabel(r.d, r.next.step)) : `<span class="st dim">nothing left</span>`}</td>
+      const row = r.next ? "next step at " + Math.round(r.next.at) + " %"
+        + (r.away === null ? "" : r.away > 0 ? ", " + Math.round(r.away * 10) / 10 + " % away" : ", due now")
+        : "nothing left";
+      const st = this._obj(r.d.entity);
+      return `<tr class="${r.soon && !r.held ? "soon" : ""}"${this._tip(r.d.name, row, "up_row")}>
+        <td><span class="name" data-act="more" data-ent="${r.d.entity}"${
+          this._tip(r.d.name, st ? st.state : "not found", "up_device")}>${this._esc(r.d.name)}</span></td>
+        <td>${r.next ? this._esc(this._stepLabel(r.d, r.next.step))
+          : `<span class="st dim"${this._tip("Next step", "nothing left", "up_next")}>nothing left</span>`}</td>
         <td class="mono">${at}</td>
         <td class="mono">${away}</td>
         <td>${state}</td>
@@ -736,10 +869,12 @@ class LoadSheddingCard extends HTMLElement {
       const msg = SHARED.error || (problems.length ? problems.join("; ") : "Unsaved changes");
       bar = `<div class="savebar ${SHARED.error || problems.length ? "err" : ""}">
         <span>${this._esc(msg)}</span>
-        ${dirty ? `<button class="btn" data-act="discard">Discard</button>
-          <button class="btn primary" data-act="save" ${problems.length || SHARED.saving ? "disabled" : ""}>
+        ${dirty ? `<button class="btn" data-act="discard"${this._tip("Discard", "", "discard")}>Discard</button>
+          <button class="btn primary" data-act="save" ${problems.length || SHARED.saving ? "disabled" : ""}${
+            this._tip("Save", SHARED.saving ? "saving" : problems.length ? "fix the problems first" : "",
+              "save")}>
             ${SHARED.saving ? "Saving…" : "Save"}</button>`
-          : `<button class="btn" data-act="discard">Dismiss</button>`}
+          : `<button class="btn" data-act="discard"${this._tip("Dismiss", "", "dismiss")}>Dismiss</button>`}
       </div>`;
     }
 
@@ -753,12 +888,13 @@ class LoadSheddingCard extends HTMLElement {
           ${bar}
           ${devs || `<p class="empty">No devices yet. Add one below.</p>`}
           <div class="addrow">
-            <button class="btn" data-act="picker">${this._ui.picker ? "Close" : "+ Add device"}</button>
+            <button class="btn" data-act="picker"${this._tip("+ Add device", this._ui.picker ? "list open" : "",
+              "picker")}>${this._ui.picker ? "Close" : "+ Add device"}</button>
           </div>
           ${this._ui.picker ? `
           <div class="picker">
             <input class="txt" data-kind="query" placeholder="Search devices — name or entity id"
-                   value="${this._esc(this._ui.query)}">
+                   value="${this._esc(this._ui.query)}"${this._tip("Search", this._ui.query, "pick_query")}>
             <div class="plist">${this._pickerList()}</div>
           </div>` : ""}
         </div>
@@ -777,7 +913,8 @@ class LoadSheddingCard extends HTMLElement {
     if (!rows.length) return `<p class="empty">Nothing matches.</p>`;
     return rows.map((s) => {
       const domain = s.entity_id.split(".")[0];
-      return `<button class="pick" data-act="pick" data-ent="${s.entity_id}">
+      return `<button class="pick" data-act="pick" data-ent="${s.entity_id}"${
+        this._tip((s.attributes || {}).friendly_name || s.entity_id, s.state, "pick_item")}>
         <ha-icon icon="${(s.attributes || {}).icon || ICONS[domain] || "mdi:power-plug"}"></ha-icon>
         <span class="pn">${this._esc((s.attributes || {}).friendly_name || s.entity_id)}</span>
         <code>${s.entity_id}</code><span class="ps">${this._esc(s.state)}</span></button>`;
@@ -805,20 +942,28 @@ class LoadSheddingCard extends HTMLElement {
           <span class="n">${n + 1}</span>
           <ha-icon icon="${(st && st.attributes && st.attributes.icon) || ICONS[domain] || "mdi:power-plug"}"></ha-icon>
           <div class="who">
-            <input class="txt name" data-kind="name" data-dev="${i}" value="${this._esc(d.name)}" aria-label="Name">
-            <span class="sub"><code data-act="more" data-ent="${d.entity}">${d.entity}</code>
-              <span class="st ${status.cls}">${this._esc(status.text)}</span></span>
+            <input class="txt name" data-kind="name" data-dev="${i}" value="${this._esc(d.name)}" aria-label="Name"${
+              this._tip("Name", d.name, "dev_name")}>
+            <span class="sub"><code data-act="more" data-ent="${d.entity}"${
+              this._tip(d.entity, st ? st.state : "not found", "dev_entity")}>${d.entity}</code>
+              <span class="st ${status.cls}"${this._tip("Status", status.text, "dev_status")}>${
+                this._esc(status.text)}</span></span>
           </div>
-          ${this._toggle(enabled, `data-act="enable" data-dev="${i}"`, "Use this device")}
-          <button class="icon" data-act="remove-dev" data-dev="${i}" title="Remove device">✕</button>
+          ${this._toggle(enabled, `data-act="enable" data-dev="${i}"`,
+            this._tip("Use this device", enabled ? "on" : "off", "dev_enable"))}
+          <button class="icon" data-act="remove-dev" data-dev="${i}"${
+            this._tip("Remove device", d.name, "dev_remove")}>✕</button>
         </div>
         <div class="steps">
           ${steps.map(({ s, si }) => this._stepHTML(d, i, s, si)).join("")}
-          <button class="btn small" data-act="add-step" data-dev="${i}">+ Add step</button>
+          <button class="btn small" data-act="add-step" data-dev="${i}"${
+            this._tip("+ Add step", (d.steps || []).length + ((d.steps || []).length === 1 ? " step" : " steps"),
+              "add_step")}>+ Add step</button>
         </div>
         <div class="guard">
-          <button class="link" data-act="guard" data-dev="${i}">${guardOpen ? "▾" : "▸"} Make sure it is really off${
-            Object.keys(g).length ? " · on" : ""}</button>
+          <button class="link" data-act="guard" data-dev="${i}"${
+            this._tip("Make sure it is really off", Object.keys(g).length ? "on" : "not set", "guard")}>${
+            guardOpen ? "▾" : "▸"} Make sure it is really off${Object.keys(g).length ? " · on" : ""}</button>
           ${guardOpen ? `
           <p class="blurb">For a device whose "off" might not arrive (an infrared A/C). After a step that turns it
             off, if <b>running</b> still says on 90 s later, or <b>online</b> says the bridge is down, the <b>plug</b> is cut.
@@ -833,7 +978,8 @@ class LoadSheddingCard extends HTMLElement {
   }
 
   _guardInput(i, field, value, domain, label) {
-    return `<label class="gf"><span class="cap">${label}</span>
+    return `<label class="gf"${this._tip(label.split(" (")[0], value || "not set", "guard_" + field)}>
+      <span class="cap">${label}</span>
       <input class="txt" list="ents-${domain}" data-kind="guard" data-dev="${i}" data-field="${field}"
              value="${this._esc(value || "")}" placeholder="${domain}.…">
       ${this._datalist(domain)}</label>`;
@@ -863,23 +1009,27 @@ class LoadSheddingCard extends HTMLElement {
       fieldsHTML = fields.filter((f) => !f.adv || showAdv || data[f.key] !== undefined)
         .map((f) => this._fieldHTML(d, i, si, svc, f, data[f.key])).join("");
     } else if (s.action) {
-      fieldsHTML = `<label class="fld"><span class="cap">data (JSON)</span>
+      fieldsHTML = `<label class="fld"${this._tip("Data", JSON.stringify(data), "step_json")}><span class="cap">data (JSON)</span>
         <input class="txt mono" data-kind="field" data-type="json" data-dev="${i}" data-step="${si}"
                data-field="__all" value="${this._esc(JSON.stringify(data))}"></label>`;
     }
     let more = "";
-    if (hasAdv && !showAdv) more = `<button class="link" data-act="adv" data-dev="${i}" data-step="${si}">more fields</button>`;
-    else if (showAdv) more = `<button class="link" data-act="adv" data-dev="${i}" data-step="${si}">fewer fields</button>`;
+    const adv = this._tip(showAdv ? "Fewer fields" : "More fields", "", "step_adv");
+    if (hasAdv && !showAdv) more = `<button class="link" data-act="adv" data-dev="${i}" data-step="${si}"${adv}>more fields</button>`;
+    else if (showAdv) more = `<button class="link" data-act="adv" data-dev="${i}" data-step="${si}"${adv}>fewer fields</button>`;
     return `
       <div class="step">
         <span class="at">at</span>
         <input class="num soc" type="number" min="1" max="100" step="1" data-kind="soc"
-               data-dev="${i}" data-step="${si}" value="${Number.isFinite(soc) && s.soc !== null ? soc : ""}"><span class="u">%</span>
+               data-dev="${i}" data-step="${si}" value="${Number.isFinite(soc) && s.soc !== null ? soc : ""}"${
+                 this._tip("Battery %", Number.isFinite(soc) && s.soc !== null ? soc + " %" : "not set", "step_soc")}><span class="u">%</span>
         <span class="arrow">→</span>
-        <select class="sel" data-kind="action" data-dev="${i}" data-step="${si}">${options}</select>
+        <select class="sel" data-kind="action" data-dev="${i}" data-step="${si}"${
+          this._tip("Action", cur ? cur.name : s.action || "not set", "step_action")}>${options}</select>
         <span class="flds">${fieldsHTML}</span>
         ${more}
-        <button class="icon" data-act="remove-step" data-dev="${i}" data-step="${si}" title="Remove step">✕</button>
+        <button class="icon" data-act="remove-step" data-dev="${i}" data-step="${si}"${
+          this._tip("Remove step", Number.isFinite(soc) && s.soc !== null ? "at " + soc + " %" : "", "step_remove")}>✕</button>
       </div>`;
   }
 
@@ -930,7 +1080,9 @@ class LoadSheddingCard extends HTMLElement {
       input = `<input class="txt mono" ${base} data-type="json" placeholder="JSON"
         value="${value === undefined ? "" : this._esc(JSON.stringify(value))}">`;
     }
-    return `<label class="fld"><span class="cap">${this._esc(label)}</span><span class="in">${input}</span></label>`;
+    const shown = value === undefined ? "not set" : typeof value === "object" ? JSON.stringify(value) : String(value);
+    return `<label class="fld"${this._tip(label, shown, "step_field")}><span class="cap">${this._esc(label)}</span><span class="in">${
+      input}</span></label>`;
   }
 
   _backupHTML() {
@@ -947,7 +1099,7 @@ class LoadSheddingCard extends HTMLElement {
                 fallen this much further. Then the deepest step reached is applied again.</p>
             </div>
             <span class="in"><input class="num" type="number" min="1" max="50" step="1" data-kind="ostep"
-              value="${this._esc(rules.override_step)}"><span class="u">%</span></span>
+              value="${this._esc(rules.override_step)}"${this._tip("Override step", rules.override_step + " %", "ostep")}><span class="u">%</span></span>
           </div>
           <div class="kvrow">
             <div>
@@ -956,7 +1108,8 @@ class LoadSheddingCard extends HTMLElement {
                 50% warns at 51%. 0 turns the warnings off.</p>
             </div>
             <span class="in"><input class="num" type="number" min="0" max="20" step="1" data-kind="margin"
-              value="${this._esc(rules.warn_margin === undefined ? 1 : rules.warn_margin)}"><span class="u">%</span></span>
+              value="${this._esc(rules.warn_margin === undefined ? 1 : rules.warn_margin)}"${
+              this._tip("Warn before a step", (rules.warn_margin === undefined ? 1 : rules.warn_margin) + " %", "margin")}><span class="u">%</span></span>
           </div>
           <div class="kvrow">
             <div>
@@ -964,21 +1117,22 @@ class LoadSheddingCard extends HTMLElement {
               <p class="blurb">The rules live in Home Assistant, not in git. Keep a copy.</p>
             </div>
             <span class="btns">
-              <button class="btn" data-act="export">${this._ui.exportOpen ? "Hide" : "Show JSON"}</button>
-              <button class="btn" data-act="copy">Copy</button>
-              <button class="btn" data-act="download">Download</button>
+              <button class="btn" data-act="export"${this._tip(this._ui.exportOpen ? "Hide JSON" : "Show JSON", "", "export")}>${this._ui.exportOpen ? "Hide" : "Show JSON"}</button>
+              <button class="btn" data-act="copy"${this._tip("Copy", "", "copy")}>Copy</button>
+              <button class="btn" data-act="download"${this._tip("Download", "", "download")}>Download</button>
             </span>
           </div>
-          ${this._ui.exportOpen ? `<textarea class="code" readonly>${this._esc(json)}</textarea>` : ""}
+          ${this._ui.exportOpen ? `<textarea class="code" readonly${this._tip("Rules JSON", "", "export_json")}>${this._esc(json)}</textarea>` : ""}
           <div class="kvrow">
             <div>
               <span class="name">Import</span>
               <p class="blurb">Paste exported JSON. It opens as unsaved changes in the editor; nothing is
                 replaced until you press Save.</p>
             </div>
-            <span class="btns"><button class="btn" data-act="import">Load into editor</button></span>
+            <span class="btns"><button class="btn" data-act="import"${this._tip("Load into editor", "", "import")}>Load into editor</button></span>
           </div>
-          <textarea class="code" data-kind="import" placeholder='{"override_step": 10, "devices": [...]}'>${
+          <textarea class="code" data-kind="import" placeholder='{"override_step": 10, "devices": [...]}'${
+            this._tip("Import JSON", "", "import_text")}>${
             this._esc(this._ui.importText)}</textarea>
           <p class="foot">Rules are saved through <code>script.load_shedding_save_config</code>, which checks them.
             The engine is <code>packages/load_shedding.yaml</code>; it acts only while the inverter reports the grid as

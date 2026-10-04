@@ -8,8 +8,8 @@ BMS gateway.
 
 | Tab | Card | Version | Side of the system |
 | --- | --- | --- | --- |
-| Inverter | `config/www/powmr-inverter-console-card.js` (`custom:powmr-inverter-console-card`) | 2.1.3 | AC: grid → inverter → house |
-| Battery (`/battery`) | `config/www/jkbms-battery-console-card.js` (`custom:jkbms-battery-console-card`) | 1.4.1 | DC: inverter bus ↔ battery pack |
+| Inverter | `config/www/powmr-inverter-console-card.js` (`custom:powmr-inverter-console-card`) | 2.10.0 | AC: grid → inverter → house |
+| Battery (`/battery`) | `config/www/jkbms-battery-console-card.js` (`custom:jkbms-battery-console-card`) | 1.6.0 | DC: inverter bus ↔ battery pack |
 
 ## Why custom cards
 
@@ -90,10 +90,15 @@ outage). On and idle is lit and still.
 The card options `chip_night_only` and `chip_precharge` still override the two
 switches that used to be chips.
 
-**Every tooltip explains its toggle.** Hovering a chip or an icon shows its name
-and state, then what it does and an example (`HELP` in the card), e.g. Night
-only: "charging stops at 07:00 and starts again at 23:00". The card options `chip_night_only` and `chip_precharge`
-still override the two switches that used to be chips.
+**Every tooltip explains its element.** Hovering a chip, an icon, a tile or a
+control shows its name and state, then what it does and an example (`HELP` in
+the card), e.g. Night only: "charging stops at 07:00 and starts again at 23:00".
+That covers the status pill and its return countdown, the uptime, the five
+tiles and their status words (whose tooltips give the bands), the four flow
+runs, the three selects, the energy rows, and the chart's range and series
+buttons, its title, window and Now/Min/Max/Mean. The two chip sub-labels open
+the plan sensors, so each has a tooltip of its own. The format is
+[the dashboard tooltip standard](dashboard-tooltips.md).
 
 **Adaptive** ([adaptive-charge.md](adaptive-charge.md)) has a sub-label from
 `sensor.adaptive_charge_plan`: **20 A → 07:00** while it is sizing the night

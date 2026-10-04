@@ -19,6 +19,7 @@
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
+const { cardSource } = require("./fake_dom");
 
 const WWW = path.join(__dirname, "..", "config", "www");
 const HOUR = 3600000, DAY = 24 * HOUR;
@@ -37,7 +38,7 @@ function loadCard(file) {
   };
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
-  vm.runInContext(fs.readFileSync(path.join(WWW, file), "utf8"), sandbox, { filename: file });
+  vm.runInContext(cardSource(file), sandbox, { filename: file });
   if (!Klass) throw new Error(file + " did not define a custom element");
   return Klass;
 }

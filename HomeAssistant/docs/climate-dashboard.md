@@ -57,8 +57,9 @@ outlier to clip) and no off-scale counter, because nothing is ever clipped.
 tap anywhere on the ring. The service call fires on *release* and only if the
 value changed — on the hall unit every `set_temperature` is an infrared frame,
 and one per `pointermove` would fill the bridge's queue with setpoints nobody
-asked for. The ring also carries a tick at the **current** temperature, so the
-gap between the mark and the knob is the work the unit has to do.
+asked for. The ring also carries a dot at the **current** room temperature, so
+the gap between the dot and the knob is the work the unit has to do; hovering
+the dot gives the reading (and which side it ran off, when it is off the scale).
 
 ## Running cost, on both units, on two tariffs
 
