@@ -17,7 +17,7 @@ test_outage_precharge.py, test_battery_runtime.py and test_tariff_switch.py.
 What it does
 ------------
 Triggers   state (entity_id str/list, from/to/not_from/not_to incl. lists and
-           `to: ~`, attribute), time_pattern (hours/minutes/seconds with
+           `to: ~`, attribute, and `for:` -- see below), time_pattern (hours/minutes/seconds with
            "/n", n, "*"; smaller units default to 0 as in HA), time (`at:`
            "HH:MM[:SS]", or the int a YAML 1.1 sexagesimal turns it into),
            homeassistant start. Old (`platform:`) and new (`trigger:`) keys.
@@ -53,8 +53,14 @@ Fidelity limits -- what it does NOT model
 * No real concurrency. `mode: single` takes the first trigger of an event and
   drops the rest; queued/parallel/restart enqueue every match (up to `max`)
   and run them one after the other. `restart` does not cancel anything.
+* `for:` on a state trigger is a timer, as in HA: a matching change starts
+  it, a change of that entity that no longer matches cancels it, a change to
+  another matching state restarts it, and it fires on the first house.tick()
+  at or past the due time -- the automation's conditions are checked then.
+  `for:` as "HH:MM:SS", seconds, or {hours, minutes, seconds}; not templated.
+  Attribute-only changes do not cancel a timer on a plain state trigger.
 * Unsupported (raise NotImplementedError rather than guess): `for:` on
-  triggers and conditions, numeric_state, time/sun/zone/device conditions,
+  other triggers and on conditions, templated `for:`, numeric_state, time/sun/zone/device conditions,
   template/event/mqtt/... triggers, repeat while/until/count, parallel,
   sequence blocks, response_variable, `enabled: false`, `continue_on_error`
   is ignored, entity-id `at:` in time triggers.
@@ -388,11 +394,32 @@ def _time_at(at):
     return tuple(parts)
 
 
+def parse_for(value):
+    """A trigger's `for:` as a timedelta: "HH:MM:SS", seconds, or a dict."""
+    if isinstance(value, dict):
+        return timedelta(**{k: float(v) for k, v in value.items()
+                            if k in ("days", "hours", "minutes", "seconds", "milliseconds")})
+    if isinstance(value, (int, float)):
+        return timedelta(seconds=value)
+    text = str(value)
+    if "{" in text:
+        _unsupported("templated `for:`")
+    parts = [float(x) for x in text.split(":")]
+    while len(parts) < 3:
+        parts.insert(0, 0.0)
+    h, m, sec = parts[-3:]
+    return timedelta(hours=h, minutes=m, seconds=sec)
+
+
 def match_trigger(trig, event, idx):
-    """The trigger variables if `trig` fires for `event`, else None."""
-    if "for" in trig:
-        _unsupported("`for:` on triggers")
+    """The trigger variables if `trig` fires for `event`, else None.
+
+    A state trigger with `for:` is matched here as if it had none; the
+    Simulator turns that match into a timer (see Simulator.fire).
+    """
     p = _platform(trig)
+    if "for" in trig and p != "state":
+        _unsupported("`for:` on %s triggers" % p)
     base = {"platform": p, "id": str(trig.get("id", idx)), "idx": str(idx)}
     if p == "homeassistant":
         if isinstance(event, Started) and trig.get("event") == "start":
@@ -619,14 +646,49 @@ class Simulator:
         self.automations = _as_list(automations)
         self.pending = []
         self.history = []
+        # (automation index, trigger index) -> (due datetime, trigger vars)
+        self.timers = {}
 
     def triggered(self, auto, event):
-        """Every trigger of `auto` that fires for `event`, as trigger variables."""
+        """Every trigger of `auto` that fires for `event`, as trigger variables.
+
+        A state trigger with `for:` never fires here: a match starts (or
+        restarts) its timer, and a change of its entity that no longer
+        matches cancels it. Due timers fire from fire() on a TimeTick.
+        """
         out = []
+        ai = self.automations.index(auto)
         for i, trig in enumerate(_as_list(_key(auto, "triggers", "trigger"))):
+            if "for" in trig:
+                self._track(ai, i, trig, event)
+                continue
             tv = match_trigger(trig, event, i)
             if tv is not None:
                 out.append(tv)
+        return out
+
+    def _track(self, ai, i, trig, event):
+        if not isinstance(event, StateChanged) or event.entity_id not in _as_list(trig["entity_id"]):
+            return
+        plain = {k: v for k, v in trig.items() if k != "for"}
+        tv = match_trigger(plain, event, i)
+        if tv is not None:
+            delay = parse_for(trig["for"])
+            self.timers[(ai, i)] = (self.house.now + delay, dict(tv, **{"for": delay}))
+            return
+        # Not a match. Only a real state change cancels: an attribute-only
+        # update leaves the entity in the state the timer is counting.
+        if trig.get("attribute") is None and event.old is not None and event.new is not None \
+                and event.old.state == event.new.state:
+            return
+        self.timers.pop((ai, i), None)
+
+    def _due(self, now):
+        """Pop the timers that have run out by `now`, as (automation, trigger vars)."""
+        out = []
+        for key in sorted(k for k, (due, _) in self.timers.items() if due <= now):
+            due, tv = self.timers.pop(key)
+            out.append((self.automations[key[0]], tv))
         return out
 
     def fire(self, event, run=True):
@@ -635,8 +697,9 @@ class Simulator:
         With run=True (the default) the queue is drained and the finished
         runs are returned; with run=False they wait for drain().
         """
+        timed = self._due(event.now) if isinstance(event, TimeTick) else []
         for auto in self.automations:
-            matched = self.triggered(auto, event)
+            matched = self.triggered(auto, event) + [tv for a, tv in timed if a is auto]
             mode = auto.get("mode", "single")
             if mode == "single":
                 matched = matched[:1]

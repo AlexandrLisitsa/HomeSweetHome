@@ -15,6 +15,10 @@ The zone comes from the clock, not from which trigger fired, so a restart
 across a boundary still lands on the right one. A wrong boundary books a whole
 night at day rates.
 
+The A/C tariff meters (packages/ac_tariffs.yaml) have a third zone, battery,
+and follow sensor.electricity_tariff_zone with a 30 s `for:` so a grid blip
+switches nothing; they are run here too, as is the simulator's `for:` itself.
+
 This runs each automation through ha_automation_sim.py at the boundaries:
 which moments trigger it, and what each run writes to its select. It also
 guards the YAML itself: an unquoted `23:00:00` is a YAML 1.1 sexagesimal
@@ -129,6 +133,96 @@ for name, automation, select in SWITCHES:
     PREFIX[0] = name + ": "
     print("\n=== %s (%s)" % (name, select))
     suite(automation, select)
+
+# --- the simulator's `for:` --------------------------------------------------------
+PREFIX[0] = "sim for: "
+print("\n=== `for:` on a state trigger, as HA times it")
+from ha_automation_sim import parse_for, render  # noqa: E402
+AUTO = {"id": "t", "mode": "queued", "trigger": [{"platform": "state", "entity_id": "sensor.z",
+                                                    "to": "on", "for": "00:00:30"}],
+        "action": [{"service": "notify.x", "data": {"message": "fired"}}]}
+h = House(at(2, "10:00:00"))
+h.set("sensor.z", "off")
+sim = Simulator(h, [AUTO])
+check("a match only starts the timer", sim.fire(h.change("sensor.z", "on")), [])
+check("29 s later: not yet", sim.fire(h.tick(at(2, "10:00:29"))), [])
+runs = sim.fire(h.tick(at(2, "10:00:30")))
+check("30 s later: fires once", len(runs), 1)
+check("...with `for` in its trigger variables", runs[0].trigger["for"], timedelta(seconds=30))
+check("and not again", sim.fire(h.tick(at(2, "10:01:30"))), [])
+h.tick(at(2, "11:00:00"))
+sim.fire(h.change("sensor.z", "off"))
+sim.fire(h.change("sensor.z", "on"))
+h.tick(at(2, "11:00:10"))
+sim.fire(h.change("sensor.z", "off"))
+check("leaving the state before it runs out cancels", sim.fire(h.tick(at(2, "11:00:40"))), [])
+sim.fire(h.change("sensor.z", "on"))
+h.tick(at(2, "11:00:50"))
+sim.fire(h.change("sensor.z", "on", note="attribute only"))
+check("an attribute-only update does not cancel", len(sim.fire(h.tick(at(2, "11:01:10")))), 1)
+check("parse_for: seconds", parse_for(90), timedelta(seconds=90))
+check("parse_for: dict", parse_for({"minutes": 2, "seconds": 5}), timedelta(minutes=2, seconds=5))
+check("parse_for: MM:SS", parse_for("01:30"), timedelta(minutes=1, seconds=30))
+try:
+    parse_for("{{ 30 }}")
+    check("templated for: raises", False, True)
+except NotImplementedError:
+    check("templated for: raises", True, True)
+
+# --- the A/C tariff meters ---------------------------------------------------------
+PREFIX[0] = "A/C meters: "
+print("\n=== 'A/C: switch the tariff meters day/night/battery' (packages/ac_tariffs.yaml)")
+AC = find(load_package(CONFIG / "packages" / "ac_tariffs.yaml")["automation"], "id", "ac_tariff_auto_switch")
+SELECTS = ["select.irbridge_ac_tariff_daily", "select.irbridge_ac_tariff_monthly",
+           "select.bedroom_ac_tariff_daily", "select.bedroom_ac_tariff_monthly"]
+ZONE = "sensor.electricity_tariff_zone"
+
+
+def ac_house(zone, now):
+    h = House(now)
+    h.set(ZONE, zone)
+    for e in SELECTS:
+        h.set(e, "day")
+    return h, Simulator(h, [AC])
+
+
+def selects(h):
+    return sorted({h.state(e) for e in SELECTS})
+
+
+h, sim = ac_house("night", at(2, "22:59:59"))
+runs = sim.fire(h.tick(at(2, "23:00:00")))
+check("23:00 books all four to the zone the sensor gives", (len(runs), selects(h)), (1, ["night"]))
+h, sim = ac_house("day", at(3, "06:59:59"))
+sim.fire(h.tick(at(3, "07:00:00")))
+check("07:00 likewise", selects(h), ["day"])
+h, sim = ac_house("battery", at(2, "12:00:00"))
+sim.fire(START)
+check("an HA start books the current zone", selects(h), ["battery"])
+
+h, sim = ac_house("day", at(2, "12:00:00"))
+sim.fire(h.change(ZONE, "battery"))
+check("the pack takes over: nothing for 30 s", (sim.fire(h.tick(at(2, "12:00:29"))), selects(h)), ([], ["day"]))
+sim.fire(h.tick(at(2, "12:00:30")))
+check("...then all four go to battery", selects(h), ["battery"])
+
+h, sim = ac_house("day", at(2, "12:00:00"))
+sim.fire(h.change(ZONE, "battery"))
+h.tick(at(2, "12:00:08"))
+sim.fire(h.change(ZONE, "day"))
+runs = sim.fire(h.tick(at(2, "12:01:00")))
+check("an 8 s blip never books battery: its timer was cancelled",
+      [c.data.get("option") for r in runs for c in r.calls], ["day"])
+check("...only the return to day ran, after its own 30 s, booking day", selects(h), ["day"])
+
+for bad in ("unknown", "unavailable"):
+    h, sim = ac_house(bad, at(2, "22:59:59"))
+    check("zone %s at 23:00: the selects stay where they were" % bad,
+          (sim.fire(h.tick(at(2, "23:00:00"))), selects(h)), ([], ["day"]))
+    h.tick(at(2, "23:05:00"))
+    sim.fire(h.change(ZONE, "night"))
+    sim.fire(h.tick(at(2, "23:05:30")))
+    check("...and the zone coming back heals it within 30 s", selects(h), ["night"])
 
 print("\n%s" % ("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed"))
 sys.exit(1 if FAILED else 0)
