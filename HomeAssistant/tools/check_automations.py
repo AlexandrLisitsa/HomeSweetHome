@@ -17,6 +17,7 @@ template picks the right branch -- and every one of those was wrong once
   * the weekly MeterBots session check says why whenever it fails
   * the meter-reading sends refuse a second reading in a month, and the
     two monthly asks never start at the same minute
+  * the gas camera alert fires after 6 h without an accepted reading
 
 Same approach as check_dtek_templates.py: just enough of HA's template
 environment to render these templates, not an HA emulator.
@@ -249,6 +250,29 @@ for kind, pkgfile, aid in (("gas", "gas_submit.yaml", "gas_submit_monthly"),
     asks[kind] = [t["at"] for t in auto["trigger"] if t.get("platform") == "time"]
 check("gas asks at 21:00, electricity 10 minutes later", (asks["gas"], asks["electricity"]),
       (["21:00:00"], ["21:10:00"]))
+# --- gas camera watch ---------------------------------------------------------
+print("\n10. gas camera: an alert when nothing has been accepted for hours")
+pkg = yaml.load((CONFIG / "packages" / "metercam_watch.yaml").read_text(encoding="utf-8"), HaLoader)
+sens = pkg["rest"][0]["sensor"][0]
+v = lambda j: render(sens["value_template"], value_json=j)  # noqa: E731
+check("an hour-old accept: 60 min", v({"last_accepted_s_ago": {"gas": 3600}}), "60")
+check("rounds to whole minutes", v({"last_accepted_s_ago": {"gas": 89}}), "1")
+check("no accept yet (key absent): none", v({"last_accepted_s_ago": {}}), "None")
+check("an older MeterCam without the field: none", v({"status": "ok"}), "None")
+check("polled every 10 minutes", pkg["rest"][0]["scan_interval"], 600)
+auto = pkg["automation"][0]
+trig = {t["id"]: t for t in auto["trigger"]}
+check("stale: above 6 h (360 min)", (trig["stale"]["platform"], trig["stale"]["above"]), ("numeric_state", 360))
+check("down: MeterCam unanswered for an hour", (trig["down"]["to"], trig["down"]["for"]), ("unavailable", "01:00:00"))
+notify = auto["action"][1]
+msg = notify["data"]["message"]
+check("notifies the household", notify["service"], "notify.household")
+hours = render(auto["action"][0]["variables"]["hours"], states={"sensor.gas_camera_last_accepted": "397"})
+check("hours from the sensor", hours, "6.6")
+m = render(msg, trigger={"id": "stale"}, hours=hours)
+check("stale message names the hours", "No accepted gas reading for 6.6 h." in " ".join(m.split()), True)
+m = render(msg, trigger={"id": "down"}, hours="0")
+check("down message says MeterCam is silent", m.startswith("MeterCam has not answered for an hour"), True)
 
 print("\n%s" % ("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed"))
 sys.exit(1 if FAILED else 0)
