@@ -635,6 +635,9 @@ async function inverterSuite() {
     return { c: c, h: h, el: c._el, set: (st) => { h.states = st; c.hass = Object.assign({}, h, { states: st }); } };
   }
 
+  /** A tooltip's first line: name, state and the plan's reason; the help follows. */
+  const head = (t) => String(t).split("\n")[0];
+
   /** Re-render with a modified copy of the states. */
   function rerender(r, mutate) {
     const st = Object.assign({}, r.h.states);
@@ -764,11 +767,22 @@ async function inverterSuite() {
     const r = mk(base());
     const el = r.el;
     check("built", r.c._built === true);
-    ["uptime", "livedot", "mode", "ret", "retsep", "clock", "chip0", "chip4", "chipSub4", "chipAd2", "chipAdSub2",
+    ["uptime", "livedot", "mode", "ret", "retsep", "clock", "chip0", "chip2", "chipNt2", "chipAd2", "chipPc2",
+      "chipAdSub2", "chipPcSub2",
       "gridVal", "invVal", "loadVal", "socVal", "maxChg", "prio", "acMode", "erow0", "chLine", "stats"]
       .forEach((k) => check("has data-ref " + k, !!el[k]));
-    check("only Pre-charge carries a plan sub-label", !el.chipSub0 && !el.chipSub2 && !!el.chipSub4);
-    check("only AC charge carries the adaptive dot", !el.chipAd0 && !el.chipAd4 && !!el.chipAd2);
+    check("three chips: Night only and Pre-charge are not chips any more", !el.chip3 && !el.chip4);
+    check("only AC charge carries the extra icons",
+      ["Nt", "Ad", "Pc"].every((k) => !el["chip" + k + "0"] && !el["chip" + k + "1"] && !!el["chip" + k + "2"]));
+    const icons = el.chip2.querySelectorAll(".dw.i ha-icon").map((n) => n.getAttribute("icon"));
+    eq("AC charge's feature toggles are icons, in order", icons,
+      ["mdi:weather-night", "mdi:tune-variant", "mdi:battery-clock"]);
+    check("AC charge has no dot or icon of its own after the label: the left icon is the switch",
+      el.chip2.querySelector(".dw .dot") === null && el.chip2.classList.contains("nodot"));
+    check("Auto and Protect keep their plain dot", !!el.chip0.querySelector(".dw .dot") && !el.chip0.querySelector(".dw.i"));
+    eq("Night only lights blue", el.chipNt2.style._props["--dc"], "#6EA8FE");
+    eq("adaptive and Pre-charge light amber",
+      [el.chipAd2.style._props["--dc"], el.chipPc2.style._props["--dc"]], ["#AE8446", "#AE8446"]);
     eq("uptime", el.uptime.textContent, "up 3d 12h");
     eq("mode word", el.mode.textContent, "Grid connected · UPS");
     eq("live dot green", el.livedot.style.background, OK_C);
@@ -797,7 +811,10 @@ async function inverterSuite() {
     // The CSS gates the pulse on BOTH classes; the patch only sets `live`.
     const css = r.c.shadowRoot.querySelector("style").textContent;
     check("pulse needs .on AND .live", css.indexOf(".chip.on.live {") >= 0);
-    check("dimmed adaptive dot is styled", css.indexOf(".chip .dw.ad.dis {") >= 0);
+    check("dimmed adaptive icon is styled", css.indexOf(".chip .dw.i.dis {") >= 0);
+    check("a lit icon takes its own colour", css.indexOf(".chip .dw.i.on ha-icon { color: var(--dc);") >= 0);
+    check("the chip's main icon pulses when it has no dot", css.indexOf(".chip.on.live.nodot .ic ha-icon { animation: pmpulse") >= 0);
+    check("...and stops under reduced motion", css.indexOf(".chip.on.live.nodot .ic ha-icon, .chip .dw.i.on.act ha-icon { animation-play-state: paused; }") >= 0);
   }
 
   group = "inverter/escaping: ";
@@ -820,18 +837,37 @@ async function inverterSuite() {
     eq("Auto on", el.chip0.classList.contains("on"), true);
     eq("Protect on", el.chip1.classList.contains("on"), true);
     eq("AC charge on", el.chip2.classList.contains("on"), true);
-    eq("Night only unavailable is off", el.chip3.classList.contains("on"), false);
-    eq("Pre-charge missing is off", el.chip4.classList.contains("on"), false);
-    eq("title from friendly_name", el.chip0.title, "Auto tariff mode — on");
-    eq("title for unavailable", el.chip3.title, "Night charging only — unavailable");
-    eq("title for a missing entity is the label", el.chip4.title, "Pre-charge");
+    eq("Night only unavailable is off", el.chipNt2.classList.contains("on"), false);
+    eq("Pre-charge missing is off", el.chipPc2.classList.contains("on"), false);
+    eq("title from friendly_name", head(el.chip0.title), "Auto tariff mode — on");
+    eq("icon title for unavailable", head(el.chipNt2.title), "Night charging only — unavailable");
+    eq("icon title for a missing entity is the label", head(el.chipPc2.title), "Pre-charge — unknown");
+    rerender(r, (s) => { s[E.night] = S("on", { friendly_name: "Night charging only" }); });
+    check("Night only on lights its icon, not the chip's own", el.chipNt2.classList.contains("on"));
+    rerender(r, (s) => { s[E.acc] = S("off", { friendly_name: "AC charging" }); });
+    check("charger off, Night only on: chip off, Night icon still lit",
+      !el.chip2.classList.contains("on") && el.chipNt2.classList.contains("on"));
+    rerender(r, (s) => { s[E.acc] = S("on", { friendly_name: "AC charging" }); s[E.night] = S("unavailable", { friendly_name: "Night charging only" }); });
     // The print reads states, not attributes: a friendly_name change alone
     // waits for the next state change, which is fine for a name.
     rerender(r, (s) => { s[E.prot] = S("on", {}); });
-    eq("attribute-only change does not re-patch", el.chip1.title, "Auto grid protection — on");
+    eq("attribute-only change does not re-patch", head(el.chip1.title), "Auto grid protection — on");
     rerender(r, (s) => { s[E.prot] = S("off", {}); });
-    eq("title without friendly_name falls back to label", el.chip1.title, "Protect — off");
-    check("no chip is live while the pack idles", [0, 1, 2, 3, 4].every((i) => !el["chip" + i].classList.contains("live")));
+    eq("title without friendly_name falls back to label", head(el.chip1.title), "Protect — off");
+    check("no chip is live while the pack idles", [0, 1, 2].every((i) => !el["chip" + i].classList.contains("live")));
+    // Every toggle's tooltip says what it does, with an example, after the state line.
+    const tips = { chip0: "SBU Battery", chip1: "185–250 V", chip2: "BMS charge switch",
+      chipNt2: "night tariff", chipAd2: "lowest current", chipPc2: "DTEK outage" };
+    Object.keys(tips).forEach((k) => {
+      const t = el[k].title.split("\n");
+      check(k + ": a description after the state line", t.length >= 3 && t[1].indexOf(tips[k]) >= 0, el[k].title);
+      check(k + ": with an example", t.some((l) => l.indexOf("E.g.") === 0), el[k].title);
+    });
+    check("the chip's own icon and dot inherit its description (no title of their own)",
+      el.chip2.querySelector(".ic").getAttribute("title") === null
+      && el.chip0.querySelector(".dw").getAttribute("title") === null);
+    rerender(r, (s) => { s[E.ad] = S("on"); });
+    eq("a re-patch does not stack descriptions", el.chipAd2.title.split("E.g.").length, 2);
   }
 
   group = "inverter/live: ";
@@ -853,7 +889,7 @@ async function inverterSuite() {
       const r = mk(st);
       eq(name + ": AC charge live", r.el.chip2.classList.contains("live"), want);
       check(name + ": no other chip ever live",
-        [0, 1, 3, 4].every((i) => !r.el["chip" + i].classList.contains("live")));
+        [0, 1].every((i) => !r.el["chip" + i].classList.contains("live")));
     });
     // `live` follows the charging, the switch only decides whether CSS shows it.
     const st = base();
@@ -951,28 +987,30 @@ async function inverterSuite() {
       return mk(st).el;
     };
     let el = plan("charging", { current: 30, until: until, reason: "outage at 10:00" });
-    eq("charging", el.chipSub4.textContent, "30 A → " + hm(until));
+    eq("charging", el.chipPcSub2.textContent, "30 A → " + hm(until));
     check("time is HH:MM", /^\d\d:\d\d$/.test(hm(until)), hm(until));
-    eq("tooltip carries state and reason", el.chip4.title, "Outage pre-charge — on · charging: outage at 10:00");
+    eq("tooltip carries state and reason", head(el.chipPc2.title), "Outage pre-charge — on · charging: outage at 10:00");
+    check("switch on lights the Pre-charge icon", el.chipPc2.classList.contains("on"));
     el = plan("waiting_night", { until: until, reason: "night will do" });
-    eq("waiting_night", el.chipSub4.textContent, "at night → " + hm(until));
+    eq("waiting_night", el.chipPcSub2.textContent, "at night → " + hm(until));
     el = plan("waiting_night", { until: "garbage" });
-    eq("waiting_night with a bad until: no dangling arrow", el.chipSub4.textContent, "at night");
+    eq("waiting_night with a bad until: no dangling arrow", el.chipPcSub2.textContent, "at night");
     el = plan("full", { reason: "already full" });
-    eq("full", el.chipSub4.textContent, "full");
+    eq("full", el.chipPcSub2.textContent, "full");
     el = plan("idle", { reason: "" });
-    eq("idle prints nothing", el.chipSub4.textContent, "");
-    eq("empty reason adds nothing to the tooltip", el.chip4.title, "Outage pre-charge — on");
+    eq("idle prints nothing", el.chipPcSub2.textContent, "");
+    eq("empty reason adds nothing to the tooltip", head(el.chipPc2.title), "Outage pre-charge — on");
     el = plan("charging", { current: 30, until: until, reason: "x" }, "off");
-    eq("switch off: nothing, whatever the plan", el.chipSub4.textContent, "");
-    eq("switch off: reason still explains", el.chip4.title, "Outage pre-charge — off · charging: x");
+    eq("switch off: nothing, whatever the plan", el.chipPcSub2.textContent, "");
+    eq("switch off: reason still explains", head(el.chipPc2.title), "Outage pre-charge — off · charging: x");
+    check("switch off: icon dark", !el.chipPc2.classList.contains("on"));
     el = plan("charging", { current: 30, until: until }, "unavailable");
-    eq("switch unavailable: nothing", el.chipSub4.textContent, "");
+    eq("switch unavailable: nothing", el.chipPcSub2.textContent, "");
     el = plan(null);
-    eq("plan sensor missing: nothing", el.chipSub4.textContent, "");
-    eq("plan sensor missing: plain tooltip", el.chip4.title, "Outage pre-charge — on");
+    eq("plan sensor missing: nothing", el.chipPcSub2.textContent, "");
+    eq("plan sensor missing: plain tooltip", head(el.chipPc2.title), "Outage pre-charge — on");
     el = plan("unavailable", {});
-    eq("plan unavailable: nothing", el.chipSub4.textContent, "");
+    eq("plan unavailable: nothing", el.chipPcSub2.textContent, "");
 
     // The tooltip is rebuilt, not appended to, on every patch.
     const st = base();
@@ -980,17 +1018,17 @@ async function inverterSuite() {
     st[E.pplan] = S("charging", { current: 30, until: until, reason: "r" });
     const r = mk(st);
     rerender(r, (s) => { s[E.pplan] = S("charging", { current: 40, until: until, reason: "r" }); });
-    eq("re-patched sub-label", r.el.chipSub4.textContent, "40 A → " + hm(until));
-    eq("tooltip carries the reason once", r.el.chip4.title, "P — on · charging: r");
+    eq("re-patched sub-label", r.el.chipPcSub2.textContent, "40 A → " + hm(until));
+    eq("tooltip carries the reason once", head(r.el.chipPc2.title), "P — on · charging: r");
 
     el = plan("charging", { until: until });
-    eq("charging plan with no `current` does not print \"undefined A\"", el.chipSub4.textContent, "charging → " + hm(until));
+    eq("charging plan with no `current` does not print \"undefined A\"", el.chipPcSub2.textContent, "charging → " + hm(until));
     el = plan("charging", { current: 30 });
-    eq("charging plan with no `until` leaves no dangling arrow", el.chipSub4.textContent, "30 A");
+    eq("charging plan with no `until` leaves no dangling arrow", el.chipPcSub2.textContent, "30 A");
     el = plan("charging", {});
-    eq("charging plan with neither", el.chipSub4.textContent, "charging");
+    eq("charging plan with neither", el.chipPcSub2.textContent, "charging");
     el = plan("charging", { current: "unknown", until: "garbage" });
-    eq("charging plan with garbage in both", el.chipSub4.textContent, "charging");
+    eq("charging plan with garbage in both", el.chipPcSub2.textContent, "charging");
   }
 
   /* --- the adaptive dot ----------------------------------------------------- */
@@ -1013,10 +1051,10 @@ async function inverterSuite() {
     check("on: lit, not dimmed", on(el) && !dis(el));
     el = run({ [E.ad]: "off", [E.auto]: "off", [E.night]: "off" });
     check("off, neither Auto nor Night only: dimmed", dis(el) && !on(el));
-    eq("...with the why", el.chipAd2.title, NEEDS);
+    eq("...with the why", head(el.chipAd2.title), NEEDS);
     el = run({ [E.ad]: "off", [E.auto]: "on", [E.acc]: "on", [E.night]: "off" });
     check("off, Auto with charger on: usable", !dis(el));
-    eq("...tooltip says off", el.chipAd2.title, "Adaptive night charge — off · off: switched off");
+    eq("...tooltip says off", head(el.chipAd2.title), "Adaptive night charge — off · off: switched off");
     el = run({ [E.ad]: "off", [E.auto]: "on", [E.acc]: "off", [E.night]: "off" });
     check("off, Auto but charger off, no Night only: dimmed", dis(el));
     el = run({ [E.ad]: "off", [E.auto]: "off", [E.acc]: "off", [E.night]: "on" });
@@ -1028,7 +1066,7 @@ async function inverterSuite() {
     ["waiting_night", "charging", "full"].forEach((p) => {
       el = run({ [E.ad]: "off", [E.night]: "on", [E.pplan]: p });
       check("off, pre-charge " + p + ": dimmed", dis(el));
-      eq("off, pre-charge " + p + ": outage tooltip", el.chipAd2.title, OUTAGE);
+      eq("off, pre-charge " + p + ": outage tooltip", head(el.chipAd2.title), OUTAGE);
       el = run({ [E.ad]: "on", [E.night]: "on", [E.pplan]: p });
       check("ON, pre-charge " + p + ": not dimmed, so it can be turned off", !dis(el) && on(el));
     });
@@ -1042,7 +1080,7 @@ async function inverterSuite() {
     check("unavailable and unusable: dimmed, not lit", dis(el) && !on(el));
     el = run({ [E.ad]: null });
     check("boolean missing, usable: neither lit nor dimmed", !dis(el) && !on(el));
-    eq("...tooltip says unknown", el.chipAd2.title, "Adaptive night charge — unknown · off: switched off");
+    eq("...tooltip says unknown", head(el.chipAd2.title), "Adaptive night charge — unknown · off: switched off");
     // An ON dot under unusable switches is still not dimmed.
     el = run({ [E.ad]: "on", [E.auto]: "off", [E.night]: "off" });
     check("on while unusable: still clickable", !dis(el) && on(el));
@@ -1064,9 +1102,48 @@ async function inverterSuite() {
     eq("boolean off hides a charging plan", sub("off", "charging", { current: 20, until: seven }), "");
     eq("boolean unavailable hides it too", sub("unavailable", "day", {}), "");
     el = run({ [E.ad]: "on", [E.aplan]: S("charging", { current: 20, until: seven, reason: "needs 18.2 A" }) });
-    eq("tooltip with plan reason", el.chipAd2.title, "Adaptive night charge — on · charging: needs 18.2 A");
+    eq("tooltip with plan reason", head(el.chipAd2.title), "Adaptive night charge — on · charging: needs 18.2 A");
     el = run({ [E.ad]: "on", [E.aplan]: S("charging", { current: 20, until: seven }) });
-    eq("tooltip without a reason", el.chipAd2.title, "Adaptive night charge — on");
+    eq("tooltip without a reason", head(el.chipAd2.title), "Adaptive night charge — on");
+  }
+
+  /* --- acting icons pulse --------------------------------------------------- */
+  group = "inverter/acting: ";
+  {
+    const until = localIso(7, 0);
+    const act = (k, el) => el["chip" + k + "2"].classList.contains("act");
+    const run = (o) => { const st = base(); Object.keys(o).forEach((k) => { st[k] = o[k]; }); return mk(st).el; };
+    // Night only: on AND the pack charging now.
+    check("Night only on, pack idle: lit, still",
+      !act("Nt", run({ [E.night]: S("on") })));
+    let el = run({ [E.night]: S("on"), [E.bw]: S("900") });
+    check("Night only on, pack charging: pulses", act("Nt", el) && el.chipNt2.classList.contains("on"));
+    check("Night only off, pack charging: still", !act("Nt", run({ [E.night]: S("off"), [E.bw]: S("900") })));
+    check("Night only on, charging but grid down: still",
+      !act("Nt", run({ [E.night]: S("on"), [E.bw]: S("900"), [E.safe]: S("on") })));
+    // Adaptive: on AND its plan charging.
+    check("adaptive on, plan charging: pulses",
+      act("Ad", run({ [E.ad]: S("on"), [E.aplan]: S("charging", { current: 20, until: until }) })));
+    ["day", "full", "off", "inactive", "unknown"].forEach((p) => {
+      check("adaptive on, plan " + p + ": still", !act("Ad", run({ [E.ad]: S("on"), [E.aplan]: S(p, {}) })));
+    });
+    check("adaptive off, plan charging: still",
+      !act("Ad", run({ [E.ad]: S("off"), [E.aplan]: S("charging", { current: 20 }) })));
+    // Pre-charge: on AND its plan charging.
+    check("pre-charge on, plan charging: pulses",
+      act("Pc", run({ [E.pre]: S("on"), [E.pplan]: S("charging", { current: 30, until: until }) })));
+    ["idle", "waiting_night", "full"].forEach((p) => {
+      check("pre-charge on, plan " + p + ": still", !act("Pc", run({ [E.pre]: S("on"), [E.pplan]: S(p, {}) })));
+    });
+    check("pre-charge off, plan charging: still",
+      !act("Pc", run({ [E.pre]: S("off"), [E.pplan]: S("charging", { current: 30 }) })));
+    // And it stops when the action does.
+    const r = mk(Object.assign(base(), { [E.ad]: S("on"), [E.aplan]: S("charging", { current: 20 }) }));
+    rerender(r, (s) => { s[E.aplan] = S("full", { current: 2 }); });
+    check("adaptive stops pulsing when the plan goes full", !r.el.chipAd2.classList.contains("act"));
+    const css = r.c.shadowRoot.querySelector("style").textContent;
+    check("only a lit AND acting icon animates", css.indexOf(".chip .dw.i.on.act ha-icon { animation: pmpulse") >= 0);
+    check("reduced motion pauses it", css.indexOf(".chip .dw.i.on.act ha-icon { animation-play-state: paused; }") >= 0);
   }
 
   /* --- clicks ---------------------------------------------------------------- */
@@ -1081,10 +1158,14 @@ async function inverterSuite() {
     let ev = fire(r.el.chip0.querySelector(".ic"), "click");
     eq("icon toggles its switch", last(), ["switch", "toggle", { entity_id: E.auto }]);
     check("toggle stops propagation and the default", ev.stopped && ev.defaultPrevented);
-    fire(r.el.chip3.querySelector(".dw"), "click");
-    eq("dot toggles its switch", last(), ["switch", "toggle", { entity_id: E.night }]);
-    fire(r.el.chip2.querySelector(".dw .dot"), "click");
-    eq("a click on the inner dot reaches the toggle", last(), ["switch", "toggle", { entity_id: E.acc }]);
+    fire(r.el.chip1.querySelector(".dw .dot"), "click");
+    eq("a plain chip's dot toggles its switch", last(), ["switch", "toggle", { entity_id: E.prot }]);
+    fire(r.el.chip2.querySelector(".ic ha-icon"), "click");
+    eq("the AC charge chip's left icon toggles the charger", last(), ["switch", "toggle", { entity_id: E.acc }]);
+    fire(r.el.chipNt2, "click");
+    eq("the Night icon toggles Night only", last(), ["switch", "toggle", { entity_id: E.night }]);
+    fire(r.el.chipPc2.querySelector("ha-icon"), "click");
+    eq("a click on the Pre-charge glyph toggles pre-charge", last(), ["switch", "toggle", { entity_id: E.pre }]);
 
     const before = ncalls();
     fire(r.el.chip1.querySelector(".lbl"), "click");
@@ -1097,14 +1178,14 @@ async function inverterSuite() {
     // Adaptive dot: usable (Auto + charger on) -> input_boolean.toggle.
     fire(r.el.chipAd2, "click");
     eq("adaptive dot toggles the input_boolean", last(), ["input_boolean", "toggle", { entity_id: E.ad }]);
-    fire(r.el.chipAd2.querySelector(".dot"), "click");
-    eq("adaptive inner dot too", last(), ["input_boolean", "toggle", { entity_id: E.ad }]);
+    fire(r.el.chipAd2.querySelector("ha-icon"), "click");
+    eq("adaptive glyph too", last(), ["input_boolean", "toggle", { entity_id: E.ad }]);
 
     // Dimmed: nothing at all -- no service, no dialog, and the click stops here.
     rerender(r, (s) => { s[E.auto] = S("off"); s[E.night] = S("off"); });
     check("now dimmed", r.el.chipAd2.classList.contains("dis"));
     const n0 = ncalls(), d0 = r.c.dispatched.length;
-    ev = fire(r.el.chipAd2.querySelector(".dot"), "click");
+    ev = fire(r.el.chipAd2.querySelector("ha-icon"), "click");
     eq("dimmed dot: no service", ncalls(), n0);
     eq("dimmed dot: no dialog", r.c.dispatched.length, d0);
     check("dimmed dot: click still swallowed", ev.stopped);
@@ -1113,7 +1194,7 @@ async function inverterSuite() {
 
     fire(r.el.chipAdSub2, "click");
     eq("adaptive sub-label opens the plan", r.c.dispatched.pop().detail.entityId, E.aplan);
-    fire(r.el.chipSub4, "click");
+    fire(r.el.chipPcSub2, "click");
     eq("pre-charge sub-label opens its plan", r.c.dispatched.pop().detail.entityId, E.pplan);
     fire(q(".tile.t-grid .t-val"), "click");
     eq("a tile's child opens the tile's entity", r.c.dispatched.pop().detail.entityId, E.gv);
@@ -1172,7 +1253,7 @@ async function inverterSuite() {
     const r = mk(st, { chip_auto: "switch.my_auto", chip_ac_charge: "input_boolean.my_ac",
       adaptive_charge: "input_boolean.other_adaptive" });
     eq("overridden chip reads its own entity", r.el.chip0.classList.contains("on"), true);
-    eq("overridden chip title", r.el.chip0.title, "My auto — on");
+    eq("overridden chip title", head(r.el.chip0.title), "My auto — on");
     eq("icon data-ent", r.el.chip0.querySelector(".ic").getAttribute("data-ent"), "switch.my_auto");
     eq("label data-more", r.el.chip0.querySelector(".lbl").getAttribute("data-more"), "switch.my_auto");
     fire(r.el.chip0.querySelector(".ic"), "click");
@@ -1180,6 +1261,10 @@ async function inverterSuite() {
     fire(r.el.chip2.querySelector(".ic"), "click");
     eq("domain comes from the entity id", r.h.calls.pop(), ["input_boolean", "toggle", { entity_id: "input_boolean.my_ac" }]);
     eq("adaptive dot follows its override", r.el.chipAd2.getAttribute("data-ent"), "input_boolean.other_adaptive");
+    const r2 = mk(base(), { chip_night_only: "switch.my_night", chip_precharge: "switch.my_pre" });
+    eq("chip_night_only still overrides the Night icon", r2.el.chipNt2.getAttribute("data-ent"), "switch.my_night");
+    eq("chip_precharge still overrides the Pre-charge icon", r2.el.chipPc2.getAttribute("data-ent"), "switch.my_pre");
+    throws("chip_night_only is still validated", () => r2.c.setConfig({ chip_night_only: "x" }), /chip_night_only must be an entity id/);
     // The adaptive usability rule reads the overridden chips too.
     check("usable through the overridden Auto + charger", !r.el.chipAd2.classList.contains("dis"));
   }
@@ -1333,7 +1418,7 @@ async function inverterSuite() {
     rerender(r, (s) => { s[E.aplan] = S("charging", { current: 25, until: seven, reason: "a" }); });
     eq("an attribute-only change reaches the sub-label", r.el.chipAdSub2.textContent, "25 A → 07:00");
     rerender(r, (s) => { s[E.aplan] = S("charging", { current: 25, until: seven, reason: "behind" }); });
-    eq("a reason-only change reaches the tooltip", r.el.chipAd2.title, "Adaptive night charge — on · charging: behind");
+    eq("a reason-only change reaches the tooltip", head(r.el.chipAd2.title), "Adaptive night charge — on · charging: behind");
 
     // The pre-charge reason is in the print too.
     rerender(r, (s) => {
@@ -1342,7 +1427,7 @@ async function inverterSuite() {
     });
     rerender(r, (s) => { s[E.pplan] = S("charging", { current: 30, until: seven, reason: "outage moved to 11:00" }); });
     check("a pre-charge reason-only change refreshes the Pre-charge tooltip",
-      r.el.chip4.title.indexOf("outage moved to 11:00") >= 0, "title still " + JSON.stringify(r.el.chip4.title));
+      r.el.chipPc2.title.indexOf("outage moved to 11:00") >= 0, "title still " + JSON.stringify(r.el.chipPc2.title));
   }
 
   /* --- nothing reporting ------------------------------------------------------ */
@@ -1373,9 +1458,10 @@ async function inverterSuite() {
       ["—%", "IDLE · NO DATA", "— V · — W idle"]);
     check(v + "selects disabled", el.maxChg.disabled && el.prio.disabled && el.acMode.disabled);
     eq(v + "energy", el.eval2.textContent, "— kWh");
-    check(v + "no chip on", [0, 1, 2, 3, 4].every((i) => !el["chip" + i].classList.contains("on")));
+    check(v + "no chip on", [0, 1, 2].every((i) => !el["chip" + i].classList.contains("on")));
+    check(v + "no icon lit", ["Nt", "Ad", "Pc"].every((k) => !el["chip" + k + "2"].classList.contains("on")));
     check(v + "adaptive dimmed", el.chipAd2.classList.contains("dis"));
-    eq(v + "subs empty", [el.chipSub4.textContent, el.chipAdSub2.textContent], ["", ""]);
+    eq(v + "subs empty", [el.chipPcSub2.textContent, el.chipAdSub2.textContent], ["", ""]);
     check(v + "no countdown", el.ret.hidden);
     eq(v + "flows idle", [el.runGrid, el.runLoad, el.runBatt].map((n) => n.style._props["--play"]), ["paused", "paused", "paused"]);
   }

@@ -73,7 +73,7 @@
  */
 
 const CARD = "powmr-inverter-console-card";
-const VERSION = "2.1.3";
+const VERSION = "2.5.0";
 
 /*
  * Brand colours stay literal: they identify a leg of the diagram (amber =
@@ -156,8 +156,10 @@ const DEFAULTS = {
 };
 
 /*
- * The four switches the tab's badge row already carries, in its order. Each
- * keeps its own MDI icon so a chip and its badge read as one control.
+ * The header's switches. Each keeps its own MDI icon so a chip and its badge
+ * read as one control. Night only and Pre-charge used to be chips of their
+ * own; they only ever shape AC charging, so they are icons on that chip now
+ * (AC_DOTS below), and the header is three chips instead of five.
  *
  * The design had a fifth chip ("Quiet / night fan limit"). This system has no
  * such switch and it is deliberately not faked. The badge row's other three
@@ -167,27 +169,73 @@ const DEFAULTS = {
 const CHIPS = [
   { label: "Auto", cfg: "chip_auto", ent: "switch.powmr_inverter_auto_tariff_mode", icon: "mdi:clock-check-outline", color: BATT_C },
   { label: "Protect", cfg: "chip_protect", ent: "switch.powmr_inverter_auto_grid_protection", icon: "mdi:shield-home", color: BATT_C },
-  { label: "AC charge", cfg: "chip_ac_charge", ent: "switch.powmr_inverter_ac_charging_enabled", icon: "mdi:battery-charging-50", color: GRID_C, live: true, adaptive: true },
-  { label: "Night only", cfg: "chip_night_only", ent: "switch.powmr_inverter_night_charging_only", icon: "mdi:weather-night", color: LOAD_C },
-  { label: "Pre-charge", cfg: "chip_precharge", ent: "switch.powmr_inverter_outage_pre_charge", icon: "mdi:battery-clock", color: GRID_C, plan: true },
+  { label: "AC charge", cfg: "chip_ac_charge", ent: "switch.powmr_inverter_ac_charging_enabled", icon: "mdi:battery-charging-50", color: GRID_C, live: true, dots: true },
 ];
 CHIPS.forEach((c) => { DEFAULTS[c.cfg] = c.ent; });
 /*
- * `plan` marks the outage pre-charge chip. Its switch only ARMS the feature --
- * nothing happens until DTEK publishes a window -- so ON alone says as little
- * as AC charge's does. It carries a sub-label from the plan sensor instead:
- * "30 A → 09:30" while charging, "at night" while the night tariff will do.
+ * The AC charge chip carries the charger's feature toggles as small icons
+ * after its label, in this order: when it charges (Night only), how hard
+ * (adaptive), and the outage override (Pre-charge). The charger itself is the
+ * chip's own icon on the left, which pulses while the pack charges -- no dot
+ * of its own, so the main switch stands apart from the features. Each icon
+ * is its own switch: dim when off, lit in its colour when on, a tap toggles
+ * it, the tooltip names it and its state.
+ *
+ * THE RULE: an icon pulses while it is acting, not merely on. The charger
+ * (the chip's left icon) while the pack takes grid current; Night only while
+ * the pack charges under its window; adaptive and Pre-charge while their plan
+ * reads `charging`. On and idle is lit and still. Adaptive is an input_boolean with its
+ * own rules and keeps its config key (adaptive_charge); the other two keep
+ * the keys they had as chips, so an existing override still works.
+ */
+/*
+ * What each toggle does, with an example, for the tooltips. The first line of
+ * a tooltip stays "<name> — <state>" (plus the plan's reason); this follows
+ * on the next lines. Keep it in step with PowerStation/docs/architecture.md
+ * (§3, §10, §11) and the two HA packages.
+ */
+const HELP = {
+  chip_auto: "Spends the battery by day and buys from the grid at night: SBU Battery "
+    + "07:00–23:00, Utility First 23:00–07:00.\nE.g. at 22:59 the house runs on the pack; "
+    + "at 23:00 it switches to the grid.\nCannot be on together with Night only.",
+  chip_protect: "Moves the house to the battery when the grid leaves 185–250 V for 5 s, "
+    + "and back after 5 min of stable grid. Beats every other rule.\nE.g. a brownout "
+    + "to 170 V: SBU Battery within 5 s.",
+  chip_ac_charge: "Lets the battery charge from the grid at all (the BMS charge switch). "
+    + "Off: no grid charging, whatever else is on.\nE.g. switch it off to keep a full "
+    + "pack from topping up. It pulses while the pack is charging.",
+  chip_night_only: "Opens the charger only in the night tariff (23:00–07:00) and leaves "
+    + "the power priority alone: the pack is a UPS that only buys cheap power.\nE.g. on: "
+    + "charging stops at 07:00 and starts again at 23:00.\nCannot be on together with Auto.",
+  adaptive_charge: "Charges at night at the lowest current that still fills the pack by "
+    + "06:30, re-sized every 10 min.\nE.g. a half-full pack at 23:00 needs ~21 A, so it "
+    + "charges at 30 A instead of a fixed 60 A.\nNeeds Auto or Night only; goes off when "
+    + "an outage is scheduled.",
+  chip_precharge: "Arms filling the pack before a scheduled DTEK outage. Nothing happens "
+    + "until an outage is published.\nE.g. outage at 10:00: charges overnight on the "
+    + "night tariff, or by day at the current it needs to be full by 10:00.",
+};
+const AC_DOTS = [
+  { ref: "Nt", label: "Night only", cfg: "chip_night_only", ent: "switch.powmr_inverter_night_charging_only", icon: "mdi:weather-night", color: LOAD_C },
+  { ref: "Ad", label: "Adaptive night charge", cfg: "adaptive_charge", icon: "mdi:tune-variant", color: GRID_C },
+  { ref: "Pc", label: "Pre-charge", cfg: "chip_precharge", ent: "switch.powmr_inverter_outage_pre_charge", icon: "mdi:battery-clock", color: GRID_C },
+];
+AC_DOTS.forEach((d) => { if (d.ent) DEFAULTS[d.cfg] = d.ent; });
+/*
+ * The Pre-charge dot's switch only ARMS the feature -- nothing happens until
+ * DTEK publishes a window -- so ON alone says little. The chip carries a
+ * sub-label from its plan sensor instead: "30 A → 09:30" while charging, "at
+ * night" while the night tariff will do.
  *
  * `live` marks the chip whose switch only PERMITS something. AC charge sits
  * on all night whether or not a watt is moving, so ON alone says nothing; the
  * chip pulses while the grid is up and the BMS says the pack is taking
  * current. There is no PV here, so a charging pack on grid is the AC charger.
  *
- * `adaptive` gives a chip a second dot, after its own: adaptive night charge,
- * which sizes the charge current to finish by 07:00. It is its own switch
- * (an input_boolean), lit orange on its own, with a sub-label from its plan
- * ("20 A → 07:00"). It only works under Auto or Night only, with the charger
- * on, so otherwise the dot is dimmed and a tap on it does nothing.
+ * `dots` gives a chip the AC_DOTS icons. The adaptive one sizes the charge current
+ * to finish by 07:00, with a sub-label from its plan ("20 A → 07:00"). It
+ * only works under Auto or Night only, with the charger on, so otherwise its
+ * icon is dimmed and a tap on it does nothing.
  */
 
 /*
@@ -398,13 +446,16 @@ ha-card {
 .chip.on .dot { background: var(--cc); box-shadow: 0 0 8px var(--cs); }
 .chip.on.live { animation: pmchip 2s ease-in-out infinite; }
 .chip.on.live .dot { animation: pmpulse 2s ease-in-out infinite; }
-/* The adaptive dot keeps its own state, whatever the chip's switch is doing. */
-.chip .dw.ad { margin-left: -6px; }
-.chip .dw.ad .dot { background: transparent; box-shadow: none; animation: none;
-  border: 1px solid #3A3F49; width: 7px; height: 7px; box-sizing: border-box; }
-.chip .dw.ad.on .dot { background: ${GRID_C}; border-color: ${GRID_C}; box-shadow: 0 0 8px ${GRID_C}99; }
-.chip .dw.ad.dis { cursor: not-allowed; opacity: .35; }
-.chip .dw.ad.dis:hover { background: transparent; }
+/* AC charge's feature toggles are icons (AC_DOTS). Each keeps its own state,
+   whatever the chip's switch is doing: --dc is its colour, --ds its glow. */
+.chip .dw.i { width: 22px; margin-left: -4px; }
+.chip .dw.i ha-icon { --mdc-icon-size: calc(15px * var(--s)); color: #4A505B; transition: color .2s; }
+.chip .dw.i.on ha-icon { color: var(--dc); filter: drop-shadow(0 0 4px var(--ds)); }
+.chip .dw.i.on.act ha-icon { animation: pmpulse 2s ease-in-out infinite; }
+/* A chip without a dot of its own (AC charge) pulses its main icon instead. */
+.chip.on.live.nodot .ic ha-icon { animation: pmpulse 2s ease-in-out infinite; }
+.chip .dw.i.dis { cursor: not-allowed; opacity: .35; }
+.chip .dw.i.dis:hover { background: transparent; }
 @keyframes pmchip { 0%, 100% { box-shadow: 0 0 0 0 transparent } 50% { box-shadow: 0 0 14px -2px var(--cs) } }
 
 /* --- panels ------------------------------------------------------------- */
@@ -614,7 +665,8 @@ svg.ch { width: 100%; height: ${CH_H}px; display: block; }
  * direction and the dimming, and every value is on screen as a number anyway.
  */
 @media (prefers-reduced-motion: reduce) {
-  .run i, .livedot, .chip.on.live, .chip.on.live .dot { animation-play-state: paused; }
+  .run i, .livedot, .chip.on.live, .chip.on.live .dot,
+  .chip.on.live.nodot .ic ha-icon, .chip .dw.i.on.act ha-icon { animation-play-state: paused; }
   .socfill, .mark { transition: none; }
 }
 `;
@@ -951,11 +1003,26 @@ class PowmrInverterConsoleCard extends HTMLElement {
   }
 
   /**
-   * The Pre-charge chip's sub-label and tooltip, from the plan sensor. Empty
-   * (and hidden) while the switch is off or there is nothing to charge for,
-   * which is most of the time: the chip is then just a switch.
+   * One of AC charge's switch dots: lit while its switch is on, and a tooltip
+   * from the entity's friendly_name, the same words a chip's title uses.
+   * Returns the state.
    */
-  _patchPlan(node, sub, st) {
+  _patchSwitchDot(dot, ent, label) {
+    const st = this._state(ent);
+    if (!dot) return st;
+    dot.classList.toggle("on", st === "on");
+    const o = this._stateObj(ent);
+    dot.title = ((o && o.attributes && o.attributes.friendly_name) || label) + " — " + st;
+    return st;
+  }
+
+  /**
+   * The Pre-charge dot, and the sub-label and tooltip from its plan sensor.
+   * The sub-label is empty (and hidden) while the switch is off or there is
+   * nothing to charge for, which is most of the time.
+   */
+  _patchPlan(node, sub) {
+    const st = this._patchSwitchDot(node, this._config.chip_precharge, "Pre-charge");
     const plan = this._stateObj(this._config.precharge_plan);
     const a = (plan && plan.attributes) || {};
     const t = Date.parse(a.until || "");
@@ -969,7 +1036,8 @@ class PowmrInverterConsoleCard extends HTMLElement {
       else if (plan.state === "full") text = "full";
     }
     if (sub) sub.textContent = text;
-    if (plan && a.reason) node.title += " · " + plan.state + ": " + a.reason;
+    if (node) node.classList.toggle("act", st === "on" && !!plan && plan.state === "charging");
+    if (node && plan && a.reason) node.title += " · " + plan.state + ": " + a.reason;
   }
 
   /**
@@ -1016,6 +1084,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
     }
     if (dot) {
       dot.classList.toggle("on", st === "on");
+      dot.classList.toggle("act", st === "on" && !!plan && plan.state === "charging");
       dot.classList.toggle("dis", !usable && st !== "on");
       dot.title = !usable && st !== "on"
         ? (outage ? "Adaptive night charge — off while an outage is scheduled (pre-charge)"
@@ -1104,18 +1173,19 @@ class PowmrInverterConsoleCard extends HTMLElement {
       parts.push(`
       <div class="bar">
         <div class="chips">${CHIPS.map((ch, i) => `
-          <div class="chip" data-ref="chip${i}"
+          <div class="chip${ch.dots ? " nodot" : ""}" data-ref="chip${i}"
                style="--cc:${ch.color};--cb:${ch.color}4D;--cf:${ch.color}14;--cs:${ch.color}99">
             <span class="ic" data-act="toggle" data-ent="${c[ch.cfg]}" role="button" tabindex="0"
-                  title="Toggle ${this._esc(ch.label)}"><ha-icon icon="${ch.icon}"></ha-icon></span>
-            <span class="lbl" data-more="${c[ch.cfg]}" role="button" tabindex="0">${this._esc(ch.label)}</span>${
-              ch.plan ? `<span class="sub" data-ref="chipSub${i}" data-more="${c.precharge_plan}" role="button" tabindex="0"></span>` : ""}
+                  aria-label="Toggle ${this._esc(ch.label)}"><ha-icon icon="${ch.icon}"></ha-icon></span>
+            <span class="lbl" data-more="${c[ch.cfg]}" role="button" tabindex="0">${this._esc(ch.label)}</span>
+${ch.dots ? "" : `
             <span class="dw" data-act="toggle" data-ent="${c[ch.cfg]}" role="button" tabindex="0"
-                  title="Toggle ${this._esc(ch.label)}"><span class="dot"></span></span>${
-              ch.adaptive ? `
-            <span class="dw ad" data-ref="chipAd${i}" data-act="toggle" data-ent="${c.adaptive_charge}" role="button" tabindex="0"
-                  title="Toggle adaptive night charge"><span class="dot"></span></span>
-            <span class="sub" data-ref="chipAdSub${i}" data-more="${c.adaptive_plan}" role="button" tabindex="0"></span>` : ""}
+                  aria-label="Toggle ${this._esc(ch.label)}"><span class="dot"></span></span>`}${
+              ch.dots ? AC_DOTS.map((d) => `
+            <span class="dw i" data-ref="chip${d.ref}${i}" data-act="toggle" data-ent="${c[d.cfg]}" role="button" tabindex="0"
+                  style="--dc:${d.color};--ds:${d.color}99" title="Toggle ${this._esc(d.label)}"><ha-icon icon="${d.icon}"></ha-icon></span>`).join("") + `
+            <span class="sub" data-ref="chipAdSub${i}" data-more="${c.adaptive_plan}" role="button" tabindex="0"></span>
+            <span class="sub" data-ref="chipPcSub${i}" data-more="${c.precharge_plan}" role="button" tabindex="0"></span>` : ""}
           </div>`).join("")}
         </div>
       </div>`);
@@ -1376,7 +1446,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
       c.charge_current, c.discharge_current,
       c.tariff_day, c.tariff_night, c.total_energy,
       c.max_charge_current, c.power_priority, c.ac_input_mode, c.tariff,
-    ].concat(CHIPS.map((ch) => c[ch.cfg]));
+    ].concat(CHIPS.map((ch) => c[ch.cfg]), [c.chip_night_only, c.chip_precharge]);
     const plan = (this._stateObj(c.precharge_plan) || {}).attributes || {};
     const ad = (this._stateObj(c.adaptive_plan) || {}).attributes || {};
     return ids.map((id) => this._state(id)).join("|")
@@ -1416,11 +1486,18 @@ class PowmrInverterConsoleCard extends HTMLElement {
       const st = this._state(c[ch.cfg]);
       node.classList.toggle("on", st === "on");
       node.classList.toggle("live", !!ch.live && acCharging);
-      node.title = (this._stateObj(c[ch.cfg]) || {}).attributes
+      node.title = ((this._stateObj(c[ch.cfg]) || {}).attributes
         ? ((this._stateObj(c[ch.cfg]).attributes.friendly_name || ch.label) + " — " + st)
-        : ch.label;
-      if (ch.plan) this._patchPlan(node, el["chipSub" + i], st);
-      if (ch.adaptive) this._patchAdaptive(el["chipAd" + i], el["chipAdSub" + i]);
+        : ch.label) + (HELP[ch.cfg] ? "\n" + HELP[ch.cfg] : "");
+      if (ch.dots) {
+        const nt = this._patchSwitchDot(el["chipNt" + i], c.chip_night_only, "Night only");
+        if (el["chipNt" + i]) el["chipNt" + i].classList.toggle("act", nt === "on" && acCharging);
+        this._patchAdaptive(el["chipAd" + i], el["chipAdSub" + i]);
+        this._patchPlan(el["chipPc" + i], el["chipPcSub" + i]);
+        // The description goes after whatever state line each one wrote.
+        [["chipNt", "chip_night_only"], ["chipAd", "adaptive_charge"], ["chipPc", "chip_precharge"]]
+          .forEach(([ref, key]) => { if (el[ref + i]) el[ref + i].title += "\n" + HELP[key]; });
+      }
     });
 
     // --- grid tile ---------------------------------------------------------

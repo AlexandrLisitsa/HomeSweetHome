@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # Adaptive night charge — the lowest current that still fills the pack by 07:00
 #
-#     input_boolean.adaptive_night_charge   the on/off, the second dot on the
+#     input_boolean.adaptive_night_charge   the on/off, the adaptive icon on the
 #                                           dashboard's AC charge chip
 #     sensor.adaptive_charge_plan           what it intends to do, and why
 #
@@ -144,7 +144,7 @@ template:
             {{ {'state': out.state, 'reason': out.reason, 'current': out.current,
                 'need_ah': out.need_ah, 'hours_left': out.hours_left, 'until': out.until} }}
     sensor:
-      # off        the dot is off
+      # off        the icon is off
       # inactive   on, but Auto and Night only are both off
       # day        on, outside 23:00-07:00
       # unknown    no battery reading; the select is left alone

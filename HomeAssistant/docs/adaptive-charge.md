@@ -8,7 +8,7 @@ then sitting full from 01:00.
 
 | Entity | What it is |
 | --- | --- |
-| `input_boolean.adaptive_night_charge` | the on/off: the second dot on the dashboard's **AC charge** chip |
+| `input_boolean.adaptive_night_charge` | the on/off: the adaptive icon (`mdi:tune-variant`) on the dashboard's **AC charge** chip |
 | `sensor.adaptive_charge_plan` | what it intends to do, and why |
 | `input_number.adaptive_charge_saved_current` | your own current, kept so it can be put back at 07:00 (0 means nothing is saved) |
 
@@ -21,7 +21,7 @@ The firmware already charges at night. **Auto** puts the inverter on Utility
 First, and **Night only** opens the BMS charger. Adaptive only chooses the amps,
 so it works only while one of those two is on:
 
-- With both off, the dot on the card is dimmed and a tap on it does nothing.
+- With both off, the icon on the card is dimmed and a tap on it does nothing.
   Switching it on from the more-info dialog is turned straight back off by the
   `adaptive_charge_guard` automation.
 - **It goes off with the charger.** Switching **AC charge** off by hand switches
@@ -42,7 +42,7 @@ automation switches adaptive off and sends a phone notification on the
 its own.
 
 - **It stays off** until you switch it back on after the outage. While a window
-  is pending, the dot is dimmed and the guard refuses to switch it on.
+  is pending, the icon is dimmed and the guard refuses to switch it on.
 - **Switching off hands your current back,** and that is the one moment the two
   could still collide. If a pre-charge is already charging, the drive
   automation holds the hand-back until it ends. A pre-charge counts as running
@@ -54,13 +54,13 @@ its own.
 ## The plan
 
 `sensor.adaptive_charge_plan` is re-rendered every 10 minutes (:00, :10, :20 …;
-23:00 is one of those), whenever the dot, Auto or Night only changes, and when HA
+23:00 is one of those), whenever the icon, Auto or Night only changes, and when HA
 starts. It used to be hourly, which left a step change waiting up to an hour to
 reach the select; now it lands within 10 minutes.
 
 | State | Meaning | Chip sub-label |
 | --- | --- | --- |
-| `off` | the dot is off | — |
+| `off` | the icon is off | — |
 | `inactive` | on, but Auto and Night only are both off | — |
 | `day` | on, outside 23:00–07:00 | **tonight** |
 | `unknown` | no battery reading; the current is left alone | — |
