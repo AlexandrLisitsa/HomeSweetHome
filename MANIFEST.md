@@ -110,6 +110,7 @@ ships bumps at least one of them:
 | --- | --- | --- |
 | Lovelace cards in `HomeAssistant/config/www/` | `const VERSION` at the top of the card | The resource URL's `?v=`, and the banner the card logs to the browser console |
 | The shared tooltip, `HomeAssistant/config/www/card-tip.js` | `export const VERSION` | The `?v=` in every card's `import`; a change to it bumps every card that imports it, or the browser keeps the old module |
+| The shared colour ramp, `HomeAssistant/config/www/card-ramp.js` | `export const VERSION` | The `?v=` in the power cards' `import`, the same way as `card-tip.js` |
 | `IRBridge` app | `versionName` in `app/build.gradle.kts` | `"version"` in the bridge's `/health` reply |
 | `MeterBots` service | `VERSION` in `service/app.py` | `"version"` in its `/health` reply |
 
