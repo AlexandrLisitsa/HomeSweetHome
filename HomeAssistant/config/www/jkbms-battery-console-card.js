@@ -88,8 +88,9 @@
 
 const CARD = "jkbms-battery-console-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
+import { ramp, rampCss } from "./card-ramp.js?v=1.0.0";
 
-const VERSION = "1.6.0";
+const VERSION = "1.6.1";
 
 /*
  * The design's palette, literal. Names are what the design calls them: two
@@ -400,6 +401,28 @@ const TEMP_WARN_LO = 10;
 const TEMP_WARN_HI = 40;
 const TEMP_BAD_HI = 50;
 const TEMP_AXIS_HI = 60;
+
+/*
+ * How far either side of a threshold the colour fades between two bands
+ * (card-ramp.js), per reading. At most half the narrowest gap between two of
+ * its thresholds, so every band keeps a solid middle: the cell's 3.50 and
+ * 3.60 are 0.10 V apart, so 0.05 V. CUR_FADE is a fraction of max_current_a,
+ * like the 0.5 and 0.8 it fades across.
+ */
+const SOC_FADE = 10;
+const CELL_FADE = 0.05;
+const DELTA_FADE = 0.010;
+const TEMP_FADE = 5;
+const CUR_FADE = 0.1;
+
+/* The bands as ramp edges -- [threshold, colour below, colour above]. */
+const SOC_EDGES = (bad, warn, ok) => [[SOC_RED, bad, warn], [SOC_GREEN, warn, ok]];
+const CELL_EDGES = (bad, warn, ok) => [[CELL_BAD_LO, bad, warn], [CELL_WARN_LO, warn, ok],
+  [CELL_WARN_HI, ok, warn], [CELL_BAD_HI, warn, bad]];
+const DELTA_EDGES = (bad, warn, ok) => [[DELTA_WARN, ok, warn], [DELTA_BAD, warn, bad]];
+const TEMP_EDGES = (bad, warn, ok) => [[TEMP_BAD_LO, bad, warn], [TEMP_WARN_LO, warn, ok],
+  [TEMP_WARN_HI, ok, warn], [TEMP_BAD_HI, warn, bad]];
+const CUR_EDGES = (bad, warn, ok) => [[0.5, ok, warn], [0.8, warn, bad]];
 
 /*
  * IBM Plex Sans is the design's text face and IBM Plex Mono every number in
@@ -959,9 +982,13 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
 
   // --- derivation ----------------------------------------------------------
 
+  /*
+   * Every _xColor below fades across its thresholds rather than snapping
+   * (card-ramp.js); the matching _xLabel word still changes on the threshold.
+   */
   _socColor(p) {
     if (p === null) return MUTED;
-    return p < SOC_RED ? BAD : p < SOC_GREEN ? WARN : OK;
+    return ramp(p, SOC_EDGES(BAD, WARN, OK), SOC_FADE);
   }
 
   _socLabel(p) {
@@ -972,9 +999,16 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
   /** Bands for ONE cell, in volts. The pack meter divides before calling this. */
   _cellColor(v) {
     if (v === null) return MUTED;
-    if (v < CELL_BAD_LO || v > CELL_BAD_HI) return BAD;
-    if (v < CELL_WARN_LO || v > CELL_WARN_HI) return WARN;
-    return OK;
+    return ramp(v, CELL_EDGES(BAD, WARN, OK), CELL_FADE);
+  }
+
+  /**
+   * Whether one cell is inside its green band -- the test, as opposed to the
+   * paint. _cellColor fades, so comparing its colour to OK would call a cell
+   * at 3.12 V out of tolerance because it is already tinting amber.
+   */
+  _cellOk(v) {
+    return v !== null && v >= CELL_WARN_LO && v <= CELL_WARN_HI;
   }
 
   _cellLabel(v) {
@@ -988,14 +1022,12 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
 
   _deltaColor(v) {
     if (v === null) return MUTED;
-    return v > DELTA_BAD ? BAD : v > DELTA_WARN ? WARN : OK;
+    return ramp(v, DELTA_EDGES(BAD, WARN, OK), DELTA_FADE);
   }
 
   _tempColor(t) {
     if (t === null) return MUTED;
-    if (t < TEMP_BAD_LO || t > TEMP_BAD_HI) return BAD;
-    if (t < TEMP_WARN_LO || t > TEMP_WARN_HI) return WARN;
-    return OK;
+    return ramp(t, TEMP_EDGES(BAD, WARN, OK), TEMP_FADE);
   }
 
   /**
@@ -1005,7 +1037,7 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
   _currentColor(a) {
     if (a === null) return MUTED;
     const r = Math.abs(a) / this._config.max_current_a;
-    return r > 0.8 ? BAD : r > 0.5 ? WARN : OK;
+    return ramp(r, CUR_EDGES(BAD, WARN, OK), CUR_FADE);
   }
 
   /**
@@ -1239,17 +1271,6 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
     if (el.chLine && !this._inflight.size && this._stale()) this._refreshChart();
   }
 
-  /** A gauge track: hard stops at the percentages the bands actually fall on. */
-  _trackCss(stops) {
-    const parts = [];
-    let from = 0;
-    stops.forEach(([to, color]) => {
-      parts.push(color + " " + from.toFixed(2) + "% " + to.toFixed(2) + "%");
-      from = to;
-    });
-    return "linear-gradient(90deg," + parts.join(",") + ")";
-  }
-
   /** The three meters, built from config so their tracks and ticks agree. */
   _meterSpecs() {
     const c = this._config;
@@ -1262,7 +1283,7 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
         key: "cap",
         label: "Capacity",
         more: c.soc,
-        track: this._trackCss([[SOC_RED, TRACK_BAD], [SOC_GREEN, TRACK_WARN], [100, TRACK_OK]]),
+        track: rampCss(SOC_EDGES(TRACK_BAD, TRACK_WARN, TRACK_OK), SOC_FADE),
         ticks: [["0", 0], [String(SOC_RED), SOC_RED], [String(SOC_GREEN), SOC_GREEN], ["100 %", 100]],
         mid: false,
       },
@@ -1272,11 +1293,12 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
         more: c.pack_current,
         /*
          * Mirrored about the centre: the same three bands either side of zero,
-         * so a 160 A discharge is as red as a 160 A charge. The stops are at
-         * 0.5 and 0.8 of the ceiling, which is where _currentColor changes.
+         * so a 160 A discharge is as red as a 160 A charge. The edges are at
+         * 0.5 and 0.8 of the ceiling, which is where _currentColor fades, and
+         * half the track is the whole ceiling -- hence the fade times 50.
          */
-        track: this._trackCss([[10, TRACK_BAD], [25, TRACK_WARN], [75, TRACK_OK],
-          [90, TRACK_WARN], [100, TRACK_BAD]]),
+        track: rampCss([[10, TRACK_BAD, TRACK_WARN], [25, TRACK_WARN, TRACK_OK],
+          [75, TRACK_OK, TRACK_WARN], [90, TRACK_WARN, TRACK_BAD]], CUR_FADE * 50),
         ticks: [["−" + amp, 0], ["−" + (amp / 2), 25], ["0", 50],
           ["+" + (amp / 2), 75], ["+" + amp + " A", 100]],
         mid: true,
@@ -1285,10 +1307,7 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
         key: "volt",
         label: "Pack voltage",
         more: c.pack_voltage,
-        track: this._trackCss([
-          [cellPct(CELL_BAD_LO), TRACK_BAD], [cellPct(CELL_WARN_LO), TRACK_WARN],
-          [cellPct(CELL_WARN_HI), TRACK_OK], [cellPct(CELL_BAD_HI), TRACK_WARN],
-          [100, TRACK_BAD]]),
+        track: rampCss(CELL_EDGES(TRACK_BAD, TRACK_WARN, TRACK_OK), CELL_FADE, cellPct),
         ticks: [
           [(CELL_BAD_LO * cells).toFixed(1), cellPct(CELL_BAD_LO)],
           [(CELL_WARN_LO * cells).toFixed(1), cellPct(CELL_WARN_LO)],
@@ -1853,11 +1872,11 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
         const col = this._cellColor(v);
         const drift = drifting(v);
         bar.style.height = this._cellPct(v).toFixed(2) + "%";
-        bar.style.background = drift && col === OK ? WARN : col;
+        bar.style.background = drift && this._cellOk(v) ? WARN : col;
         // A cell whose sensor is unavailable has not failed a tolerance test,
         // it has failed to answer. Counting it as out of tolerance would say
         // something about the pack that nothing measured.
-        if (v !== null && (col !== OK || drift)) out++;
+        if (v !== null && (!this._cellOk(v) || drift)) out++;
         const wrap = el["pcellWrap" + i];
         if (wrap) wrap.dataset.tip = this._tip("C" + (i + 1) + " — " + this._reading(v, 3, "V"), "cell");
       });
@@ -1927,7 +1946,7 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
         down.style.background = col;
         if (volt) {
           volt.textContent = this._fmt(v, 3);
-          volt.style.color = col === OK ? TXT : col;
+          volt.style.color = dev !== null && !drifting(v) && this._cellOk(v) ? TXT : col;
         }
         const bar = el["cvBar" + i];
         if (bar) {

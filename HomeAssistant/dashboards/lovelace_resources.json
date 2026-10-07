@@ -11,12 +11,12 @@
       },
       {
         "id": "504a7eef6aab46e38dae85aab34e7ea7",
-        "url": "/local/powmr-inverter-console-card.js?v=2.10.0",
+        "url": "/local/powmr-inverter-console-card.js?v=2.11.1",
         "type": "module"
       },
       {
         "id": "7005a1469b8546f2b0f05a4e7ab9c216",
-        "url": "/local/jkbms-battery-console-card.js?v=1.6.0",
+        "url": "/local/jkbms-battery-console-card.js?v=1.6.1",
         "type": "module"
       },
       {

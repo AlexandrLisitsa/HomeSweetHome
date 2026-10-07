@@ -209,21 +209,25 @@ async function inverterSuite() {
     const vl = [[null, "NO DATA"], [199.9, "UNDERVOLTAGE"], [200, "LOW"], [220, "LOW"], [220.1, "NOMINAL"],
       [239.9, "NOMINAL"], [240, "HIGH"], [250, "HIGH"], [250.1, "OVERVOLTAGE"], [0, "UNDERVOLTAGE"]];
     vl.forEach(([v, w]) => eq("_vLabel(" + v + ")", c._vLabel(v), w));
-    const vc = [[null, "#5C616B"], [199.9, BAD_C], [200, WARN_C], [220, WARN_C], [230, OK_C], [240, WARN_C],
-      [250, WARN_C], [250.1, BAD_C]];
+    // Colours fade across each edge (card-ramp.js): solid inside a band, half
+    // of each on the edge. The words above still snap on the edge.
+    const RA = "#B57451", AG = "#838D58"; // red/amber and amber/green, half-half
+    const vc = [[null, "#5C616B"], [190, BAD_C], [195, BAD_C], [200, RA], [205, WARN_C], [210, WARN_C],
+      [220, AG], [230, OK_C], [235, OK_C], [240, AG], [245, WARN_C], [250, RA], [255, BAD_C], [300, BAD_C]];
     vc.forEach(([v, w]) => eq("_vColor(" + v + ")", c._vColor(v), w));
     const ll = [[null, "NO DATA"], [0, "NORMAL"], [60, "NORMAL"], [60.1, "ELEVATED"], [85, "ELEVATED"],
       [85.1, "HEAVY"], [100, "HEAVY"], [100.1, "OVERLOAD"]];
     ll.forEach(([v, w]) => eq("_loadLabel(" + v + ")", c._loadLabel(v), w));
-    eq("_loadColor(60)", c._loadColor(60), OK_C);
-    eq("_loadColor(61)", c._loadColor(61), WARN_C);
-    eq("_loadColor(86)", c._loadColor(86), BAD_C);
+    const lc = [[null, "#5C616B"], [0, OK_C], [50, OK_C], [60, AG], [70, WARN_C], [75, WARN_C], [85, RA],
+      [95, BAD_C], [140, BAD_C]];
+    lc.forEach(([v, w]) => eq("_loadColor(" + v + ")", c._loadColor(v), w));
     const sl = [[null, "NO DATA"], [0, "CRITICAL"], [19.9, "CRITICAL"], [20, "MODERATE"], [69.9, "MODERATE"],
       [70, "HEALTHY"], [94.9, "HEALTHY"], [95, "FULL"], [100, "FULL"], [-3, "CRITICAL"]];
     sl.forEach(([v, w]) => eq("_socLabel(" + v + ")", c._socLabel(v), w));
-    eq("_socColor(19)", c._socColor(19), BAD_C);
-    eq("_socColor(20)", c._socColor(20), WARN_C);
-    eq("_socColor(70)", c._socColor(70), OK_C);
+    const sc = [[null, "#5C616B"], [-5, BAD_C], [10, BAD_C], [20, RA], [30, WARN_C], [45, WARN_C],
+      [60, WARN_C], [70, AG], [80, OK_C], [120, OK_C]];
+    sc.forEach(([v, w]) => eq("_socColor(" + v + ")", c._socColor(v), w));
+    eq("_socColor moves every percent", c._socColor(71) !== c._socColor(72), true);
     eq("_pct null is 0", c._pct(null, 190, 70), 0);
     eq("_pct clamps low", c._pct(100, 190, 70), 0);
     eq("_pct clamps high", c._pct(400, 190, 70), 100);
@@ -893,7 +897,8 @@ async function inverterSuite() {
 
     rerender(r, (s) => { s[E.mw] = S("4200"); });
     eq("over 60 %: elevated, amber", [r.el.dirState.textContent, r.el.dirVal.style.color], ["ELEVATED", WARN_C]);
-    rerender(r, (s) => { s[E.mw] = S("5400"); });
+    // 95 %: past the 85 % edge's fade, so solid red (90 % would still tint amber).
+    rerender(r, (s) => { s[E.mw] = S("5700"); });
     eq("over 85 %: heavy, red", [r.el.dirState.textContent, r.el.dirVal.style.color], ["HEAVY", BAD_C]);
     rerender(r, (s) => { s[E.mw] = S("6600"); });
     eq("past the breaker: overload, marker pinned", [r.el.dirState.textContent, r.el.dirMark.style.left], ["OVERLOAD", "100.00%"]);
@@ -931,7 +936,8 @@ async function inverterSuite() {
     eq("discharging sub", r.el.battSub.textContent, "26.8 V · -300 W out · 11.2 A");
     eq("discharging links the discharge current", r.el.battSub.getAttribute("data-more"), E.dc);
     eq("battery run reversed", r.el.runBatt.style._props["--dir"], "reverse");
-    eq("critical soc red", r.el.socVal.style.color, BAD_C);
+    // 15 % is inside the 20 % edge's fade: a quarter of the way to amber.
+    eq("critical soc mostly red", r.el.socVal.style.color, "#B86B56");
     rerender(r, (s) => { s[E.bw] = S("-2"); });
     eq("-2 W is idle", r.el.battState.textContent, "IDLE · CRITICAL");
     rerender(r, (s) => { s[E.bw] = S("800"); s[E.cc] = S("0"); });
@@ -1213,20 +1219,27 @@ async function batterySuite() {
     eq("_socColor null", c._socColor(null), MUTED);
     [[null, "NO DATA"], [2.8999, "UNDERVOLTAGE"], [2.9, "LOW"], [3.0999, "LOW"], [3.1, "NOMINAL"], [3.5, "NOMINAL"],
       [3.5001, "HIGH"], [3.6, "HIGH"], [3.6001, "OVERVOLTAGE"]].forEach(([v, w]) => eq("_cellLabel(" + v + ")", c._cellLabel(v), w));
-    [[null, MUTED], [2.89, BAD], [2.9, WARN], [3.1, OK], [3.5, OK], [3.55, WARN], [3.61, BAD]]
+    // Colours fade across each edge (card-ramp.js): solid inside a band, half
+    // of each on the edge. The words above still snap on the edge.
+    const RA = "#B57451", AG = "#838D58"; // red/amber and amber/green, half-half
+    [[null, MUTED], [2.8, BAD], [2.84, BAD], [2.9, RA], [2.96, WARN], [3.04, WARN], [3.1, AG], [3.16, OK],
+      [3.44, OK], [3.5, AG], [3.6, RA], [3.66, BAD]]
       .forEach(([v, w]) => eq("_cellColor(" + v + ")", c._cellColor(v), w));
-    [[null, MUTED], [0, OK], [0.02, OK], [0.0201, WARN], [0.05, WARN], [0.0501, BAD]]
+    [[null, MUTED], [0, OK], [0.005, OK], [0.02, AG], [0.035, WARN], [0.05, RA], [0.065, BAD]]
       .forEach(([v, w]) => eq("_deltaColor(" + v + ")", c._deltaColor(v), w));
-    [[null, MUTED], [-0.1, BAD], [0, WARN], [9.9, WARN], [10, OK], [40, OK], [40.1, WARN], [50, WARN], [50.1, BAD]]
+    [[null, MUTED], [-10, BAD], [0, RA], [5, WARN], [10, AG], [25, OK], [40, AG], [45, WARN], [50, RA], [60, BAD]]
       .forEach(([v, w]) => eq("_tempColor(" + v + ")", c._tempColor(v), w));
-    [[null, MUTED], [0, OK], [100, OK], [100.2, WARN], [-160, WARN], [-160.2, BAD], [500, BAD]]
+    [[null, MUTED], [0, OK], [50, OK], [100, AG], [130, WARN], [-130, WARN], [-160, RA], [200, BAD], [500, BAD]]
       .forEach(([v, w]) => eq("_currentColor(" + v + ") of 200 A", c._currentColor(v), w));
+    eq("colour moves every millivolt", c._cellColor(3.12) !== c._cellColor(3.13), true);
+    eq("_cellOk", [2.95, 3.1, 3.3, 3.5, 3.51, null].map((v) => c._cellOk(v)), [false, true, true, true, false, false]);
     eq("_cellPct floor", c._cellPct(2.5), 0);
     eq("_cellPct ceiling", c._cellPct(4), 100);
     eq("_cellPct null", c._cellPct(null), 0);
     eq("_scale delta to mV", c._scale({ mul: 1000 }, 0.0123), 12.3);
     eq("_scale passthrough", c._scale({}, 5), 5);
-    eq("_trackCss", c._trackCss([[20, "r"], [100, "g"]]), "linear-gradient(90deg,r 0.00% 20.00%,g 20.00% 100.00%)");
+    eq("capacity track fades where the paint does", c._meterSpecs()[0].track,
+      "linear-gradient(90deg,#5c2f2a 0%,#5c2f2a 10.00%,#6b5520 30.00%,#6b5520 60.00%,#245c40 80.00%,#245c40 100%)");
   }
 
   group = "battery/activity: ";
@@ -1412,7 +1425,7 @@ async function batterySuite() {
     const c = r.c;
     c._hass = mkHass({ [E.cap]: S("28"), [E.v]: S("29.0") });
     eq("cap band from capacity/nameplate (10 %)", c._seriesColor({ band: "cap" }), BAD);
-    eq("pack band per cell (3.625 V)", c._seriesColor({ band: "pack" }), BAD);
+    eq("pack band per cell (3.625 V), three quarters to red", c._seriesColor({ band: "pack" }), "#B86B56");
     c._hass = mkHass({});
     eq("bands with nothing known", [c._seriesColor({ band: "cap" }), c._seriesColor({ band: "pack" }),
       c._seriesColor({ band: "delta" }), c._seriesColor({ band: "temp", cfg: "temp_1" })], [MUTED, MUTED, MUTED, MUTED]);
@@ -1468,7 +1481,7 @@ async function batterySuite() {
     r = mk(base([3.30, 3.30, 3.30, 3.30, 3.30, 3.30, 3.30, 3.319]));
     eq("19 mV is within", r.el.packSub.textContent, "8 cells in series · all within tolerance");
     r = mk(Object.assign(base([3.30, 3.30, 3.30, 3.30, 3.30, 3.30, 3.30, 3.32]), { [E.d]: S("0.02") }));
-    eq("the delta reading itself calls 20 mV OK", r.el.cvDelta.style.color, OK);
+    eq("the delta reading paints 20 mV half green, half amber", r.el.cvDelta.style.color, "#838D58");
     eq("a cell exactly 20 mV from the median is within tolerance, as _deltaColor treats 20 mV",
       r.el.packSub.textContent, "8 cells in series · all within tolerance");
 
@@ -1501,7 +1514,7 @@ async function batterySuite() {
     const r = mk(base());
     const t = (v) => { rerender(r, (s) => { s[E.t1] = S(v); }); return [r.el.tVal0.textContent, r.el.tFill0.style.width, r.el.tVal0.style.color]; };
     eq("freezing", t("-5"), ["-5.0 °C", "0.00%", BAD]);
-    eq("0 °C", t("0"), ["0.0 °C", "0.00%", WARN]);
+    eq("0 °C, half red, half amber", t("0"), ["0.0 °C", "0.00%", "#B57451"]);
     eq("hot", t("70"), ["70.0 °C", "100.00%", BAD]);
     eq("unknown", t("unavailable"), ["— °C", "0.00%", MUTED]);
   }
@@ -2419,6 +2432,15 @@ function filesSuite() {
   fs.readdirSync(WWW).filter((f) => f.endsWith(".js")).forEach((f) => {
     const b = fs.readFileSync(path.join(WWW, f));
     check(f + " has no NUL byte (write it as \\u0000)", b.indexOf(0) < 0, "at byte " + b.indexOf(0));
+  });
+  // The shared colour ramp is fetched at the ?v= in each import, so an edit to
+  // it that is not mirrored there leaves the browser on the old module.
+  const rampV = (fs.readFileSync(path.join(WWW, "card-ramp.js"), "utf8")
+    .match(/^export const VERSION = "([^"]+)";/m) || [])[1];
+  ["powmr-inverter-console-card.js", "jkbms-battery-console-card.js"].forEach((f) => {
+    const m = fs.readFileSync(path.join(WWW, f), "utf8")
+      .match(/^import \{ ramp, rampCss \} from "\.\/card-ramp\.js\?v=([^"]+)";$/m);
+    eq(f + " imports card-ramp.js at its VERSION", m && m[1], rampV);
   });
 }
 

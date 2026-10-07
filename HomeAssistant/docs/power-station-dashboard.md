@@ -144,6 +144,15 @@ Colour follows state rather than decoration:
 - **State of charge**: red below 20 %, amber below 70 %, green from 70 % (the
   card's `SOC_RED` / `SOC_GREEN`; the meter's track and its tick labels use the
   same two numbers).
+- **Colours fade, words snap.** Every banded reading on both tabs (voltages,
+  load, state of charge, current, cell voltages, cell spread, temperatures)
+  fades between its two colours across each threshold instead of jumping:
+  solid inside a band, half of each on the threshold itself, so a bar, its
+  number and its chart line shift a little with every step of the reading. The
+  status word (HEALTHY, HIGH, ...) still changes exactly on the threshold, and
+  so do the "out of tolerance" counts. Both cards get the fade from the shared
+  `config/www/card-ramp.js`; each card's `*_FADE` constants say how wide it is
+  (10 % for state of charge, 5 V for grid voltage, 0.05 V for a cell).
 - **The flow tile** is green only while charging. While discharging it is drawn
   in greys and white on purpose: the energy leaving the pack is the number to
   read, not an alert.

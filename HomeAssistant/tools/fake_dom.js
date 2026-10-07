@@ -409,16 +409,16 @@ function fire(node, type, extra) {
 
 /**
  * A card's source as a plain script. The cards are ES modules that import the
- * shared tooltip (config/www/card-tip.js); vm runs scripts, so the import is
- * replaced by that module's own source, `export`s dropped, in a scope of its
- * own so its names cannot clash with the card's.
+ * shared modules in config/www (card-tip.js, card-ramp.js); vm runs scripts,
+ * so each import is replaced by that module's own source, `export`s dropped,
+ * in a scope of its own so its names cannot clash with the card's.
  */
 function cardSource(file) {
   const src = fs.readFileSync(path.join(WWW, file), "utf8");
-  return src.replace(/^import \{ cardTip \} from "\.\/card-tip\.js\?v=[^"]+";$/m, () =>
-    "const { cardTip } = (function () {\n"
-    + fs.readFileSync(path.join(WWW, "card-tip.js"), "utf8").replace(/^export /gm, "")
-    + "\nreturn { cardTip: cardTip };\n})();");
+  return src.replace(/^import \{ ([\w, ]+) \} from "\.\/(card-[\w-]+\.js)\?v=[^"]+";$/gm, (_m, names, mod) =>
+    "const { " + names + " } = (function () {\n"
+    + fs.readFileSync(path.join(WWW, mod), "utf8").replace(/^export /gm, "")
+    + "\nreturn { " + names + " };\n})();");
 }
 
 /** Run a card file in a sandbox; `extra` adds or overrides sandbox globals. */

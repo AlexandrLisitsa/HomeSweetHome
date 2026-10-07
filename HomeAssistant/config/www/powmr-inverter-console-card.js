@@ -74,8 +74,9 @@
 
 const CARD = "powmr-inverter-console-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
+import { ramp, rampCss } from "./card-ramp.js?v=1.0.0";
 
-const VERSION = "2.10.0";
+const VERSION = "2.11.1";
 
 /*
  * Brand colours stay literal: they identify a leg of the diagram (amber =
@@ -408,6 +409,20 @@ const DASH = 14; // px, one gradient period -- must match @keyframes flowX/flowY
  */
 const SOC_RED = 20;
 const SOC_GREEN = 70;
+/*
+ * How far either side of a threshold the colour fades between two bands
+ * (card-ramp.js), per reading. At most half the narrowest gap between two of
+ * its thresholds, so every band keeps a solid middle: grid voltage has 240 and
+ * 250 only 10 V apart, so 5 V.
+ */
+const SOC_FADE = 10;
+const V_FADE = 5;
+const LOAD_FADE = 10;
+
+/* The bands as ramp edges -- [threshold, colour below, colour above]. */
+const V_EDGES = (bad, warn, ok) => [[200, bad, warn], [220, warn, ok], [240, ok, warn], [250, warn, bad]];
+const LOAD_EDGES = (bad, warn, ok) => [[60, ok, warn], [85, warn, bad]];
+const SOC_EDGES = (bad, warn, ok) => [[SOC_RED, bad, warn], [SOC_GREEN, warn, ok]];
 
 /*
  * Space Grotesk ships no Cyrillic subset from Google, so Cyrillic in the sans
@@ -597,10 +612,11 @@ ha-card {
 .t-batt .t-row .t-sub { margin-top: 0; padding-bottom: 4px; cursor: pointer; }
 .t-batt .t-row .t-sub:hover { color: #B9BEC7; }
 .gauge { position: relative; height: 6px; border-radius: 6px; margin-top: 14px; opacity: .55; }
-.gauge.volt { background: linear-gradient(90deg, #BB635B 0 14.3%, #AE8446 14.3% 42.9%, #589569 42.9% 71.4%, #AE8446 71.4% 85.7%, #BB635B 85.7% 100%); }
-.gauge.load { background: linear-gradient(90deg, #589569 0 60%, #AE8446 60% 85%, #BB635B 85% 100%); }
+/* The tracks fade across each threshold exactly where the paint does (card-ramp.js). */
+.gauge.volt { background: ${rampCss(V_EDGES(BAD, WARN, OK), V_FADE, (v) => (v - V_LO) / V_SPAN * 100)}; }
+.gauge.load { background: ${rampCss(LOAD_EDGES(BAD, WARN, OK), LOAD_FADE)}; }
 .gauge.soc { opacity: 1; overflow: hidden;
-  background: linear-gradient(90deg, #2E1618 0 20%, #2B2313 20% 70%, #12241C 70% 100%); }
+  background: ${rampCss(SOC_EDGES("#2E1618", "#2B2313", "#12241C"), SOC_FADE)}; }
 .socfill { height: 100%; border-radius: 6px; width: 0; transition: width .4s;
   /*
    * The fill fades in from 40% alpha of its own colour, so the bar reads as a
@@ -927,13 +943,13 @@ class PowmrInverterConsoleCard extends HTMLElement {
 
   /*
    * Grid voltage bands, from the design. The gauge's coloured zones use the
-   * same stops, so a mark sitting in the amber band always reads HIGH or LOW.
+   * same edges, so a mark sitting in the amber band always reads HIGH or LOW.
+   * The colour fades V_FADE either side of each edge (card-ramp.js); the word
+   * from _vLabel still changes on the edge itself.
    */
   _vColor(v) {
     if (v === null) return "#5C616B";
-    if (v > 250 || v < 200) return BAD;
-    if (v >= 240 || v <= 220) return WARN;
-    return OK;
+    return ramp(v, V_EDGES(BAD, WARN, OK), V_FADE);
   }
 
   _vLabel(v) {
@@ -947,7 +963,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
 
   _loadColor(p) {
     if (p === null) return "#5C616B";
-    return p > 85 ? BAD : p > 60 ? WARN : OK;
+    return ramp(p, LOAD_EDGES(BAD, WARN, OK), LOAD_FADE);
   }
 
   _loadLabel(p) {
@@ -955,9 +971,10 @@ class PowmrInverterConsoleCard extends HTMLElement {
     return p > 100 ? "OVERLOAD" : p > 85 ? "HEAVY" : p > 60 ? "ELEVATED" : "NORMAL";
   }
 
+  /** SOC_RED/SOC_GREEN, faded SOC_FADE either side -- the word still snaps. */
   _socColor(p) {
     if (p === null) return "#5C616B";
-    return p < SOC_RED ? BAD : p < SOC_GREEN ? WARN : OK;
+    return ramp(p, SOC_EDGES(BAD, WARN, OK), SOC_FADE);
   }
 
   _socLabel(p) {

@@ -17,7 +17,8 @@ read before it goes live, and a `git revert` if it was wrong.
   battery, [`docs/power-station-dashboard.md`](docs/power-station-dashboard.md)),
   Climate, Shutdowns (DTEK) and Home (floor plan, see
   [`../FloorPlan`](../FloorPlan)) dashboards, plus `card-tip.js`, the tooltip
-  every card imports ([`docs/dashboard-tooltips.md`](docs/dashboard-tooltips.md)).
+  every card imports ([`docs/dashboard-tooltips.md`](docs/dashboard-tooltips.md)), and
+  `card-ramp.js`, the colour fade the two power cards share.
   Each card is versioned (see [MANIFEST, Versions](../MANIFEST.md#6-versions)).
 - **The DTEK outage schedule**: a poller for the distributor's queue and hourly
   schedule, so a planned outage can be told apart from a fault
