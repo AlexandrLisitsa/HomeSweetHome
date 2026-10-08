@@ -110,8 +110,7 @@ async function inverterSuite() {
     dc: "sensor.powmr_inverter_battery_discharge_current",
     td: "sensor.electricity_meter_tariff_day",
     tn: "sensor.electricity_meter_tariff_night",
-    tdc: "sensor.electricity_meter_tariff_day_cost",
-    tnc: "sensor.electricity_meter_tariff_night_cost",
+    np: "input_number.grid_night_price",
     tot: "sensor.electricity_meter_energy",
     mw: "sensor.electricity_meter_power",
     maxc: "select.powmr_inverter_max_ac_charge_current",
@@ -855,11 +854,7 @@ async function inverterSuite() {
     check("labelled as this month's, from the meter",
       r.c.shadowRoot.querySelectorAll(".erow .en").map((n) => n.textContent).join("|") === "Day this month|Night this month|Meter total");
     eq("rows open the meter's entities", [0, 1, 2].map((i) => r.el["erow" + i].getAttribute("data-more")), [E.td, E.tn, E.tot]);
-    rerender(r, (s) => { s[E.tdc] = S("12.3456"); s[E.tnc] = S("5.263"); });
-    eq("with costs", [r.el.eval0.textContent, r.el.eval1.textContent], ["123.46 kWh12.35 ₴", "78.90 kWh5.26 ₴"]);
-    eq("cost is its own element", r.el.eval0.innerHTML, "123.46 kWh<small>12.35 ₴</small>");
-    rerender(r, (s) => { s[E.tdc] = S("unavailable"); });
-    eq("an unavailable cost is left out", r.el.eval0.textContent, "123.46 kWh");
+    eq("no Energy prices: no cost", r.el.eval0.innerHTML.indexOf("<small>"), -1);
     rerender(r, (s) => { s[E.tariff] = S("night"); });
     check("night row active", !r.el.erow0.classList.contains("on") && r.el.erow1.classList.contains("on"));
     rerender(r, (s) => { s[E.tariff] = S("unavailable"); s[E.td] = S("unknown"); });
@@ -867,6 +862,49 @@ async function inverterSuite() {
     eq("unknown meter", r.el.eval0.textContent, "— kWh");
     check("the total never shows a cost", r.el.eval2.innerHTML.indexOf("<small>") < 0);
     check("the total is never 'active'", !r.el.erow2.classList.contains("on"));
+  }
+
+  /* --- energy rows: cost at the Energy dashboard's price ---------------------- */
+  group = "inverter/energy cost: ";
+  {
+    // Today's prefs shape: one flat grid source per meter, one price each,
+    // the night one a price entity.
+    const prefs = { energy_sources: [
+      { type: "battery", stat_energy_from: "sensor.x" },
+      { type: "grid", stat_energy_from: E.td, number_energy_price: 4.32, entity_energy_price: null },
+      { type: "grid", stat_energy_from: E.tn, number_energy_price: null, entity_energy_price: E.np },
+      { type: "gas", stat_energy_from: "sensor.gas", number_energy_price: 9.99 },
+    ] };
+    const st = base();
+    st[E.np] = S("2.16");
+    const r = mk(st, {}, { callWS: (m) => (m.type === "energy/get_prefs" ? prefs : {}) });
+    await flush();
+    check("asked the Energy prefs once", r.h.ws.filter((m) => m.type === "energy/get_prefs").length === 1);
+    eq("kWh times price", [r.el.eval0.textContent, r.el.eval1.textContent], ["123.46 kWh533.33 ₴", "78.90 kWh170.42 ₴"]);
+    eq("cost is its own element", r.el.eval0.innerHTML, "123.46 kWh<small>533.33 ₴</small>");
+    check("cost in the tooltip", head(r.el.erow0.dataset.tip).indexOf("533.33 ₴") > 0, r.el.erow0.dataset.tip);
+    check("the total never shows a cost", r.el.eval2.innerHTML.indexOf("<small>") < 0);
+    // The bug: HA's own *_cost sensors restart at 0. They are not read at all.
+    rerender(r, (s) => { s["sensor.electricity_meter_tariff_day_cost"] = S("0.0"); });
+    eq("a restarted *_cost sensor changes nothing", r.el.eval0.textContent, "123.46 kWh533.33 ₴");
+    rerender(r, (s) => { s[E.np] = S("3"); });
+    eq("a price entity is read live", r.el.eval1.textContent, "78.90 kWh236.70 ₴");
+    rerender(r, (s) => { s[E.np] = S("unavailable"); });
+    eq("an unavailable price is left out", r.el.eval1.textContent, "78.90 kWh");
+    rerender(r, (s) => { s[E.td] = S("unknown"); });
+    eq("unknown kWh: no cost", r.el.eval0.textContent, "— kWh");
+    check("not asked again within the hour", r.h.ws.filter((m) => m.type === "energy/get_prefs").length === 1);
+
+    // Older prefs nest the meters under flow_from.
+    const old = { energy_sources: [{ type: "grid", flow_from: [
+      { stat_energy_from: E.td, number_energy_price: 2 }, { stat_energy_from: E.tn, number_energy_price: 1 }] }] };
+    const r2 = mk(base(), {}, { callWS: (m) => (m.type === "energy/get_prefs" ? old : {}) });
+    await flush();
+    eq("flow_from prefs", [r2.el.eval0.textContent, r2.el.eval1.textContent], ["123.46 kWh246.91 ₴", "78.90 kWh78.90 ₴"]);
+
+    const r3 = mk(base(), {}, { callWS: (m) => { if (m.type === "energy/get_prefs") throw new Error("unauthorized"); return {}; } });
+    await flush();
+    eq("prefs refused: kWh only", r3.el.eval0.textContent, "123.46 kWh");
   }
 
   /* --- the Meter tile ------------------------------------------------------------ */
