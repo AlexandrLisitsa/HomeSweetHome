@@ -76,7 +76,7 @@ const CARD = "powmr-inverter-console-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 import { ramp, rampCss } from "./card-ramp.js?v=1.0.0";
 
-const VERSION = "2.11.1";
+const VERSION = "2.11.2";
 
 /*
  * Brand colours stay literal: they identify a leg of the diagram (amber =
@@ -134,13 +134,11 @@ const DEFAULTS = {
   // The flat's electricity meter (ElectricityMeter/, packages/
   // electricity_meter.yaml): what the grid really delivers, the boiler's
   // circuit included, which never passes through the inverter. Its power is
-  // the Meter tile under Grid; its tariff counters and their Energy-dashboard
-  // costs are the energy rows.
+  // the Meter tile under Grid; its tariff counters, priced at the Energy
+  // dashboard's rates (see _loadPrices), are the energy rows.
   meter_power: "sensor.electricity_meter_power",
   meter_day: "sensor.electricity_meter_tariff_day",
   meter_night: "sensor.electricity_meter_tariff_night",
-  meter_day_cost: "sensor.electricity_meter_tariff_day_cost",
-  meter_night_cost: "sensor.electricity_meter_tariff_night_cost",
   meter_total: "sensor.electricity_meter_energy",
   meter_tariff: "select.electricity_meter_tariff",
   // Controls
@@ -354,11 +352,11 @@ const SERIES = [
  * Cumulative meters: a rising total charts as a ramp, so these are rows. All
  * from the electricity meter -- what YASNO bills -- not the inverter's
  * estimate, which misses the boiler's circuit. The tariff rows are this
- * month's, with their cost from the Energy dashboard when it has one.
+ * month's, with their cost at the Energy dashboard's price when it has one.
  */
 const ENERGY = [
-  { key: "mtr_d", cfg: "meter_day", cost: "meter_day_cost", short: "Day this month", unit: "kWh", dec: 2, tariff: "day", help: "erow_day" },
-  { key: "mtr_n", cfg: "meter_night", cost: "meter_night_cost", short: "Night this month", unit: "kWh", dec: 2, tariff: "night", help: "erow_night" },
+  { key: "mtr_d", cfg: "meter_day", priced: true, short: "Day this month", unit: "kWh", dec: 2, tariff: "day", help: "erow_day" },
+  { key: "mtr_n", cfg: "meter_night", priced: true, short: "Night this month", unit: "kWh", dec: 2, tariff: "night", help: "erow_night" },
   { key: "mtr_t", cfg: "meter_total", short: "Meter total", unit: "kWh", dec: 1, help: "erow_total" },
 ];
 
@@ -813,6 +811,11 @@ class PowmrInverterConsoleCard extends HTMLElement {
     this._hist = new Map();
     this._inflight = new Map();
     this._token = null;
+    // The Energy dashboard's grid prices, by the meter they are set on; see
+    // _loadPrices.
+    this._prices = null;
+    this._pricesAt = 0;
+    this._pricesBusy = false;
     // Where the cursor is, so a redraw can put the readout back under it
     // rather than being held off until the pointer leaves.
     this._hovering = false;
@@ -872,7 +875,66 @@ class PowmrInverterConsoleCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    this._loadPrices();
     if (this._config) this._render();
+  }
+
+  /*
+   * The tariff rows' money is the month's kWh times the Energy dashboard's
+   * price, worked out here rather than read off its sensor.*_cost.
+   *
+   * Those cost sensors are not restored: every HA start brings them back at 0
+   * with a fresh last_reset. The Energy dashboard does not mind, it sums
+   * statistics across resets, but the state itself is "since the last
+   * restart", so the card showed 0.00 ₴ against a half-month of kWh after
+   * every `ha core restart`. The kWh are monthly utility meters, which do come back.
+   *
+   * The price comes from the Energy prefs so that it is set in one place: a
+   * fixed number, or a price entity read live. Asked again hourly, so a rate
+   * changed in the Energy settings lands without a reload. One price for the
+   * whole month: a rate changed mid-month reprices all of it, which the
+   * Energy dashboard does not do.
+   */
+  _loadPrices() {
+    if (!this._hass || typeof this._hass.callWS !== "function" || this._pricesBusy) return;
+    if (this._prices && Date.now() - this._pricesAt < 3600000) return;
+    this._pricesBusy = true;
+    this._pricesAt = Date.now();
+    Promise.resolve()
+      .then(() => this._hass.callWS({ type: "energy/get_prefs" }))
+      .then((prefs) => {
+        const map = {};
+        ((prefs && prefs.energy_sources) || []).forEach((src) => {
+          if (!src || src.type !== "grid") return;
+          // Older Energy prefs nest the meters under flow_from.
+          const flows = Array.isArray(src.flow_from) ? src.flow_from : [src];
+          flows.forEach((f) => {
+            if (!f || typeof f.stat_energy_from !== "string") return;
+            if (typeof f.entity_energy_price === "string" && f.entity_energy_price) {
+              map[f.stat_energy_from] = { entity: f.entity_energy_price };
+            } else if (Number.isFinite(f.number_energy_price)) {
+              map[f.stat_energy_from] = { number: f.number_energy_price };
+            }
+          });
+        });
+        this._prices = map;
+      })
+      .catch(() => {
+        // No Energy dashboard, or no admin: the rows go without money. Kept
+        // as an empty map so this is not asked again until the hour is up.
+        this._prices = this._prices || {};
+      })
+      .then(() => {
+        this._pricesBusy = false;
+        if (this._config && this._hass) this._render();
+      });
+  }
+
+  /** The price per kWh set on this meter, or null. */
+  _price(id) {
+    const p = this._prices && this._prices[id];
+    if (!p) return null;
+    return p.entity ? this._num(p.entity) : p.number;
   }
 
   connectedCallback() {
@@ -1597,15 +1659,17 @@ ${ch.dots ? "" : `
       c.ac_output_voltage, c.load_power, c.load_percentage, c.uptime,
       c.battery_power, c.battery_soc, c.battery_voltage,
       c.charge_current, c.discharge_current,
-      c.meter_power, c.meter_day, c.meter_night, c.meter_day_cost, c.meter_night_cost, c.meter_total,
+      c.meter_power, c.meter_day, c.meter_night, c.meter_total,
       c.max_charge_current, c.power_priority, c.ac_input_mode, c.meter_tariff,
     ].concat(CHIPS.map((ch) => c[ch.cfg]), [c.chip_night_only, c.chip_precharge]);
+    const prices = ENERGY.filter((e) => e.priced).map((e) => this._price(c[e.cfg]));
     const plan = (this._stateObj(c.precharge_plan) || {}).attributes || {};
     const ad = (this._stateObj(c.adaptive_plan) || {}).attributes || {};
     return ids.map((id) => this._state(id)).join("|")
       + "|" + this._state(c.precharge_plan) + "|" + plan.current + "|" + plan.until + "|" + plan.reason
       + "|" + this._state(c.adaptive_charge) + "|" + this._state(c.adaptive_plan)
       + "|" + ad.current + "|" + ad.until + "|" + ad.reason
+      + "|" + prices.join(",")
       + "|" + this._range + "|" + this._sel;
   }
 
@@ -1791,7 +1855,9 @@ ${ch.dots ? "" : `
       const active = e.tariff && e.tariff === tariff;
       row.classList.toggle("on", !!active);
       el["etag" + i].textContent = active ? "active" : "";
-      const cost = e.cost ? this._num(c[e.cost]) : null;
+      const kwh = this._num(c[e.cfg]);
+      const price = e.priced ? this._price(c[e.cfg]) : null;
+      const cost = kwh !== null && price !== null ? kwh * price : null;
       el["eval" + i].innerHTML = this._esc(this._fmt(this._num(c[e.cfg]), e.dec) + " " + e.unit)
         + (cost !== null ? "<small>" + this._esc(cost.toFixed(2)) + " ₴</small>" : "");
       row.dataset.tip = tip(e.short + " — " + this._fmt(this._num(c[e.cfg]), e.dec) + " " + e.unit
