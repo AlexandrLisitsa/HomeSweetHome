@@ -40,6 +40,7 @@ import hmac
 import json
 import os
 import pathlib
+import re
 import threading
 import time
 import urllib.error
@@ -307,7 +308,7 @@ def health():
         "error": error,
         "meters": meters,
         "auth": "token" if TOKEN else "DISABLED",
-        "firmware": _firmware_version(),
+        "firmware": _firmware_version("gas"),
         "uptime_s": int(time.time() - _STARTED),
         "last_read_s_ago": {k: int(time.time() - v) for k, v in _LAST_READ.items()},
         # Since the last ACCEPTED reading, per meter, from last_accepted.json:
@@ -407,7 +408,7 @@ def do_read():
                 remember(name, result, "last_accepted.jpg")
         _LAST_READ[name] = time.time()
 
-    latest = _firmware_version()
+    latest = _firmware_version(name)
     if result is None:
         print("read %s fw=%s -> error %s" % (name, fw, error), flush=True)
         # Still carries the firmware offer: a board whose reads are failing is
@@ -479,24 +480,41 @@ def last_accepted_jpg():
 # Firmware, for a board that updates itself
 # ---------------------------------------------------------------------------
 #
-# Drop a build in /data/firmware as gas-cam.bin, then write its version into
-# version.txt -- in that order, so a board never sees the new version paired
-# with the old binary. Every /read answer carries that version; the board
-# updates only when the number after its last '-' is higher than its own.
+# Drop a build in /data/firmware as <meter>-cam.bin, then write its version
+# into version-<meter>.txt -- in that order, so a board never sees the new
+# version paired with the old binary. Every /read answer carries the version
+# for ITS meter; the board updates only when the number after its last '-' is
+# higher than its own.
+#
+# One channel per meter because the board compares numbers only: offered
+# gas-cam-7, a water-cam-1 board would fetch its own binary, still be 1, and
+# fetch it again every few wakes. A meter with no version file is offered
+# nothing. Gas also reads the plain version.txt it has always read, so the
+# board in the kitchen sees no change until version-gas.txt exists.
 
-def _firmware_version():
-    try:
-        with open(FIRMWARE_DIR / "version.txt", encoding="utf-8") as fh:
-            return fh.read().strip() or None
-    except OSError:
+_METER_NAME = re.compile(r"^[a-z0-9_]{1,32}$")
+
+
+def _firmware_version(meter):
+    if not _METER_NAME.match(meter or ""):
         return None
+    names = ["version-%s.txt" % meter]
+    if meter == "gas":
+        names.append("version.txt")
+    for fname in names:
+        try:
+            with open(FIRMWARE_DIR / fname, encoding="utf-8") as fh:
+                return fh.read().strip() or None
+        except OSError:
+            continue
+    return None
 
 
 @APP.route("/firmware/version.txt")
 def firmware_version():
     if not authorised():
         return deny()
-    version = _firmware_version()
+    version = _firmware_version(request.args.get("meter", "gas"))
     if version is None:
         # 404, not an empty 200. A board comparing itself against "" would
         # read that as a version it does not have.

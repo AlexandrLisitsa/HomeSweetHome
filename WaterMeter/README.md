@@ -5,7 +5,37 @@ meter: the board wakes, photographs the dial and posts the frames to the MeterCa
 the digits and hands Home Assistant a reading. Today the cold-water reading is typed in by hand
 ([`HomeAssistant/docs/gas-and-water-meters.md`](../HomeAssistant/docs/gas-and-water-meters.md)).
 
-**Status:** parts chosen 2026-10-12, not yet bought. Firmware, wiring and the service side come once they arrive.
+**Status:** parts chosen 2026-10-12, not yet bought. The software is ready on the gas meter's
+code (below); the board, its aim and its ROIs come once the parts arrive.
+
+## Software: the gas camera's, reused
+
+Nothing new runs anywhere. Each piece is the gas meter's, with a water entry beside it:
+
+| Piece | Where | For water |
+|---|---|---|
+| Firmware | [`MeterCam/firmware/gas-cam/`](../MeterCam/firmware/gas-cam) | env `water-cam`: same source, posts `?meter=water`, versions `water-cam-<n>`, fetches `water-cam.bin` ([`firmware.md`](../MeterCam/docs/firmware.md)) |
+| Reading service | MeterCam, LXC 104 | a `water` block in the box's `config.json` (template in [`config.example.json`](../MeterCam/service/config.example.json)): 8 drums, 3 decimals read, 2 published, continuous gearing |
+| Firmware updates | MeterCam, LXC 104 | its own channel, `data/firmware/version-water.txt`. It is never offered the gas build |
+| Home Assistant | [`water_meter.yaml`](../HomeAssistant/config/packages/water_meter.yaml) | `input_number.water_meter_cold_camera_reading`. `sensor.cold_water_meter_reading` takes the higher of it and the typed reading, so the Energy history stays one series |
+| Stale alert | [`metercam_watch.yaml`](../HomeAssistant/config/packages/metercam_watch.yaml) | `sensor.water_camera_last_accepted`, and an alert after 6 h without an accepted reading. Quiet until the camera's first accepted reading |
+| Monthly submission | MeterBots, LXC 105 | **not built yet.** Dniprovodokanal takes readings through the Telegram bot [@dniprovoda_bot](https://t.me/dniprovoda_bot) (ТОВ «ЄРЦ КП»), by the 28th. A `waterbot` on the gasbot pattern needs one real dialog with it recorded first |
+
+Tests: `MeterCam/tests/test_routes.py` (firmware channels), `test_reader.py` sections 2g, 2h and 9
+(the config template, a water reading through the gate, the channels through the real app),
+`test_firmware_config.py` (the two builds), and `HomeAssistant/tools/check_automations.py`
+sections 12 and 13 (both reading sensors, the water alert).
+
+## Install checklist
+
+1. Flash once over the MB base: `pio run -e water-cam -t upload` (PowerShell, from
+   `MeterCam/firmware/gas-cam`), with `config.h` already filled in for the gas board.
+2. Wire the spliced cable to 5V/GND, lay the board under the meter, and focus the lens.
+3. Press RST for a wake, look at `/last.jpg?meter=water`, and redo the `water` block's ROIs and
+   `/data/ref/water.jpg` from that frame. Check the gearing (continuous or jump) on the photo.
+4. Deploy the service and the HA packages (they are backward compatible), and restart HA so the new
+   helper exists.
+5. Publish later builds as `water-cam-<n>.bin` → `water-cam.bin`, then `version-water.txt`.
 
 ## The site
 

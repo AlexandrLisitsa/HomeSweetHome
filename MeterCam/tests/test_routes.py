@@ -101,4 +101,52 @@ check("each meter its own", ages({"gas": {"at_epoch": 999990.0}, "water": {"at_e
                                 meters=("gas", "water")) == {"gas": 10, "water": 1000})
 check("/health reports it", '"last_accepted_s_ago": _accepted_ages(meters)' in APP.read_text(encoding="utf-8"))
 
+print("firmware: one channel per meter")
+# _firmware_version() lifted out like authorised() above, run against a real
+# temporary directory.
+fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_firmware_version")
+src_fw = ast.get_source_segment(APP.read_text(encoding="utf-8"), fn)
+name_rule = next(n for n in tree.body if isinstance(n, ast.Assign)
+                 and getattr(n.targets[0], "id", "") == "_METER_NAME")
+src_fw = ast.get_source_segment(APP.read_text(encoding="utf-8"), name_rule) + "\n" + src_fw
+
+
+def offered(files, meter):
+    import re
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        for fname, text in files.items():
+            (root / fname).write_text(text, encoding="utf-8")
+        env = {"FIRMWARE_DIR": root, "re": re}
+        exec(src_fw, env)
+        return env["_firmware_version"](meter)
+
+
+legacy = {"version.txt": "gas-cam-7\n"}
+check("gas with only the old version.txt: offered as before", offered(legacy, "gas") == "gas-cam-7")
+check("gas: version-gas.txt wins over version.txt",
+      offered(dict(legacy, **{"version-gas.txt": "gas-cam-8"}), "gas") == "gas-cam-8")
+check("water with no file of its own: nothing, never the gas build", offered(legacy, "water") is None)
+check("water with its own file: its version",
+      offered(dict(legacy, **{"version-water.txt": "water-cam-2"}), "water") == "water-cam-2")
+check("water never reads version-gas.txt",
+      offered({"version-gas.txt": "gas-cam-8"}, "water") is None)
+check("an empty file is no offer", offered({"version-water.txt": "\n"}, "water") is None)
+check("no files at all: nothing", offered({}, "gas") is None)
+check("a meter name with a path in it: nothing", offered(legacy, "../version") is None)
+check("an empty meter name: nothing", offered(legacy, "") is None)
+
+app_src = APP.read_text(encoding="utf-8")
+read_fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "do_read")
+calls = [n for n in ast.walk(read_fn) if isinstance(n, ast.Call)
+         and getattr(n.func, "id", "") == "_firmware_version"]
+check("/read asks for its own meter's version",
+      calls and all(len(c.args) == 1 and getattr(c.args[0], "id", "") == "name" for c in calls),
+      [ast.dump(c) for c in calls])
+check("/firmware/version.txt takes ?meter=, gas by default",
+      '_firmware_version(request.args.get("meter", "gas"))' in app_src)
+check("/health still reports the gas version", '"firmware": _firmware_version("gas")' in app_src)
+check("no call without a meter is left", "_firmware_version()" not in app_src)
+
 print("%d checks passed" % checks)

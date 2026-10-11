@@ -120,14 +120,18 @@ jobs:
       # MeterCam's model fetch, FloorPlan's render, the HA and Proxmox tools.
       - name: Shell scripts parse
         run: git ls-files -z '*.sh' | xargs -0 -n1 sh -n
-      # MeterCam stays a camera service: its routes, read without OpenCV.
-      - name: MeterCam has no bot routes
+      # MeterCam stays a camera service: its routes, read without OpenCV, and
+      # one firmware channel per meter.
+      - name: MeterCam routes and firmware channels
         run: python MeterCam/tests/test_routes.py
       # The carry rule and the plausibility gate: the failure that cannot be
       # undone is a misread that comes out as a decrease. Pure arithmetic; the
       # OpenCV and model sections skip here and run in the container.
       - name: MeterCam reading arithmetic
         run: python MeterCam/tests/test_reader.py
+      # Gas and water boards from one source: neither may take the other's build.
+      - name: MeterCam firmware builds
+        run: python MeterCam/tests/test_firmware_config.py
 
   proxmox:
     name: Proxmox backup hook

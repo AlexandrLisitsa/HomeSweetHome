@@ -5,8 +5,8 @@ MeterCam listens on `:8770` in LXC 104.
 | Endpoint | Who calls it | What |
 | --- | --- | --- |
 | `POST /read?meter=gas&fw=<version>` | the camera, once per wake | Read the frames, gate, write an accepted reading to Home Assistant, answer |
-| `GET /firmware/gas-cam.bin` | the camera, when offered a newer build | The firmware image |
-| `GET /firmware/version.txt` | gas-cam-5 and older boards, or a human with curl | The version on offer; 404 when none is published. gas-cam-6 and later read it from the `/read` answer instead |
+| `GET /firmware/gas-cam.bin`, `/firmware/water-cam.bin` | the camera, when offered a newer build | The firmware image |
+| `GET /firmware/version.txt[?meter=water]` | gas-cam-5 and older boards, or a human with curl | The version on offer for that meter (gas by default); 404 when none is published. gas-cam-6 and later read it from the `/read` answer instead, which offers each meter only its own build ([`firmware.md`](firmware.md)) |
 | `GET /last.jpg?meter=gas` | a human | The frame behind the last answer, exactly as the camera sent it |
 | `GET /last_accepted.jpg?meter=gas` | Home Assistant (`gas_submit.py`) | The frame behind the last *accepted* reading; headers `X-Value`, `X-At`, `X-At-Epoch` carry that reading |
 | `GET /archive/days` | a human | What is archived, newest day first, with frame counts and bytes. Read this before the one below |

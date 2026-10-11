@@ -79,6 +79,36 @@ Republish the old image under a **higher** number: rebuild the old source with
 `.bin` over `gas-cam.bin` does nothing, because its version is lower than what
 the board runs.
 
+## The water board: same source, its own channel
+
+The cold-water camera ([`WaterMeter/`](../../WaterMeter/README.md)) runs this
+firmware too. `platformio.ini`'s `water-cam` env sets `METERCAM_METER`,
+`FIRMWARE_VERSION` and `FIRMWARE_BINARY` with `-D` flags. `config.h` guards
+those three with `#ifndef`, so the one `config.h` serves both boards: WiFi,
+token, LEDs and sleep are shared.
+
+```powershell
+pio run -e water-cam                 # .pio\build\water-cam\firmware.bin
+pio run -e water-cam -t upload       # first flash, over the MB shield
+```
+
+A bare `pio run` is still the gas board only (`default_envs`).
+
+MeterCam offers each board its own meter's version file, because the board
+compares numbers only. Offered `gas-cam-7`, a `water-cam-1` board would fetch
+`water-cam.bin`, still be 1, and fetch it again every six hours.
+
+| Board | Version file | Binary |
+|---|---|---|
+| gas | `version-gas.txt`, else the old `version.txt` | `gas-cam.bin` |
+| water | `version-water.txt` only | `water-cam.bin` |
+
+Publishing a water build follows the steps above with `water-cam` in place of
+`gas-cam` and `version-water.txt` in place of `version.txt`. A meter with no
+version file is offered nothing. `tests/test_firmware_config.py` pins the two
+envs, and `tests/test_routes.py` and `tests/test_reader.py` section 9 pin the
+channels.
+
 ## Flashing over USB
 
 Needed only for the first flash, a partition-table change, or a board that can

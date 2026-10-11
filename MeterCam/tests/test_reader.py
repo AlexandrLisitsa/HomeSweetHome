@@ -823,6 +823,204 @@ def test_seven_drums():
     done()
 
 
+def _example_meters():
+    import json
+    path = pathlib.Path(__file__).resolve().parent.parent / "service" / "config.example.json"
+    return json.loads(path.read_text(encoding="utf-8"))["meters"]
+
+
+def test_config_example():
+    """Section 2g: the config template, one block per meter.
+
+    The water block was added next to the gas one before any water frame
+    existed. This pins the gas block to the values the mounted camera runs on,
+    so an edit meant for water that lands in gas fails here, and checks that
+    every block has what read_once() and read() look up.
+    """
+    section("2g. config.example.json: every meter block is complete")
+
+    meters = _example_meters()
+    check("two meters, gas and water", sorted(meters), ["gas", "water"])
+    for name, m in sorted(meters.items()):
+        for key in ("transform", "align", "model", "decimals", "report_decimals",
+                    "counter_type", "rois", "gate", "confirm", "home_assistant"):
+            check("%s has %s" % (name, key), key in m, True)
+        check("%s: counter_type is one assemble() knows" % name,
+              m["counter_type"] in ("jump", "continuous"), True)
+        check("%s: report_decimals within decimals" % name,
+              0 <= m["report_decimals"] <= m["decimals"], True)
+        check("%s: every ROI is a positive rectangle" % name,
+              all(r["w"] > 0 and r["h"] > 0 and r["x"] >= 0 and r["y"] >= 0
+                  for r in m["rois"]), True)
+        check("%s: never accepts a decrease" % name, m["gate"]["tolerance_down"], 0.0)
+        check("%s: never accepts an unguarded first reading" % name,
+              m["gate"]["require_prevalue"], True)
+        check("%s: two frames must agree" % name, m["confirm"]["samples"], 2)
+        check("%s: reads and writes its own helper" % name,
+              m["home_assistant"]["prevalue_entity"], m["home_assistant"]["write_entity"])
+        check("%s: its own reference frame" % name,
+              m["align"]["reference"], "/data/ref/%s.jpg" % name)
+
+    gas = meters["gas"]
+    check("gas unchanged: seven drums, two decimals, jump, last drum down",
+          (len(gas["rois"]), gas["decimals"], gas["report_decimals"],
+           gas["counter_type"], gas["round_last_drum_down"]),
+          (7, 2, 2, "jump", True))
+    check("gas unchanged: the gate",
+          {k: gas["gate"][k] for k in ("max_delta", "max_delta_window_s",
+                                       "min_confidence", "min_confidence_last_digit")},
+          {"max_delta": 0.6, "max_delta_window_s": 300,
+           "min_confidence": 0.5, "min_confidence_last_digit": 0.3})
+    check("gas unchanged: writes the gas camera helper",
+          gas["home_assistant"]["write_entity"], "input_number.gas_meter_camera_reading")
+
+    water = meters["water"]
+    check("water: eight drums, three decimals, publishes two",
+          (len(water["rois"]), water["decimals"], water["report_decimals"]), (8, 3, 2))
+    check("water: continuous gearing, no last-drum rounding",
+          (water["counter_type"], water["round_last_drum_down"]), ("continuous", False))
+    check("water: writes the cold-water camera helper",
+          water["home_assistant"]["write_entity"],
+          "input_number.water_meter_cold_camera_reading")
+    check("water and gas never share a helper",
+          water["home_assistant"]["write_entity"] != gas["home_assistant"]["write_entity"], True)
+    done()
+
+
+def test_water_drums():
+    """Section 2h: a water reading through the same arithmetic as gas.
+
+    The water block's own settings, end to end through what read() calls:
+    assemble -> truncate -> confirm_samples -> gate. Readings as dig-class100
+    would return them off a continuously geared 5 black + 3 red dial.
+    """
+    from service.digits import (assemble, confirm_samples, gate,
+                                reported_decimals, truncate)
+
+    section("2h. water: eight continuous drums, 0.001 read, 0.01 published")
+
+    m = _example_meters()["water"]
+    dec, rep = m["decimals"], reported_decimals(m)
+    count = len(m["rois"])
+
+    def publish(values):
+        dial, digits, raw = assemble(values, dec, m["counter_type"],
+                                     last_down=m["round_last_drum_down"])
+        return truncate(dial, dec, rep), raw
+
+    check("a centred dial", publish([0.0, 0.0, 2.0, 3.0, 3.1, 1.9, 8.7, 7.2]),
+          (233.18, "00233187"))
+    # Mid-carry: the units drum already looks like a 4, but the drums to its
+    # right are still at 9 -- continuous gearing, so it is still 3.
+    check("mid-carry across the red drums stays below the turn",
+          publish([0.0, 0.0, 2.0, 3.0, 3.95, 9.95, 9.9, 9.3]), (233.99, "00233999"))
+    check("  and the turn itself",
+          publish([0.0, 0.0, 2.0, 3.0, 4.0, 0.0, 0.05, 0.4]), (234.0, "00234000"))
+    check("the 0.001 drum never moves the published value by itself",
+          publish([0.0, 0.0, 2.0, 3.0, 3.1, 1.9, 8.2, 2.0])[0], 233.18)
+
+    gcfg, ccfg = m["gate"], m["confirm"]
+    ok = [0.9] * count
+    check("the turn is accepted after the reading before it",
+          gate(234.0, 233.99, gcfg, count, count, ok), (True, None))
+    check("a decrease of one step is refused",
+          gate(233.17, 233.18, gcfg, count, count, ok)[0], False)
+    check("a shower's half hour is within the rate (scaled to 1800 s)",
+          gate(233.18 + 0.6, 233.18, gcfg, count, count, ok, elapsed_s=1800)[0], True)
+    check("a misread m3 drum (+1 m3 in 5 min) is refused",
+          gate(234.18, 233.18, gcfg, count, count, ok, elapsed_s=300)[0], False)
+    check("seven drums read off an eight-drum dial is refused",
+          gate(233.18, 233.17, gcfg, 7, count, ok[:7])[0], False)
+    check("a weak m3 drum is refused",
+          gate(233.18, 233.17, gcfg, count, count, [0.2] + [0.9] * 7)[0], False)
+    check("no prevalue: refused, as for gas",
+          gate(233.18, None, gcfg, count, count, ok)[0], False)
+    check("zero is refused", gate(0.0, 233.18, gcfg, count, count, ok)[0], False)
+
+    check("two frames one published step apart agree (water running)",
+          confirm_samples([233.18, 233.19], rep, ccfg)[0], True)
+    check("three steps apart: refused",
+          confirm_samples([233.18, 233.21], rep, ccfg)[0], False)
+    check("a frame lower than the one before: refused",
+          confirm_samples([233.19, 233.18], rep, ccfg)[0], False)
+    done()
+
+
+def test_firmware_offer():
+    """Section 9: /read offers each board its own meter's firmware, end to end.
+
+    Through the real Flask app, a real read of a synthetic frame (refused, as
+    trash should be -- the offer rides on every answer regardless) and a real
+    firmware directory. The live gas board has only ever seen the plain
+    version.txt; that must keep working, and a water board must never be
+    offered it.
+    """
+    section("9. firmware: each board is offered its own build")
+
+    try:
+        import cv2
+        import numpy as np
+    except ImportError as exc:
+        raise ImportError("needs cv2 and numpy (run it in the container)") from exc
+    import json
+    import tempfile
+    from service import app as A
+
+    here = pathlib.Path(__file__).resolve().parent.parent
+    models = sorted(glob.glob(str(here / "models" / "*.tflite"))) or sorted(glob.glob("/models/*.tflite"))
+    if not models:
+        print("  SKIPPED - no .tflite weights (sh models/fetch.sh)")
+        return
+
+    blob = cv2.imencode(".jpg", np.random.default_rng(1).integers(
+        0, 256, (480, 640, 3), dtype=np.uint8))[1].tobytes()
+    meter = {"align": {"enabled": False}, "confirm": {"samples": 1}, "model": models[0],
+             "decimals": 2, "counter_type": "jump",
+             "rois": [{"x": 40 + i * 70, "y": 200, "w": 60, "h": 80} for i in range(7)],
+             "gate": {"max_delta": 0.6, "tolerance_down": 0.0}}
+
+    saved = (A.CONFIG_PATH, A.IMAGE_DIR, A.FIRMWARE_DIR, A.TOKEN, A.HA_TOKEN)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        (root / "config.json").write_text(json.dumps({"meters": {"gas": meter, "water": meter}}),
+                                          encoding="utf-8")
+        fw = root / "firmware"
+        fw.mkdir()
+        A.CONFIG_PATH, A.IMAGE_DIR, A.FIRMWARE_DIR = str(root / "config.json"), root / "images", fw
+        A.TOKEN, A.HA_TOKEN = None, None
+        client = A.APP.test_client()
+
+        def offer(name):
+            r = client.post("/read?meter=%s&fw=%s-cam-1" % (name, name), data=blob,
+                            content_type="image/jpeg")
+            return r.status_code, r.get_json().get("firmware")
+
+        def version(query=""):
+            r = client.get("/firmware/version.txt" + query)
+            return r.status_code, r.get_data(as_text=True).strip() if r.status_code == 200 else None
+
+        try:
+            check("nothing published: neither board is offered anything",
+                  (offer("gas")[1], offer("water")[1]), (None, None))
+            (fw / "version.txt").write_text("gas-cam-7\n", encoding="utf-8")
+            check("today's layout: the gas board sees gas-cam-7 as before", offer("gas"), (200, "gas-cam-7"))
+            check("  and the water board is offered nothing", offer("water"), (200, None))
+            check("  /firmware/version.txt without ?meter= is still gas", version(), (200, "gas-cam-7"))
+            check("  and ?meter=water is a 404, not the gas build", version("?meter=water")[0], 404)
+            (fw / "version-water.txt").write_text("water-cam-2\n", encoding="utf-8")
+            check("water published: the water board sees its own", offer("water"), (200, "water-cam-2"))
+            check("  and gas is untouched", offer("gas"), (200, "gas-cam-7"))
+            check("  ?meter=water serves it", version("?meter=water"), (200, "water-cam-2"))
+            (fw / "version-gas.txt").write_text("gas-cam-8\n", encoding="utf-8")
+            check("version-gas.txt takes over from version.txt", offer("gas"), (200, "gas-cam-8"))
+            check("/health reports the gas version", client.get("/health").get_json()["firmware"], "gas-cam-8")
+            check("an unknown meter is a 400, offered nothing",
+                  client.post("/read?meter=hot", data=blob, content_type="image/jpeg").status_code, 400)
+        finally:
+            A.CONFIG_PATH, A.IMAGE_DIR, A.FIRMWARE_DIR, A.TOKEN, A.HA_TOKEN = saved
+    done()
+
+
 def test_single_push():
     """A single pushed frame must not skip confirm.samples.
 
@@ -872,6 +1070,8 @@ def main():
     test_confirm_samples()
     test_report_decimals()
     test_seven_drums()
+    test_config_example()
+    test_water_drums()
     test_gate()
     test_transform()
     try:
@@ -892,6 +1092,10 @@ def main():
     # workstation, so this joins the tier that skips here.
     try:
         test_home_assistant()
+    except ImportError as exc:
+        print("  SKIPPED - %s" % exc)
+    try:
+        test_firmware_offer()
     except ImportError as exc:
         print("  SKIPPED - %s" % exc)
 
