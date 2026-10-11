@@ -57,7 +57,7 @@ ITEMS = [
     {"kind": "light", "room": "kitchen", "spot": "kitchen_ceiling", "overlay": "kitchen_ceiling",
      "entity": "light.kitchen_relay", "name": "Ceiling", "icon": "mdi:ceiling-light"},
     {"kind": "light", "room": "kitchen", "spot": "kitchen_led", "overlay": "kitchen_led",
-     "entity": "light.0xa4c1385443844c1e", "name": "LED strip", "icon": "mdi:led-strip-variant"},
+     "entity": "light.led_ambient", "name": "LED strip", "icon": "mdi:led-strip-variant"},
     {"kind": "badge", "room": "kitchen", "spot": "kitchen_climate",
      "entities": ["sensor.0xa4c1383900dd497c_temperature", "sensor.0xa4c1383900dd497c_humidity"]},
     # Hallway

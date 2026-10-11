@@ -289,7 +289,7 @@ script:
                       hvac_mode: "off"
               - id: led_ambient
                 name: "LED ambient"
-                entity: light.0xa4c1385443844c1e
+                entity: light.led_ambient
                 enabled: true
                 steps:
                   - soc: 80
