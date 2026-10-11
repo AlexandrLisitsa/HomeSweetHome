@@ -146,7 +146,6 @@ EXTERNAL = {
     # Created in the UI, so they exist in .storage/core.entity_registry and
     # nowhere in this repo. Listed one by one on purpose: they are few, and a
     # typo in one is exactly the kind of thing this script is for.
-    "input_boolean.kitchen_light_block",
     "input_boolean.hallway_light_sensor",
     "input_boolean.bathroom_light_sensor",
     "input_boolean.kitchen_light_force_on",

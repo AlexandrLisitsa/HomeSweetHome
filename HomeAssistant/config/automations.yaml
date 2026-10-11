@@ -342,61 +342,20 @@
   mode: restart
 - id: '1783284466403'
   alias: "\U0001F4A1Kitchen: Force Light On"
-  description: 'Kitchen light-off block: while the helper is on, the kitchen light is switched back on whenever it is turned off. With the helper off, control is manual.'
+  description: 'Kitchen light force-on: while the helper is on, the kitchen light is switched back on whenever it is turned off. With the helper off, control is manual.'
   triggers:
   - entity_id: light.kitchen_relay
     to: 'off'
     trigger: state
   - entity_id: input_boolean.kitchen_light_force_on
     to: 'on'
-    id: helper_on
     trigger: state
   conditions:
   - condition: state
     entity_id: input_boolean.kitchen_light_force_on
     state: 'on'
   actions:
-  - if:
-    - condition: trigger
-      id: helper_on
-    then:
-    - action: input_boolean.turn_off
-      target:
-        entity_id: input_boolean.kitchen_light_block
-  - condition: state
-    entity_id: input_boolean.kitchen_light_block
-    state: 'off'
   - action: light.turn_on
-    target:
-      entity_id: light.kitchen_relay
-  mode: restart
-- id: '1783546168549'
-  alias: "\U0001F4A1Kitchen: Block Light On "
-  description: 'Kitchen light-on block: while the helper is on, the kitchen light is switched back off whenever it is turned on (by hand or at the switch). With the helper off, control is manual.'
-  triggers:
-  - entity_id: light.kitchen_relay
-    to: 'on'
-    trigger: state
-  - entity_id: input_boolean.kitchen_light_block
-    to: 'on'
-    id: helper_on
-    trigger: state
-  conditions:
-  - condition: state
-    entity_id: input_boolean.kitchen_light_block
-    state: 'on'
-  actions:
-  - if:
-    - condition: trigger
-      id: helper_on
-    then:
-    - action: input_boolean.turn_off
-      target:
-        entity_id: input_boolean.kitchen_light_force_on
-  - condition: state
-    entity_id: input_boolean.kitchen_light_force_on
-    state: 'off'
-  - action: light.turn_off
     target:
       entity_id: light.kitchen_relay
   mode: restart
