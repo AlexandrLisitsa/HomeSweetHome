@@ -116,6 +116,9 @@ jobs:
         run: python MeterBots/tests/test_tgclient.py
       - name: Routes and tokens
         run: python MeterBots/tests/test_app.py
+      # The water cabinet (no Telegram): a fake dneprvoda.com.ua on localhost.
+      - name: MeterBots water cabinet
+        run: python MeterBots/tests/test_waterweb.py
       # Every shell script in the repo, not just MeterBots': deploy scripts,
       # MeterCam's model fetch, FloorPlan's render, the HA and Proxmox tools.
       - name: Shell scripts parse

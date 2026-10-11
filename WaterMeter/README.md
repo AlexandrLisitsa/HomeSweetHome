@@ -19,7 +19,7 @@ Nothing new runs anywhere. Each piece is the gas meter's, with a water entry bes
 | Firmware updates | MeterCam, LXC 104 | its own channel, `data/firmware/version-water.txt`. It is never offered the gas build |
 | Home Assistant | [`water_meter.yaml`](../HomeAssistant/config/packages/water_meter.yaml) | `input_number.water_meter_cold_camera_reading`. `sensor.cold_water_meter_reading` takes the higher of it and the typed reading, so the Energy history stays one series |
 | Stale alert | [`metercam_watch.yaml`](../HomeAssistant/config/packages/metercam_watch.yaml) | `sensor.water_camera_last_accepted`, and an alert after 6 h without an accepted reading. Quiet until the camera's first accepted reading |
-| Monthly submission | MeterBots, LXC 105 | **not built yet.** Dniprovodokanal takes readings through the Telegram bot [@dniprovoda_bot](https://t.me/dniprovoda_bot) (ТОВ «ЄРЦ КП»), by the 28th. A `waterbot` on the gasbot pattern needs one real dialog with it recorded first |
+| Monthly submission | MeterBots, LXC 105 | `/water/web/*`: the dneprvoda.com.ua web cabinet, whole m³ ([`water-web.md`](../MeterBots/docs/water-web.md)). The utility's Telegram bot answers only that it is blocked. The Home Assistant side (ask on the 1st, a Submit button) is still to come |
 
 Tests: `MeterCam/tests/test_routes.py` (firmware channels), `test_reader.py` sections 2g, 2h and 9
 (the config template, a water reading through the gate, the channels through the real app),
@@ -48,25 +48,25 @@ sections 12 and 13 (both reading sensors, the water alert).
   flash; later updates come over Wi-Fi, as with the gas camera.
 - A phone charger in a socket feeds the board. No 230 V cable runs to the meter: only 5 V.
 
-## Parts to buy: 632 UAH
+## Parts to buy: 634.80 UAH
 
-All on prom.ua with Smart delivery, and each seller's subtotal clears its minimum order. Prices were checked on
-2026-10-12.
+One order, from one prom.ua seller. Prom's Smart delivery is free only when one seller's subtotal is at least 200 UAH,
+so the parts are bought together. That also clears the seller's own 150 UAH minimum. Prices were checked on 2026-10-12.
 
-| # | Part | Shop (minimum order) | Price, UAH |
+| # | Part | Shop | Price, UAH |
 |---|---|---|---|
-| 1 | **ESP32-CAM with OV2640** (AI-Thinker layout, 27×41 mm, 4 MB PSRAM) | [prom.ua (1Дюйм)](https://prom.ua/ua/p2224538685-modul-kamery-esp32.html) (200) | 351 |
-| 2 | **ESP32-CAM-MB programmer base, USB-C** (FT232, Reset and Download buttons), for the first flash only | [prom.ua (Носуль)](https://prom.ua/ua/p2199400728-esp32-cam-usb.html) (100) | 199 |
-| 3 | **Phone charger**, 2 USB, 2.4 A | [prom.ua (GoMarket)](https://prom.ua/ua/p3221702885-setevoe-zaryadnoe-ustrojstvo.html) (none) | 82 |
-| | **Total** | | **632** |
+| 1 | **ESP32-CAM with OV2640** in the kit (ESP32-S, 27×41 mm, 4 MB PSRAM) | [prom.ua (ФОП Корнієнко)](https://prom.ua/ua/p2796254769-plata-kameroj-esp32.html) | 418.80 |
+| 2 | **ESP32-CAM-MB programmer base, USB-C** (CH340), for the first flash only | [prom.ua (ФОП Корнієнко)](https://prom.ua/ua/p2796254768-plata-rasshireniya-esp32.html) | 216 |
+| | **Total, one seller, Smart** | | **634.80** |
 
 **Not bought:**
+- **Charger:** a spare USB phone charger from home (5 V, 1 A or more). Bought alone, any charger is below the
+  200 UAH Smart threshold, and this seller has none.
 - **Cable:** two broken 2 m USB cables are spliced into one longer one. Only power is needed, so only the red
   (+5 V) and black (GND) wires are joined. The USB-A plug goes into the charger, and the other end is soldered
   straight to the board's **5V** and **GND** pins. At the board's 0.2–0.3 A, about 4 m of cable loses almost nothing.
 - **Box:** left out for now. If it is needed later, only the lens needs a clear window: a flat box with a hole
   over the lens and a piece of microscope slide glued over it. Plastic lids are too cloudy for a photo this close.
 
-**Before paying:** check the charger's photo to make sure its ports are USB-A. A buyer review of the ESP32-CAM
-listing reports one board that would not flash. Носуль can also supply a matched ESP32-CAM with the base, for a
-surcharge not listed on the page.
+**Before paying:** check that both items are still in the same cart with the Smart badge, and that the subtotal is at least
+200 UAH.
