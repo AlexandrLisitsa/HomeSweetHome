@@ -1,6 +1,7 @@
 # How bright will it be?
 
-**About 3200 lm out of the diffuser at any colour temperature, from about 48 W at the wall.**
+**About 6000 lm out of the diffuser at any colour temperature, from about 90 W at the wall** (the dense layout,
+28 stripes edge to edge, ≈ 10.8 m; up to ≈ 6700 lm with 30 stripes).
 
 ![Light out of the diffuser: the old lamp's label, a realistic estimate of it, and the rebuild](images/brightness-chart.svg)
 
@@ -17,16 +18,20 @@ How the numbers are worked out:
 
 | | LED power | From the wall | Light out of the diffuser |
 |---|---|---|---|
-| **Rebuild, 16 stripes ≈ 5.7 m, any colour temperature** | **40 W** | **48 W** | **≈ 3200 lm** |
+| **Rebuild, 28 stripes ≈ 10.8 m, any colour temperature** | **76 W** | **≈ 90 W** | **≈ 6000 lm** |
+| Rebuild, 30 stripes ≈ 11.9 m | 83 W | ≈ 100 W | ≈ 6700 lm |
+| First plan, 16 stripes ≈ 5.7 m | 40 W | 48 W | ≈ 3200 lm |
 | Luxel, label | — | 72 W | 5400 lm |
 | Luxel, realistic guess | — | ~45–55 W | ~3000–4000 lm |
 
 **The Luxel's real output:** a "72 W" Chinese fitting usually draws 45–55 W, and at 70–75 lm per wall-watt that is
 **3000–4000 lm** with both colour channels on (neutral). That is a rough estimate, not a measurement. Against it the
-rebuild is **about the same to 20 % dimmer at neutral**, and probably brighter at the warm and cool ends, where the
-Luxel likely uses only half its LEDs. For an 18–20 m² living room, ~3000 lm is comfortable general light.
+dense rebuild is **about 1.5–2× as bright at neutral**, and more at the warm and cool ends, where the Luxel likely uses
+only half its LEDs. For an 18–20 m² living room, ~3000 lm is comfortable general light, so the rebuild will mostly run
+dimmed, with headroom.
 
-**The one Zigbee route to more light at neutral:** two single-channel Zigbee dimmers (e.g. 2× MiBoxer E2-ZR in
+**The one Zigbee route to more light at neutral** (written for the first plan; with the dense layout it would double the
+power to ~165 W and isn't needed): two single-channel Zigbee dimmers (e.g. 2× MiBoxer E2-ZR in
 single-colour mode, one per white) mixed by an HA template light, so both whites can run at 100 %. That gives up to
 ~6300 lm at neutral from ~80 W, but needs a second E2-ZR (+1210), a 100 W supply, and at 14 W/m the strip
 wants aluminium under it. Not part of this build.

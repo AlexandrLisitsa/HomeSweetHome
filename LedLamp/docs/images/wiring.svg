@@ -14,9 +14,9 @@
 
     <rect x="200" y="95" width="130" height="130" rx="8" fill="#e4e8ec" stroke="#8e97a1"/>
     <text x="214" y="118" font-size="12" font-weight="700">Power supply</text>
-    <text x="214" y="134" font-size="9.5" fill="#4a525c">BIOM BPBLS-60-24</text>
+    <text x="214" y="134" font-size="9.5" fill="#4a525c">Diasha PPF-SL-C-24V-120W</text>
     <text x="214" y="148" font-size="9.5" fill="#4a525c">230 V AC → 24 V DC</text>
-    <text x="214" y="162" font-size="9.5" fill="#4a525c">60 W · 2.5 A · IP20</text>
+    <text x="214" y="162" font-size="9.5" fill="#4a525c">120 W · 5 A · IP20 · stick</text>
     <g font-size="9" fill="#4a525c">
       <text x="204" y="189">AC L</text><text x="204" y="205">AC N</text>
       <text x="290" y="189">+V</text><text x="290" y="205">−V</text>
@@ -55,9 +55,9 @@
     <path d="M572 195 V340" stroke="#e08a2c" stroke-width="3"/>
     <path d="M584 215 V340" stroke="#4f8fd6" stroke-width="3"/>
     <g>
-      <g transform="translate(600,250)"><rect x="0" y="-7" width="80" height="14" rx="3" fill="#f6d9a6" stroke="#d9a454"/><text x="8" y="4" font-size="8">stripes 1–5</text></g>
-      <g transform="translate(600,285)"><rect x="0" y="-7" width="80" height="14" rx="3" fill="#f6d9a6" stroke="#d9a454"/><text x="8" y="4" font-size="8">stripes 6–11</text></g>
-      <g transform="translate(600,320)"><rect x="0" y="-7" width="80" height="14" rx="3" fill="#f6d9a6" stroke="#d9a454"/><text x="8" y="4" font-size="8">stripes 12–16</text></g>
+      <g transform="translate(600,250)"><rect x="0" y="-7" width="80" height="14" rx="3" fill="#f6d9a6" stroke="#d9a454"/><text x="8" y="4" font-size="8">groups 1–2</text></g>
+      <g transform="translate(600,285)"><rect x="0" y="-7" width="80" height="14" rx="3" fill="#f6d9a6" stroke="#d9a454"/><text x="8" y="4" font-size="8">groups 3–5</text></g>
+      <g transform="translate(600,320)"><rect x="0" y="-7" width="80" height="14" rx="3" fill="#f6d9a6" stroke="#d9a454"/><text x="8" y="4" font-size="8">groups 6–7</text></g>
     </g>
     <g stroke-width="1.6">
       <path d="M560 246 H600" stroke="#d23b3b"/><path d="M572 250 H600" stroke="#e08a2c"/><path d="M584 254 H600" stroke="#4f8fd6"/>
@@ -69,8 +69,8 @@
       <circle cx="560" cy="281" r="2.5"/><circle cx="572" cy="285" r="2.5"/><circle cx="584" cy="289" r="2.5"/>
       <circle cx="560" cy="316" r="2.5"/><circle cx="572" cy="320" r="2.5"/><circle cx="584" cy="324" r="2.5"/>
     </g>
-    <text x="545" y="266" font-size="9" fill="#4a525c" text-anchor="end">every stripe tapped</text>
-    <text x="545" y="278" font-size="9" fill="#4a525c" text-anchor="end">in parallel</text>
+    <text x="545" y="266" font-size="9" fill="#4a525c" text-anchor="end">each group of 4 stripes</text>
+    <text x="545" y="278" font-size="9" fill="#4a525c" text-anchor="end">tapped in parallel</text>
 
     <g font-size="9" transform="translate(20,385)">
       <rect width="16" height="4" y="-4" fill="#8b5a2b"/><text x="22">L (brown)</text>
