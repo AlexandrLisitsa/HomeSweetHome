@@ -25,7 +25,9 @@ LXC_STORAGE=local-lvm
 # The house defaults. The image is python:3.12-slim plus flask and telethon,
 # about 200 MB; the only state is a session file and .env. MeterCam needed
 # 8 GB and 1 GB for OpenCV and its frames; nothing here does.
-LXC_DISK=2
+# 4, not 2: a 2 GB disk filled up with the image and its build cache and a
+# rebuild failed with "no space left" (grown with pct resize on 2026-10-12).
+LXC_DISK=4
 LXC_CORES=1
 LXC_MEMORY=512
 LXC_SWAP=512

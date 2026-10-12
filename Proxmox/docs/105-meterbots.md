@@ -7,7 +7,7 @@ phone. The project is [`MeterBots/`](../../MeterBots/README.md).
 | | |
 | --- | --- |
 | Type | unprivileged LXC, Debian 13, `nesting` and `keyctl` on (it runs Docker) |
-| CPU / RAM / disk | 1 vCPU / 512 MB (+512 MB swap) / 2 GB, the house defaults |
+| CPU / RAM / disk | 1 vCPU / 512 MB (+512 MB swap) / 4 GB. Created at 2 GB; grown 2026-10-12 (`pct resize 105 rootfs +2G`) when a rebuild ran out of space |
 | Software | Docker, running the MeterBots service from `MeterBots/docker-compose.yml` |
 | Created by | `MeterBots/deploy/lxc_create.sh`, provisioned by `lxc_provision.sh`, updated by `deploy.sh` |
 | Starts with host | yes |

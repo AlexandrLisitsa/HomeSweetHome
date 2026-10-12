@@ -25,15 +25,16 @@ def check(name, cond, got=""):
         sys.exit(1)
 
 
-def load(gas_token, yasno_token=None):
+def load(gas_token, yasno_token=None, water_token=None):
     """The app as it starts with these tokens in its environment. Both bots'
     run() are stubbed and record into the same list, tagged by bot."""
-    for name, value in (("GASBOT_TOKEN", gas_token), ("YASNOBOT_TOKEN", yasno_token)):
+    for name, value in (("GASBOT_TOKEN", gas_token), ("YASNOBOT_TOKEN", yasno_token),
+                        ("WATERWEB_TOKEN", water_token)):
         if value is None:
             os.environ.pop(name, None)
         else:
             os.environ[name] = value
-    from service import app as appmod, gasbot, yasnobot
+    from service import app as appmod, gasbot, waterweb, yasnobot
     appmod = importlib.reload(appmod)
     calls = []
 
@@ -44,6 +45,7 @@ def load(gas_token, yasno_token=None):
         return run
     gasbot.run = stub("gas")
     yasnobot.run = stub("yasno")
+    waterweb.run = stub("water")
     appmod.tgclient.session_check = lambda: calls.append(("session",)) or {"ok": True,
                                                                          "authorized": True}
     return appmod.create_app().test_client(), calls
@@ -54,8 +56,8 @@ client, _ = load(TOKEN)
 r = client.get("/health")
 body = r.get_json()
 check("200 and ok", r.status_code == 200 and body["status"] == "ok")
-check("carries the version", body.get("version") == "1.2.0", body)
-check("says which bots are configured", body.get("bots") == {"gas": True, "yasno": False}, body)
+check("carries the version", body.get("version") == "1.3.0", body)
+check("says which bots are configured", body.get("bots") == {"gas": True, "yasno": False, "water": False}, body)
 check("no secret in it", TOKEN not in r.get_data(as_text=True))
 
 print("tokens")
@@ -77,7 +79,7 @@ check("token unset: submit refused",
       client.post("/gas/bot/submit", json={"value": 2262},
                   headers={"X-Gasbot-Token": ""}).status_code == 401)
 check("token unset: health says the gas bot is off",
-      client.get("/health").get_json()["bots"] == {"gas": False, "yasno": False})
+      client.get("/health").get_json()["bots"] == {"gas": False, "yasno": False, "water": False})
 check("and the bot was never called", calls == [])
 
 print("gas submit: what reaches the bot")
@@ -145,6 +147,42 @@ for body in [{}, {"day": 38500}, {"night": 6450}, {"day": "abc", "night": 6450},
     calls.clear()
     r = client.post("/yasno/bot/submit", json=body, headers=Y)
     check("%r -> 400, bot not called" % (body,), r.status_code == 400 and calls == [],
+          (r.status_code, calls))
+
+print("water: tokens")
+client, calls = load(TOKEN, "yasno-token", "water-token")
+W = {"X-Waterweb-Token": "water-token"}
+check("health says the water cabinet is configured",
+      client.get("/health").get_json()["bots"] == {"gas": True, "yasno": True, "water": True})
+check("no token -> 401", client.get("/water/web/status").status_code == 401)
+check("the gas token does not open the water routes",
+      client.get("/water/web/status", headers={"X-Waterweb-Token": TOKEN}).status_code == 401)
+check("nor the YASNO one",
+      client.post("/water/web/submit", json={"value": 2875},
+                  headers={"X-Waterweb-Token": "yasno-token"}).status_code == 401)
+check("the water token does not open the gas routes",
+      client.get("/gas/bot/status", headers={"X-Gasbot-Token": "water-token"}).status_code == 401)
+check("nor /session (it is Telegram's, and water is not)",
+      client.get("/session", headers=W).status_code == 401)
+check("and nothing was called", calls == [])
+r = client.get("/water/web/status", headers=W)
+check("status with the token reaches the cabinet, with no value",
+      r.status_code == 200 and calls == [("water",)], calls)
+client, calls = load(TOKEN, "yasno-token", None)
+check("water token unset: refused even with an empty header",
+      client.post("/water/web/submit", json={"value": 2875},
+                  headers={"X-Waterweb-Token": ""}).status_code == 401 and calls == [])
+
+print("water submit: what reaches the cabinet")
+client, calls = load(TOKEN, "yasno-token", "water-token")
+for value, want in [(2875, ("water", 2875)), ("2875", ("water", 2875)), (" 2875 ", ("water", 2875))]:
+    calls.clear()
+    r = client.post("/water/web/submit", json={"value": value}, headers=W)
+    check("%r -> run(%r)" % (value, want[1]), r.status_code == 200 and calls == [want], calls)
+for value in ["", "abc", 0, -5, 100000, 2875.5, "2875.0", "2 875", None, "nan"]:
+    calls.clear()
+    r = client.post("/water/web/submit", json={"value": value}, headers=W)
+    check("%r -> 400, cabinet not called" % (value,), r.status_code == 400 and calls == [],
           (r.status_code, calls))
 
 print("%d checks passed" % checks)

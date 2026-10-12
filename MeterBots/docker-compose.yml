@@ -28,3 +28,10 @@ services:
       YASNOBOT_TOKEN: "${YASNOBOT_TOKEN:-}"
       YASNOBOT_ACCOUNT: "${YASNOBOT_ACCOUNT:-}"
       YASNOBOT_BOT: "${YASNOBOT_BOT:-Yasnoonlinebot}"
+      # service/waterweb.py: the monthly cold-water reading via the
+      # dneprvoda.com.ua cabinet (no Telegram).
+      WATERWEB_TOKEN: "${WATERWEB_TOKEN:-}"
+      WATERWEB_EMAIL: "${WATERWEB_EMAIL:-}"
+      WATERWEB_PASSWORD: "${WATERWEB_PASSWORD:-}"
+      WATERWEB_METER: "${WATERWEB_METER:-}"
+      WATERWEB_URL: "${WATERWEB_URL:-https://dneprvoda.com.ua}"

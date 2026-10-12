@@ -1,5 +1,6 @@
 # ---------------------------------------------------------------------------
 # Is the gas camera still being heard? An alert when it is not.
+# (The cold-water camera gets the same, from the same poll: see the end.)
 #
 # The ESP32-CAM wakes every 30 min and MeterCam (LXC 104) writes each reading
 # it accepts to input_number.gas_meter_camera_reading. When the board stops
@@ -33,6 +34,17 @@ rest:
         value_template: >-
           {% set s = (value_json.last_accepted_s_ago | default({})).gas | default(none) %}
           {{ (s / 60) | round(0) | int if s is number else none }}
+      # The bathroom's cold-water camera (WaterMeter/), from the same poll. Absent
+      # from /health until the board has had a reading accepted, which keeps it
+      # `none` and the alert below quiet until the camera is installed.
+      - name: "Water camera last accepted"
+        unique_id: metercam_water_last_accepted
+        icon: mdi:camera-timer
+        unit_of_measurement: "min"
+        device_class: duration
+        value_template: >-
+          {% set s = (value_json.last_accepted_s_ago | default({})).water | default(none) %}
+          {{ (s / 60) | round(0) | int if s is number else none }}
 
 automation:
   - id: metercam_gas_stale
@@ -63,3 +75,27 @@ automation:
           data:
             channel: Gas meter
             tag: metercam-stale
+
+  # The water camera's twin of the alert above. Stale only: "MeterCam is not
+  # answering" is one fact about one LXC, and the gas alert already says it.
+  - id: metercam_water_stale
+    alias: 'Water camera: no accepted reading for hours'
+    mode: single
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.water_camera_last_accepted
+        above: 360
+        id: stale
+    action:
+      - variables:
+          hours: "{{ ((states('sensor.water_camera_last_accepted') | float(0)) / 60) | round(1) }}"
+      - service: notify.household
+        data:
+          title: '📷 Water camera'
+          message: >-
+            No accepted cold-water reading for {{ hours }} h. The camera may have
+            stopped waking, or every frame is being refused: see its last photo and
+            the refused frames (MeterCam/docs/operations.md).
+          data:
+            channel: Water meter
+            tag: metercam-water-stale
