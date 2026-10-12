@@ -95,6 +95,29 @@ async function suite(file, spec) {
         rec.pts.length ? new Date(rec.pts[0][0]).toISOString() : "no points");
   eq(file + ": 14 d carries no note", rec.note, null);
 
+  // Min/Max of a statistics window are the hours' own extremes, not the
+  // extremes of their means (2026-10-12: 7d load showed Max 435 W, real 8132 W).
+  const spiky = { [E]: [
+    { start: now - 3 * DAY, mean: 200, min: 90, max: 1766 },
+    { start: now - 3 * DAY + HOUR, mean: 150, min: 120, max: 400 },
+    { start: now - 3 * DAY + 2 * HOUR, mean: 180, min: 100, max: 300 },
+  ] };
+  ({ c, calls } = rig(Card, E, spiky, lastTwoDays));
+  rec = await c._load(spec, "k7", now - 7 * DAY, now, 1500, 0);
+  eq(file + ": stats rows keep min/max", rec.pts[0], [now - 3 * DAY, 200, 90, 1766]);
+  const ext = c._extremes(rec.pts, { min: 150, max: 200 }, now - 7 * DAY, now);
+  eq(file + ": Max/Min come from the hours' extremes", [ext.min, ext.max], [90, 1766]);
+  const tail = c._extremes(rec.pts, { min: 150, max: 180 }, now - 3 * DAY + HOUR + 1, now);
+  eq(file + ": an hour wholly before the window is left out", [tail.min, tail.max], [100, 400]);
+
+  // ...and the chart draws that band, so the plot and the stats row agree
+  // (2026-10-12: line topped out at 435 W under "Max 8132 W").
+  const p = c._path(rec.pts, 600, 200, 10, now - 7 * DAY, now);
+  check(file + ": stats rows draw a min-max band", p.ranged === true);
+  eq(file + ": the axis holds the band, not just the means", [p.min, p.max], [90, 1766]);
+  const flat = c._path([[now - 2 * HOUR, 5], [now - HOUR, 7]], 600, 200, 10, now - 3 * HOUR, now);
+  check(file + ": raw rows keep the plain fill", flat.ranged === false);
+
   // 14 d on a sensor with no statistics: falls back, and says so.
   ({ c, calls } = rig(Card, E, {}, lastTwoDays));
   rec = await c._load(spec, "k14b", now - 14 * DAY, now, 1500, 0);
