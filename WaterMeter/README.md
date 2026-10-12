@@ -48,25 +48,29 @@ sections 12 and 13 (both reading sensors, the water alert).
   flash; later updates come over Wi-Fi, as with the gas camera.
 - A phone charger in a socket feeds the board. No 230 V cable runs to the meter: only 5 V.
 
-## Parts to buy: 634.80 UAH
+## Parts to buy: 658 UAH
 
-One order, from one prom.ua seller. Prom's Smart delivery is free only when one seller's subtotal is at least 200 UAH,
-so the parts are bought together. That also clears the seller's own 150 UAH minimum. Prices were checked on 2026-10-12.
+One order from one prom.ua seller, СЦ Екран, both items with Smart. Prom's Smart delivery is free only when one
+seller's subtotal is at least 200 UAH, and this seller's own minimum is 400 UAH. The order clears both. Prices were
+checked on 2026-10-12. Every charger this seller sells comes with a cable. The only cheaper one, at 159 UAH,
+has a Lightning cable, which is no use here.
 
-| # | Part | Shop | Price, UAH |
-|---|---|---|---|
-| 1 | **ESP32-CAM with OV2640** in the kit (ESP32-S, 27×41 mm, 4 MB PSRAM) | [prom.ua (ФОП Корнієнко)](https://prom.ua/ua/p2796254769-plata-kameroj-esp32.html) | 418.80 |
-| 2 | **ESP32-CAM-MB programmer base, USB-C** (CH340), for the first flash only | [prom.ua (ФОП Корнієнко)](https://prom.ua/ua/p2796254768-plata-rasshireniya-esp32.html) | 216 |
-| | **Total, one seller, Smart** | | **634.80** |
+| # | Part | Price, UAH |
+|---|---|---|
+| 1 | [**ESP32-CAM with OV2640 and the programmer base**](https://prom.ua/ua/p3034708996-plata-razrabotki-esp32.html), kit (ESP32-CAM-MB for the first USB flash) | 489 |
+| 2 | [**Charger LDNIO A2219**](https://prom.ua/ua/p1824668257-zaryadnoe-ustrojstvo-ldnio.html), 2 × USB-A, 5 V 2.4 A, with a USB-A → micro-USB cable | 169 |
+| | **Total, one seller, Smart** | **658** |
+
+Alternatives checked on 2026-10-12 cost more, or come without a Smart charger. 1Дюйм has the board at 351 UAH and a
+CH341A at 155 UAH, but no mains charger and no in-stock CH340. ФОП Корнієнко has the board and base at 634.80 UAH,
+but no charger. Rozetka had no cheaper ESP32-CAM in stock.
 
 **Not bought:**
-- **Charger:** a spare USB phone charger from home (5 V, 1 A or more). Bought alone, any charger is below the
-  200 UAH Smart threshold, and this seller has none.
 - **Cable:** two broken 2 m USB cables are spliced into one longer one. Only power is needed, so only the red
   (+5 V) and black (GND) wires are joined. The USB-A plug goes into the charger, and the other end is soldered
   straight to the board's **5V** and **GND** pins. At the board's 0.2–0.3 A, about 4 m of cable loses almost nothing.
 - **Box:** left out for now. If it is needed later, only the lens needs a clear window: a flat box with a hole
   over the lens and a piece of microscope slide glued over it. Plastic lids are too cloudy for a photo this close.
 
-**Before paying:** check that both items are still in the same cart with the Smart badge, and that the subtotal is at least
-200 UAH.
+**Before paying:** check that the listing still shows the Smart badge, and that the photo shows the MB base in the kit.
+Test the board on the base as soon as it arrives. The seller lists 14 days for exchange and return.
