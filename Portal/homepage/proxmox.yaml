@@ -1,0 +1,7 @@
+# The connection behind the CPU/RAM line on each guest's card (proxmoxVMID in
+# services.yaml). The key is the node's name. The token is root@pam!homepage,
+# PVEAuditor: read-only, its own token so it can be revoked on its own.
+proxmox:
+  url: https://{{HOMEPAGE_VAR_PVE_ADDR}}
+  token: "{{HOMEPAGE_VAR_PVE_TOKEN_ID}}"
+  secret: "{{HOMEPAGE_VAR_PVE_TOKEN_SECRET}}"

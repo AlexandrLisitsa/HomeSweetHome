@@ -16,6 +16,7 @@ it all from filling up is in [`docs/maintenance.md`](docs/maintenance.md).
 | 103 · LXC | Cloudflare Tunnel: lets Google Home and Gemini reach Home Assistant, without an open port | [`docs/103-cloudflare.md`](docs/103-cloudflare.md) |
 | 104 · LXC | MeterCam: reads the gas meter's dial for Home Assistant | [`docs/104-metercam.md`](docs/104-metercam.md) |
 | 105 · LXC | MeterBots: files the monthly meter readings with the suppliers' Telegram bots | [`docs/105-meterbots.md`](docs/105-meterbots.md) |
+| 106 · LXC | Portal: the house dashboard and the `.lan` names | [`docs/106-portal.md`](docs/106-portal.md) |
 
 The tooling began as a way to measure the HA guest's resource history rather
 than eyeball it off a graph ([the CPU case study](docs/cpu-growth-case-study.md)).
@@ -35,7 +36,7 @@ Two ways in, for two jobs:
   config and metric and change nothing. Setup steps and the privilege-separation
   trap are in `secrets.env.example`. The measuring tools below use only this.
 - **SSH as root** with a dedicated key, for everything that writes: creating and
-  deploying MeterCam's and MeterBots' containers, LXC 104 and 105 (see
+  deploying MeterCam's, MeterBots' and the Portal's containers, LXC 104–106 (see
   [`docs/ssh-write-path.md`](docs/ssh-write-path.md)),
   and host administration — installing packages, the backup hook, the backup
   jobs. The hook is installed by hand (see [`docs/backups.md`](docs/backups.md)).
@@ -96,6 +97,7 @@ help".
 | [`docs/103-cloudflare.md`](docs/103-cloudflare.md) | LXC 103, Cloudflare Tunnel |
 | [`docs/104-metercam.md`](docs/104-metercam.md) | LXC 104, MeterCam |
 | [`docs/105-meterbots.md`](docs/105-meterbots.md) | LXC 105, MeterBots |
+| [`docs/106-portal.md`](docs/106-portal.md) | LXC 106, Portal |
 | [`docs/ssh-write-path.md`](docs/ssh-write-path.md) | the root SSH key that changes the host, and what the read/write split does and does not buy |
 | [`docs/backups.md`](docs/backups.md) | what is backed up, where, the retention, and how to restore |
 | [`docs/maintenance.md`](docs/maintenance.md) | housekeeping: what keeps the host and its guests from slowly filling up |

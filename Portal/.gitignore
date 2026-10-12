@@ -1,0 +1,8 @@
+# The real configuration; .env.example is the committed template.
+.env
+
+# Homepage builds made by tools/build_homepage.sh.
+.build/
+
+# The LXC's real address; see deploy/lxc.env.example.
+deploy/lxc.env
