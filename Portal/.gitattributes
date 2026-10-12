@@ -1,0 +1,7 @@
+# Everything here runs on Debian inside the LXC: a CR in a shell script, a
+# Caddyfile or a systemd unit breaks it in a way that reads as something else.
+*.sh          text eol=lf
+*.env.example text eol=lf
+*.yaml        text eol=lf
+*.service     text eol=lf
+Caddyfile     text eol=lf
