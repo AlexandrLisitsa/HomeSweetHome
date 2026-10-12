@@ -2,8 +2,9 @@
 
 MeterBots runs in **LXC 105** (`meterbots`) on the Proxmox host, at the house's
 next fixed address (root README, "Network"). The container is unprivileged
-with `nesting=1,keyctl=1` for Docker, and is sized at the house defaults: 1
-core, 512 MB, 2 GB.
+with `nesting=1,keyctl=1` for Docker, and has 1 core and 512 MB (the house
+defaults) and a 4 GB disk. The default 2 GB filled up with the image and its
+build cache; it was grown on 2026-10-12.
 
 ## First setup
 
