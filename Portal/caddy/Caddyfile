@@ -44,6 +44,12 @@ http://meter.lan {
 	reverse_proxy {$HOMEPAGE_VAR_METER_ADDR}
 }
 
+# MeterCam's control panel (MeterCam/docs/panel.md). The panel is open on the
+# LAN; the camera's own routes behind it keep their token.
+http://cam.lan {
+	reverse_proxy {$HOMEPAGE_VAR_METERCAM_ADDR}
+}
+
 # Any other *.lan name lands on the dashboard, not on an error page.
 http:// {
 	redir http://home.lan{uri} 302

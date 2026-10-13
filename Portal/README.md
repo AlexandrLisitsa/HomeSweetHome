@@ -17,7 +17,8 @@ browser ── home.lan ──► AdGuard: *.lan = Portal ──► Caddy :80 �
                                                                ├─► ha.lan      Home Assistant :8123
                                                                ├─► pve.lan     Proxmox :8006 (https)
                                                                ├─► adguard.lan AdGuard :80
-                                                               └─► meter.lan   ElectricityMeter board
+                                                               ├─► meter.lan   ElectricityMeter board
+                                                               └─► cam.lan     MeterCam's control panel
 ```
 
 ## Names
@@ -29,9 +30,10 @@ browser ── home.lan ──► AdGuard: *.lan = Portal ──► Caddy :80 �
 | `http://pve.lan` | Proxmox (the console works too) |
 | `http://adguard.lan` | AdGuard Home |
 | `http://meter.lan` | the ElectricityMeter board's own page |
+| `http://cam.lan` | MeterCam's control panel ([MeterCam/docs/panel.md](../MeterCam/docs/panel.md)) |
 
-Any other `*.lan` name goes to the dashboard. MeterCam and MeterBots have no
-page to open, only an API, so they get a status card and no name.
+Any other `*.lan` name goes to the dashboard. MeterBots has no page to open,
+only an API, so it gets a status card and no name.
 
 The old addresses keep working. Home Assistant is still on `:8123` and on its
 Cloudflare hostname, which Google Home uses.

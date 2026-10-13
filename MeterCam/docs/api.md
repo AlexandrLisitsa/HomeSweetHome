@@ -11,7 +11,8 @@ MeterCam listens on `:8770` in LXC 104.
 | `GET /last_accepted.jpg?meter=gas` | Home Assistant (`gas_submit.py`) | The frame behind the last *accepted* reading; headers `X-Value`, `X-At`, `X-At-Epoch` carry that reading |
 | `GET /archive/days` | a human | What is archived, newest day first, with frame counts and bytes. Read this before the one below |
 | `GET /archive` | a human | Every archived frame and its sidecars as one streamed zip. `?meter=gas` `?days=3` (today and the two before) |
-| `GET /health` | Docker's healthcheck, deploy.sh | Config status, meters, auth, firmware on offer, seconds since each meter's last read |
+| `GET /health` | Docker's healthcheck, deploy.sh, the Portal's MeterCam card | Config status, meters, auth, firmware on offer, seconds since each meter's last read |
+| `GET /`, `/api/*`, `/img/*`, `/live/*` | a browser, at `cam.lan` | The control panel. Open on the LAN, no token: see [panel.md](panel.md) |
 
 ## Auth
 
