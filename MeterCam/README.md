@@ -12,6 +12,10 @@ then three **red** decimals. The camera frames seven of them, so the reading
 goes to 0.01 m³, which is also the most this project will publish. See
 [What is published](docs/pitfalls.md#what-is-published).
 
+What it has been reading is on **`http://cam.lan`**, the [control panel](docs/panel.md):
+the latest frame, every read with its digits and why it was refused, trends,
+and a replay of any frame against the current config.
+
 ---
 
 ## How it works
@@ -72,9 +76,11 @@ drum. Optical reading depends on nothing hidden inside the meter.
 | `service/digits.py` | The carry rule, the agreement check and the gate. Stdlib only, so the tests that guard the irreversible failures run anywhere |
 | `service/reader.py` | Decode, orient, align, crop, infer, assemble |
 | `service/app.py` | `POST /read`, `/last.jpg`, `/last_accepted.jpg`, `/archive`, `/firmware/*`, `/health`; the Home Assistant prevalue fetch and write |
+| `service/panel.py`, `service/templates/`, `service/static/` | The control panel at `cam.lan`: views of the archive, replay, firmware publishing |
 | `service/config.example.json` | Template for the box's `config.json`, with the reasoning for each setting |
 | `tests/test_reader.py` | Plain asserts, no pytest |
-| `tests/test_routes.py` | The service's routes, read from `app.py` without importing it: what exists, and that no bot route has crept back |
+| `tests/test_routes.py` | The service's routes, read from `app.py` and `panel.py` without importing them: what exists, that no bot route has crept back, and that the camera's routes still check the token |
+| `tests/test_panel.py` | The panel against a throwaway archive. Needs Flask and OpenCV, so it runs in the container |
 | `models/fetch.sh` | Downloads the weights. Not committed: no stated licence upstream |
 | `firmware/gas-cam/` | The camera: AI-Thinker ESP32-CAM, PlatformIO |
 | `deploy/` | Creates LXC 104 on the Proxmox host and deploys the service into it |
@@ -87,6 +93,7 @@ drum. Optical reading depends on nothing hidden inside the meter.
 python tests/test_reader.py                                   # the arithmetic: no dependencies
 python tests/test_routes.py                                   # the routes: no dependencies
 sh Proxmox/tools/pve_ssh.sh "pct exec 104 -- docker exec metercam python tests/test_reader.py"
+sh Proxmox/tools/pve_ssh.sh "pct exec 104 -- docker exec metercam python tests/test_panel.py"
 ```
 
 The first runs on a bare workstation. `digits.py` imports nothing third-party
@@ -102,6 +109,7 @@ frames, which must never be accepted. Both must pass before a deploy.
 | --- | --- |
 | [`docs/architecture.md`](docs/architecture.md) | The wake cycle, who decides what, and how Home Assistant is wired |
 | [`docs/api.md`](docs/api.md) | The service's HTTP endpoints |
+| [`docs/panel.md`](docs/panel.md) | The control panel at `cam.lan`: what it shows, replay, publishing firmware, what it costs |
 | [`docs/firmware.md`](docs/firmware.md) | The board: wiring, building, the first USB flash, publishing an update, rolling back |
 | [`docs/deployment.md`](docs/deployment.md) | LXC 104: creating it, first setup, its tokens, deploying code, frame retention |
 | [`docs/operations.md`](docs/operations.md) | Day to day: checking reads, the camera moved, a reading went wrong |

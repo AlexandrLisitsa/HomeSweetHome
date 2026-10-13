@@ -79,11 +79,27 @@
         siteMonitor: http://{{HOMEPAGE_VAR_METER_ADDR}}
     - MeterCam:
         icon: mdi-camera-iris
+        href: http://cam.lan
         description: CT 104 · reads the gas meter from the ESP32-CAM's photos.
         siteMonitor: http://{{HOMEPAGE_VAR_METERCAM_ADDR}}/health
         proxmoxNode: proxmox
         proxmoxVMID: 104
         proxmoxType: lxc
+        # /health needs no token. Fetched only while this page is open, once
+        # a minute: MeterCam does nothing between camera wakes otherwise.
+        widget:
+          type: customapi
+          url: http://{{HOMEPAGE_VAR_METERCAM_ADDR}}/health
+          refreshInterval: 60000
+          mappings:
+            - field:
+                last_accepted_s_ago: gas
+              label: Last read
+              format: duration
+            - field: firmware
+              label: Firmware
+            - field: status
+              label: Service
     - MeterBots:
         icon: mdi-robot
         description: CT 105 · files the monthly readings with the suppliers' bots.
