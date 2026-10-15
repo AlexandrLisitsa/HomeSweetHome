@@ -87,7 +87,7 @@
                   "room": "kitchen"
                 },
                 {
-                  "entity": "light.0xa4c1385443844c1e",
+                  "entity": "light.led_ambient",
                   "overlay": "/local/floorplan/kitchen_led.png?v=9acd8325",
                   "name": "LED strip",
                   "icon": "mdi:led-strip-variant",
