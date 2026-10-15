@@ -13,7 +13,7 @@
           "cards": [
             {
               "type": "custom:floorplan-card",
-              "image": "/local/floorplan/base.png?v=aec422c2",
+              "image": "/local/floorplan/base.png?v=316dcf34",
               "rooms": [
                 {
                   "id": "kitchen",
@@ -79,7 +79,7 @@
               "lights": [
                 {
                   "entity": "light.kitchen_relay",
-                  "overlay": "/local/floorplan/kitchen_ceiling.png?v=a300e357",
+                  "overlay": "/local/floorplan/kitchen_ceiling.png?v=e4c5cb3f",
                   "name": "Ceiling",
                   "icon": "mdi:ceiling-light",
                   "x": 76.6,
@@ -88,7 +88,7 @@
                 },
                 {
                   "entity": "light.0xa4c1385443844c1e",
-                  "overlay": "/local/floorplan/kitchen_led.png?v=a125e33d",
+                  "overlay": "/local/floorplan/kitchen_led.png?v=9acd8325",
                   "name": "LED strip",
                   "icon": "mdi:led-strip-variant",
                   "x": 81.0,
@@ -97,7 +97,7 @@
                 },
                 {
                   "entity": "light.hallway_relay",
-                  "overlay": "/local/floorplan/hallway.png?v=f4cd9095",
+                  "overlay": "/local/floorplan/hallway.png?v=ffaaea74",
                   "name": "Light",
                   "icon": "mdi:lightbulb",
                   "x": 48.8,
@@ -106,7 +106,7 @@
                 },
                 {
                   "entity": "light.bathroom_relay",
-                  "overlay": "/local/floorplan/bathroom.png?v=974a7519",
+                  "overlay": "/local/floorplan/bathroom.png?v=0f1e3e72",
                   "name": "Light",
                   "icon": "mdi:lightbulb-group",
                   "x": 69.1,
@@ -115,7 +115,7 @@
                 },
                 {
                   "entity": "media_player.samsung_7_series_43_ue43nu7090",
-                  "overlay": "/local/floorplan/living_tv.png?v=2dbcc452",
+                  "overlay": "/local/floorplan/living_tv.png?v=0dbcda90",
                   "name": "TV",
                   "icon": "mdi:television",
                   "x": 8.3,
