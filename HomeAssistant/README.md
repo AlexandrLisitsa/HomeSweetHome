@@ -127,6 +127,7 @@ sh tools/ha_get.sh /api/config
 | `tools/test_load_shedding.py` | renders the load-shedding engine's templates in `packages/load_shedding.yaml` (decision, warnings, validator, stores, restore) against fake states | no — pure local |
 | `tools/test_climate_chart.js` | fixture tests for the climate card's chart and dial maths | no — no network |
 | `tools/test_console_history.js` | the inverter and battery cards' history: raw states inside the recorder's window, hourly statistics past it | no — pure local |
+| `tools/test_dtek_card.js` | the DTEK card's hero, Next window tile and today/tomorrow grid against the applied schedule, on a pinned clock | no — pure local |
 | `tools/test_card_tooltips.js` | renders every custom card and checks each meaningful element's tooltip against [the standard](docs/dashboard-tooltips.md); `tools/fake_dom.js` is the small DOM it and `test_power_cards.js` share | no — pure local |
 | `tools/ha_www_push.sh` | pushes `config/www/` (the custom cards) to the box over SSH; follow with `ha_dashboard.py --card` to bump the resource version — **changes the house** | yes, deliberately |
 
@@ -166,6 +167,7 @@ python tools/test_gas_submit.py
 python tools/test_electricity_submit.py
 python tools/test_load_shedding.py
 node tools/test_power_cards.js
+node tools/test_dtek_card.js
 node tools/test_console_history.js
 node tools/test_climate_chart.js
 ```
