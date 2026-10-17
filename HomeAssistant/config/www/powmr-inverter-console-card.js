@@ -76,7 +76,7 @@ const CARD = "powmr-inverter-console-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 import { ramp, rampCss } from "./card-ramp.js?v=1.0.0";
 
-const VERSION = "2.11.4";
+const VERSION = "2.11.6";
 
 /*
  * Brand colours stay literal: they identify a leg of the diagram (amber =
@@ -230,13 +230,13 @@ const HELP = {
     + "\nCannot be on together with Auto.",
   adaptive_charge: "Charges at night at the lowest current that still fills the pack by 06:30."
     + "\nE.g. half full at 23:00 needs ~21 A, so 30 A, not 60 A; re-sized every 10 min."
-    + "\nNeeds Auto with the charger on, or Night only; an outage window switches it off.",
+    + "\nNeeds Auto with the charger on, or Night only; an outage pauses it until it is over.",
   chip_precharge: "Arms a full pack before each scheduled DTEK outage; idle until DTEK publishes one."
     + "\nE.g. outage at 10:00: fills overnight at night rates, or by day at the amps it needs.",
   adaptive_plan: "What adaptive night charge is doing: the current it set and when the charge ends."
     + "\nE.g. 20 A → 07:00 at night, tonight by day, full within 1 % of a full pack.",
   precharge_plan: "What pre-charge is doing for the next DTEK outage: the amps and the outage start."
-    + "\nE.g. 30 A → 10:00 while charging; at night → 10:00 when the night tariff will do.",
+    + "\nE.g. 30 A → 10:00 charging; on grid → 10:00 full and held; at night → 10:00.",
   // Flow tiles and their status words
   tile_grid: "Mains voltage at the inverter input, its frequency and the inverter's estimated draw."
     + "\nE.g. 231.4 V · 50.00 Hz · 640 W in; Protect trips outside 185–250 V for 5 s.",
@@ -1221,6 +1221,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
     let text = "";
     if (st === "on" && plan) {
       if (plan.state === "charging") text = this._chargeText(a.current, at);
+      else if (plan.state === "holding") text = at ? "on grid → " + at : "on grid";
       else if (plan.state === "waiting_night") text = at ? "at night → " + at : "at night";
       else if (plan.state === "full") text = "full";
     }
@@ -1228,7 +1229,8 @@ class PowmrInverterConsoleCard extends HTMLElement {
       sub.textContent = text;
       sub.dataset.tip = tip("Pre-charge plan — " + (text || (plan ? plan.state : "unknown")), "precharge_plan");
     }
-    if (node) node.classList.toggle("act", st === "on" && !!plan && plan.state === "charging");
+    if (node) node.classList.toggle("act", st === "on" && !!plan
+      && (plan.state === "charging" || plan.state === "holding"));
   }
 
   /**
@@ -1257,7 +1259,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
   _patchAdaptive(dot, sub) {
     const c = this._config;
     const st = this._state(c.adaptive_charge);
-    const outage = ["waiting_night", "charging", "full"].includes(this._state(c.precharge_plan));
+    const outage = ["waiting_night", "charging", "holding", "full"].includes(this._state(c.precharge_plan));
     const charges = this._state(c.chip_night_only) === "on"
       || (this._state(c.chip_auto) === "on" && this._state(c.chip_ac_charge) === "on");
     const usable = charges && !outage;

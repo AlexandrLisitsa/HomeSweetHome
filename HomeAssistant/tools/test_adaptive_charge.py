@@ -218,7 +218,7 @@ KYIV_FALL = datetime(2026, 10, 24, 23, 0, tzinfo=KYIV)
 
 # --- the automations, through ha_automation_sim -------------------------------
 
-from ha_automation_sim import (House, Simulator, START, TimeTick, find,  # noqa: E402
+from ha_automation_sim import (House, Simulator, START, TimeTick, find, render,  # noqa: E402
                                load_package)
 
 KNOWN = []
@@ -352,6 +352,8 @@ check("deadline written naive-local by hand '2026-11-03 02:00:00' -> held",
       calls(drive(until="2026-11-03 02:00:00", **OFF_SAVED)[0]), [])
 check("pre-charge waiting_night with the deadline released -> not held",
       options(drive(pre="waiting_night", **OFF_SAVED)[0]), ["40"])
+check("pre-charge holding, even with the deadline released -> held",
+      calls(drive(pre="holding", **OFF_SAVED)[0]), [])
 
 print("drive: gate and triggers")
 for bad in ("unavailable", "unknown"):
@@ -467,6 +469,85 @@ h = outage_house(pre="unavailable")
 check("HA start with the plan unavailable -> nothing",
       Simulator(h, [OUTAGE_OFF]).fire(START), [])
 
+print("outage_resume")
+RESUME = find(PACKAGE["automation"], "id", "adaptive_charge_outage_resume")
+FLAG_CLEAR = find(PACKAGE["automation"], "id", "adaptive_charge_outage_flag_clear")
+PAUSED = "input_boolean.adaptive_charge_outage_paused"
+DARK = "binary_sensor.dtek_scheduled_dark"
+DTEK_NOW = "binary_sensor.dtek_outage_now"
+GRID_UNSAFE = "binary_sensor.powmr_inverter_grid_condition_safe"  # on = no mains
+
+h = outage_house()
+runs = Simulator(h, [OUTAGE_OFF]).fire(
+    h.change(PRECHARGE, "charging", until="2026-11-03T10:00:00+02:00"))
+check("outage_off also sets the paused flag", (h.state(ENABLED), h.state(PAUSED)), ("off", "on"))
+check("... and says it comes back by itself",
+      "comes back on by itself" in notes(runs)[0]["message"], True)
+
+
+def resume_house(pre="charging", paused="on", adaptive="off", dark="off", grid="off", dtek="off"):
+    h = House(at(2, "17:00"))
+    h.set(ENABLED, adaptive)
+    h.set(PAUSED, paused)
+    h.set(PRECHARGE, pre)
+    h.set(DARK, dark)
+    h.set(DTEK_NOW, dtek)
+    h.set(GRID_UNSAFE, grid)
+    return h
+
+
+h = resume_house()
+runs = Simulator(h, [RESUME]).fire(h.change(PRECHARGE, "idle"))
+check("window over, mains up, schedule lit -> adaptive on, flag off",
+      (h.state(ENABLED), h.state(PAUSED)), ("on", "off"))
+check("... one notification, back on",
+      [(n["title"], n["data"]) for n in notes(runs)],
+      [("\U0001f50b Adaptive night charge back on", {"channel": "Adaptive charge"})])
+h = resume_house(dark="on")
+sim = Simulator(h, [RESUME])
+check("plan idle but this half hour still dark -> waits", sim.fire(h.change(PRECHARGE, "idle")), [])
+runs = sim.fire(h.change(DARK, "off"))
+check("... schedule lit -> resumes", h.state(ENABLED), "on")
+h = resume_house(grid="on")
+sim = Simulator(h, [RESUME])
+check("window over but no mains -> waits", sim.fire(h.change(PRECHARGE, "idle")), [])
+sim.fire(h.change(GRID_UNSAFE, "off"))
+check("... mains back -> resumes", h.state(ENABLED), "on")
+h = resume_house(dtek="on")
+check("DTEK still records an outage -> waits",
+      Simulator(h, [RESUME]).fire(h.change(PRECHARGE, "idle")), [])
+h = resume_house(pre="waiting_night")
+check("next window already pending -> stays paused",
+      (Simulator(h, [RESUME]).fire(TimeTick(at(2, "17:10"))), h.state(ENABLED)), ([], "off"))
+h = resume_house(paused="off")
+check("never paused (adaptive was off anyway) -> never turned on",
+      (Simulator(h, [RESUME]).fire(h.change(PRECHARGE, "idle")), h.state(ENABLED)), ([], "off"))
+h = resume_house(pre="off")
+Simulator(h, [RESUME]).fire(h.change(GRID_UNSAFE, "on"))
+Simulator(h, [RESUME]).fire(h.change(GRID_UNSAFE, "off"))
+check("pre-charge switched off counts as no window -> resumes", h.state(ENABLED), "on")
+h = resume_house(pre="idle")
+Simulator(h, [RESUME]).fire(START)
+check("HA start after the outage ended -> resumes", h.state(ENABLED), "on")
+h = resume_house(pre="idle")
+Simulator(h, [RESUME]).fire(TimeTick(at(2, "17:10")))
+check("10-minute self-heal -> resumes", h.state(ENABLED), "on")
+h = resume_house(pre="idle", adaptive="on")
+check("already on -> nothing", Simulator(h, [RESUME]).fire(TimeTick(at(2, "17:10"))), [])
+note = [s for s in RESUME["action"] if "service" in s and s["service"] == "notify.household"][0]
+h = resume_house(pre="idle")
+check("guard refused it (adaptive still off) -> says it stays off",
+      (render(note["data"]["title"], h),
+       "needs Auto" in render(note["data"]["message"], h)),
+      ("\U0001f50b Adaptive night charge stays off", True))
+
+h = resume_house(pre="charging")
+Simulator(h, [FLAG_CLEAR]).fire(h.change(ENABLED, "on"))
+check("switched on by hand while paused -> flag cleared", h.state(PAUSED), "off")
+h.change(ENABLED, "off")
+Simulator(h, [RESUME]).fire(h.change(PRECHARGE, "idle"))
+check("... a later manual off is not undone", h.state(ENABLED), "off")
+
 print("guard")
 
 
@@ -494,7 +575,7 @@ check("Auto on but the charger off (Night only off) -> refused",
       switch_on(charger="off"), "off")
 check("Night only on, charger off (the firmware's, by day) -> stays on",
       switch_on(auto="off", night_only="on", charger="off"), "on")
-for pre in ("waiting_night", "charging", "full"):
+for pre in ("waiting_night", "charging", "holding", "full"):
     check("outage window pending (%s) -> refused, even with Auto on" % pre,
           switch_on(pre=pre), "off")
     check("... and even with Night only on (%s)" % pre,
