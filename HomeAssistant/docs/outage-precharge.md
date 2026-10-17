@@ -52,8 +52,9 @@ inverter stuck on the grid.
 ## The plan
 
 `sensor.outage_pre_charge_plan` is re-rendered on every DTEK poll, every 5
-minutes, and whenever the switch changes. Each poll replaces the plan; nothing
-from the last one is kept. If a window moves earlier, the current goes up. If it
+minutes, and whenever the switch changes. Each poll replaces the plan, and the
+only thing it keeps from the last one is whether a charge has started (see
+[Once it starts, it holds](#once-it-starts-it-holds)). If a window moves earlier, the current goes up. If it
 moves later, the current goes down, or the plan goes back to waiting for the
 night. If it disappears, the override is released straight away.
 
@@ -64,6 +65,7 @@ night. If it disappears, the override is released straight away.
 | `full` | the pack is within 1 % of full |
 | `waiting_night` | it is daytime, and the night tariff before the outage can fill the pack at 60 A |
 | `charging` | the override is on: `current` amps until `until` |
+| `holding` | charged after a `charging` start: still on grid (Utility First) until `until`, no current change |
 
 The arithmetic, using the same 280 Ah pack constant as `battery_runtime.yaml`:
 
@@ -86,15 +88,37 @@ below 10 A, and it is 60 A when the deadline is under 15 minutes away. The ESP
 holds the override until the outage start itself, so the 30-minute buffer only
 affects the sizing.
 
+### Once it starts, it holds
+
+The first real outage (17.10.2026, 13:30) showed the problem with a stateless
+plan. The pack reached 99 %, the plan said `full`, and the drive released the
+deadline. The ESP went back to SBU, the house drew 2.8 Ah from the pack, and
+the plan said `charging` again. Power Priority flipped 20 times in three hours,
+and every flip sent another "pre-charge started".
+
+So the plan reads its own previous state. Once it is `charging` or `holding`,
+it is committed until the window starts or the switch goes off:
+
+- within 5 % of full, it is `holding`. The deadline stays armed, so the ESP
+  keeps Utility First and the charger on. The pack floats on grid and the
+  house runs from the grid.
+- more than 5 % short, it is `charging` again, silently. It never goes back
+  to `waiting_night` by day.
+
+A pack that is already full when a window appears is `full` and is not held:
+the house stays on SBU until the pack drops below 99 %, and from then on the
+latch applies.
+
 Pre-charge outranks [adaptive night charge](adaptive-charge.md). When this plan
 leaves `idle` (a window is published), adaptive is switched off, and a
-notification says so. It stays off until you switch it back on. If you switch
+notification says so. It comes back on by itself once the outage is over. If you switch
 it off while a pre-charge is charging, adaptive waits to hand back your own
 current until the pre-charge is over.
 
 When a pre-charge starts, `notify.household` sends one message on the
 `Outage pre-charge` channel, with the time and the amps. A day-rate charge is
-never a surprise. Re-targets after that are silent.
+never a surprise. Re-targets after that, and the swaps between `charging` and
+`holding`, are silent.
 
 ## Testing
 

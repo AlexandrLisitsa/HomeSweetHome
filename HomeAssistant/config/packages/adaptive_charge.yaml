@@ -38,7 +38,9 @@
 # publishes an outage window (the pre-charge plan leaves `idle`), adaptive
 # switches itself off, and it cannot be switched on again while a window is
 # pending. Pre-charge then owns the select alone; the firmware saves and
-# restores it around the override.
+# restores it around the override. Once the outage is over (no window pending,
+# the schedule lit, mains measured) adaptive switches itself back on -- only
+# if the outage is what switched it off.
 #
 # The one overlap left is the hand-back. Switching off puts the user's current
 # back, and if the pre-charge is already charging that would overwrite its
@@ -59,6 +61,12 @@ input_boolean:
   adaptive_night_charge:
     name: "Adaptive night charge"
     icon: mdi:battery-charging-medium
+  # On while adaptive is off only because an outage window switched it off;
+  # adaptive_charge_outage_resume switches it back on once the outage is over.
+  # No `initial:`, so a restart mid-outage still remembers.
+  adaptive_charge_outage_paused:
+    name: "Adaptive charge paused for an outage"
+    icon: mdi:pause-circle-outline
 
 input_number:
   # The user's own Max AC Charge Current, saved at the first adaptive write of
@@ -195,7 +203,7 @@ automation:
       # to end (the triggers above).
       - condition: template
         value_template: >-
-          {{ not (is_state('sensor.outage_pre_charge_plan', 'charging')
+          {{ not (states('sensor.outage_pre_charge_plan') in ['charging', 'holding']
                   or (is_state('switch.powmr_inverter_outage_pre_charge', 'on')
                       and as_timestamp(states('datetime.powmr_inverter_pre_charge_until'), 0) + 360
                           > as_timestamp(now()))) }}
@@ -245,8 +253,9 @@ automation:
                   value: 0
 
   # An outage window from DTEK hands the night to pre-charge: adaptive goes
-  # off, and stays off until switched on again (the guard refuses that while
-  # a window is pending). The hand-back of the user's current follows from
+  # off, and adaptive_charge_outage_paused remembers why, so
+  # adaptive_charge_outage_resume can switch it back on once the outage is
+  # over (the guard refuses a manual switch-on while a window is pending). The hand-back of the user's current follows from
   # `off` in the drive, held while a pre-charge is already charging.
   - id: adaptive_charge_outage_off
     alias: 'Adaptive charge: off when an outage is scheduled'
@@ -257,6 +266,7 @@ automation:
         to:
           - waiting_night
           - charging
+          - holding
           - full
       # A window published while HA was down.
       - platform: homeassistant
@@ -270,12 +280,16 @@ automation:
         state:
           - waiting_night
           - charging
+          - holding
           - full
     action:
+      - service: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.adaptive_charge_outage_paused
       - service: input_boolean.turn_off
         target:
           entity_id: input_boolean.adaptive_night_charge
-      # It stays off until someone switches it back on, so say so.
+      # Paused, not cancelled: adaptive_charge_outage_resume brings it back.
       - variables:
           until: "{{ state_attr('sensor.outage_pre_charge_plan', 'until') }}"
           at: >-
@@ -286,7 +300,7 @@ automation:
           message: >-
             DTEK scheduled an outage at {{ at }}, so outage pre-charge takes over
             the battery charge and adaptive night charge was switched off.
-            Switch it back on from the AC charge chip after the outage.
+            It comes back on by itself once the outage is over.
           data:
             channel: Adaptive charge
 
@@ -323,6 +337,7 @@ automation:
             state:
               - waiting_night
               - charging
+              - holding
               - full
           - condition: and
             conditions:
@@ -341,3 +356,93 @@ automation:
       - service: input_boolean.turn_off
         target:
           entity_id: input_boolean.adaptive_night_charge
+
+  # The other half of adaptive_charge_outage_off. Once no window is pending,
+  # DTEK's schedule has this half hour lit, DTEK records no outage and the
+  # inverter measures mains, adaptive goes back on -- but only if the outage
+  # is what switched it off (the paused flag). A second window later the same
+  # day keeps the pre-charge plan out of idle, so it stays paused through both.
+  - id: adaptive_charge_outage_resume
+    alias: 'Adaptive charge: back on after the outage'
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: sensor.outage_pre_charge_plan
+        to:
+          - idle
+          - 'off'
+      - platform: state
+        entity_id: binary_sensor.dtek_scheduled_dark
+        to: 'off'
+      - platform: state
+        entity_id: binary_sensor.dtek_outage_now
+        to: 'off'
+      # on = UNSAFE (the ESPHome sensor's polarity): off is mains back.
+      - platform: state
+        entity_id: binary_sensor.powmr_inverter_grid_condition_safe
+        to: 'off'
+      # Self-healing, and a restart that lands after the outage ended.
+      - platform: time_pattern
+        minutes: "/10"
+      - platform: homeassistant
+        event: start
+    condition:
+      - condition: state
+        entity_id: input_boolean.adaptive_charge_outage_paused
+        state: 'on'
+      - condition: state
+        entity_id: input_boolean.adaptive_night_charge
+        state: 'off'
+      - condition: state
+        entity_id: sensor.outage_pre_charge_plan
+        state:
+          - idle
+          - 'off'
+      - condition: state
+        entity_id: binary_sensor.dtek_scheduled_dark
+        state: 'off'
+      - condition: state
+        entity_id: binary_sensor.dtek_outage_now
+        state: 'off'
+      - condition: state
+        entity_id: binary_sensor.powmr_inverter_grid_condition_safe
+        state: 'off'
+    action:
+      # The flag first: one attempt per outage, whatever the guard says.
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.adaptive_charge_outage_paused
+      - service: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.adaptive_night_charge
+      # adaptive_charge_guard refuses it if neither Auto nor Night only would
+      # charge tonight; give it the moment it needs before saying which.
+      - delay:
+          seconds: 5
+      - service: notify.household
+        data:
+          title: >-
+            {{ '🔋 Adaptive night charge back on' if is_state('input_boolean.adaptive_night_charge', 'on')
+               else '🔋 Adaptive night charge stays off' }}
+          message: >-
+            {% if is_state('input_boolean.adaptive_night_charge', 'on') %}The DTEK outage is over, so adaptive night charge sizes tonight's charge again.{% else %}The DTEK outage is over, but adaptive needs Auto with the AC charger on, or Night only. Switch one on, then adaptive from the AC charge chip.{% endif %}
+          data:
+            channel: Adaptive charge
+
+  # Switched on any other way while paused (by hand, from the chip): the pause
+  # is over, so a later manual off is never undone by the resume above.
+  - id: adaptive_charge_outage_flag_clear
+    alias: 'Adaptive charge: switched on, not paused any more'
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: input_boolean.adaptive_night_charge
+        to: 'on'
+    condition:
+      - condition: state
+        entity_id: input_boolean.adaptive_charge_outage_paused
+        state: 'on'
+    action:
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.adaptive_charge_outage_paused
