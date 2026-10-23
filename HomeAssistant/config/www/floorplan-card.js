@@ -50,10 +50,11 @@
  * Everything in the flat runs through the inverter, so with a `power` block the
  * plan shows how: a stream from the grid's entry and one between the pack and
  * the inverter (backwards while it charges), and one from the inverter along
- * the hallway and through the doors to every lamp, plug and screen that is on.
+ * the tops of the walls, like real wiring, to every lamp, plug and screen that is on.
  * The paths come from make_dashboard.py, in pixels like an A/C's air; width and
- * pace follow the watts. The inverter's label says what feeds it ("Battery
- * 412 W"), the pack's which way its power goes ("64% · −420 W").
+ * pace follow the watts. The inverter's label says what it gives the house and
+ * from where ("274 W to the house · on battery"), the pack's which way its own
+ * power goes ("47% · −300 W").
  *
  * The grid is down when the inverter says so (its grid sensor is on), never
  * because DTEK says so. Then the flat dims, a red chip reads "Grid down · on

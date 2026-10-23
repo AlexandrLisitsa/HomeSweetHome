@@ -6,7 +6,7 @@ rooms.py is the one list, and make_dashboard.py turns it into the Home
 dashboard's card config. Neither needs the other to be right, so this checks:
 
   * rooms.py hangs together: every item's room, spot and overlay exist, every
-    room a power stream enters has a door, and the POWER spots exist;
+    POWER spots exist;
   * every image the card serves is committed, and every URL's ?v= is the hash of
     the file as committed -- a picture rebuilt without re-running
     make_dashboard.py would be served stale;
@@ -59,9 +59,6 @@ for name, light in LIGHTS.items():
     check("light %s: room" % name, light["room"] in ROOMS, light["room"])
 for key in ("hub", "grid_in", "battery"):
     check("POWER %s: spot" % key, POWER[key] in SPOTS, POWER[key])
-hub_room = next((i["room"] for i in ITEMS if i.get("spot") == POWER["hub"]), None)
-for room in sorted(({i["room"] for i in ITEMS if is_load(i)} | {hub_room}) - {"hallway"}):
-    check("room %s: a door for the power path" % room, len(ROOMS[room].get("door", ())) == 2)
 
 print("images")
 doc = json.loads(DASHBOARD.read_text(encoding="utf-8"))

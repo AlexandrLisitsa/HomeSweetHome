@@ -58,14 +58,15 @@ wash, never a red alarm; a comfortable room stays untinted.
 
 Everything in the flat runs through the inverter, and the plan shows how: a
 stream from the grid's entry to it and one between it and the pack (backwards
-while the pack charges), then one along the hallway and in through each door to
+while the pack charges), then one along the tops of the walls to
 every lamp, plug and TV that is on, its width and pace set by its watts. The
 inverter's label says what feeds it, the pack's which way its power goes. When
 the inverter loses the grid, the flat dims, a red chip says so with the hours the
 pack has left, and whatever load shedding stepped down or cut gets an amber or
 red ring. With the grid up, a DTEK outage scheduled for today shows as an amber
-chip. The routes come from `make_dashboard.py`: each room's `door` in `rooms.py`
-is where its path crosses into it, and `POWER` names the entities. Tap toggles what can be toggled and opens the dialog for
+chip. The routes come from `make_dashboard.py`: the walls of the model are a graph,
+each wire takes the shortest way along their tops and drops to its icon from the
+wall point nearest it in the picture; `POWER` in `rooms.py` names the entities. Tap toggles what can be toggled and opens the dialog for
 the rest; holding always opens the dialog. Every icon, number, badge, chip, switch
 and slider explains itself on hover, in the house tooltip format
 ([`dashboard-tooltips.md`](../HomeAssistant/docs/dashboard-tooltips.md)).
@@ -80,7 +81,7 @@ Run from the repository root. Each one reads the room list in `tools/rooms.py`.
 
 | Script | Does |
 | --- | --- |
-| `tools/rooms.py` | the one list: the rooms the dashboard knows (and their doors, for the power path), where each lamp and control sits, its colour and brightness gain, and the power entities |
+| `tools/rooms.py` | the one list: the rooms the dashboard knows, where each lamp and control sits, its colour and brightness gain, and the power entities |
 | `tools/catalog.py <what>` | searches every furniture catalog installed with Sweet Home 3D, to find a model before placing it |
 | `tools/make_render_copy.py` | writes `build/MySweetHome-render.sh3d`: walls and tall furniture cut, doors and windows hidden, night |
 | `tools/render.sh [room...]` | renders the dashboard photos into `renders/` with Sweet Home 3D's own renderer (`tools/Render.java`), no UI |
