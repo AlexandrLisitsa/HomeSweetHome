@@ -76,7 +76,7 @@ const CARD = "powmr-inverter-console-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 import { ramp, rampCss } from "./card-ramp.js?v=1.0.0";
 
-const VERSION = "2.11.2";
+const VERSION = "2.11.6";
 
 /*
  * Brand colours stay literal: they identify a leg of the diagram (amber =
@@ -230,13 +230,13 @@ const HELP = {
     + "\nCannot be on together with Auto.",
   adaptive_charge: "Charges at night at the lowest current that still fills the pack by 06:30."
     + "\nE.g. half full at 23:00 needs ~21 A, so 30 A, not 60 A; re-sized every 10 min."
-    + "\nNeeds Auto with the charger on, or Night only; an outage window switches it off.",
+    + "\nNeeds Auto with the charger on, or Night only; an outage pauses it until it is over.",
   chip_precharge: "Arms a full pack before each scheduled DTEK outage; idle until DTEK publishes one."
     + "\nE.g. outage at 10:00: fills overnight at night rates, or by day at the amps it needs.",
   adaptive_plan: "What adaptive night charge is doing: the current it set and when the charge ends."
     + "\nE.g. 20 A → 07:00 at night, tonight by day, full within 1 % of a full pack.",
   precharge_plan: "What pre-charge is doing for the next DTEK outage: the amps and the outage start."
-    + "\nE.g. 30 A → 10:00 while charging; at night → 10:00 when the night tariff will do.",
+    + "\nE.g. 30 A → 10:00 charging; on grid → 10:00 full and held; at night → 10:00.",
   // Flow tiles and their status words
   tile_grid: "Mains voltage at the inverter input, its frequency and the inverter's estimated draw."
     + "\nE.g. 231.4 V · 50.00 Hz · 640 W in; Protect trips outside 185–250 V for 5 s.",
@@ -285,7 +285,7 @@ const HELP = {
   // History
   range: "Shows this span on the chart, ending now, and keeps it live as readings arrive."
     + "\nE.g. 24h on SOC shows the night charge as the 23:00–07:00 climb."
-    + "\nPast 36 h (7d, 14d) it draws hourly statistics, not every reading.",
+    + "\nPast 36 h (7d, 14d): hourly means, each hour's min–max shaded around them.",
   tab: "Picks the series the chart draws; one with bands takes its tile's colour."
     + "\nE.g. Grid voltage at 243 V draws the line amber, like the Grid tile's HIGH.",
   ch_name: "The series on the chart: drag to pan, pinch or scroll to zoom, double-click for live."
@@ -1221,6 +1221,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
     let text = "";
     if (st === "on" && plan) {
       if (plan.state === "charging") text = this._chargeText(a.current, at);
+      else if (plan.state === "holding") text = at ? "on grid → " + at : "on grid";
       else if (plan.state === "waiting_night") text = at ? "at night → " + at : "at night";
       else if (plan.state === "full") text = "full";
     }
@@ -1228,7 +1229,8 @@ class PowmrInverterConsoleCard extends HTMLElement {
       sub.textContent = text;
       sub.dataset.tip = tip("Pre-charge plan — " + (text || (plan ? plan.state : "unknown")), "precharge_plan");
     }
-    if (node) node.classList.toggle("act", st === "on" && !!plan && plan.state === "charging");
+    if (node) node.classList.toggle("act", st === "on" && !!plan
+      && (plan.state === "charging" || plan.state === "holding"));
   }
 
   /**
@@ -1257,7 +1259,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
   _patchAdaptive(dot, sub) {
     const c = this._config;
     const st = this._state(c.adaptive_charge);
-    const outage = ["waiting_night", "charging", "full"].includes(this._state(c.precharge_plan));
+    const outage = ["waiting_night", "charging", "holding", "full"].includes(this._state(c.precharge_plan));
     const charges = this._state(c.chip_night_only) === "on"
       || (this._state(c.chip_auto) === "on" && this._state(c.chip_ac_charge) === "on");
     const usable = charges && !outage;
@@ -2221,7 +2223,7 @@ ${ch.dots ? "" : `
             end_time: new Date(end).toISOString(),
             statistic_ids: [entity],
             period: "hour",
-            types: ["mean"],
+            types: ["mean", "min", "max"],
           });
           raw = this._parseStats(stats, entity);
           fromStats = raw.length > 0;
@@ -2278,6 +2280,12 @@ ${ch.dots ? "" : `
    * Hourly means from recorder/statistics_during_period, in the [ms, value]
    * shape _parse() produces. Plotted at the start of each hour, as the History
    * panel does; `start` is epoch ms on current releases, ISO on older ones.
+   *
+   * Each row also carries the hour's own min and max as [ms, mean, min, max].
+   * Only the mean is drawn, but Min/Max in the stats row read these: the
+   * highest hourly MEAN of a week of house load is a few hundred watts, while
+   * the kettle that ran inside that hour drew 1.8 kW. Reporting the former as
+   * "Max" made every 7d/14d window look calmer than any 24h one inside it.
    */
   _parseStats(reply, entity) {
     const rows = reply && reply[entity];
@@ -2288,7 +2296,11 @@ ${ch.dots ? "" : `
       const v = parseFloat(r.mean);
       if (!Number.isFinite(v)) continue;
       const t = typeof r.start === "number" ? r.start : Date.parse(r.start);
-      if (Number.isFinite(t)) out.push([t, v]);
+      if (!Number.isFinite(t)) continue;
+      const row = [t, v];
+      const lo = parseFloat(r.min), hi = parseFloat(r.max);
+      if (Number.isFinite(lo) && Number.isFinite(hi)) row.push(lo, hi);
+      out.push(row);
     }
     out.sort((a, b) => a[0] - b[0]);
     return out;
@@ -2350,6 +2362,29 @@ ${ch.dots ? "" : `
     // Every row sharing one timestamp leaves nothing to weight; the last value
     // is the only defensible answer.
     return span > 0 ? acc / span : pts[pts.length - 1][1];
+  }
+
+  /**
+   * The window's true Min and Max, from the rows that cover it. A raw row
+   * holds its value until the next one, so the row just before the window
+   * counts and the one just after does not. An hourly statistics row counts
+   * when its hour overlaps the window, with the hour's own min and max.
+   */
+  _extremes(pts, p, t0, t1) {
+    let min = Infinity, max = -Infinity;
+    pts.forEach((q, i) => {
+      if (q.length >= 4) {
+        if (q[0] + 3600000 <= t0 || q[0] >= t1) return;
+        if (q[2] < min) min = q[2];
+        if (q[3] > max) max = q[3];
+        return;
+      }
+      const next = pts[i + 1];
+      if (q[0] > t1 || (next && next[0] <= t0)) return;
+      if (q[1] < min) min = q[1];
+      if (q[1] > max) max = q[1];
+    });
+    return min <= max ? { min, max } : { min: p.min, max: p.max };
   }
 
   /**
@@ -2422,8 +2457,13 @@ ${ch.dots ? "" : `
    * reading against the time axis under it.
    */
   _path(pts, w, h, pad, t0, t1) {
+    // An hourly statistics row is [t, mean, min, max]; its band is part of
+    // what is drawn, so it is part of what the axis has to hold.
+    const ranged = pts.some((q) => q.length >= 4);
+    const bot = (q) => (q.length >= 4 ? q[2] : q[1]);
+    const top = (q) => (q.length >= 4 ? q[3] : q[1]);
     let min = Infinity, max = -Infinity;
-    for (const q of pts) { if (q[1] < min) min = q[1]; if (q[1] > max) max = q[1]; }
+    for (const q of pts) { if (bot(q) < min) min = bot(q); if (top(q) > max) max = top(q); }
     let lo = min, hi = max;
 
     /*
@@ -2438,7 +2478,12 @@ ${ch.dots ? "" : `
      * Max, the window label counts what went off-scale, and hovering the spike
      * gives its exact recorded value.
      */
-    const sorted = pts.map((q) => q[1]).sort((a, b) => a - b);
+    const vals = [];
+    for (const q of pts) {
+      vals.push(q[1]);
+      if (q.length >= 4) vals.push(q[2], q[3]);
+    }
+    const sorted = vals.sort((a, b) => a - b);
     const at = (f) => sorted[Math.min(sorted.length - 1,
       Math.max(0, Math.round(f * (sorted.length - 1))))];
     const band = at(0.99) - at(0.01);
@@ -2452,19 +2497,27 @@ ${ch.dots ? "" : `
     if (hi - lo < 1e-9) { hi += 0.5; lo -= 0.5; }
     const span = hi - lo;
     const tspan = (t1 - t0) || 1;
-    const xy = pts.map(([t, v]) => [
-      Math.max(0, Math.min(w, (t - t0) / tspan * w)),
-      h - pad - (v - lo) / span * (h - pad * 2),
-    ]);
+    const X = (t) => Math.max(0, Math.min(w, (t - t0) / tspan * w));
+    const Y = (v) => h - pad - (v - lo) / span * (h - pad * 2);
+    const xy = pts.map(([t, v]) => [X(t), Y(v)]);
     const line = xy.map((q, i) => (i ? "L" : "M") + q[0].toFixed(1) + " " + q[1].toFixed(1)).join(" ");
     // Close the area under the data it actually has, not the whole frame.
-    const area = xy.length
-      ? line + " L" + xy[xy.length - 1][0].toFixed(1) + " " + h
-             + " L" + xy[0][0].toFixed(1) + " " + h + " Z"
-      : "";
+    // Hourly statistics shade each hour's min-max band instead: the line is
+    // only the hours' means, and without the band the stats row's Min/Max
+    // (the hours' real extremes) would sit far outside anything drawn.
+    let area = "";
+    if (ranged) {
+      const f = (q) => X(q[0]).toFixed(1) + " ";
+      area = pts.map((q, i) => (i ? "L" : "M") + f(q) + Y(top(q)).toFixed(1)).join(" ")
+        + " " + pts.slice().reverse().map((q) => "L" + f(q) + Y(bot(q)).toFixed(1)).join(" ")
+        + " Z";
+    } else if (xy.length) {
+      area = line + " L" + xy[xy.length - 1][0].toFixed(1) + " " + h
+           + " L" + xy[0][0].toFixed(1) + " " + h + " Z";
+    }
     let off = 0;
-    for (const q of pts) if (q[1] < lo || q[1] > hi) off++;
-    return { line, area, lo, hi, min, max, off, xy };
+    for (const q of pts) if (bot(q) < lo || top(q) > hi) off++;
+    return { line, area, ranged, lo, hi, min, max, off, xy };
   }
 
   /**
@@ -2613,6 +2666,7 @@ ${ch.dots ? "" : `
     const p = this._path(pts, CH_W, CH_H, CH_PAD, d.t0, d.t1);
     el.chLine.setAttribute("d", p.line);
     el.chArea.setAttribute("d", p.area);
+    el.chArea.setAttribute("fill-opacity", p.ranged ? "0.22" : "0.08");
     this._hv = { spec: spec, span: d.t1 - d.t0, pts: pts, xy: p.xy, col: col };
 
     const span = p.hi - p.lo;
@@ -2632,9 +2686,10 @@ ${ch.dots ? "" : `
 
     const now = this._num(this._config[spec.cfg]);
     const mean = this._mean(pts);
+    const ext = this._extremes(pts, p, d.t0, d.t1);
     el.stats.innerHTML = [
       ["Now", now === null ? pts[pts.length - 1][1] : now],
-      ["Min", p.min], ["Max", p.max], ["Mean", mean],
+      ["Min", ext.min], ["Max", ext.max], ["Mean", mean],
     ].map(([label, v]) =>
       "<div class='stat' data-tip=\"" + this._esc(tip(label + " — " + v.toFixed(spec.dec) + " " + spec.unit, "stat"))
       + "\"><b>" + label + "</b><span>"
@@ -2698,7 +2753,11 @@ ${ch.dots ? "" : `
     el.hvDot.classList.add("on");
 
     el.tip.innerHTML = "<b>" + this._esc(hv.pts[best][1].toFixed(hv.spec.dec) + " " + hv.spec.unit)
-      + "</b><i>" + this._esc(this._stamp(hv.pts[best][0], hv.span)) + "</i>";
+      + "</b><i>" + this._esc(this._stamp(hv.pts[best][0], hv.span)) + "</i>"
+      + (hv.pts[best].length >= 4
+        ? "<i>hour " + this._esc(hv.pts[best][2].toFixed(hv.spec.dec) + "–"
+          + hv.pts[best][3].toFixed(hv.spec.dec) + " " + hv.spec.unit) + "</i>"
+        : "");
     el.tip.style.color = hv.col;
     // Keep the bubble inside the plot at both edges.
     el.tip.style.left = Math.max(52, Math.min(rect.width - 52, px)) + "px";

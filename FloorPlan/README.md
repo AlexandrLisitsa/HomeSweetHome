@@ -51,7 +51,21 @@ tints with it, a plug the power it draws, the TV on/off, the router and the powe
 station their readings. While an A/C runs, its air streams out of the unit into
 the room in the colour of its mode (`flow` in `rooms.py` names its piece in the
 model; `make_dashboard.py` projects the streams and keeps what the walls do not
-hide). Tap toggles what can be toggled and opens the dialog for
+hide). A room with a thermometer tints its floor when it leaves 20–26 °C, a little
+more with every degree: a warm wash from 26 °C, at its fullest by 34 °C, a cool
+one from 20 °C, at its fullest by 14 °C. Even at its fullest it stays a soft
+wash, never a red alarm; a comfortable room stays untinted.
+
+Everything in the flat runs through the inverter, and the plan shows how: a
+stream from the grid's entry to it and one between it and the pack (backwards
+while the pack charges), then one along the hallway and in through each door to
+every lamp, plug and TV that is on, its width and pace set by its watts. The
+inverter's label says what feeds it, the pack's which way its power goes. When
+the inverter loses the grid, the flat dims, a red chip says so with the hours the
+pack has left, and whatever load shedding stepped down or cut gets an amber or
+red ring. With the grid up, a DTEK outage scheduled for today shows as an amber
+chip. The routes come from `make_dashboard.py`: each room's `door` in `rooms.py`
+is where its path crosses into it, and `POWER` names the entities. Tap toggles what can be toggled and opens the dialog for
 the rest; holding always opens the dialog. Every icon, number, badge, chip, switch
 and slider explains itself on hover, in the house tooltip format
 ([`dashboard-tooltips.md`](../HomeAssistant/docs/dashboard-tooltips.md)).
@@ -66,13 +80,14 @@ Run from the repository root. Each one reads the room list in `tools/rooms.py`.
 
 | Script | Does |
 | --- | --- |
-| `tools/rooms.py` | the one list: the rooms the dashboard knows, where each lamp and control sits, its colour and brightness gain |
+| `tools/rooms.py` | the one list: the rooms the dashboard knows (and their doors, for the power path), where each lamp and control sits, its colour and brightness gain, and the power entities |
 | `tools/catalog.py <what>` | searches every furniture catalog installed with Sweet Home 3D, to find a model before placing it |
 | `tools/make_render_copy.py` | writes `build/MySweetHome-render.sh3d`: walls and tall furniture cut, doors and windows hidden, night |
 | `tools/render.sh [room...]` | renders the dashboard photos into `renders/` with Sweet Home 3D's own renderer (`tools/Render.java`), no UI |
 | `tools/check_camera.py` | checks the render copy's camera is the one `base.png` was actually taken with |
 | `tools/build_overlays.py` | turns the renders into a base image plus one light-only overlay per lamp, masked to its room |
 | `tools/make_dashboard.py` | writes the Home dashboard's card config from `rooms.py` |
+| `tools/check_rooms.py` | checks `rooms.py` hangs together and the dashboard and its images match it; with a pulled registry (`ha_pull.sh`), that every entity exists. CI runs it |
 | `tools/sh3d_camera.py` | library, not a command: projects plan coordinates (cm) into a render, used by the three above |
 | `tools/card_harness.html` | a local page to try `floorplan-card.js` against fake states before deploying it |
 
@@ -117,12 +132,15 @@ where icons go, and which HA entity is which item in which room.
    photos were taken from a different camera than the file holds.
 5. `python FloorPlan/tools/build_overlays.py` — denoises every photo (a guided
    filter: render grain smoothed on flat surfaces, edges kept), then writes the
-   dashboard images and a mask per room. Brightness per lamp is its `gain` in `rooms.py`; changing it
+   dashboard images and a mask per room. A room with a climate badge also gets its
+   mask served, as `tint_<room>.png` (white, the mask as alpha), for the card's
+   temperature tint. Brightness per lamp is its `gain` in `rooms.py`; changing it
    needs no re-render.
 6. `python FloorPlan/tools/make_dashboard.py` — writes the card config into
    `HomeAssistant/dashboards/lovelace.dashboard_home.json`: every item at its spot,
    every room's zoom box, and image URLs with a hash of the file as `?v=`, so a
-   changed picture can never be served stale. Check `build/icon_check.png`. A point
+   changed picture can never be served stale. Check `build/icon_check.png` (the
+   power paths are drawn on it too), then `python FloorPlan/tools/check_rooms.py`. A point
    on a floor the walls hide lands on the wall in front of it: badges float
    mid-room at 130 cm for that reason.
 7. Push:

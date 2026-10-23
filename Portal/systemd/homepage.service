@@ -1,0 +1,35 @@
+[Unit]
+Description=Homepage, the house dashboard (HomeSweetHome/Portal)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=portal
+Group=portal
+WorkingDirectory=/opt/portal/homepage
+EnvironmentFile=/opt/portal/.env
+Environment=NODE_ENV=production
+Environment=NEXT_TELEMETRY_DISABLED=1
+# Loopback only: Caddy is the front door, as home.lan.
+Environment=HOSTNAME=127.0.0.1
+Environment=PORT=3000
+Environment=HOMEPAGE_CONFIG_DIR=/opt/portal/config
+# The journal, not config/logs/homepage.log: no file writes while idle.
+Environment=LOG_TARGETS=stdout
+# The host has well under 1 GB free (Proxmox/docs/host.md): keep the heap small.
+Environment=NODE_OPTIONS=--max-old-space-size=128
+ExecStart=/opt/node/bin/node server.js
+Restart=on-failure
+RestartSec=5
+
+# Homepage only reads its config and talks HTTP to the LAN.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# .next, not just .next/cache: Homepage regenerates its prerendered page there
+# when the config changes (/api/revalidate).
+ReadWritePaths=/opt/portal/homepage/.next
+
+[Install]
+WantedBy=multi-user.target

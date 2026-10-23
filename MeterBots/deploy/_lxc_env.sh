@@ -6,7 +6,7 @@
 # Proxmox/tools/pve_ssh.sh.
 
 # 100 is haos17-1, 101 adguard, 102 tailscale, 103 cloudflare, 104 metercam.
-# 105 is this one; 106 is next.
+# 105 is this one; 106 is portal, 107 is next.
 VMID=105
 LXC_HOSTNAME=meterbots
 

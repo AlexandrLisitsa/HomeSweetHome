@@ -84,12 +84,47 @@ dead.
 
 `dashboards/lovelace.dashboard_dtek.json` is the **Shutdowns** dashboard,
 sitting directly under Power station in the sidebar. Almost all of it is one
-custom card, `config/www/dtek-shutdowns-card.js`, in three stacked full-width
-blocks: a hero status banner (headline, the applied-schedule note, DTEK's stated
-reason, and three stat tiles), the 7×24 heatmap of DTEK's recurring weekly
-table — or, when DTEK is withholding it, the reason why, in place of the grid
-and with the card left standing — and where the data came from. Below it, the section the feature exists
-for — DTEK's claim and the inverter's measurement on one `history-graph` axis.
+custom card, `config/www/dtek-shutdowns-card.js`, in four stacked full-width
+blocks:
+
+- `hero`: a status banner with the headline, the applied-schedule note, DTEK's
+  stated reason, and three stat tiles.
+- `days`: today and tomorrow as DTEK has applied them (`today` / `tomorrow`,
+  from `fact`), in the same hour grid as the weekly table. This is what DTEK's
+  own site shows under "Графік відключень". An unpublished tomorrow is drawn
+  hatched with a dash for its total. It shows whenever `schedule_in_effect` is
+  true, whatever `hidden_reason` says, because `plan_off` only withdraws the
+  weekly table.
+- `week`: the 7×24 heatmap of DTEK's recurring weekly table. When DTEK is
+  withholding it, the reason why takes the grid's place and the card stays.
+- `source`: where the data came from.
+
+Below the card is the section the feature exists for: DTEK's claim and the
+inverter's measurement on one `history-graph` axis.
+
+The hero ranks its states, highest first:
+
+1. **Mains measured down:** "The power is off", in red. Inside an applied
+   window the lede gives the window and when it ends ("off 13:30–17:00, back
+   by 17:00"). If tomorrow is unpublished and the window reaches midnight, it
+   says so rather than invent an end.
+2. **A live DTEK notice** (`outage_active`): "DTEK reports an outage", in
+   orange.
+3. **Inside an applied window, mains still up:** "Scheduled outage until
+   17:00", in orange. On 17.10.2026 the window opened at 13:30 and the mains
+   lasted until 13:42. Before this rule the card said "The power is on" for
+   the whole window.
+4. Otherwise **"The power is on"**, in green.
+
+The "Next window" tile reads the running window while inside one ("now, ends
+in 3h 21m"). `next_outage_start` is null then, because the window has already
+started.
+
+`❌ Alert: Grid Outage!` and `✅ Power Restored` (in `automations.yaml`) quote
+the same thing. Inside an applied window the alert says "On DTEK's schedule
+(queue 1.1): off until 17:00." Before, it said "DTEK has nothing on record",
+because DTEK never records a stabilisation window as an outage. A restore
+inside the window says "Back early".
 
 Note what is deliberately *not* there: the raw entity values. The second design
 iteration dropped the Entities list, and the tile grids went with the first, so

@@ -123,10 +123,22 @@ template:
               {% set out.need_ah = need | round(1) %}
               {% set out.hours_left = hours_left | round(2) %}
               {% set out.night_hours = ns.night | round(2) %}
-              {% if deficit <= full_ah * 0.01 %}
+              {# Latched once a charge has started: stay on grid until the
+                 window instead of handing back to SBU at 99% and re-arming
+                 at 98% — on 17.10 that flipped Power Priority 20 times and
+                 sent a "started" ping each time. A pack that was already
+                 full when the window appeared is not latched. #}
+              {# Its own state, i.e. the last render: `this` is not
+                 guaranteed inside a trigger template's action block. #}
+              {% set prev = states('sensor.outage_pre_charge_plan') %}
+              {% set committed = prev in ['charging', 'holding'] %}
+              {% if committed and deficit <= full_ah * 0.05 %}
+                {% set out.state = 'holding' %}
+                {% set out.reason = 'full, holding on grid until the outage' %}
+              {% elif not committed and deficit <= full_ah * 0.01 %}
                 {% set out.state = 'full' %}
                 {% set out.reason = 'battery already full' %}
-              {% elif not at_night and night_enough %}
+              {% elif not committed and not at_night and night_enough %}
                 {% set out.state = 'waiting_night' %}
                 {% set out.reason = 'the night tariff alone fills it in time' %}
               {% else %}
@@ -154,6 +166,8 @@ template:
       # full           already full, nothing to do
       # waiting_night  the night tariff alone will fill it before the window
       # charging       the override is on; `current` amps until `until`
+      # holding        charged, still on grid (Utility First) until `until`;
+      #                drops back to charging only below 95%
       - name: "Outage pre-charge plan"
         unique_id: outage_precharge_plan
         icon: mdi:battery-clock
@@ -198,7 +212,7 @@ automation:
           until: "{{ state_attr('sensor.outage_pre_charge_plan', 'until') }}"
           amps: "{{ state_attr('sensor.outage_pre_charge_plan', 'current') }}"
           # 0 = no request. Any past moment means the same to the ESP.
-          want_ts: "{{ as_timestamp(until, 0) | int if plan == 'charging' and until else 0 }}"
+          want_ts: "{{ as_timestamp(until, 0) | int if plan in ['charging', 'holding'] and until else 0 }}"
           have_ts: "{{ as_timestamp(states('datetime.powmr_inverter_pre_charge_until'), 0) | int }}"
           now_ts: "{{ as_timestamp(now()) | int }}"
       - if:
@@ -240,7 +254,7 @@ automation:
         to: 'charging'
     condition:
       - condition: template
-        value_template: "{{ trigger.from_state is not none and trigger.from_state.state != 'charging' }}"
+        value_template: "{{ trigger.from_state is not none and trigger.from_state.state not in ['charging', 'holding'] }}"
     action:
       - variables:
           at: >-

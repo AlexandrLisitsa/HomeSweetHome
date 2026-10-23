@@ -31,7 +31,7 @@
     continue_on_timeout: true
   - variables:
       battery_line: "{% set r = states('sensor.battery_runtime_remaining') %}{% set s = states('sensor.jkbms_gateway_bms_state_of_charge') %}{% if r | is_number and s | is_number %}Battery {{ s | float | round(0) }}%, about {{ r | float | round(1) }} h left at the current draw.{% elif s | is_number %}Battery {{ s | float | round(0) }}%.{% endif %}"
-      dtek_line: "{% if is_state('binary_sensor.dtek_outage_now', 'on') %}{% set e = state_attr('sensor.dtek_shutdowns', 'outage_end') %}DTEK: {{ state_attr('sensor.dtek_shutdowns', 'outage_reason') or 'outage on record' }}{% if e %}, expected back by {{ as_datetime(e) | as_local | as_timestamp | timestamp_custom('%H:%M') }}{% endif %}.{% else %}DTEK has nothing on record yet.{% endif %}"
+      dtek_line: "{% if is_state('binary_sensor.dtek_outage_now', 'on') %}{% set e = state_attr('sensor.dtek_shutdowns', 'outage_end') %}DTEK: {{ state_attr('sensor.dtek_shutdowns', 'outage_reason') or 'outage on record' }}{% if e %}, expected back by {{ as_datetime(e) | as_local | as_timestamp | timestamp_custom('%H:%M') }}{% endif %}.{% elif is_state('binary_sensor.dtek_scheduled_dark', 'on') %}{% set se = state_attr('sensor.dtek_shutdowns', 'next_outage_end') %}{% set sq = state_attr('sensor.dtek_shutdowns', 'queue') %}On DTEK's schedule{% if sq %} (queue {{ sq }}){% endif %}: off{% if se %} until {{ as_datetime(se) | as_local | as_timestamp | timestamp_custom('%H:%M') }}{% endif %}.{% else %}DTEK has nothing on record and the schedule has this hour lit, so it is unscheduled.{% endif %}"
   - action: notify.household
     data:
       title: '❌ Alert: Grid Outage!'
@@ -61,7 +61,7 @@
     value_template: '{{ (trigger.to_state.last_changed - trigger.from_state.last_changed).total_seconds() >= 20 }}'
   actions:
   - variables:
-      dtek_line: "{% if is_state('binary_sensor.dtek_outage_now', 'on') %}{% set e = state_attr('sensor.dtek_shutdowns', 'outage_end') %}DTEK still reports an outage{% if e %} until {{ as_datetime(e) | as_local | as_timestamp | timestamp_custom('%H:%M') }}{% endif %}.{% endif %}"
+      dtek_line: "{% if is_state('binary_sensor.dtek_outage_now', 'on') %}{% set e = state_attr('sensor.dtek_shutdowns', 'outage_end') %}DTEK still reports an outage{% if e %} until {{ as_datetime(e) | as_local | as_timestamp | timestamp_custom('%H:%M') }}{% endif %}.{% elif is_state('binary_sensor.dtek_scheduled_dark', 'on') %}{% set se = state_attr('sensor.dtek_shutdowns', 'next_outage_end') %}{% set sq = state_attr('sensor.dtek_shutdowns', 'queue') %}Back early: DTEK's schedule has it off{% if se %} until {{ as_datetime(se) | as_local | as_timestamp | timestamp_custom('%H:%M') }}{% endif %}.{% endif %}"
   - action: notify.household
     data:
       title: ✅ Power Restored

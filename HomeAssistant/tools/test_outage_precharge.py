@@ -88,9 +88,11 @@ def plan_template():
 TEMPLATE = plan_template()
 
 
-def plan(now, start, cap, enabled=True):
+def plan(now, start, cap, enabled=True, prev="idle"):
+    """`prev` is the plan's own state before this render (the latch input)."""
     states = {SWITCH: "on" if enabled else "off", CAP: cap,
-              START: start.isoformat() if start else "unknown"}
+              START: start.isoformat() if start else "unknown",
+              "sensor.outage_pre_charge_plan": prev}
     out = make_env(states, now).from_string(TEMPLATE).render().strip()
     # HA parses a rendered variable back into a native dict the same way.
     return ast.literal_eval(out)
@@ -124,6 +126,37 @@ check("no battery reading -> idle",
       plan(at(2, "12:00"), at(2, "14:00"), "unavailable")["state"], "idle")
 check("battery at 279 of 280 Ah -> full",
       plan(at(2, "12:00"), at(2, "14:00"), 279)["state"], "full")
+
+print("latched once charging (17.10: 20 flips charging <-> full)")
+check("charging, 279 Ah -> holding, no current",
+      state_current(plan(at(2, "12:00"), at(2, "14:00"), 279, prev="charging")),
+      ("holding", None))
+check("... until is still the outage start",
+      plan(at(2, "12:00"), at(2, "14:00"), 279, prev="charging")["until"],
+      at(2, "14:00").isoformat())
+check("holding, 270 Ah (3.6% short) -> still holding",
+      plan(at(2, "12:00"), at(2, "14:00"), 270, prev="holding")["state"], "holding")
+check("holding, 260 Ah (7% short) -> charging again",
+      plan(at(2, "12:00"), at(2, "14:00"), 260, prev="holding")["state"], "charging")
+check("charging by day, night would now do -> stays charging",
+      plan(at(2, "14:00"), at(3, "10:00"), 252, prev="charging")["state"], "charging")
+check("... the same render uncommitted -> waiting_night",
+      plan(at(2, "14:00"), at(3, "10:00"), 252)["state"], "waiting_night")
+check("not committed, 279 Ah -> full (a full pack is not held)",
+      plan(at(2, "12:00"), at(2, "14:00"), 279, prev="idle")["state"], "full")
+check("full, 274 Ah -> charging (then latched)",
+      plan(at(2, "12:00"), at(2, "14:00"), 274, prev="full")["state"], "charging")
+check("holding, window started -> idle (latch released)",
+      plan(at(2, "14:01"), at(2, "14:00"), 279, prev="holding")["state"], "idle")
+check("holding, switched off -> off",
+      plan(at(2, "12:00"), at(2, "14:00"), 279, enabled=False, prev="holding")["state"], "off")
+seq, prev = [], "idle"
+for hhmm, cap in (("10:00", 200), ("10:30", 240), ("11:00", 278), ("11:05", 279),
+                  ("11:10", 277), ("11:15", 275), ("11:30", 279), ("12:00", 276)):
+    prev = plan(at(2, hhmm), at(2, "13:30"), cap, prev=prev)["state"]
+    seq.append(prev)
+check("replay of 17.10: one charging -> holding edge, no full",
+      seq, ["charging"] * 2 + ["holding"] * 6)
 
 print("currents")
 check("40% with 2 h to go, day -> charging, 60 A",
@@ -367,7 +400,12 @@ check("charging, current as a string '60' -> treated as 60",
 check("charging, no current -> no select write", writes(drive(amps=None)[0], OPT), [])
 check("select 'unavailable' -> still tried (HA logs the failed call)",
       writes(drive(select="unavailable")[0], OPT), [{"option": 60}])
-for st in ("full", "waiting_night", "idle", "off"):
+runs, h = drive(state="holding", amps=None, select="10")
+check("holding -> deadline armed, select left alone",
+      calls(runs), [(SET, {"datetime": "2026-11-02T12:00:00+00:00"})])
+check("charging -> holding with the deadline set -> nothing",
+      calls(drive(state="holding", amps=None, have="2026-11-02T12:00:00+00:00")[0]), [])
+for st in ("full", "waiting_night", "idle", "off", "holding"):
     check("%s -> never touches the select" % st,
           writes(drive(state=st, amps=None, until=None)[0], OPT), [])
 for bad in ("unavailable", "unknown"):
@@ -435,6 +473,11 @@ check("SOC unavailable -> the line says 'battery 0%' (float(0) default)",
       "(battery 0%," in start_msgs(h, h.change(PLAN, "charging", **CHARGING))[0], True)
 h = started_house()
 check("idle -> full -> nothing", start_msgs(h, h.change(PLAN, "full")), [])
+h = started_house(state="holding")
+check("holding -> charging (dipped below 95%) -> nothing",
+      start_msgs(h, h.change(PLAN, "charging", **CHARGING)), [])
+h = started_house(state="charging")
+check("charging -> holding -> nothing", start_msgs(h, h.change(PLAN, "holding")), [])
 
 print("DST nights (were known bugs, fixed 2026-10-02)")
 # The plan adds and subtracts datetimes that share now()'s ZoneInfo, which

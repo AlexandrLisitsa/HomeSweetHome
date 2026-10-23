@@ -38,7 +38,9 @@ HEALTHCHECK --interval=60s --timeout=5s --start-period=20s \
 
 # waitress rather than flask's dev server: it is a real WSGI server, it is pure
 # Python, and it does not print a warning on every start telling you not to use
-# it. Two threads because app.py holds one lock around the reader -- more would
-# only queue deeper.
+# it. Four threads: app.py holds one lock around the reader, so reads never run
+# in parallel anyway, but the panel's gallery fetches a page of thumbnails at
+# once and the camera's POST /read must still find a free thread. An idle
+# waitress thread is blocked on a queue and costs no CPU.
 CMD ["python", "-m", "waitress", "--host=0.0.0.0", "--port=8770", \
-     "--threads=2", "--call", "service.app:create_app"]
+     "--threads=4", "--call", "service.app:create_app"]

@@ -36,13 +36,26 @@ so it works only while one of those two is on:
 
 **An outage schedule switches adaptive off** ([outage-precharge.md](outage-precharge.md)).
 When the power company (DTEK) publishes an outage window and the pre-charge plan leaves `idle`
-(`waiting_night`, `charging` or `full`), the `adaptive_charge_outage_off`
+(`waiting_night`, `charging`, `holding` or `full`), the `adaptive_charge_outage_off`
 automation switches adaptive off and sends a phone notification on the
 `Adaptive charge` channel. From then on, pre-charge owns the charge current on
 its own.
 
-- **It stays off** until you switch it back on after the outage. While a window
-  is pending, the icon is dimmed and the guard refuses to switch it on.
+- **It comes back on by itself** once the outage is over.
+  - `input_boolean.adaptive_charge_outage_paused` remembers that the outage is
+    what switched it off.
+  - `adaptive_charge_outage_resume` switches it back on when all of these hold:
+    the pre-charge plan is `idle` or `off`, DTEK's schedule has the current half
+    hour lit, DTEK records no outage, and the inverter measures mains.
+  - A second window later the same day keeps the plan out of `idle`, so
+    adaptive stays paused through both.
+  - The resume sends one notification on the `Adaptive charge` channel. If the
+    guard refuses (neither Auto nor Night only would charge), the notification
+    says it stays off.
+  - Switching adaptive on by hand clears the flag, so a later manual off is
+    never undone.
+  - While a window is pending, the icon is dimmed and the guard refuses to
+    switch it on.
 - **Switching off hands your current back,** and that is the one moment the two
   could still collide. If a pre-charge is already charging, the drive
   automation holds the hand-back until it ends. A pre-charge counts as running

@@ -1,0 +1,56 @@
+# The .lan names. AdGuard answers *.lan with this container's address
+# (Portal/README.md, "Names"), and Caddy picks the upstream by Host header.
+#
+# Upstream addresses come from /opt/portal/.env, which the caddy unit loads
+# (systemd/caddy-portal.conf): real LAN addresses are never committed
+# (MANIFEST.md §4). {$VAR} is substituted once, when Caddy loads this file.
+{
+	# Plain HTTP on the LAN; Tailscale encrypts the remote path. No ACME, no
+	# certificate maintenance timers, no admin endpoint: nothing here does any
+	# work until a request arrives.
+	auto_https off
+	admin off
+	# Access logs are off (the default without a `log` directive). Errors still
+	# reach the journal.
+}
+
+http://home.lan {
+	reverse_proxy 127.0.0.1:3000
+}
+
+# Home Assistant wants X-Forwarded-For from a proxy it trusts: this
+# container's address is in its http trusted_proxies (Portal/README.md).
+# Websockets pass through reverse_proxy without extra configuration.
+http://ha.lan {
+	reverse_proxy {$HOMEPAGE_VAR_HA_ADDR}
+}
+
+# Proxmox serves only HTTPS, with its own self-signed certificate. The hop
+# from here to the host stays on the LAN bridge.
+http://pve.lan {
+	reverse_proxy https://{$HOMEPAGE_VAR_PVE_ADDR} {
+		transport http {
+			tls_insecure_skip_verify
+		}
+	}
+}
+
+http://adguard.lan {
+	reverse_proxy {$HOMEPAGE_VAR_ADGUARD_ADDR}
+}
+
+# The ElectricityMeter board's own page: live level and the sample plot.
+http://meter.lan {
+	reverse_proxy {$HOMEPAGE_VAR_METER_ADDR}
+}
+
+# MeterCam's control panel (MeterCam/docs/panel.md). The panel is open on the
+# LAN; the camera's own routes behind it keep their token.
+http://cam.lan {
+	reverse_proxy {$HOMEPAGE_VAR_METERCAM_ADDR}
+}
+
+# Any other *.lan name lands on the dashboard, not on an error page.
+http:// {
+	redir http://home.lan{uri} 302
+}
