@@ -157,18 +157,14 @@ check("offline alert after 10 min unavailable",
       ("unavailable", {"minutes": 10}))
 
 # --- kitchen ---------------------------------------------------------------
-print("\n5. kitchen: the helpers exclude each other")
-for alias, mine, other in (("Force Light On", "kitchen_light_force_on", "kitchen_light_block"),
-                           ("Block Light On", "kitchen_light_block", "kitchen_light_force_on")):
-    a = by_alias(autos, alias)
-    turned_off = [d["target"]["entity_id"] for d in walk(a["actions"])
-                  if d.get("action") == "input_boolean.turn_off"]
-    check("%s: switching on turns %s off" % (mine, other),
-          turned_off, ["input_boolean." + other])
-    gates = [d for d in a["actions"] if d.get("condition") == "state"]
-    check("%s: drives the relay only while %s is off" % (mine, other),
-          [(g["entity_id"], g["state"]) for g in gates],
-          [("input_boolean." + other, "off")])
+print("\n5. kitchen: force-on alone, the block mode is gone")
+force = by_alias(autos, "Force Light On")
+check("force-on turns the kitchen light on, ungated",
+      [(d.get("action"), d.get("condition")) for d in force["actions"]],
+      [("light.turn_on", None)])
+check("nothing references the removed block helper",
+      any("kitchen_light_block" in p.read_text(encoding="utf-8")
+          for p in [CONFIG / "automations.yaml", *(CONFIG / "packages").glob("*.yaml")]), False)
 
 # --- IR blaster charging ---------------------------------------------------
 print("\n6. IR blaster: charges below 21% on every path")

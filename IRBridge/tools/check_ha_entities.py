@@ -116,8 +116,11 @@ def created(files):
 # in configuration.yaml, which filter over many entities rather than refer to
 # one. It has to exclude word characters as well as the star, or the match
 # just backtracks a character and reports `sensor.google` instead.
+# The leading lookbehind skips file names in comments: `docs/kitchen-button.md`
+# would otherwise read as the entity `button.md`. An entity id never follows
+# a hyphen or a slash.
 REF = re.compile(
-    r"\b(sensor|binary_sensor|climate|switch|script|input_number|input_text|"
+    r"(?<![-/])\b(sensor|binary_sensor|climate|switch|script|input_number|input_text|"
     r"input_boolean|input_select|button|number|select)\.[a-z0-9_]+(?![a-z0-9_*])"
 )
 
@@ -146,7 +149,6 @@ EXTERNAL = {
     # Created in the UI, so they exist in .storage/core.entity_registry and
     # nowhere in this repo. Listed one by one on purpose: they are few, and a
     # typo in one is exactly the kind of thing this script is for.
-    "input_boolean.kitchen_light_block",
     "input_boolean.hallway_light_sensor",
     "input_boolean.bathroom_light_sensor",
     "input_boolean.kitchen_light_force_on",

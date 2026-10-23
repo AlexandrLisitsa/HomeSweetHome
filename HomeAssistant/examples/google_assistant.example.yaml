@@ -39,7 +39,7 @@ entity_config:
   # ==========================================
   # KITCHEN WORKTOP LIGHT (ZIGBEE STRIP)
   # ==========================================
-  light.0xa4c1385443844c1e:
+  light.led_ambient:
     name: "Kitchen worktop light"
     aliases: ["Kitchen light", "Kitchen strip", "Worktop light", "LED strip"]
     expose: true

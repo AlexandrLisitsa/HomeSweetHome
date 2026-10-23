@@ -51,6 +51,9 @@ read before it goes live, and a `git revert` if it was wrong.
   is found before the month-end ask.
 - **Two air conditioners**: an infrared one through [`../IRBridge`](../IRBridge)
   and a networked one ([`docs/climate-dashboard.md`](docs/climate-dashboard.md)).
+- **Kitchen light button**: an Aqara double rocker. Left toggles the kitchen
+  light, right toggles the LED strip, clicking both switches both, and holding
+  a rocker glides the strip dimmer or brighter ([`docs/kitchen-button.md`](docs/kitchen-button.md)).
 - **Google Home and Gemini**: entities exposed through the Google Assistant
   integration, with the spoken names kept in a git-ignored file
   ([`docs/private-files.md`](docs/private-files.md)). Google reaches the box
