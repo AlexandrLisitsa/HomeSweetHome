@@ -165,7 +165,7 @@ group = "source: ";
   r = render({ [P.grid]: S("0", W), [P.battery_power]: S("-420", W), [P.hub_entity]: S("412", W) });
   check("battery: grid stream still", !on(streams(r)[0]));
   check("battery: battery stream runs", on(streams(r)[1]));
-  eq("battery: towards the inverter", streams(r)[1].querySelectorAll("path")[1].style.animationDirection, "normal");
+  eq("battery: towards the inverter", streams(r)[1].querySelector(".current").style.animationDirection, "normal");
   eq("battery: the inverter says so", labelOf(r, P.hub_entity), "412 W to the house · on battery");
   eq("battery: the pack says it feeds", labelOf(r, P.battery_entity), "64% · −420 W");
   {
@@ -179,7 +179,7 @@ group = "source: ";
   r = render({ [P.grid]: S("1580", W), [P.battery_power]: S("1200", W) });
   check("charging: grid stream runs", on(streams(r)[0]));
   eq("charging: battery stream backwards",
-    streams(r)[1].querySelectorAll("path")[1].style.animationDirection, "reverse");
+    streams(r)[1].querySelector(".current").style.animationDirection, "reverse");
   eq("charging: the pack says so", labelOf(r, P.battery_entity), "64% · +1.2 kW");
   check("charging: a stronger grid stream is wider",
     Number(streams(r)[0].style.getPropertyValue("--width")) > Number(streams(render()).at(0).style.getPropertyValue("--width")));
