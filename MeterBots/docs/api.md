@@ -5,12 +5,14 @@ MeterBots listens on `:8770` in LXC 105. Home Assistant calls it with
 
 | Endpoint | Who calls it | What |
 | --- | --- | --- |
-| `GET /health` | Docker's healthcheck, `deploy.sh`, a human | `{status, version, bots: {gas, yasno}, session}`. `bots` says which bots have a token; `session` says whether a session file exists, not whether it is still logged in. No secrets |
+| `GET /health` | Docker's healthcheck, `deploy.sh`, a human | `{status, version, bots: {gas, yasno, water}, session}`. `bots` says which bots (and the water cabinet) have a token; `session` says whether a session file exists, not whether it is still logged in. No secrets |
 | `GET /session` | Home Assistant (`meterbots_session.yaml`), every Monday | `{ok: true, authorized: true}` while the Telegram session is logged in, else `{ok: false, error}`. One round trip to Telegram, nothing sent to any bot. Either bot's token opens it. Waits out a running walk |
 | `GET /gas/bot/status` | Home Assistant (`gas_submit.yaml`) | Dry run of `@mygrmu_bot`: walks to the reading prompt and back, answers `{ok, previous, previous_date, transcript}`. Sends no reading |
 | `POST /gas/bot/submit` | Home Assistant, on a button press | `{"value": 2262}` (> 0, < 100000, at most 2 decimals) sends the monthly gas reading; `{ok, value, reply, transcript}` or `{ok: false, error, transcript}` |
 | `GET /yasno/bot/status` | Home Assistant (`electricity_submit.yaml`) | Dry run of `@Yasnoonlinebot`: walks to the reading prompt and back, answers `{ok, previous: {day, night, date}, transcript}`. Sends no reading |
 | `POST /yasno/bot/submit` | Home Assistant, on a button press | `{"day": 38500, "night": 6450}`, whole kWh each, > 0 and < 1000000, sends the monthly electricity reading; `{ok, day, night, reply, transcript}` or `{ok: false, error, transcript}` |
+| `GET /water/web/status` | Home Assistant (water submit, planned) | Dry run of the dneprvoda.com.ua cabinet: logs in, reads the form, answers `{ok, meter, previous, previous_date, filed, trace}`. Posts nothing ([`water-web.md`](water-web.md)) |
+| `POST /water/web/submit` | Home Assistant, on a button press | `{"value": 2875}`, whole m³, > 0 and < 100000, files the monthly cold-water reading; `{ok, value, previous, filed, trace}` (`already: true` when that value is on file for today) or `{ok: false, error, trace}`. Ok only once the cabinet lists it |
 
 ## Tokens
 
@@ -20,9 +22,10 @@ Each bot has its own token, sent as its own header:
 | --- | --- | --- | --- |
 | `/gas/bot/*` | `X-Gasbot-Token` | `GASBOT_TOKEN` | `gasbot_token` |
 | `/yasno/bot/*` | `X-Yasnobot-Token` | `YASNOBOT_TOKEN` | `yasnobot_token` |
+| `/water/web/*` | `X-Waterweb-Token` | `WATERWEB_TOKEN` | `waterweb_token` |
 
 A wrong or missing token gets `401`, and one bot's token never opens another's
-routes. `/session` is the exception: it walks no bot, so either token opens it. **With the token unset, the route refuses
+routes. `/session` is the exception: it walks no bot, so either Telegram bot's token opens it (the water token does not: water is not Telegram). **With the token unset, the route refuses
 everyone**, an empty header included: filing a reading as the household is not
 something a stray script on the LAN may do. `/health` needs no token and
 carries none.

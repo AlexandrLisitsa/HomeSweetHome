@@ -19,6 +19,8 @@ template picks the right branch -- and every one of those was wrong once
     two monthly asks never start at the same minute
   * the gas camera alert fires after 6 h without an accepted reading
   * every A/C call reports a failure; the meter's tariff switch is verified
+  * the gas and cold-water readings take the higher of camera and hand, and
+    the water camera alert stays quiet until the camera exists
 
 Same approach as check_dtek_templates.py: just enough of HA's template
 environment to render these templates, not an HA emulator.
@@ -316,6 +318,71 @@ check("the retry waits 30 s, then switches again",
       (retry["then"][0], retry["then"][1]["action"]), ({"delay": "00:00:30"}, "select.select_option"))
 check("still behind after the retry: notify", (render(final["if"][0]["value_template"], states=half, zone="night"),
       final["then"][0]["action"]), ("True", "notify.household"))
+
+# --- meter readings ----------------------------------------------------------------
+print("\n12. meter readings: the higher of camera and hand, none when neither")
+
+
+def template_sensor(package, unique_id):
+    pkg = yaml.load((CONFIG / "packages" / package).read_text(encoding="utf-8"), HaLoader)
+    return next(s for block in pkg["template"] for s in block.get("sensor", [])
+                if s.get("unique_id") == unique_id), pkg
+
+
+for package, uid, manual, camera, name in (
+        ("gas_meter.yaml", "gas_meter_reading", "input_number.gas_meter_manual_reading",
+         "input_number.gas_meter_camera_reading", "gas"),
+        ("water_meter.yaml", "water_meter_cold_reading", "input_number.water_meter_cold_manual_reading",
+         "input_number.water_meter_cold_camera_reading", "water")):
+    sens, pkg = template_sensor(package, uid)
+    st = lambda m, c: render(sens["state"], states={manual: m, camera: c})  # noqa: E731
+    av = lambda m, c: render(sens["availability"], states={manual: m, camera: c})  # noqa: E731
+    check(name + ": hand only", (st("233.18", "0.0"), av("233.18", "0.0")), ("233.18", "True"))
+    check(name + ": camera only", (st("0.0", "233.19"), av("0.0", "233.19")), ("233.19", "True"))
+    check(name + ": camera ahead of the hand", st("233.18", "240.5"), "240.5")
+    check(name + ": hand ahead of the camera", st("241.0", "240.5"), "241.0")
+    check(name + ": neither yet (both at min 0): none, unavailable",
+          (st("0.0", "0.0"), av("0.0", "0.0")), ("None", "False"))
+    check(name + ": helpers not loaded yet: none, unavailable",
+          (st("unknown", "unavailable"), av("unknown", "unavailable")), ("None", "False"))
+    check(name + ": three decimals kept", st("233.1874", "0.0"), "233.187")
+    check(name + ": Energy-dashboard shape",
+          (sens["state_class"], sens["unit_of_measurement"], sens["device_class"]),
+          ("total_increasing", "m³", name))
+    helpers = pkg["input_number"]
+    for helper in (manual, camera):
+        h = helpers[helper.split(".", 1)[1]]
+        check(helper + ": min 0, no initial", (h["min"], "initial" in h), (0, False))
+check("water keeps its statistics id",
+      template_sensor("water_meter.yaml", "water_meter_cold_reading")[0]["name"], "Cold water meter reading")
+
+print("\n13. water camera: an alert after 6 h without an accepted reading, and only then")
+pkg = yaml.load((CONFIG / "packages" / "metercam_watch.yaml").read_text(encoding="utf-8"), HaLoader)
+check("one /health poll serves both cameras", len(pkg["rest"]), 1)
+sensors = {s["unique_id"]: s for s in pkg["rest"][0]["sensor"]}
+check("gas sensor still first (section 10 reads [0])",
+      pkg["rest"][0]["sensor"][0]["unique_id"], "metercam_gas_last_accepted")
+ws = sensors["metercam_water_last_accepted"]
+v = lambda j: render(ws["value_template"], value_json=j)  # noqa: E731
+check("water reads its own age", v({"last_accepted_s_ago": {"gas": 60, "water": 7200}}), "120")
+check("before install (no water key): none", v({"last_accepted_s_ago": {"gas": 60}}), "None")
+check("an older MeterCam without the field: none", v({"status": "ok"}), "None")
+autos = {a["id"]: a for a in pkg["automation"]}
+check("gas alert still first (section 10 reads [0])", pkg["automation"][0]["id"], "metercam_gas_stale")
+wa = autos["metercam_water_stale"]
+check("stale only: MeterCam being down is the gas alert's to say",
+      [(t["id"], t["platform"], t["entity_id"], t["above"]) for t in wa["trigger"]],
+      [("stale", "numeric_state", "sensor.water_camera_last_accepted", 360)])
+notify = wa["action"][1]
+check("notifies the household", notify["service"], "notify.household")
+check("its own tag, so it never replaces the gas alert",
+      (notify["data"]["data"]["tag"], notify["data"]["data"]["tag"] != autos["metercam_gas_stale"]["action"][1]["data"]["data"]["tag"]),
+      ("metercam-water-stale", True))
+hours = render(wa["action"][0]["variables"]["hours"], states={"sensor.water_camera_last_accepted": "397"})
+check("hours from the water sensor", hours, "6.6")
+check("the message names water and the hours",
+      "No accepted cold-water reading for 6.6 h." in " ".join(render(notify["data"]["message"], hours=hours).split()),
+      True)
 
 print("\n%s" % ("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed"))
 sys.exit(1 if FAILED else 0)

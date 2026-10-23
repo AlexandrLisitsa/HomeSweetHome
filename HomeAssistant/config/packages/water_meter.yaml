@@ -15,10 +15,11 @@
 # noticed when it doubles. Typing it in once a month is not measurement, but it
 # is a series, and a series is the thing that makes a leak or a bill obvious.
 #
-# There is no water metering hardware here and none on order. Unlike gas, there
-# is not even a trial. If a pulse source ever does appear it feeds the sensor
-# below and nothing else changes — which is the whole reason the dashboard is
-# pointed at a template sensor rather than at the helper directly. Long-term
+# A camera is coming, the gas meter's twin (WaterMeter/README.md, parts chosen
+# 2026-10-12). It writes its own helper, input_number.water_meter_cold_camera_reading,
+# the sensor below takes the higher of the two, and nothing else changes — which
+# is the whole reason the dashboard is pointed at a template sensor rather than
+# at the helper directly. Long-term
 # statistics are keyed by statistic id and the Energy dashboard stores that id,
 # so the source can change underneath this name without orphaning a single m³.
 #
@@ -140,13 +141,31 @@ template:
         state_class: total_increasing
         unit_of_measurement: "m³"
         icon: mdi:counter
+        # The higher of the hand-typed reading and the camera's (WaterMeter/),
+        # exactly as gas_meter.yaml does it. Each helper counts only when > 0:
+        # until the camera has written once, its helper sits at its min of 0
+        # and this is the manual reading alone, as before.
         availability: >-
-          {{ states('input_number.water_meter_cold_manual_reading') | float(0) > 0 }}
+          {{ [states('input_number.water_meter_cold_manual_reading') | float(0),
+              states('input_number.water_meter_cold_camera_reading') | float(0)] | max > 0 }}
         state: >-
-          {% set manual = states('input_number.water_meter_cold_manual_reading') | float(0) %}
-          {{ manual | round(3) if manual > 0 else none }}
+          {% set best = [states('input_number.water_meter_cold_manual_reading') | float(0),
+                         states('input_number.water_meter_cold_camera_reading') | float(0)] | max %}
+          {{ best | round(3) if best > 0 else none }}
 
 input_number:
+  # The dial reading as the bathroom camera last read it, to 0.01 m³. Written
+  # only by MeterCam, only with a reading its gate accepted (WaterMeter/README.md).
+  # Same load-bearing `min: 0` and no `initial:` as the helper below.
+  water_meter_cold_camera_reading:
+    name: "Cold water meter camera reading"
+    icon: mdi:camera-iris
+    min: 0
+    max: 99999
+    step: 0.001
+    unit_of_measurement: "m³"
+    mode: box
+
   # The dial reading, typed in from the meter face. A domestic cold meter reads
   # five whole m³ and three decimals, so `max` and `step` cover the face exactly;
   # mode: box because a slider for an eight-digit number is a joke at the user's

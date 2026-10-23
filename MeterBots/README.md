@@ -1,7 +1,8 @@
 # MeterBots
 
 Files the monthly meter readings with the suppliers, through their Telegram
-bots, as the household's own Telegram user. It runs as a small service in its
+bots as the household's own Telegram user, or through a supplier's web cabinet
+where its bot is gone. It runs as a small service in its
 own Proxmox LXC (105), and Home Assistant calls it when someone taps *Submit*
 on the phone.
 
@@ -14,6 +15,7 @@ bot said.
 | --- | --- | --- | --- |
 | `@mygrmu_bot` | Gazmerezhi (gas distribution) | the gas meter, whole m³ | [`docs/gas-bot.md`](docs/gas-bot.md) |
 | `@Yasnoonlinebot` | YASNO (electricity supply) | the electricity meter's day and night registers, whole kWh | [`docs/yasno-bot.md`](docs/yasno-bot.md) |
+| dneprvoda.com.ua (web cabinet) | Dniprovodokanal (water) | the cold-water meter, whole m³ | [`docs/water-web.md`](docs/water-web.md) |
 
 Gas is proven: a real reading has gone through the bot. **YASNO is not yet.**
 Its walk is tested against a fake of the bot as it was on 2026-10-04, but what
@@ -41,8 +43,9 @@ that comes with it: one session, one process, one conversation at a time.
 | `service/tgclient.py` | The Telegram session: login, the lock every bot shares, and `Walk`, a conversation that records what the bot said |
 | `service/gasbot.py` | The gas reading's walk through `@mygrmu_bot` |
 | `service/yasnobot.py` | The electricity reading's walk through `@Yasnoonlinebot`, and `explore` for linking and re-mapping it |
-| `service/app.py` | `/health`, `/gas/bot/*`, `/yasno/bot/*`; `VERSION` |
-| `tests/` | `test_gasbot.py`, `test_yasnobot.py`, `test_tgclient.py`, `test_app.py` |
+| `service/waterweb.py` | The cold-water reading through Dniprovodokanal's web cabinet (plain HTTP, no Telegram) |
+| `service/app.py` | `/health`, `/gas/bot/*`, `/yasno/bot/*`, `/water/web/*`; `VERSION` |
+| `tests/` | `test_gasbot.py`, `test_yasnobot.py`, `test_tgclient.py`, `test_app.py`, `test_waterweb.py` |
 | `deploy/` | Creates LXC 105 on the Proxmox host and deploys the service into it |
 | `.env.example` | Template for the box's `.env`: API credentials, tokens, account numbers |
 
@@ -62,10 +65,11 @@ python tests/test_gasbot.py      # the gas walk, against a fake bot
 python tests/test_yasnobot.py    # the YASNO walk, against a fake bot that edits in place
 python tests/test_tgclient.py    # the shared walker, the lock, the JSON on failure
 python tests/test_app.py         # the routes and tokens (needs flask)
+python tests/test_waterweb.py    # the water cabinet, against a fake site on localhost
 sh Proxmox/tools/pve_ssh.sh "pct exec 105 -- docker exec meterbots python tests/test_gasbot.py"
 ```
 
-None of them need Telegram or Telethon. CI runs them on every push.
+None of them need Telegram, Telethon or the internet. CI runs them on every push.
 
 ## Setting it up
 
@@ -82,3 +86,4 @@ Telegram login, moving the session, and backups. HTTP:
 | [`docs/deployment.md`](docs/deployment.md) | LXC 105, `.env`, logging in, moving the session, backups |
 | [`docs/gas-bot.md`](docs/gas-bot.md) | The gas reading: why a bot, the conversation, its checks |
 | [`docs/yasno-bot.md`](docs/yasno-bot.md) | The electricity reading: the conversation, its checks, linking the account |
+| [`docs/water-web.md`](docs/water-web.md) | The cold-water reading: why the website, the pages, its checks |

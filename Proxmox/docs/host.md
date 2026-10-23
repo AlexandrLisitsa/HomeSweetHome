@@ -22,7 +22,7 @@ Assistant as a VM, and the network services as LXC containers.
 | 102 | LXC | `tailscale` | 1 | 512 MB | 2 GB | [Tailscale](102-tailscale.md) |
 | 103 | LXC | `cloudflare` | 1 | 512 MB | 2 GB | [Cloudflare Tunnel](103-cloudflare.md) |
 | 104 | LXC | `metercam` | 2 | 1 GB | 8 GB | [MeterCam](104-metercam.md) |
-| 105 | LXC | `meterbots` | 1 | 512 MB | 2 GB | [MeterBots](105-meterbots.md) |
+| 105 | LXC | `meterbots` | 1 | 512 MB | 4 GB | [MeterBots](105-meterbots.md) |
 | 106 | LXC | `portal` | 1 | 512 MB | 2 GB | [Portal](106-portal.md) |
 
 All of them start with the host (`onboot=1`). Every guest runs Debian or, for the

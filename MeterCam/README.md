@@ -42,8 +42,9 @@ ESP32-CAM (deep sleep)                  MeterCam, LXC 104 :8770              Hom
    MeterCam write it to Home Assistant. A refused reading writes nothing, and
    its frames are kept with the reason beside them. Every frame is archived;
    the newest one is at `/last.jpg`, and `/archive` downloads the lot.
-4. **Every answer carries the newest firmware version.** If it is higher than
-   the board's own, the board updates itself before going back to sleep.
+4. **Every answer carries the newest firmware version for that board's meter.**
+   If it is higher than the board's own, the board updates itself before going
+   back to sleep. The gas and water boards each have their own channel.
 
 In Home Assistant, `sensor.gas_meter_reading` (the Energy dashboard's gas
 source) shows the **higher** of the camera's helper and the hand-typed one. So
@@ -79,10 +80,11 @@ drum. Optical reading depends on nothing hidden inside the meter.
 | `service/panel.py`, `service/templates/`, `service/static/` | The control panel at `cam.lan`: views of the archive, replay, firmware publishing |
 | `service/config.example.json` | Template for the box's `config.json`, with the reasoning for each setting |
 | `tests/test_reader.py` | Plain asserts, no pytest |
-| `tests/test_routes.py` | The service's routes, read from `app.py` and `panel.py` without importing them: what exists, that no bot route has crept back, and that the camera's routes still check the token |
+| `tests/test_routes.py` | The service's routes, read from `app.py` and `panel.py` without importing them: what exists, that no bot route has crept back, that the camera's routes still check the token, and one firmware channel per meter |
 | `tests/test_panel.py` | The panel against a throwaway archive. Needs Flask and OpenCV, so it runs in the container |
+| `tests/test_firmware_config.py` | The gas-cam and water-cam builds, read from `platformio.ini` and `config.h.example`: neither may take the other's build |
 | `models/fetch.sh` | Downloads the weights. Not committed: no stated licence upstream |
-| `firmware/gas-cam/` | The camera: AI-Thinker ESP32-CAM, PlatformIO |
+| `firmware/gas-cam/` | The cameras: AI-Thinker ESP32-CAM, PlatformIO. Env `gas-cam` (the default) and `water-cam`, from one source |
 | `deploy/` | Creates LXC 104 on the Proxmox host and deploys the service into it |
 
 ---
@@ -92,6 +94,7 @@ drum. Optical reading depends on nothing hidden inside the meter.
 ```sh
 python tests/test_reader.py                                   # the arithmetic: no dependencies
 python tests/test_routes.py                                   # the routes: no dependencies
+python tests/test_firmware_config.py                          # the two firmware builds: no dependencies
 sh Proxmox/tools/pve_ssh.sh "pct exec 104 -- docker exec metercam python tests/test_reader.py"
 sh Proxmox/tools/pve_ssh.sh "pct exec 104 -- docker exec metercam python tests/test_panel.py"
 ```

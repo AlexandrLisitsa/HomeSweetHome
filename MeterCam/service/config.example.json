@@ -121,6 +121,75 @@
           "the service's own last accepted reading stands in."
         ]
       }
+    },
+    "water": {
+      "_comment": [
+        "The bathroom's cold-water meter, KV-1.5 (Qn 1.5, Qmax about 3 m3/h). 8 drums:",
+        "five black (whole m3), three red (0.001 m3), dark digits on light drums.",
+        "The board is not mounted yet (WaterMeter/README.md): the ROIs below are",
+        "PLACEHOLDERS, redone with the reference frame at install."
+      ],
+      "transform": {"flip": "none", "rotate": 0, "deskew": 0.0},
+      "align": {
+        "enabled": true,
+        "reference": "/data/ref/water.jpg",
+        "min_matches": 12,
+        "min_inliers": 60,
+        "min_inlier_ratio": 0.35,
+        "max_shift_px": 300,
+        "max_rotation_deg": 10,
+        "on_failure": "reject"
+      },
+      "model": "/models/dig-class100-0180-s2-q.tflite",
+      "decimals": 3,
+      "report_decimals": 2,
+      "counter_type": "continuous",
+      "round_last_drum_down": false,
+      "_comment_reading": [
+        "counter_type continuous until a photo of the dial says otherwise: the",
+        "usual gearing on water meters (digits.assemble has how to tell).",
+        "round_last_drum_down applies to jump counters only.",
+        "",
+        "report_decimals 2: the frames of a wake may differ by one published",
+        "step, so the step sets a flow ceiling. At 0.01 m3 that is 3.6 m3/h,",
+        "above the meter's Qmax; at 0.001 it would be 0.36 m3/h and a running",
+        "shower would refuse every read. The 0.001 drum is still read: it",
+        "decides whether the 0.01 drum is arriving or leaving."
+      ],
+      "rois": [
+        {"x": 100,  "y": 500, "w": 140, "h": 210},
+        {"x": 280,  "y": 500, "w": 140, "h": 210},
+        {"x": 460,  "y": 500, "w": 140, "h": 210},
+        {"x": 640,  "y": 500, "w": 140, "h": 210},
+        {"x": 820,  "y": 500, "w": 140, "h": 210},
+        {"x": 1000, "y": 500, "w": 140, "h": 210},
+        {"x": 1180, "y": 500, "w": 140, "h": 210},
+        {"x": 1360, "y": 500, "w": 140, "h": 210}
+      ],
+      "gate": {
+        "max_delta": 0.3,
+        "max_delta_window_s": 300,
+        "tolerance_down": 0.0,
+        "min_confidence": 0.5,
+        "min_confidence_last_digit": 0.3,
+        "require_prevalue": true,
+        "_comment": [
+          "max_delta 0.3 m3 per 300 s, scaled by the time since the last accepted",
+          "read: Qmax gives 0.25. tolerance_down 0.0 for the same reason as gas."
+        ]
+      },
+      "confirm": {"samples": 2, "max_last_digit_step": 1},
+      "home_assistant": {
+        "url": "http://192.0.2.3:8123",
+        "prevalue_entity": "input_number.water_meter_cold_camera_reading",
+        "write_entity": "input_number.water_meter_cold_camera_reading",
+        "write": true,
+        "prevalue_fallback": "last_accepted",
+        "_comment": [
+          "sensor.cold_water_meter_reading takes the higher of this helper and the",
+          "hand-typed one -- HomeAssistant/config/packages/water_meter.yaml."
+        ]
+      }
     }
   }
 }
