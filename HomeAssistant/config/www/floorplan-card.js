@@ -105,7 +105,7 @@
 const CARD = "floorplan-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "1.12.0";
+const VERSION = "1.13.0";
 
 // Glow colour for a lamp that reports none: the warm white it was rendered in.
 const WARM = [255, 180, 107];
@@ -153,6 +153,8 @@ const MAX_LOAD_W = 2400;
 const MAX_BATT_W = 1600;
 // Below this a reading is noise or standby, not power moving.
 const MOVING_W = 20;
+// One dash plus its gap along a wire, in px of the picture; `.stream path.current` in STYLE.
+const CURRENT_PERIOD = 60;
 const PLUG_W = 5;
 const ON_GREEN = [102, 187, 106];
 const MEDIA = [186, 104, 200];
@@ -426,20 +428,22 @@ class FloorplanCard extends HTMLElement {
     const g = document.createElementNS(SVG, "g");
     g.setAttribute("class", "stream");
     g.dataset.room = room || "";
-    const track = document.createElementNS(SVG, "path");
-    track.setAttribute("class", "track");
-    track.setAttribute("d", path);
-    g.appendChild(track);
-    const paths = [0, 0.5].map((half) => {
-      const p = document.createElementNS(SVG, "path");
-      p.setAttribute("d", path);
-      p.setAttribute("pathLength", "100");
-      p.style.animationDelay = -((i * 0.29 + half) % 1) * BLOW_S + "s";
-      g.appendChild(p);
-      return p;
-    });
+    // A cable: a dark casing so it reads on the light wall tops, the coloured core over it.
+    for (const cls of ["casing", "track"]) {
+      const el = document.createElementNS(SVG, "path");
+      el.setAttribute("class", cls);
+      el.setAttribute("d", path);
+      g.appendChild(el);
+    }
+    // The current: dashes every CURRENT_PERIOD px marching along the whole wire, so a long
+    // run reads as busy as a short one (two puffs per wire thinned out on the long ones).
+    const p = document.createElementNS(SVG, "path");
+    p.setAttribute("class", "current");
+    p.setAttribute("d", path);
+    p.style.animationDelay = -((i * 0.29) % 1) + "s";
+    g.appendChild(p);
     parent.appendChild(g);
-    return { g, paths };
+    return { g, paths: [p] };
   }
 
   /**
@@ -452,8 +456,9 @@ class FloorplanCard extends HTMLElement {
     const f = watts == null ? 0.15 : Math.max(0.1, Math.min(1, Math.abs(watts) / max));
     S.g.style.setProperty("--glow", `rgb(${rgb.join(", ")})`);
     S.g.style.setProperty("--width", (1.5 + 3 * f).toFixed(1));
+    // Pace in px per second, so every wire carrying the same watts moves alike.
     for (const p of S.paths) {
-      p.style.animationDuration = (3.6 - 2 * f).toFixed(2) + "s";
+      p.style.animationDuration = (CURRENT_PERIOD / (30 + 90 * f)).toFixed(2) + "s";
       p.style.animationDirection = back ? "reverse" : "normal";
     }
   }
@@ -1137,30 +1142,29 @@ ha-card { overflow: hidden; background: #1c1c1c; }
   100% { stroke-dashoffset: -100; opacity: 0; }
 }
 /* Without motion: the streams stand still, faint, so the mode still shows. */
-/* Power streams: the same puffs, thinner and calmer, their width and pace set per stream. */
+/* Power streams: a wire (the track) with current marching along it, dash after dash,
+   its width and pace set per stream. One period is CURRENT_PERIOD (60) px: keep in step. */
 .stream { opacity: 0; transition: opacity 0.8s ease; }
-.stream.on { opacity: 0.85; }
+.stream.on { opacity: 0.9; }
 .stream.elsewhere { display: none; }
-.stream path {
-  fill: none;
-  stroke: var(--glow);
+.stream path { fill: none; stroke: var(--glow); stroke-linecap: round; }
+.stream path.current {
   stroke-width: var(--width, 2);
-  stroke-linecap: round;
-  stroke-dasharray: 14 186;
-  stroke-dashoffset: 14;
+  stroke-dasharray: 12 48;
   filter: drop-shadow(0 0 2px var(--glow));
-  opacity: 0;
-  animation: blow 2.6s linear infinite;
+  animation: march 1s linear infinite;
   animation-play-state: paused;
 }
-.stream.on path { animation-play-state: running; }
-.stream path.track {
-  stroke-width: 1.5; stroke-dasharray: none; opacity: 0.22;
-  filter: none; animation: none;
+.stream.on path.current { animation-play-state: running; }
+.stream path.casing { stroke: rgba(15, 15, 25, 0.6); stroke-width: calc(var(--width, 2) + 3px); stroke-linejoin: round; }
+.stream path.track { stroke-width: 1.5; opacity: 0.6; stroke-linejoin: round; }
+@keyframes march {
+  from { stroke-dashoffset: 60; }
+  to   { stroke-dashoffset: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   .flow path { animation: none; stroke-dasharray: none; opacity: 0.45; }
-  .stream path { animation: none; stroke-dasharray: 2 8; opacity: 0.5; }
+  .stream path.current { animation: none; }
 }
 .narrow:not(.zoomed) .flow path { stroke-width: 4; }
 .spot, .row {
