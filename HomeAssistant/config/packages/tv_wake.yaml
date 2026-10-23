@@ -1,0 +1,35 @@
+# ---------------------------------------------------------------------------
+# Living room TV: power on by wake-on-LAN
+#
+# A Samsung TV can be switched off over its websocket API but not on: once it
+# sleeps, the API is gone. Without help the samsungtv integration leaves
+# TURN_ON out of the media player's features, so media_player.turn_on and
+# toggle fail ("does not support action media_player.toggle"), even when the
+# TV is on. The floor plan's tap is a toggle, so it fails too.
+#
+# The integration's own answer is its samsungtv.turn_on trigger: with an
+# automation on it, the player reports TURN_ON, and every turn_on (a tap on the
+# plan, Google, a script) runs this automation, which sends a magic packet.
+#
+# The TV must accept it: Settings -> General -> Network -> Expert Settings ->
+# Power On with Mobile. Wake over Wi-Fi is less reliable than over a cable.
+#
+# secrets.yaml:  tv_mac   the TV's MAC, as in its samsungtv config entry
+# ---------------------------------------------------------------------------
+
+wake_on_lan:
+
+automation:
+  - id: tv_wake_on_lan
+    alias: "TV: wake on LAN"
+    description: >-
+      Turns the living room TV on with a magic packet, because its own API
+      cannot wake it.
+    mode: single
+    triggers:
+      - trigger: samsungtv.turn_on
+        entity_id: media_player.samsung_7_series_43_ue43nu7090
+    actions:
+      - action: wake_on_lan.send_magic_packet
+        data:
+          mac: !secret tv_mac

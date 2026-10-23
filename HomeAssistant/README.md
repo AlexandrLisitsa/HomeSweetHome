@@ -54,6 +54,9 @@ read before it goes live, and a `git revert` if it was wrong.
 - **Kitchen light button**: an Aqara double rocker. Left toggles the kitchen
   light, right toggles the LED strip, clicking both switches both, and holding
   a rocker glides the strip dimmer or brighter ([`docs/kitchen-button.md`](docs/kitchen-button.md)).
+- **TV power-on**: the Samsung TV can't be woken over its own API, so
+  `packages/tv_wake.yaml` turns it on with a wake-on-LAN packet. That is what
+  lets a tap on the floor plan, or Google, switch it on.
 - **Google Home and Gemini**: entities exposed through the Google Assistant
   integration, with the spoken names kept in a git-ignored file
   ([`docs/private-files.md`](docs/private-files.md)). Google reaches the box
