@@ -108,7 +108,7 @@ def check(label, got, want):
 # --- a house to test against ------------------------------------------------
 
 AC = "climate.daewoo_a_c"
-LED = "light.0xa4c1385443844c1e"
+LED = "light.led_ambient"
 PLUG = "switch.0x70b3d52b600fddcb"
 RUN = "binary_sensor.a_c_running"
 
