@@ -128,7 +128,8 @@ sh tools/ha_get.sh /api/config
 | `tools/test_climate_chart.js` | fixture tests for the climate card's chart and dial maths | no — no network |
 | `tools/test_console_history.js` | the inverter and battery cards' history: raw states inside the recorder's window, hourly statistics past it | no — pure local |
 | `tools/test_dtek_card.js` | the DTEK card's hero, Next window tile and today/tomorrow grid against the applied schedule, on a pinned clock | no — pure local |
-| `tools/test_card_tooltips.js` | renders every custom card and checks each meaningful element's tooltip against [the standard](docs/dashboard-tooltips.md); `tools/fake_dom.js` is the small DOM it and `test_power_cards.js` share | no — pure local |
+| `tools/test_card_tooltips.js` | renders every custom card and checks each meaningful element's tooltip against [the standard](docs/dashboard-tooltips.md); `tools/fake_dom.js` is the small DOM it, `test_power_cards.js` and `test_floorplan_card.js` share | no — pure local |
+| `tools/test_floorplan_card.js` | the Home floor plan card with its real config: room tints, the power path's streams and labels, the DTEK chip, outage mode with load shedding's marks, patching and taps | no — pure local |
 | `tools/ha_www_push.sh` | pushes `config/www/` (the custom cards) to the box over SSH; follow with `ha_dashboard.py --card` to bump the resource version — **changes the house** | yes, deliberately |
 
 `ha_pull.sh` extracts to a temp dir and swaps, so a failed pull leaves the old
@@ -170,6 +171,9 @@ node tools/test_power_cards.js
 node tools/test_dtek_card.js
 node tools/test_console_history.js
 node tools/test_climate_chart.js
+node tools/test_card_tooltips.js
+node tools/test_floorplan_card.js
+python ../FloorPlan/tools/check_rooms.py
 ```
 
 The DTEK, pre-charge, adaptive-charge and load-shedding ones need `python -m pip install -r tools/requirements.txt`;

@@ -72,6 +72,11 @@ jobs:
         run: node HomeAssistant/tools/test_dtek_card.js
       - name: Dashboard tooltips
         run: node HomeAssistant/tools/test_card_tooltips.js
+      - name: Floor plan card
+        run: node HomeAssistant/tools/test_floorplan_card.js
+      # The entity check inside it skips here: the registry is gitignored.
+      - name: Floor plan rooms.py agrees with the dashboard and its images
+        run: python FloorPlan/tools/check_rooms.py
 
   power-station:
     name: PowerStation firmware logic
