@@ -86,6 +86,7 @@ Run from the repository root. Each one reads the room list in `tools/rooms.py`.
 | `tools/check_camera.py` | checks the render copy's camera is the one `base.png` was actually taken with |
 | `tools/build_overlays.py` | turns the renders into a base image plus one light-only overlay per lamp, masked to its room |
 | `tools/make_dashboard.py` | writes the Home dashboard's card config from `rooms.py` |
+| `tools/check_rooms.py` | checks `rooms.py` hangs together and the dashboard and its images match it; with a pulled registry (`ha_pull.sh`), that every entity exists. CI runs it |
 | `tools/sh3d_camera.py` | library, not a command: projects plan coordinates (cm) into a render, used by the three above |
 | `tools/card_harness.html` | a local page to try `floorplan-card.js` against fake states before deploying it |
 
@@ -137,7 +138,8 @@ where icons go, and which HA entity is which item in which room.
 6. `python FloorPlan/tools/make_dashboard.py` — writes the card config into
    `HomeAssistant/dashboards/lovelace.dashboard_home.json`: every item at its spot,
    every room's zoom box, and image URLs with a hash of the file as `?v=`, so a
-   changed picture can never be served stale. Check `build/icon_check.png`. A point
+   changed picture can never be served stale. Check `build/icon_check.png` (the
+   power paths are drawn on it too), then `python FloorPlan/tools/check_rooms.py`. A point
    on a floor the walls hide lands on the wall in front of it: badges float
    mid-room at 130 cm for that reason.
 7. Push:
