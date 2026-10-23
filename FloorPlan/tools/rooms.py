@@ -5,16 +5,19 @@ LIGHTS are the lamps that get a light-only overlay: the photo each is lit in
 (renders/<key>.png, taken by render.sh), its room, and a brightness gain that needs no
 re-render. SPOTS are the plan points (x, y, height) where dashboard icons go.
 An A/C's `flow` names its piece in the model: the card draws its air leaving the unit.
+POWER names the inverter's entities; the power path runs from its spot through each room's `door`.
 """
 
+# `door` is where the power path enters the room from the hallway: a point either side of
+# its door frame, 30 cm out (cm, plan). The hallway has none: every path runs along it.
 ROOMS = {
-    "kitchen":  {"name": "Kitchen",     "point": (665, 450)},
+    "kitchen":  {"name": "Kitchen",     "point": (665, 450), "door": ((407, 506), (467, 506))},
     "hallway":  {"name": "Hallway",     "point": (300, 700)},
-    "bedroom":  {"name": "Bedroom",     "point": (630, 690)},
-    "living":   {"name": "Living room", "point": (400, 968)},
-    "bathroom": {"name": "Bathroom",    "point": (330, 370)},
+    "bedroom":  {"name": "Bedroom",     "point": (630, 690), "door": ((343, 624), (403, 624))},
+    "living":   {"name": "Living room", "point": (400, 968), "door": ((315, 784), (315, 844))},
+    "bathroom": {"name": "Bathroom",    "point": (330, 370), "door": ((329, 484), (329, 424))},
     # Behind the entrance door; HA calls this area "vestibule".
-    "vestibule": {"name": "Vestibule",  "point": (130, 630)},
+    "vestibule": {"name": "Vestibule",  "point": (130, 630), "door": ((256, 651), (196, 651))},
 }
 
 LIGHTS = {
@@ -47,7 +50,28 @@ SPOTS = {
     "living_climate":    (403.5, 1030.0, 130.0),
     # South of the entrance door: left of it, seen from the hallway.
     "inverter":          (205.0, 737.0, 138.0),
-    "inverter_battery":  (205.0, 780.0, 110.0),
+    "inverter_battery":  (205.0, 810.0, 100.0),   # clear of the inverter's label
+    # Where the supply comes in: by the entrance door, which is where the grid stream starts.
+    "grid_in":           (130.0, 475.0, 100.0),
+}
+
+# The power path: the inverter every socket runs through, what feeds it, and what it says
+# about the grid. `hub` and `battery` are SPOTS keys; every light, plug and TV in ITEMS
+# gets a stream from the hub. An A/C draws through its plug, so the plug's stream is its.
+POWER = {
+    "hub": "inverter",
+    "hub_entity": "sensor.powmr_inverter_ac_output_power",
+    "grid_in": "grid_in",
+    "battery": "inverter_battery",
+    "grid": "sensor.powmr_inverter_grid_real_power_calculated",
+    "battery_power": "sensor.jkbms_gateway_bms_power",
+    "priority": "select.powmr_inverter_power_priority",
+    "down": "binary_sensor.powmr_inverter_grid_condition_safe",   # on = grid DOWN
+    "returning": "binary_sensor.powmr_inverter_grid_voltage_in_range",
+    "runtime": "sensor.battery_runtime_remaining",
+    "shedding": "sensor.load_shedding",
+    "dtek_start": "sensor.dtek_next_outage_start",
+    "dtek_end": "sensor.dtek_next_outage_end",
 }
 
 # What the dashboard shows, room by room. `spot` is a SPOTS key; a light names its

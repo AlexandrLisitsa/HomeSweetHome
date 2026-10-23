@@ -43,6 +43,22 @@
  * card's bands. A comfortable room is not tinted at all. The tint sits under
  * the lamps' light, so a lit room still glows on top of it.
  *
+ * POWER PATH AND OUTAGES
+ * ----------------------
+ * Everything in the flat runs through the inverter, so with a `power` block the
+ * plan shows how: a stream from the grid's entry and one between the pack and
+ * the inverter (backwards while it charges), and one from the inverter along
+ * the hallway and through the doors to every lamp, plug and screen that is on.
+ * The paths come from make_dashboard.py, in pixels like an A/C's air; width and
+ * pace follow the watts. The inverter's label says what feeds it ("Battery
+ * 412 W"), the pack's which way its power goes ("64% · −420 W").
+ *
+ * The grid is down when the inverter says so (its grid sensor is on), never
+ * because DTEK says so. Then the flat dims, a red chip reads "Grid down · on
+ * battery · 3.4 h left" (amber "Grid returning" during the 5-minute wait), and
+ * what load shedding stepped down or cut gets an amber or red ring and a word.
+ * With the grid up, a DTEK window today shows as an amber "Outage 14:00–18:00".
+ *
  * TWO LAYOUTS, ONE CONFIG
  * -----------------------
  * Wide (a desktop, a tablet): the whole flat, sized to fit the screen's height,
@@ -69,14 +85,24 @@
  *     - { entities: [sensor.kitchen_temperature, sensor.kitchen_humidity],
  *         x: 70.8, y: 29.6, room: kitchen }
  *
- * x and y are % of the image (a flow alone is in its pixels); everything but
+ *   power:             # optional; written by make_dashboard.py from rooms.py POWER
+ *     hub_entity: sensor.inverter_output, battery_entity: sensor.battery_soc,
+ *     grid: sensor.grid_power, battery_power: sensor.battery_power,
+ *     down: binary_sensor.grid_unsafe, returning: binary_sensor.grid_in_range,
+ *     runtime: sensor.battery_runtime, shedding: sensor.load_shedding,
+ *     priority: select.power_priority, dtek_start: sensor.next_start, dtek_end: sensor.next_end,
+ *     grid_path: "M ...", battery_path: "M ...",
+ *     loads: [{ entity: light.kitchen, room: kitchen, path: "M ..." },
+ *             { entity: switch.ac_plug, value: sensor.ac_plug_power, room: bedroom, path: "M ..." }]
+ *
+ * x and y are % of the image (a flow or power path alone is in its pixels); everything but
  * entity, x and y is optional.
  */
 
 const CARD = "floorplan-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "1.8.0";
+const VERSION = "1.9.0";
 
 // Glow colour for a lamp that reports none: the warm white it was rendered in.
 const WARM = [255, 180, 107];
@@ -105,6 +131,18 @@ const COMFORT = [
   [(t) => t > 26, "warm", [255, 179, 113]],
   [(t) => t < 20, "cool", [142, 197, 232]],
 ];
+// The power path: grid and battery in the inverter console card's colours. Its load
+// blue would read here as an A/C's cool air, so loads are a lavender that no A/C mode
+// or lamp uses. A stream's speed and width follow its watts against that card's scales.
+const GRID_C = [174, 132, 70];
+const BATT_C = [88, 149, 105];
+const LOAD_C = [190, 170, 255];
+const BAD_C = [187, 99, 91];
+const MAX_LOAD_W = 2400;
+const MAX_BATT_W = 1600;
+// Below this a reading is noise or standby, not power moving.
+const MOVING_W = 20;
+const PLUG_W = 5;
 const ON_GREEN = [102, 187, 106];
 const MEDIA = [186, 104, 200];
 const NEUTRAL = [144, 164, 174];
@@ -144,6 +182,16 @@ const HELP = {
   badge: "Temperature and humidity from the room's Aqara sensor; outside 20–26 °C its floor tints.\n"
     + "E.g. the kitchen at 31 °C while someone cooks turns orange; under 20 °C a room turns blue.\n"
     + "Tap: opens the temperature's dialog.",
+  hub: "The inverter every socket runs through; the streams show where its power comes from.\n"
+    + "E.g. Battery 420 W by day on the tariff; Grid at night, with the pack charging too.\n"
+    + "Tap: opens its dialog.",
+  down: "The inverter sees no mains, so the whole flat runs on the 280 Ah pack.\n"
+    + "E.g. 3.4 h left at the current draw; load shedding steps the A/Cs down at 80 % and 60 %.\n"
+    + "The grid counts as back after 5 minutes of steady 185–250 V.",
+  returning: "Mains is back in 185–250 V; the inverter waits 5 steady minutes before using it.\n"
+    + "E.g. a flicker during the wait starts it again; the house stays on the pack meanwhile.",
+  dtek: "DTEK's schedule says the power will be off then; the plan turns red if it really goes.\n"
+    + "E.g. 14:00–18:00: the pack is charged up beforehand so the house rides it out.",
   chip: "Zooms the plan to this room and lists only its controls below it.\n"
     + "E.g. Bedroom: its A/C, the A/C plug, the router and the room's climate.\n"
     + "This phone remembers the choice.",
@@ -197,7 +245,11 @@ class FloorplanCard extends HTMLElement {
         throw new Error(CARD + ": every room needs an id and a focus with x0 < x1, y0 < y1");
       }
     }
-    this._config = { image: config.image, rooms, lights, devices, badges };
+    const power = config.power || null;
+    if (power && (!Array.isArray(power.loads) || power.loads.some((l) => !l.entity || !l.path))) {
+      throw new Error(CARD + ": power needs loads, each with entity and path");
+    }
+    this._config = { image: config.image, rooms, lights, devices, badges, power };
     if (this._room !== "all" && !rooms.some((r) => r.id === this._room)) this._room = "all";
     this._built = false;
     this._fingerprint = null;
@@ -314,6 +366,87 @@ class FloorplanCard extends HTMLElement {
     return COMFORT.find(([test]) => test(t)) || null;
   }
 
+  /** A number from an entity's state, or null. */
+  _num(id) {
+    const st = id && this._stateObj(id);
+    return st && st.state !== "" && !isNaN(Number(st.state)) ? Number(st.state) : null;
+  }
+
+  /**
+   * The house's power, read once per render. `down` is the inverter's own verdict
+   * (its grid sensor is on when the grid is NOT safe), never DTEK's: DTEK is a
+   * claim about the schedule, the inverter is the measurement.
+   */
+  _powerState() {
+    const P = this._config.power;
+    const on = (id) => {
+      const st = id && this._stateObj(id);
+      return !!st && st.state === "on";
+    };
+    const down = on(P.down);
+    const gridW = down ? 0 : this._num(P.grid) || 0;
+    const battW = this._num(P.battery_power) || 0;
+    const hours = this._num(P.runtime);
+    // What load shedding did, by entity: "cut" (its plug switched off) beats "shed".
+    const shed = {};
+    const sh = this._stateObj(P.shedding);
+    const loads = (sh && sh.attributes.loads) || {};
+    for (const rec of Object.values(loads)) {
+      if (!rec) continue;
+      if (rec.entity && rec.step_soc != null && rec.override_soc == null && !shed[rec.entity]) {
+        shed[rec.entity] = { kind: "shed", soc: rec.step_soc };
+      }
+      if (rec.plug && rec.plug_cut) shed[rec.plug] = { kind: "cut", soc: rec.step_soc };
+    }
+    // DTEK's next window, if it falls today and has not ended.
+    let dtek = null;
+    const start = Date.parse((this._stateObj(P.dtek_start) || {}).state);
+    const end = Date.parse((this._stateObj(P.dtek_end) || {}).state);
+    const now = new Date();
+    if (!isNaN(start) && !isNaN(end) && end > now.getTime()
+        && new Date(start).toDateString() === now.toDateString()) {
+      dtek = { start: new Date(start), end: new Date(end) };
+    }
+    return { down, returning: down && on(P.returning), gridW, battW, hours, shed, dtek };
+  }
+
+  /** One power stream: a faint track, so its route reads, and two puffs along it. */
+  _stream(parent, path, room, i) {
+    const g = document.createElementNS(SVG, "g");
+    g.setAttribute("class", "stream");
+    g.dataset.room = room || "";
+    const track = document.createElementNS(SVG, "path");
+    track.setAttribute("class", "track");
+    track.setAttribute("d", path);
+    g.appendChild(track);
+    const paths = [0, 0.5].map((half) => {
+      const p = document.createElementNS(SVG, "path");
+      p.setAttribute("d", path);
+      p.setAttribute("pathLength", "100");
+      p.style.animationDelay = -((i * 0.29 + half) % 1) * BLOW_S + "s";
+      g.appendChild(p);
+      return p;
+    });
+    parent.appendChild(g);
+    return { g, paths };
+  }
+
+  /**
+   * Shows a stream or not. `watts` against `max` sets its width and speed; with no
+   * meter (null) it is a thin, steady one. `back` runs it the other way.
+   */
+  _paintStream(S, on, watts, max, rgb, back) {
+    S.g.classList.toggle("on", on);
+    if (!on) return;
+    const f = watts == null ? 0.15 : Math.max(0.1, Math.min(1, Math.abs(watts) / max));
+    S.g.style.setProperty("--glow", `rgb(${rgb.join(", ")})`);
+    S.g.style.setProperty("--width", (1.5 + 3 * f).toFixed(1));
+    for (const p of S.paths) {
+      p.style.animationDuration = (3.6 - 2 * f).toFixed(2) + "s";
+      p.style.animationDirection = back ? "reverse" : "normal";
+    }
+  }
+
   /**
    * Everything that can change what is drawn, in one string. `set hass` fires
    * on every state change in the house; without this an unrelated sensor
@@ -336,6 +469,14 @@ class FloorplanCard extends HTMLElement {
       }),
       cfg.badges.map((b) => b.entities.map(s)),
       cfg.rooms.map((r) => s(r.temperature)),
+      // Power to the nearest 10 W, so the streams do not restyle on every watt.
+      cfg.power && [
+        [cfg.power.grid, cfg.power.battery_power].map((id) => Math.round((this._num(id) || 0) / 10)),
+        [cfg.power.down, cfg.power.returning, cfg.power.runtime, cfg.power.priority,
+          cfg.power.dtek_start, cfg.power.dtek_end].map(s),
+        JSON.stringify((this._stateObj(cfg.power.shedding) || { attributes: {} }).attributes.loads || null),
+        new Date().toDateString(),
+      ],
     ]);
   }
 
@@ -539,6 +680,29 @@ class FloorplanCard extends HTMLElement {
     plane.appendChild(air);
     this._air = air;
 
+    // The power path, under the A/Cs' air: what feeds the inverter, and a stream
+    // from it to every load. A status chip over the stage, not the plane, so it
+    // stays put when a phone zooms to a room.
+    this._streams = null;
+    if (cfg.power) {
+      const P = cfg.power;
+      const g = document.createElementNS(SVG, "g");
+      g.setAttribute("class", "power");
+      air.appendChild(g);
+      this._streams = {
+        grid: this._stream(g, P.grid_path, "vestibule", 0),
+        battery: this._stream(g, P.battery_path, "vestibule", 1),
+        loads: P.loads.map((l, i) => Object.assign({ cfg: l }, this._stream(g, l.path, l.room, i + 2))),
+      };
+      this._status = this._el("div", "status", stage);
+      this._status.tabIndex = 0;
+      this._status.setAttribute("role", "button");
+      this._status.addEventListener("click", () => {
+        const s = this._status.dataset.kind;
+        this._moreInfo(s === "dtek" ? P.dtek_start : s ? P.runtime : P.down);
+      });
+    }
+
     this._devices = cfg.devices.map((d) => {
       let flow = null;
       if (Array.isArray(d.flow) && d.flow.length) {
@@ -634,7 +798,7 @@ class FloorplanCard extends HTMLElement {
     }
     // A zoom box is a rectangle and rooms are not, so neighbours show at its edges:
     // their icons would be controls for a room that is not the one chosen.
-    for (const el of this._plane.querySelectorAll(".spot, .badge, .flow")) {
+    for (const el of this._plane.querySelectorAll(".spot, .badge, .flow, .stream")) {
       el.classList.toggle("elsewhere", only !== null && el.dataset.room !== only);
     }
   }
@@ -759,7 +923,98 @@ class FloorplanCard extends HTMLElement {
       B.el.dataset.tip = B.row.dataset.tip = label + " — " + spaced(text) + (band ? " · " + band[1] : "")
         + "\n" + HELP.badge;
     });
+
+    if (this._streams) this._renderPower();
   }
+
+  /** The power path, the inverter's label, and what an outage changes. */
+  _renderPower() {
+    const P = this._config.power;
+    const S = this._powerState();
+    const charging = S.battW > MOVING_W;
+    this._paintStream(this._streams.grid, S.gridW > MOVING_W, S.gridW, MAX_LOAD_W, GRID_C, false);
+    // The battery path runs pack -> inverter; charging runs it backwards.
+    this._paintStream(this._streams.battery, Math.abs(S.battW) > MOVING_W, S.battW, MAX_BATT_W,
+      S.down ? BAD_C : BATT_C, charging);
+    for (const L of this._streams.loads) {
+      const st = this._stateObj(L.cfg.entity);
+      const watts = L.cfg.value ? this._num(L.cfg.value) : null;
+      const on = this._isOn(st) && (watts == null || watts > PLUG_W);
+      this._paintStream(L, on, watts, MAX_LOAD_W, LOAD_C, false);
+    }
+
+    // The inverter says where its power is coming from, and in an outage for how long.
+    const hub = this._devices.find((D) => D.cfg.entity === P.hub_entity);
+    if (hub) {
+      const load = this._num(P.hub_entity);
+      const source = S.down || (S.gridW <= MOVING_W && S.battW < -MOVING_W) ? "Battery" : "Grid";
+      let text = source + (load != null ? " " + watt(load) : "");
+      if (S.down && S.hours != null) text += " · " + S.hours.toFixed(1) + " h";
+      const mode = (this._stateObj(P.priority) || {}).state;
+      hub.label.textContent = hub.value.textContent = text;
+      hub.btn.dataset.tip = hub.label.dataset.tip = hub.head.dataset.tip = this._name(hub.cfg, hub.cfg.entity)
+        + " — " + text + (mode ? " (" + mode + ")" : "") + "\n" + HELP.hub;
+    }
+    // The pack says which way its power goes: + charging, − feeding the house.
+    const pack = this._devices.find((D) => D.cfg.entity === P.battery_entity);
+    if (pack && Math.abs(S.battW) > MOVING_W) {
+      const flow = (S.battW > 0 ? "+" : "−") + watt(S.battW);
+      pack.label.textContent += " · " + flow;
+      pack.value.textContent += " · " + flow;
+      for (const el of [pack.btn, pack.label, pack.head]) {
+        const [first, ...rest] = el.dataset.tip.split("\n");
+        el.dataset.tip = [first + (S.battW > 0 ? " · charging " : " · feeding the house ") + watt(S.battW)]
+          .concat(rest).join("\n");
+      }
+    }
+
+    // An outage dims the flat, so what the battery still lights stands out.
+    this._stage.classList.toggle("outage", S.down);
+    const hhmm = (d) => d.toTimeString().slice(0, 5);
+    let status = null;
+    if (S.returning) {
+      status = { kind: "returning", text: "Grid returning · on battery", tip: "Grid returning — on battery" };
+    } else if (S.down) {
+      const left = S.hours != null ? S.hours.toFixed(1) + " h left" : null;
+      status = { kind: "down", text: "Grid down · on battery" + (left ? " · " + left : ""),
+        tip: "Grid down — on battery" + (left ? ", " + left : "") };
+    } else if (S.dtek) {
+      const span = hhmm(S.dtek.start) + "–" + hhmm(S.dtek.end);
+      status = { kind: "dtek", text: "Outage " + span, tip: "DTEK outage — today " + span };
+    }
+    this._status.hidden = !status;
+    this._status.dataset.kind = status ? status.kind : "";
+    this._status.className = "status" + (status ? " " + status.kind : "");
+    this._status.textContent = status ? status.text : "";
+    this._status.dataset.tip = status ? status.tip + "\n" + HELP[status.kind] : "";
+
+    // What load shedding did, on the icon and its row: amber when stepped down,
+    // red when its plug was cut, and said in the first line of its tooltip.
+    for (const X of this._lights.concat(this._devices)) {
+      const mark = S.shed[X.cfg.entity];
+      for (const el of [X.spot, X.row]) {
+        el.classList.toggle("shed", !!mark && mark.kind === "shed");
+        el.classList.toggle("cut", !!mark && mark.kind === "cut");
+      }
+      if (!mark) continue;
+      for (const el of [X.label || X.pct, X.value]) {
+        el.textContent = (el.textContent ? el.textContent + " · " : "") + mark.kind;
+      }
+      const note = mark.kind === "cut" ? " · plug cut by load shedding"
+        : " · stepped down" + (mark.soc != null ? " at " + mark.soc + " %" : "");
+      for (const el of [X.btn, X.head, X.label, X.pct]) {
+        if (!el || !el.dataset.tip) continue;
+        const [first, ...rest] = el.dataset.tip.split("\n");
+        el.dataset.tip = [first + note].concat(rest).join("\n");
+      }
+    }
+  }
+}
+
+/** 380 W, 1.2 kW: a power, unsigned. */
+function watt(w) {
+  const a = Math.abs(w);
+  return a >= 1000 ? (a / 1000).toFixed(1) + " kW" : Math.round(a) + " W";
 }
 
 /** "48%" as the tooltips write it, "48 %"; the plan keeps the tighter form. */
@@ -804,6 +1059,21 @@ ha-card { overflow: hidden; background: #1c1c1c; }
   transition: opacity 0.6s ease, background-color 0.6s ease;
 }
 .tint.on { opacity: 0.22; }
+/* An outage: the flat dims and the battery's light stands out. */
+.base, .tint { transition: filter 0.8s ease, opacity 0.6s ease, background-color 0.6s ease; }
+.stage.outage .base, .stage.outage .tint { filter: brightness(0.6); }
+.status {
+  position: absolute; left: 10px; top: 10px; z-index: 2;
+  padding: 4px 12px; border-radius: 14px; cursor: pointer;
+  color: #fff; background: rgba(0, 0, 0, 0.65);
+  font: 600 13px/18px var(--paper-font-body1_-_font-family, sans-serif);
+  border: 1px solid var(--status, transparent);
+  box-shadow: 0 0 10px var(--status, transparent);
+}
+.status[hidden] { display: none; }
+.status.down { --status: var(--error-color, #db4437); }
+.status.returning, .status.dtek { --status: var(--warning-color, #ffa600); }
+.narrow .status { left: 6px; top: 6px; padding: 2px 10px; font-size: 12px; }
 .air {
   position: absolute; inset: 0; width: 100%; height: 100%;
   overflow: visible; pointer-events: none;
@@ -833,8 +1103,30 @@ ha-card { overflow: hidden; background: #1c1c1c; }
   100% { stroke-dashoffset: -100; opacity: 0; }
 }
 /* Without motion: the streams stand still, faint, so the mode still shows. */
+/* Power streams: the same puffs, thinner and calmer, their width and pace set per stream. */
+.stream { opacity: 0; transition: opacity 0.8s ease; }
+.stream.on { opacity: 0.85; }
+.stream.elsewhere { display: none; }
+.stream path {
+  fill: none;
+  stroke: var(--glow);
+  stroke-width: var(--width, 2);
+  stroke-linecap: round;
+  stroke-dasharray: 14 186;
+  stroke-dashoffset: 14;
+  filter: drop-shadow(0 0 2px var(--glow));
+  opacity: 0;
+  animation: blow 2.6s linear infinite;
+  animation-play-state: paused;
+}
+.stream.on path { animation-play-state: running; }
+.stream path.track {
+  stroke-width: 1.5; stroke-dasharray: none; opacity: 0.22;
+  filter: none; animation: none;
+}
 @media (prefers-reduced-motion: reduce) {
   .flow path { animation: none; stroke-dasharray: none; opacity: 0.45; }
+  .stream path { animation: none; stroke-dasharray: 2 8; opacity: 0.5; }
 }
 .narrow:not(.zoomed) .flow path { stroke-width: 4; }
 .spot, .row {
@@ -866,6 +1158,9 @@ ha-card { overflow: hidden; background: #1c1c1c; }
 .lamp.device.on { box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35); }
 .lamp.device ha-icon { --mdc-icon-size: 19px; }
 .lamp.unavailable, .row.unavailable { opacity: 0.4; }
+/* Load shedding's marks: amber stepped down, red its plug cut. */
+.shed .lamp { box-shadow: 0 0 0 2px var(--warning-color, #ffa600) !important; }
+.cut .lamp { box-shadow: 0 0 0 2px var(--error-color, #db4437) !important; }
 .lamp:focus-visible, .switch:focus-visible, .chip:focus-visible {
   outline: 2px solid var(--primary-color, #03a9f4); outline-offset: 2px;
 }

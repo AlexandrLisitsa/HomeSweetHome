@@ -19,7 +19,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from rooms import ITEMS, ROOMS, SPOTS
+from rooms import ITEMS, POWER, ROOMS, SPOTS
 from sh3d_camera import load, projector
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -92,6 +92,41 @@ def flow(piece, room):
     return paths
 
 
+# The power path: from the inverter out through the vestibule door, along the hallway and
+# in through the room's door to the thing, at hand height so it reads as running through
+# the rooms rather than over the walls. Through each door it passes both of the door's
+# points, nearer one first, so it goes straight through the frame. Corners are rounded by
+# cutting them (Chaikin), which never overshoots into a loop, and the ends rise to the
+# icons. In pixels of the picture, like an A/C's air.
+ROUTE_Z = 100.0
+HUB = POWER["hub"]
+
+
+def px(x, y, z):
+    u, v = pct(x, y, z)
+    return (u / 100 * w, v / 100 * h)
+
+
+def smooth(points, rounds=3):
+    for _ in range(rounds):
+        cut = [points[0]]
+        for (ax, ay), (bx, by) in zip(points, points[1:]):
+            cut += [(0.75 * ax + 0.25 * bx, 0.75 * ay + 0.25 * by), (0.25 * ax + 0.75 * bx, 0.25 * ay + 0.75 * by)]
+        points = cut + [points[-1]]
+    return "M" + " L".join(f"{u:.1f} {v:.1f}" for u, v in points)
+
+
+def route(spot, room):
+    plan = [SPOTS[HUB][:2]]
+    hub_room = "vestibule"
+    for rid in ([hub_room] if room != hub_room else []) + ([room] if room not in (hub_room, "hallway") else []):
+        a, b = ROOMS[rid]["door"]
+        near = min((a, b), key=lambda p: math.dist(p, plan[-1]))
+        plan += [near, b if near is a else a]
+    plan.append(SPOTS[spot][:2])
+    return smooth([px(*SPOTS[HUB])] + [px(x, y, ROUTE_Z) for x, y in plan] + [px(*SPOTS[spot])])
+
+
 # A room's zoom box: its mask's bounding box, grown by a margin so the icons near its
 # edge are not cut off, then brought to between 4:3 and 3:2 by growing its short side:
 # a narrow room would be a sliver, a wide one a strip a phone shows 150 px tall.
@@ -140,6 +175,24 @@ for item in ITEMS:
     else:
         card["badges"].append({"entities": item["entities"], "name": item.get("name", "Climate"), **common})
 
+# What the inverter feeds: every lamp, plug and screen, each by its own path. A sensor
+# is not a load, and an A/C draws through its plug, so the plug carries its stream.
+loads = []
+for item in ITEMS:
+    domain = item.get("entity", "").split(".")[0]
+    if item["kind"] == "light" or domain in ("switch", "media_player"):
+        load = {"entity": item["entity"], "room": item["room"], "path": route(item["spot"], item["room"])}
+        if item.get("value"):
+            load["value"] = item["value"]
+        loads.append(load)
+card["power"] = {
+    **{k: v for k, v in POWER.items() if k not in ("hub", "grid_in", "battery")},
+    "grid_path": smooth([px(*SPOTS[POWER["grid_in"]]), px(*SPOTS[HUB])]),
+    "battery_path": smooth([px(*SPOTS[POWER["battery"]]), px(*SPOTS[HUB])]),
+    "battery_entity": next(i["entity"] for i in ITEMS if i.get("spot") == POWER["battery"]),
+    "loads": loads,
+}
+
 doc = json.load(open(DASHBOARD, encoding="utf-8"))
 cards = doc["data"]["config"]["views"][0]["cards"]
 at = next(i for i, c in enumerate(cards) if c.get("type") == "custom:floorplan-card")
@@ -161,4 +214,7 @@ for name, (px, py) in pos.items():
 for dev in card["devices"]:
     for path in dev.get("flow", []):
         d.line([tuple(map(float, p.split())) for p in path[1:].split(" L")], fill=(80, 255, 160), width=2)
+for path, colour in ([(l["path"], (110, 168, 254)) for l in loads]
+                     + [(card["power"]["grid_path"], (174, 132, 70)), (card["power"]["battery_path"], (88, 149, 105))]):
+    d.line([tuple(map(float, p.split())) for p in path[1:].split(" L")], fill=colour, width=2)
 im.save(ROOT / "build" / "icon_check.png")

@@ -204,10 +204,31 @@ const FIXTURES = {
         : /download/.test(d.entity) ? S("12", { unit_of_measurement: "Mbit/s" })
           : S("450", { unit_of_measurement: "W" });
     });
-    (cfg.badges || []).forEach((b) => {
-      out[b.entities[0]] = S("24.3", { unit_of_measurement: "°C" });
+    // One room too warm, so its tint and the band in its badge's tooltip show.
+    (cfg.badges || []).forEach((b, i) => {
+      out[b.entities[0]] = S(i ? "24.3" : "28.4", { unit_of_measurement: "°C" });
       if (b.entities[1]) out[b.entities[1]] = S("48", { unit_of_measurement: "%" });
     });
+    // An outage: on battery with hours left, the LED strip stepped down and an
+    // A/C plug cut by load shedding, so every outage tooltip is checked.
+    const P = cfg.power;
+    if (P) {
+      const plug = (cfg.devices || []).find((d) => d.entity.startsWith("switch."));
+      Object.assign(out, {
+        [P.down]: S("on", {}),
+        [P.returning]: S("off", {}),
+        [P.grid]: S("0", { unit_of_measurement: "W" }),
+        [P.battery_power]: S("-450", { unit_of_measurement: "W" }),
+        [P.runtime]: S("3.4", { unit_of_measurement: "h" }),
+        [P.priority]: S("SBU Battery", {}),
+        [P.dtek_start]: S("unknown", {}),
+        [P.dtek_end]: S("unknown", {}),
+        [P.shedding]: S("2", { loads: {
+          led: { entity: "light.0xa4c1385443844c1e", step_soc: 80, override_soc: null, plug_cut: false },
+          ac: { entity: "climate.x", plug: plug && plug.entity, plug_cut: true, step_soc: 60, override_soc: null },
+        } }),
+      });
+    }
     return out;
   },
 };

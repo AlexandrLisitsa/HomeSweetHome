@@ -15,6 +15,10 @@
          room=<id>  the phone layout's chosen room (default all)
          hvac=<mode>[,<mode>]  what the A/Cs that are on do, in config order (default cool)
          temp=<°C>[,<°C>]  the rooms' thermometers, in badge order (default 24.26: no tint)
+         src=battery|grid|charging  what feeds the inverter (default battery, the day tariff)
+         grid=down|returning  an outage: on battery, or mains back and waiting
+         dtek=HH-HH  a DTEK window today, e.g. dtek=14-18
+         shed=<entity>[:cut][,...]  what load shedding stepped down, or whose plug it cut
          selftest=1 taps, holds, drags and switches rooms, and prints what came out.
   Every entity the config names gets a plausible state: an A/C cooling to 22,
   plugs drawing power, sensors with readings.
@@ -79,6 +83,32 @@
     put(b.entities[0], temps[Math.min(i, temps.length - 1)], { unit_of_measurement: "°C" });
     if (b.entities[1]) put(b.entities[1], "48.32", { unit_of_measurement: "%" });
   });
+
+  if (card.power) {
+    const P = card.power;
+    const src = q.get("src") || "battery";
+    const grid = q.get("grid");
+    const W = { unit_of_measurement: "W" };
+    put(P.down, grid ? "on" : "off");
+    put(P.returning, grid === "returning" ? "on" : "off");
+    put(P.grid, grid || src === "battery" ? "0" : src === "charging" ? "1580" : "380", W);
+    put(P.battery_power, grid || src === "battery" ? "-420" : src === "charging" ? "1200" : "0", W);
+    put(P.hub_entity, grid || src === "battery" ? "412" : "376", W);
+    put(P.runtime, grid ? "3.4" : "unknown", { unit_of_measurement: "h" });
+    put(P.priority, src === "battery" ? "SBU Battery" : "Utility First");
+    const at = (hh) => { const d = new Date(); d.setHours(Number(hh), 0, 0, 0); return d.toISOString(); };
+    const [d0, d1] = (q.get("dtek") || "").split("-");
+    put(P.dtek_start, d0 ? at(d0) : "unknown");
+    put(P.dtek_end, d1 ? at(d1) : "unknown");
+    const loads = {};
+    (q.get("shed") || "").split(",").filter(Boolean).forEach((s, i) => {
+      const [entity, cut] = s.split(":");
+      loads["d" + i] = cut
+        ? { entity: "climate.x" + i, plug: entity, plug_cut: true, step_soc: 60, override_soc: null }
+        : { entity, step_soc: 80, override_soc: null, plug_cut: false };
+    });
+    put(P.shedding, String(Object.keys(loads).length), { loads });
+  }
 
   const log = [];
   const el = document.createElement("floorplan-card");
