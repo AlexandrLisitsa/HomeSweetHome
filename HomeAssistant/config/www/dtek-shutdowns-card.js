@@ -28,7 +28,7 @@
 const CARD = "dtek-shutdowns-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "1.5.1";
+const VERSION = "1.6.0";
 
 /*
  * The grid shows the NORMAL condition, not the exception: a cell is green when
@@ -152,6 +152,11 @@ const HELP = {
     + "E.g. grey on top, green below: a possible outage until :30, then power.",
   day_total: "Dark hours that day in the weekly table, possible outages counted as off.\n"
     + "E.g. 16 grey hours plus two half-hour splits make 17h.",
+  sched_cell: "One hour of the stabilisation schedule DTEK has applied to this day.\n"
+    + "E.g. 17.10.2026 13:00: green on top, red below -- power until 13:30, then off.",
+  sched_total: "Dark hours that day in the applied schedule, possible outages counted as off.\n"
+    + "E.g. 17.10.2026: 13:30-17:00 off makes 3.5h.\n"
+    + "A dash: DTEK has not published that day yet.",
   legend_on: "DTEK says the power stays on for the whole hour.\n"
     + "E.g. Mo 07:00 green: no outage of any kind is planned 07:00–08:00.",
   legend_maybe: "DTEK may cut the power that hour; the totals and the alerts count it as off.\n"
@@ -194,10 +199,10 @@ const DEFAULTS = {
   // measurement section, which is a separate dashboard section and cannot be
   // reordered from inside a card. Two instances: [hero, week] above it,
   // [source] below. Not a styling knob -- see BLOCKS.
-  blocks: ["hero", "week", "source"],
+  blocks: ["hero", "days", "week", "source"],
 };
 
-const BLOCKS = ["hero", "week", "source"];
+const BLOCKS = ["hero", "days", "week", "source"];
 
 const DEBUG_STATES = ["on", "outage", "dtek", "unscheduled", "stale"];
 
@@ -272,6 +277,45 @@ function offHours(row) {
   let off = 0;
   for (let h = 0; h < 24; h++) off += (STATE[row[h]] || STATE["?"]).off;
   return off;
+}
+
+// --- the applied schedule (today / tomorrow) -------------------------------
+
+/** Is half `half` (0 = :00-:29, 1 = :30-:59) of this letter's hour dark? */
+function halfDark(letter, half) {
+  const st = STATE[letter];
+  if (!st || st.off === 0) return false;
+  if (st.off === 1) return true;
+  return FIRST_HALF_ONLY.indexOf(letter) >= 0 ? half === 0 : half === 1;
+}
+
+/**
+ * The dark stretch of the applied schedule that `now` falls in, or null.
+ *
+ * today and tomorrow become one run of 96 half hours, the same slots
+ * dtek_poll.py's half_hour_slots() builds. An unpublished tomorrow is not
+ * dark, so a window running into it ends at midnight with `open` set.
+ */
+function scheduleWindow(today, tomorrow, now) {
+  if (typeof today !== "string" || today.length !== 24) return null;
+  const days = [today, typeof tomorrow === "string" && tomorrow.length === 24 ? tomorrow : null];
+  const dark = (i) => {
+    const row = days[Math.floor(i / 48)];
+    return !!row && halfDark(row[Math.floor((i % 48) / 2)], i % 2);
+  };
+  const slot = now.getHours() * 2 + (now.getMinutes() >= 30 ? 1 : 0);
+  if (!dark(slot)) return null;
+  let start = slot;
+  while (start > 0 && dark(start - 1)) start--;
+  let end = slot;
+  while (end < 95 && dark(end + 1)) end++;
+  const base = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const at = (i) => new Date(base.getTime() + i * 18e5);
+  return {
+    start: at(start), end: at(end + 1),
+    open: end === 47 && !days[1],
+    certain: CERTAIN.indexOf(today[Math.floor(slot / 2)]) >= 0,
+  };
 }
 
 // --- the recurring week ----------------------------------------------------
@@ -360,7 +404,7 @@ class DtekShutdownsCard extends HTMLElement {
   }
 
   getCardSize() {
-    const per = { hero: 5, week: 15, source: 4 };
+    const per = { hero: 5, days: 15, week: 15, source: 4 };
     return this._config
       ? this._config.blocks.reduce((t, b) => t + (per[b] || 0), 0)
       : 22;
@@ -525,6 +569,40 @@ class DtekShutdownsCard extends HTMLElement {
       }
     }
 
+    // --- the applied schedule: today and tomorrow, and whether now is dark
+    const inEffect = a.schedule_in_effect === true;
+    const schedNow = inEffect && dbg !== "on"
+      ? scheduleWindow(a.today, a.tomorrow, now) : null;
+    const schedEnd = schedNow
+      ? fmtClock(schedNow.end.toISOString()) + (schedNow.end.getDate() !== now.getDate() ? "+1" : "")
+      : null;
+    const schedSpan = schedNow
+      ? fmtClock(schedNow.start.toISOString()) + DASH + schedEnd : null;
+    const schedLeft = schedNow
+      ? fmtIn(Math.round((schedNow.end.getTime() - now.getTime()) / 60000)) : null;
+    const applied = [];
+    if (inEffect && cfg.blocks.indexOf("days") >= 0) {
+      [a.today, a.tomorrow].forEach((row, di) => {
+        const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() + di);
+        const name = di === 0 ? "Today" : "Tomorrow";
+        const ok = typeof row === "string" && row.length === 24;
+        const cells = [];
+        for (let h = 0; h < 24; h++) {
+          const st = ok ? STATE[row[h]] || STATE["?"] : STATE["?"];
+          cells.push({
+            cls: st.cls + (di === 0 && h === now.getHours() ? " now" : ""),
+            name: name + " " + pad2(h) + ":00",
+            label: ok ? st.label : "not published yet",
+          });
+        }
+        applied.push({
+          name, cls: di === 0 ? "today" : "tmrw",
+          sub: pad2(date.getDate()) + "." + pad2(date.getMonth() + 1),
+          cells, total: ok ? fmtHours(offHours(row)) : MDASH, published: ok,
+        });
+      });
+    }
+
     // --- the next window
     //
     // sensor.dtek_next_outage_start/_end derive from `fact`, which DTEK has
@@ -533,7 +611,12 @@ class DtekShutdownsCard extends HTMLElement {
     // carry a timestamp: an applied schedule beats a recurring pattern.
     let win = null;
     const appliedStart = parseDate(a.next_outage_start);
-    if (appliedStart) {
+    if (schedNow) {
+      win = {
+        label: schedSpan, at: fmtClock(schedNow.start.toISOString()),
+        when: "now, ends " + schedLeft, whenShort: "now", certain: schedNow.certain,
+      };
+    } else if (appliedStart) {
       const appliedEnd = parseDate(a.next_outage_end);
       const at = pad2(appliedStart.getHours()) + ":" + pad2(appliedStart.getMinutes());
       const when = this._whenPhrase(now, appliedStart);
@@ -580,6 +663,11 @@ class DtekShutdownsCard extends HTMLElement {
         lede = "DTEK reports an outage for " + queue
           + (reason ? " (" + reason + ")" : "")
           + (bits.length ? ", " + bits.join(" and ") : "") + ".";
+      } else if (schedNow) {
+        lede = "The inverter sees no mains, as DTEK's schedule for " + queue
+          + " has it: off " + schedSpan + ", back "
+          + (schedNow.open ? "by midnight unless tomorrow's table extends it"
+                           : "by " + schedEnd + " (" + schedLeft + ")") + ".";
       } else {
         lede = "The inverter sees no mains. DTEK reports no outage of its own, "
           + "but the schedule has this hour dark, so it does not count as "
@@ -596,6 +684,14 @@ class DtekShutdownsCard extends HTMLElement {
       if (outageEnd) bits.push("expected back by " + fmtClock(outageEnd));
       lede = "DTEK says the power is off for " + queue
         + (bits.length ? " " + bits.join(", ") : "")
+        + ". The inverter still sees mains.";
+    } else if (schedNow) {
+      // DTEK's applied schedule has this half hour dark, and the inverter
+      // still sees mains: the switching has not reached this line yet, or
+      // this slot was skipped. A claim, like a DTEK notice -- orange.
+      headline = "Scheduled outage until " + schedEnd + ".";
+      lede = "DTEK's schedule for " + queue + " has " + schedSpan + " "
+        + (schedNow.certain ? "off" : "as a possible outage")
         + ". The inverter still sees mains.";
     } else {
       headline = "The power is on.";
@@ -657,7 +753,6 @@ class DtekShutdownsCard extends HTMLElement {
     // drift_warnings() in dtek_poll.py. Never fatal, never silent.
     const warnings = Array.isArray(a.warnings) ? a.warnings : [];
     const published = a.schedule_update || "an unknown date";
-    const inEffect = a.schedule_in_effect === true;
     let note;
     if (!inEffect && !weekLive && WILL_RETURN.indexOf(hiddenReason) >= 0) {
       note = "Stabilisation schedules are not in force, and DTEK has withdrawn "
@@ -683,12 +778,13 @@ class DtekShutdownsCard extends HTMLElement {
 
     return {
       // Orange when only DTEK says it is off: a claim, not a measurement.
-      accent: gridDown ? RED : dtekOutage ? ORANGE : GREEN,
+      accent: gridDown ? RED : dtekOutage || schedNow ? ORANGE : GREEN,
       // The accent in words, for the eyebrow's tooltip.
       nowWord: gridDown ? "power off"
-        : dtekOutage ? "DTEK outage notice, mains present" : "power on",
+        : dtekOutage ? "DTEK outage notice, mains present"
+        : schedNow ? "scheduled outage, mains present" : "power on",
       identity,
-      headline, lede, note, queue, week, days, win,
+      headline, lede, note, queue, week, days, win, applied, inEffect,
       weekLive, hiddenReason,
       // Null rather than "0h": both are computed from a pattern DTEK has
       // withdrawn, and a zero reads as a measured week with no outages in it.
@@ -726,8 +822,8 @@ class DtekShutdownsCard extends HTMLElement {
         + "packages/dtek_shutdowns.yaml loaded?</p></div></ha-card>";
     }
     const d = this._derive(now, main.attributes || {});
-    const draw = { hero: () => this._hero(d), week: () => this._weekCard(d),
-                   source: () => this._sourceCard(d) };
+    const draw = { hero: () => this._hero(d), days: () => this._daysCard(d),
+                   week: () => this._weekCard(d), source: () => this._sourceCard(d) };
     return '<div class="wrap" style="--accent:' + d.accent + '">'
       + this._config.blocks.map((b) => draw[b]()).join("")
       + "</div>";
@@ -775,6 +871,51 @@ class DtekShutdownsCard extends HTMLElement {
              d.weekShare ? d.weekShare + " of the week" : "not published", "week_off")
       + tile("Feed", d.feedLabel, "Last poll " + d.lastPoll, "feed", d.feedColor)
       + "</div></div></ha-card>";
+  }
+
+  _daysCard(d) {
+    // Same grid as the weekly table, two columns: what DTEK has actually
+    // applied, which is what the site shows under "Графік відключень".
+    let inner;
+    if (!d.inEffect) {
+      inner = '<p class="note">No stabilisation schedule is in force, so DTEK '
+        + "has applied nothing to today or tomorrow.</p>";
+    } else {
+      let hours = '<div class="hours">';
+      for (let h = 0; h < 24; h++) hours += '<div class="hr">' + pad2(h) + "</div>";
+      hours += "</div>";
+      let cols = "";
+      d.applied.forEach((day) => {
+        let cells = '<div class="cells">';
+        day.cells.forEach((c) => {
+          cells += '<div class="c ' + c.cls + '"' + tip(c.name, c.label, "sched_cell") + "></div>";
+        });
+        cells += "</div>";
+        cols += '<div class="day ' + day.cls + '">'
+          + '<div class="dhead"><span class="dname">' + esc(day.name) + "</span>"
+          + '<span class="dsub">' + esc(day.sub) + "</span></div>"
+          + cells
+          + '<div class="dtot"' + tip(day.name + " total",
+            day.published ? day.total + " off" : "not published", "sched_total")
+          + ">" + esc(day.total) + "</div></div>";
+      });
+      const item = (cls, text, key) => "<span" + tip(text, null, key) + ">"
+        + '<span class="sw ' + cls + '"></span>' + esc(text) + "</span>";
+      inner = '<div class="grid">' + hours + cols + "</div>"
+        + '<div class="legend">'
+        + item("on", "Power on", "legend_on")
+        + item("out", "Scheduled outage", "legend_out")
+        + item("maybe", "Possible outage", "legend_maybe")
+        + item("out-2", "Off for half the hour", "legend_half")
+        + item("unknown", "Not published", "sched_total")
+        + item("nowsw", "Now", "legend_now")
+        + "</div>";
+    }
+    return '<ha-card class="week days"><div class="pad">'
+      + '<div class="head"><h2>Today and tomorrow</h2>'
+      + '<span class="stamp"' + tip("Schedule published", d.published, "published")
+      + ">Published " + esc(d.published) + "</span></div>"
+      + inner + "</div></ha-card>";
   }
 
   _weekCard(d) {
@@ -988,6 +1129,7 @@ a:hover { text-decoration: underline; }
   flex: 1 1 0; min-width: 34px; display: flex; flex-direction: column;
   border-radius: 8px; padding: 0 4px;
 }
+.days .grid { max-width: 420px; }
 .day.today { background: rgba(3, 169, 244, .09); }
 .day.tmrw { background: rgba(127, 127, 127, .07); }
 .dhead {

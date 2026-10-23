@@ -32,6 +32,10 @@ on the network, not a determined attacker.
 If METERCAM_TOKEN is unset, auth is OFF and `/health` says so out loud. With
 it off, `/last.jpg` and `/archive` hand photographs of the house to anything on
 the LAN that asks.
+
+The control panel (panel.py) is the exception, on purpose: it is open on the
+LAN like the house dashboard at home.lan, and everything that matters to the
+camera -- /read, /last.jpg, /archive, the firmware download -- keeps the token.
 """
 
 from __future__ import annotations
@@ -41,6 +45,7 @@ import json
 import os
 import pathlib
 import re
+import sys
 import threading
 import time
 import urllib.error
@@ -49,7 +54,7 @@ import zipfile
 
 from flask import Flask, Response, jsonify, request, send_file
 
-from . import digits, reader
+from . import digits, panel, reader
 
 APP = Flask(__name__)
 
@@ -620,6 +625,10 @@ def _archive_walk(meter=None, days=None):
         if not path.is_file():
             continue
         rel = path.relative_to(IMAGE_DIR)
+        # Dot-folders are the panel's thumbnails (.thumbs/): derived copies,
+        # not frames, so neither counted nor downloaded.
+        if any(part.startswith(".") for part in rel.parts):
+            continue
         if meter and rel.parts[0] != meter:
             continue
         day = _archive_day(path, rel)
@@ -639,10 +648,12 @@ def archive_days():
     """
     if not authorised():
         return deny()
+    return jsonify(days_summary(request.args.get("meter"),
+                                request.args.get("days", type=int)))
 
-    meter = request.args.get("meter")
-    days = request.args.get("days", type=int)
 
+def days_summary(meter=None, days=None):
+    """The body of /archive/days. Also the panel's Storage tab."""
     today = time.strftime(_DAY_FMT)
     buckets = {}
     for rel, path, day in _archive_walk(meter, days):
@@ -667,14 +678,14 @@ def archive_days():
         bucket["age_days"] = _days_between(day, today)
         out.append(bucket)
 
-    return jsonify({
+    return {
         "now": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "days": out,
         "total": {
             "frames": sum(d["frames"] for d in out),
             "bytes": sum(d["bytes"] for d in out),
         },
-    })
+    }
 
 
 @APP.route("/archive")
@@ -737,6 +748,12 @@ def archive_download():
         "Content-Disposition": "attachment; filename=%s" % json.dumps(name),
         "X-Archive-Files": str(len(files)),
     })
+
+
+# The control panel's routes (/, /api/*, /img/*). Registered here, after every
+# helper it borrows exists; handed this module rather than importing it, see
+# panel.init().
+panel.init(APP, sys.modules[__name__])
 
 
 def create_app():

@@ -90,7 +90,7 @@ const CARD = "jkbms-battery-console-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 import { ramp, rampCss } from "./card-ramp.js?v=1.0.0";
 
-const VERSION = "1.6.1";
+const VERSION = "1.6.3";
 
 /*
  * The design's palette, literal. Names are what the design calls them: two
@@ -324,7 +324,7 @@ const HELP = {
     + "Charging a LiFePO4 pack below 0 °C damages it.",
   range: "Sets the chart's window, and brings a dragged or zoomed chart back to live.\n"
     + "E.g. 24h shows the night charge as a climb from 23:00 to 07:00.\n"
-    + "Windows starting over 36 h back are drawn from hourly statistics.",
+    + "Past 36 h: hourly means, each hour's min–max shaded around them.",
   chart: "The series on the chart below; tap the name to open its entity.\n"
     + "E.g. drag the chart back to 23:00, scroll or pinch to zoom, double-click for live.",
   s_soc: "Charts the BMS state of charge, in its band colour.\n"
@@ -2378,7 +2378,7 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
             end_time: new Date(end).toISOString(),
             statistic_ids: [entity],
             period: "hour",
-            types: ["mean"],
+            types: ["mean", "min", "max"],
           });
           raw = this._parseStats(stats, entity, spec);
           fromStats = raw.length > 0;
@@ -2435,6 +2435,12 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
    * Hourly means from recorder/statistics_during_period, in the [ms, value]
    * shape _parse() produces. Plotted at the start of each hour, as the History
    * panel does; `start` is epoch ms on current releases, ISO on older ones.
+   *
+   * Each row also carries the hour's own min and max as [ms, mean, min, max].
+   * Only the mean is drawn, but Min/Max in the stats row read these: the
+   * highest hourly MEAN of a week of house load is a few hundred watts, while
+   * the kettle that ran inside that hour drew 1.8 kW. Reporting the former as
+   * "Max" made every 7d/14d window look calmer than any 24h one inside it.
    */
   _parseStats(reply, entity, spec) {
     const rows = reply && reply[entity];
@@ -2445,7 +2451,15 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
       const v = parseFloat(r.mean);
       if (!Number.isFinite(v)) continue;
       const t = typeof r.start === "number" ? r.start : Date.parse(r.start);
-      if (Number.isFinite(t)) out.push([t, this._scale(spec, v)]);
+      if (!Number.isFinite(t)) continue;
+      const row = [t, this._scale(spec, v)];
+      const lo = parseFloat(r.min), hi = parseFloat(r.max);
+      if (Number.isFinite(lo) && Number.isFinite(hi)) {
+        // A negative multiplier swaps which end is which.
+        const a = this._scale(spec, lo), b = this._scale(spec, hi);
+        row.push(Math.min(a, b), Math.max(a, b));
+      }
+      out.push(row);
     }
     out.sort((a, b) => a[0] - b[0]);
     return out;
@@ -2507,6 +2521,29 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
     // Every row sharing one timestamp leaves nothing to weight; the last value
     // is the only defensible answer.
     return span > 0 ? acc / span : pts[pts.length - 1][1];
+  }
+
+  /**
+   * The window's true Min and Max, from the rows that cover it. A raw row
+   * holds its value until the next one, so the row just before the window
+   * counts and the one just after does not. An hourly statistics row counts
+   * when its hour overlaps the window, with the hour's own min and max.
+   */
+  _extremes(pts, p, t0, t1) {
+    let min = Infinity, max = -Infinity;
+    pts.forEach((q, i) => {
+      if (q.length >= 4) {
+        if (q[0] + 3600000 <= t0 || q[0] >= t1) return;
+        if (q[2] < min) min = q[2];
+        if (q[3] > max) max = q[3];
+        return;
+      }
+      const next = pts[i + 1];
+      if (q[0] > t1 || (next && next[0] <= t0)) return;
+      if (q[1] < min) min = q[1];
+      if (q[1] > max) max = q[1];
+    });
+    return min <= max ? { min, max } : { min: p.min, max: p.max };
   }
 
   /**
@@ -2579,8 +2616,13 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
    * reading against the time axis under it.
    */
   _path(pts, w, h, pad, t0, t1) {
+    // An hourly statistics row is [t, mean, min, max]; its band is part of
+    // what is drawn, so it is part of what the axis has to hold.
+    const ranged = pts.some((q) => q.length >= 4);
+    const bot = (q) => (q.length >= 4 ? q[2] : q[1]);
+    const top = (q) => (q.length >= 4 ? q[3] : q[1]);
     let min = Infinity, max = -Infinity;
-    for (const q of pts) { if (q[1] < min) min = q[1]; if (q[1] > max) max = q[1]; }
+    for (const q of pts) { if (bot(q) < min) min = bot(q); if (top(q) > max) max = top(q); }
     let lo = min, hi = max;
 
     /*
@@ -2595,7 +2637,12 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
      * Max, the window label counts what went off-scale, and hovering the spike
      * gives its exact recorded value.
      */
-    const sorted = pts.map((q) => q[1]).sort((a, b) => a - b);
+    const vals = [];
+    for (const q of pts) {
+      vals.push(q[1]);
+      if (q.length >= 4) vals.push(q[2], q[3]);
+    }
+    const sorted = vals.sort((a, b) => a - b);
     const at = (f) => sorted[Math.min(sorted.length - 1,
       Math.max(0, Math.round(f * (sorted.length - 1))))];
     const band = at(0.99) - at(0.01);
@@ -2609,19 +2656,27 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
     if (hi - lo < 1e-9) { hi += 0.5; lo -= 0.5; }
     const span = hi - lo;
     const tspan = (t1 - t0) || 1;
-    const xy = pts.map(([t, v]) => [
-      Math.max(0, Math.min(w, (t - t0) / tspan * w)),
-      h - pad - (v - lo) / span * (h - pad * 2),
-    ]);
+    const X = (t) => Math.max(0, Math.min(w, (t - t0) / tspan * w));
+    const Y = (v) => h - pad - (v - lo) / span * (h - pad * 2);
+    const xy = pts.map(([t, v]) => [X(t), Y(v)]);
     const line = xy.map((q, i) => (i ? "L" : "M") + q[0].toFixed(1) + " " + q[1].toFixed(1)).join(" ");
     // Close the area under the data it actually has, not the whole frame.
-    const area = xy.length
-      ? line + " L" + xy[xy.length - 1][0].toFixed(1) + " " + h
-             + " L" + xy[0][0].toFixed(1) + " " + h + " Z"
-      : "";
+    // Hourly statistics shade each hour's min-max band instead: the line is
+    // only the hours' means, and without the band the stats row's Min/Max
+    // (the hours' real extremes) would sit far outside anything drawn.
+    let area = "";
+    if (ranged) {
+      const f = (q) => X(q[0]).toFixed(1) + " ";
+      area = pts.map((q, i) => (i ? "L" : "M") + f(q) + Y(top(q)).toFixed(1)).join(" ")
+        + " " + pts.slice().reverse().map((q) => "L" + f(q) + Y(bot(q)).toFixed(1)).join(" ")
+        + " Z";
+    } else if (xy.length) {
+      area = line + " L" + xy[xy.length - 1][0].toFixed(1) + " " + h
+           + " L" + xy[0][0].toFixed(1) + " " + h + " Z";
+    }
     let off = 0;
-    for (const q of pts) if (q[1] < lo || q[1] > hi) off++;
-    return { line, area, lo, hi, min, max, off, xy };
+    for (const q of pts) if (bot(q) < lo || top(q) > hi) off++;
+    return { line, area, ranged, lo, hi, min, max, off, xy };
   }
 
   /**
@@ -2769,6 +2824,7 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
     const p = this._path(pts, CH_W, CH_H, CH_PAD, d.t0, d.t1);
     el.chLine.setAttribute("d", p.line);
     el.chArea.setAttribute("d", p.area);
+    el.chArea.setAttribute("fill-opacity", p.ranged ? "0.22" : "0.10");
     this._hv = { spec: spec, span: d.t1 - d.t0, pts: pts, xy: p.xy, col: col };
 
     const span = p.hi - p.lo;
@@ -2788,9 +2844,10 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
     const raw = this._num(this._config[spec.cfg]);
     const now = raw === null ? null : this._scale(spec, raw);
     const mean = this._mean(pts);
+    const ext = this._extremes(pts, p, d.t0, d.t1);
     el.stats.innerHTML = [
       ["Now", now === null ? pts[pts.length - 1][1] : now],
-      ["Min", p.min], ["Max", p.max], ["Mean", mean],
+      ["Min", ext.min], ["Max", ext.max], ["Mean", mean],
     ].map(([label, v]) => {
       const val = v.toFixed(spec.dec) + " " + spec.unit;
       const tip = this._tip(label + " — " + val, "stat_" + label.toLowerCase());
@@ -2856,7 +2913,11 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
     el.hvDot.classList.add("on");
 
     el.tip.innerHTML = "<b>" + this._esc(hv.pts[best][1].toFixed(hv.spec.dec) + " " + hv.spec.unit)
-      + "</b><i>" + this._esc(this._stamp(hv.pts[best][0], hv.span)) + "</i>";
+      + "</b><i>" + this._esc(this._stamp(hv.pts[best][0], hv.span)) + "</i>"
+      + (hv.pts[best].length >= 4
+        ? "<i>hour " + this._esc(hv.pts[best][2].toFixed(hv.spec.dec) + "–"
+          + hv.pts[best][3].toFixed(hv.spec.dec) + " " + hv.spec.unit) + "</i>"
+        : "");
     el.tip.style.color = hv.col;
     // Keep the bubble inside the plot at both edges.
     el.tip.style.left = Math.max(52, Math.min(rect.width - 52, px)) + "px";

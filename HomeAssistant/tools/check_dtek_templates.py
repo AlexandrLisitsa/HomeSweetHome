@@ -541,13 +541,39 @@ check("outage alert, DTEK has it",
       dtek_line("❌ Alert: Grid Outage!", {"binary_sensor.dtek_outage_now": "on"}),
       "DTEK: Аварійні ремонтні роботи, expected back by 15:25.")
 check("outage alert, DTEK has nothing",
-      dtek_line("❌ Alert: Grid Outage!", {"binary_sensor.dtek_outage_now": "off"}),
-      "DTEK has nothing on record yet.")
+      dtek_line("❌ Alert: Grid Outage!", {"binary_sensor.dtek_outage_now": "off",
+                                          "binary_sensor.dtek_scheduled_dark": "off"}),
+      "DTEK has nothing on record and the schedule has this hour lit, so it is unscheduled.")
+# 17.10.2026: a stabilisation window, which DTEK never records as an outage,
+# so the alert said "nothing on record" with the schedule dark until 17:00.
+SCHED = {**GOLD, (SENSOR, "next_outage_end"): "2026-09-29T17:00:00+03:00"}
+
+
+def dtek_line_sched(alias, states):
+    for step in grid_autos[alias]["actions"]:
+        if "variables" in step and "dtek_line" in step["variables"]:
+            return render(step["variables"]["dtek_line"], states, SCHED, AT)
+    return None
+
+
+check("outage alert, on the schedule",
+      dtek_line_sched("❌ Alert: Grid Outage!", {"binary_sensor.dtek_outage_now": "off",
+                                               "binary_sensor.dtek_scheduled_dark": "on"}),
+      "On DTEK's schedule (queue 1.1): off until 17:00.")
+check("outage alert, a live DTEK notice outranks the schedule",
+      dtek_line("❌ Alert: Grid Outage!", {"binary_sensor.dtek_outage_now": "on",
+                                          "binary_sensor.dtek_scheduled_dark": "on"}),
+      "DTEK: Аварійні ремонтні роботи, expected back by 15:25.")
+check("restored inside the scheduled window",
+      dtek_line_sched("✅ Power Restored", {"binary_sensor.dtek_outage_now": "off",
+                                           "binary_sensor.dtek_scheduled_dark": "on"}),
+      "Back early: DTEK's schedule has it off until 17:00.")
 check("restored, DTEK still has it",
       dtek_line("✅ Power Restored", {"binary_sensor.dtek_outage_now": "on"}),
       "DTEK still reports an outage until 15:25.")
 check("restored, DTEK agrees", dtek_line("✅ Power Restored",
-      {"binary_sensor.dtek_outage_now": "off"}), "")
+      {"binary_sensor.dtek_outage_now": "off",
+       "binary_sensor.dtek_scheduled_dark": "off"}), "")
 check("every grid-alert message uses it",
       all("{{ dtek_line }}" in step["data"]["message"]
           for alias in ("❌ Alert: Grid Outage!", "✅ Power Restored")
@@ -661,9 +687,9 @@ else:
     ours = [n for n in nodes if n["type"] == CARD_TYPE]
     drawn = []
     for c in ours:
-        drawn += c.get("blocks") or ["hero", "week", "source"]
+        drawn += c.get("blocks") or ["hero", "days", "week", "source"]
     check("every block drawn exactly once", sorted(drawn),
-          ["hero", "source", "week"])
+          ["days", "hero", "source", "week"])
     check("and each instance draws at least one", min(
         len(c.get("blocks") or [1, 2, 3]) for c in ours) > 0, True)
 
@@ -750,9 +776,9 @@ else:
           len(re.findall(r'tile\("(?:Next window|Off this week)"', js)), 2)
     # green = all good, warn = DTEK has a notice but mains is present, red =
     # the power is actually off. In that order of precedence.
-    check("hero accent: red, then warn for a DTEK notice, then green",
-          bool(re.search(r"accent:\s*gridDown\s*\?\s*RED\s*:\s*dtekOutage\s*\?"
-                         r"\s*ORANGE\s*:\s*GREEN", js)), True)
+    check("hero accent: red, then warn for a DTEK notice or schedule, then green",
+          bool(re.search(r"accent:\s*gridDown\s*\?\s*RED\s*:\s*dtekOutage\s*\|\|"
+                         r"\s*schedNow\s*\?\s*ORANGE\s*:\s*GREEN", js)), True)
     check("weekOff is null rather than 0h when withheld",
           bool(re.search(r"weekOff:\s*weekLive\s*\?", js)), True)
 

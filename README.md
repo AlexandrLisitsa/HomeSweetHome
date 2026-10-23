@@ -42,6 +42,7 @@ flowchart LR
 | [`WaterMeter/`](WaterMeter/README.md) | A second ESP32-CAM, under the bathroom's cold-water meter, feeding the same MeterCam service. Parts chosen; not built yet. |
 | [`MeterBots/`](MeterBots/README.md) | Files the monthly meter readings (gas to Gazmerezhi, electricity day/night to YASNO) with the suppliers' Telegram bots as the household's own Telegram user, and cold water through Dniprovodokanal's web cabinet (its bot is blocked), in its own Proxmox LXC, when someone taps *Submit* on the phone. Holds the Telegram session and the supplier logins, nothing else. Gas has gone in for real; YASNO's first real submission is the 30 Oct – 3 Nov 2026 window. |
 | [`ElectricityMeter/`](ElectricityMeter/README.md) | A photodiode on the electricity meter's imp/kWh LED and an ESP8266 that counts its blinks, so Home Assistant gets the flat's power and consumption from the meter itself, split day / night. It is the Energy dashboard's grid source; the inverter alone misses the boiler's circuit. |
+| [`Portal/`](Portal/README.md) | The house dashboard: one page with a card for every service (status, live numbers from Proxmox, AdGuard and Home Assistant), and `.lan` names (`home.lan`, `ha.lan`, `pve.lan`, ...) for every web UI. LAN and Tailscale only; built to cost no CPU while nobody is looking. |
 | [`Proxmox/`](Proxmox/README.md) | The host and its guests, one doc each; read-only Proxmox API scripts that measure the Home Assistant guest's resource history; and the backup setup that keeps every guest and HA's backups on the host and, encrypted, on Google Drive ([`Proxmox/docs/backups.md`](Proxmox/docs/backups.md)). |
 
 Unfinished projects live on branches of their own until they are:
@@ -82,8 +83,9 @@ real ones.
 | `192.0.2.8` | MeterCam service (CT 104) | `MeterCam/deploy/lxc.env` |
 | `192.0.2.9` | ElectricityMeter board | `STATIC_IP` in its `config.h` |
 | `192.0.2.10` | MeterBots service (CT 105) | `MeterBots/deploy/lxc.env` |
+| `192.0.2.11` | Portal: dashboard and `.lan` names (CT 106) | `Portal/deploy/lxc.env` |
 
-**A new fixed address takes the next number after the block** (`.11` next),
+**A new fixed address takes the next number after the block** (`.12` next),
 after checking that nothing answers on it: no ping reply and no ARP entry.
 Then add it to this table. The router's DHCP pool has to stay clear of the
 block.
@@ -111,6 +113,8 @@ example next to it (or in [`HomeAssistant/examples/`](HomeAssistant/examples)):
 | MeterBots LXC `/opt/meterbots/.env` | `MeterBots/.env.example` | Telegram API credentials, the bots' tokens and account numbers |
 | MeterBots LXC `/opt/meterbots/data/telegram/telegram.session` | — (made by the login, [`MeterBots/docs/deployment.md`](MeterBots/docs/deployment.md)) | the household's logged-in Telegram account |
 | `MeterBots/deploy/lxc.env` | `MeterBots/deploy/lxc.env.example` | the LXC's address and gateway |
+| Portal LXC `/opt/portal/.env` | `Portal/.env.example` | the services' addresses, the read-only Proxmox token `root@pam!homepage`, an AdGuard login, a Home Assistant token |
+| `Portal/deploy/lxc.env` | `Portal/deploy/lxc.env.example` | the LXC's address and gateway |
 | Proxmox host `/root/.config/rclone/rclone.conf` | — (see [`Proxmox/docs/backups.md`](Proxmox/docs/backups.md#credentials)) | Google Drive token and the crypt password for the off-site backups |
 | Proxmox host `/etc/default/vzdump-offsite` | — (see [`Proxmox/docs/backups.md`](Proxmox/docs/backups.md#how-it-works)) | the Home Assistant webhook URL the backup hook alerts through |
 

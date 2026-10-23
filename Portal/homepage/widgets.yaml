@@ -1,0 +1,9 @@
+# The strip along the top. Only widgets that do no I/O: no `resources`
+# (it reads the container's /proc on every refresh) and no weather (an
+# outside API on every view).
+- datetime:
+    text_size: xl
+    format:
+      dateStyle: long
+      timeStyle: short
+      hour12: false

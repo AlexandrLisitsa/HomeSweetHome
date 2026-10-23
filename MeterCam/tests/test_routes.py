@@ -13,11 +13,13 @@ import pathlib
 import sys
 
 APP = pathlib.Path(__file__).resolve().parent.parent / "service" / "app.py"
+PANEL = APP.with_name("panel.py")
 
 tree = ast.parse(APP.read_text(encoding="utf-8"))
+panel_tree = ast.parse(PANEL.read_text(encoding="utf-8"))
 routes = set()
 imports = set()
-for node in ast.walk(tree):
+for node in [*ast.walk(tree), *ast.walk(panel_tree)]:
     if isinstance(node, ast.FunctionDef):
         for dec in node.decorator_list:
             if (isinstance(dec, ast.Call) and getattr(dec.func, "attr", "") == "route"
@@ -43,6 +45,9 @@ print("routes")
 for path in ("/read", "/last.jpg", "/last_accepted.jpg", "/archive", "/archive/days",
              "/firmware/version.txt", "/health"):
     check("%s is served" % path, path in routes, sorted(routes))
+for path in ("/", "/api/reads", "/api/series", "/api/overview", "/api/days", "/api/replay",
+             "/api/firmware", "/img/<meter>/<kind>/<day>/<name>", "/live/<meter>/<which>.jpg"):
+    check("panel serves %s" % path, path in routes, sorted(routes))
 check("no bot route", not any("/bot/" in r for r in routes), sorted(routes))
 check("no Telegram anywhere in the app",
       not ({"gasbot", "yasnobot", "tgclient", "telethon"} & imports), sorted(imports))
@@ -78,6 +83,17 @@ check("wrong token: refused", not authorised("s3cret", header="s3cres"))
 check("a prefix of the token: refused", not authorised("s3cret", header="s3c"))
 check("empty header: refused", not authorised("s3cret", header=""))
 check("non-ASCII token compares without raising", not authorised("s3cret", header="тест"))
+
+print("panel: open on the LAN, the camera's API is not")
+# The panel is open by design (it is the house's dashboard, like home.lan);
+# the routes the camera and Home Assistant use must still check the token.
+guarded = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
+           and any(isinstance(c, ast.Call) and getattr(c.func, "id", "") == "authorised"
+                   for c in ast.walk(n))}
+for fn_name in ("do_read", "last_jpg", "last_accepted_jpg", "firmware_version",
+                "firmware_binary", "archive_days", "archive_download"):
+    check("%s still checks the token" % fn_name, fn_name in guarded, sorted(guarded))
+check("the token is not read from a cookie", "cookies" not in APP.read_text(encoding="utf-8"))
 
 print("health: age of the last accepted reading")
 fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_accepted_ages")

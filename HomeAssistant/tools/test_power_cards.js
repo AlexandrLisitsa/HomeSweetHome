@@ -523,6 +523,10 @@ async function inverterSuite() {
     eq("waiting_night with a bad until: no dangling arrow", el.chipPcSub2.textContent, "at night");
     el = plan("full", { reason: "already full" });
     eq("full", el.chipPcSub2.textContent, "full");
+    el = plan("holding", { until: until, reason: "full, holding on grid until the outage" });
+    eq("holding", el.chipPcSub2.textContent, "on grid → " + hm(until));
+    el = plan("holding", { until: "garbage" });
+    eq("holding with a bad until: no dangling arrow", el.chipPcSub2.textContent, "on grid");
     el = plan("idle", { reason: "" });
     eq("idle prints nothing", el.chipPcSub2.textContent, "");
     eq("empty reason adds nothing to the tooltip", head(el.chipPc2.dataset.tip), "Outage pre-charge — on");
@@ -589,7 +593,7 @@ async function inverterSuite() {
     check("off, Auto + Night only, charger off: usable", !dis(el));
     el = run({ [E.ad]: "off", [E.auto]: "unavailable", [E.acc]: "unavailable", [E.night]: "unavailable" });
     check("off, every switch unavailable: dimmed", dis(el));
-    ["waiting_night", "charging", "full"].forEach((p) => {
+    ["waiting_night", "charging", "holding", "full"].forEach((p) => {
       el = run({ [E.ad]: "off", [E.night]: "on", [E.pplan]: p });
       check("off, pre-charge " + p + ": dimmed", dis(el));
       eq("off, pre-charge " + p + ": outage tooltip", head(el.chipAd2.dataset.tip), OUTAGE);
@@ -658,6 +662,8 @@ async function inverterSuite() {
     // Pre-charge: on AND its plan charging.
     check("pre-charge on, plan charging: pulses",
       act("Pc", run({ [E.pre]: S("on"), [E.pplan]: S("charging", { current: 30, until: until }) })));
+    check("pre-charge on, plan holding: pulses (it is holding the grid)",
+      act("Pc", run({ [E.pre]: S("on"), [E.pplan]: S("holding", { until: until }) })));
     ["idle", "waiting_night", "full"].forEach((p) => {
       check("pre-charge on, plan " + p + ": still", !act("Pc", run({ [E.pre]: S("on"), [E.pplan]: S(p, {}) })));
     });

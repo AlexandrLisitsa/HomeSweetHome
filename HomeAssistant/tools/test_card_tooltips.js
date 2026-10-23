@@ -178,8 +178,9 @@ const FIXTURES = {
         outage_start_raw: "11:05 29.09.2026", outage_end_raw: "15:25 29.09.2026",
         street_outages: 1, street_houses: 288, updated_at: "14:01 29.09.2026",
         warnings: ["unknown outage type '3'"],
-        schedule_in_effect: false, schedule_update: "24.07.2026 08:30",
-        today: null, tomorrow: null, next_outage_start: null, next_outage_end: null,
+        schedule_in_effect: true, schedule_update: "17.10.2026 10:41",
+        today: "yyyyyyyyyyyyysnnnyyyyyyy", tomorrow: null,
+        next_outage_start: null, next_outage_end: null,
         week: week, week_in_effect: true, schedule_visible: false, hidden_reason: null,
         fetched_at: new Date(now).toISOString(), stale: false, error: null,
       }),
@@ -203,10 +204,31 @@ const FIXTURES = {
         : /download/.test(d.entity) ? S("12", { unit_of_measurement: "Mbit/s" })
           : S("450", { unit_of_measurement: "W" });
     });
-    (cfg.badges || []).forEach((b) => {
-      out[b.entities[0]] = S("24.3", { unit_of_measurement: "°C" });
+    // One room too warm, so its tint and the band in its badge's tooltip show.
+    (cfg.badges || []).forEach((b, i) => {
+      out[b.entities[0]] = S(i ? "24.3" : "28.4", { unit_of_measurement: "°C" });
       if (b.entities[1]) out[b.entities[1]] = S("48", { unit_of_measurement: "%" });
     });
+    // An outage: on battery with hours left, the LED strip stepped down and an
+    // A/C plug cut by load shedding, so every outage tooltip is checked.
+    const P = cfg.power;
+    if (P) {
+      const plug = (cfg.devices || []).find((d) => d.entity.startsWith("switch."));
+      Object.assign(out, {
+        [P.down]: S("on", {}),
+        [P.returning]: S("off", {}),
+        [P.grid]: S("0", { unit_of_measurement: "W" }),
+        [P.battery_power]: S("-450", { unit_of_measurement: "W" }),
+        [P.runtime]: S("3.4", { unit_of_measurement: "h" }),
+        [P.priority]: S("SBU Battery", {}),
+        [P.dtek_start]: S("unknown", {}),
+        [P.dtek_end]: S("unknown", {}),
+        [P.shedding]: S("2", { loads: {
+          led: { entity: "light.led_ambient", step_soc: 80, override_soc: null, plug_cut: false },
+          ac: { entity: "climate.x", plug: plug && plug.entity, plug_cut: true, step_soc: 60, override_soc: null },
+        } }),
+      });
+    }
     return out;
   },
 };
