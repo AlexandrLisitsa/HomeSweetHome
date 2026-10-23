@@ -119,5 +119,5 @@ ITEMS = [
     {"kind": "device", "room": "vestibule", "spot": "inverter",
      "entity": "sensor.powmr_inverter_ac_output_power", "name": "Inverter output", "icon": "mdi:flash"},
     {"kind": "device", "room": "vestibule", "spot": "inverter_battery",
-     "entity": "sensor.jkbms_gateway_bms_state_of_charge", "name": "Battery", "icon": "mdi:home-battery"},
+     "entity": "sensor.jkbms_gateway_bms_state_of_charge", "name": "Battery", "icon": "mdi:battery"},
 ]

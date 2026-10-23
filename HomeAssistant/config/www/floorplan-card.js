@@ -104,7 +104,7 @@
 const CARD = "floorplan-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "1.10.0";
+const VERSION = "1.12.0";
 
 // Glow colour for a lamp that reports none: the warm white it was rendered in.
 const WARM = [255, 180, 107];
@@ -192,8 +192,8 @@ const HELP = {
   badge: "Temperature and humidity from the room's Aqara sensor; outside 20–26 °C its floor tints.\n"
     + "E.g. 27 °C: a faint warm wash, deeper each degree up to 34 °C; under 20 °C, a cool one.\n"
     + "Tap: opens the temperature's dialog.",
-  hub: "The inverter every socket runs through; the streams show where its power comes from.\n"
-    + "E.g. Battery 420 W by day on the tariff; Grid at night, with the pack charging too.\n"
+  hub: "The inverter every socket runs through: the power it gives the house, and its source.\n"
+    + "E.g. 274 W to the house · on battery while the pack gives 300 W: the inverter uses 26 W.\n"
     + "Tap: opens its dialog.",
   down: "The inverter sees no mains, so the whole flat runs on the 280 Ah pack.\n"
     + "E.g. 3.4 h left at the current draw; load shedding steps the A/Cs down at 80 % and 60 %.\n"
@@ -956,17 +956,25 @@ class FloorplanCard extends HTMLElement {
       this._paintStream(L, on, watts, MAX_LOAD_W, LOAD_C, false);
     }
 
-    // The inverter says where its power is coming from, and in an outage for how long.
+    // The inverter says what it delivers and where from, and in an outage for how long.
+    // Its number is AC out, so it is lower than the pack's: the inverter uses some itself.
     const hub = this._devices.find((D) => D.cfg.entity === P.hub_entity);
     if (hub) {
       const load = this._num(P.hub_entity);
-      const source = S.down || (S.gridW <= MOVING_W && S.battW < -MOVING_W) ? "Battery" : "Grid";
-      let text = source + (load != null ? " " + watt(load) : "");
+      const onBattery = S.down || (S.gridW <= MOVING_W && S.battW < -MOVING_W);
+      // "to the house", not "out from battery": the number is what the inverter delivers,
+      // and the battery's own (larger) figure is on the pack.
+      let text = (load != null ? watt(load) + " to the house · " : "") + "on " + (onBattery ? "battery" : "grid");
       if (S.down && S.hours != null) text += " · " + S.hours.toFixed(1) + " h";
+      // On battery alone, what the pack gives minus what comes out is the inverter's own use.
+      const own = onBattery && load != null ? -S.battW - load : null;
       const mode = (this._stateObj(P.priority) || {}).state;
+      // Beside its icon, not under it: the pack's icon sits just below-left.
+      hub.spot.classList.add("side");
       hub.label.textContent = hub.value.textContent = text;
       hub.btn.dataset.tip = hub.label.dataset.tip = hub.head.dataset.tip = this._name(hub.cfg, hub.cfg.entity)
-        + " — " + text + (mode ? " (" + mode + ")" : "") + "\n" + HELP.hub;
+        + " — " + text + (own > 0 ? " · uses " + watt(own) + " itself" : "") + (mode ? " (" + mode + ")" : "")
+        + "\n" + HELP.hub;
     }
     // The pack says which way its power goes: + charging, − feeding the house.
     const pack = this._devices.find((D) => D.cfg.entity === P.battery_entity);
@@ -1183,6 +1191,11 @@ ha-card { overflow: hidden; background: #1c1c1c; }
 .lamp.device.on { box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35); }
 .lamp.device ha-icon { --mdc-icon-size: 19px; }
 .lamp.unavailable, .row.unavailable { opacity: 0.4; }
+/* The inverter's label goes beside its icon: the pack's icon sits just below-left. */
+.spot.side .pct {
+  position: absolute; left: calc(100% + 6px); top: 50%;
+  transform: translateY(-50%); margin: 0;
+}
 /* Load shedding's marks: amber stepped down, red its plug cut. */
 .shed .lamp { box-shadow: 0 0 0 2px var(--warning-color, #ffa600) !important; }
 .cut .lamp { box-shadow: 0 0 0 2px var(--error-color, #db4437) !important; }

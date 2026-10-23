@@ -158,7 +158,7 @@ group = "source: ";
   let r = render();
   check("grid: grid stream runs", on(streams(r)[0]));
   check("grid: battery stream still", !on(streams(r)[1]));
-  eq("grid: the inverter says so", labelOf(r, P.hub_entity), "Grid 376 W");
+  eq("grid: the inverter says so", labelOf(r, P.hub_entity), "376 W to the house · on grid");
   check("grid: no dim", !r.$(".stage").classList.contains("outage"));
   check("grid: no chip", r.$(".status").hidden);
 
@@ -166,8 +166,15 @@ group = "source: ";
   check("battery: grid stream still", !on(streams(r)[0]));
   check("battery: battery stream runs", on(streams(r)[1]));
   eq("battery: towards the inverter", streams(r)[1].querySelectorAll("path")[1].style.animationDirection, "normal");
-  eq("battery: the inverter says so", labelOf(r, P.hub_entity), "Battery 412 W");
+  eq("battery: the inverter says so", labelOf(r, P.hub_entity), "412 W to the house · on battery");
   eq("battery: the pack says it feeds", labelOf(r, P.battery_entity), "64% · −420 W");
+  {
+    const own = render({ [P.grid]: S("0", W), [P.battery_power]: S("-232", W), [P.hub_entity]: S("177", W) });
+    const tip = own.card._devices.find((D) => D.cfg.entity === P.hub_entity).btn.dataset.tip.split("\n")[0];
+    check("battery: the tooltip says what the inverter uses itself", / · uses 55 W itself/.test(tip), tip);
+    const grid = render().card._devices.find((D) => D.cfg.entity === P.hub_entity).btn.dataset.tip.split("\n")[0];
+    check("grid: no own-use figure (the grid's reading includes charging)", !/ itself/.test(grid), grid);
+  }
 
   r = render({ [P.grid]: S("1580", W), [P.battery_power]: S("1200", W) });
   check("charging: grid stream runs", on(streams(r)[0]));
@@ -251,7 +258,7 @@ group = "outage: ";
   eq("the chip says it", r.$(".status").textContent, "Grid down · on battery · 3.4 h left");
   check("no grid stream", !on(streams(r)[0]));
   check("the battery stream runs", on(streams(r)[1]));
-  eq("the inverter gives the hours", labelOf(r, P.hub_entity), "Battery 412 W · 3.4 h");
+  eq("the inverter gives the hours", labelOf(r, P.hub_entity), "412 W to the house · on battery · 3.4 h");
 
   r = render(Object.assign({}, down, { [P.runtime]: S("unknown", {}) }));
   eq("no runtime: no hours", r.$(".status").textContent, "Grid down · on battery");
