@@ -38,10 +38,12 @@
  * ROOM TINT
  * ---------
  * A room with a `tint` (its mask from build_overlays.py, as the alpha of a
- * white image) and a `temperature` entity colours its floor when that reading
- * leaves 20-26 °C: blue under 20, orange over 26, red from 32, the climate
- * card's bands. A comfortable room is not tinted at all. The tint sits under
- * the lamps' light, so a lit room still glows on top of it.
+ * white image) and a `temperature` entity washes its floor when that reading
+ * leaves 20-26 °C, a little more with every degree: warm from 26, at its
+ * fullest by 34, cool from 20, at its fullest by 14. Even at its fullest it
+ * stays a soft wash (TINT, ALPHA), never a red alarm. A comfortable room is
+ * not tinted at all. The tint sits under the lamps' light, so a lit room
+ * still glows on top of it.
  *
  * POWER PATH AND OUTAGES
  * ----------------------
@@ -102,7 +104,7 @@
 const CARD = "floorplan-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "1.9.0";
+const VERSION = "1.10.0";
 
 // Glow colour for a lamp that reports none: the warm white it was rendered in.
 const WARM = [255, 180, 107];
@@ -123,14 +125,22 @@ const HVAC = {
   auto: ["Auto", [129, 199, 132]],
   heat_cool: ["Auto", [129, 199, 132]],
 };
-// A room's floor tints when its temperature leaves 20-26 °C: the climate card's
-// bands and colours (climate-console-card.js `_comfort`), so both say the same.
-// Comfortable is no tint at all, so a coloured room is one that wants attention.
+// The climate card's bands (climate-console-card.js `_comfort`), named in a
+// badge's tooltip so both cards say the same about a room.
 const COMFORT = [
-  [(t) => t >= 32, "hot", [242, 102, 74]],
-  [(t) => t > 26, "warm", [255, 179, 113]],
-  [(t) => t < 20, "cool", [142, 197, 232]],
+  [(t) => t >= 32, "hot"],
+  [(t) => t > 26, "warm"],
+  [(t) => t < 20, "cool"],
 ];
+// A room's floor tint: none at 20-26 °C, then a wash that deepens degree by
+// degree to its fullest `span` degrees out, and no further. Its hue drifts from
+// `from` to `to` on the way, and its opacity from ALPHA[0] to ALPHA[1] -- low
+// on purpose: a very hot room reads as a warmer floor, never as a red alarm.
+const TINT = {
+  warm: { edge: 26, span: 8, from: [255, 179, 113], to: [236, 128, 98] },
+  cool: { edge: 20, span: -6, from: [160, 205, 235], to: [120, 175, 225] },
+};
+const ALPHA = [0.05, 0.2];
 // The power path: grid and battery in the inverter console card's colours. Its load
 // blue would read here as an A/C's cool air, so loads are a lavender that no A/C mode
 // or lamp uses. A stream's speed and width follow its watts against that card's scales.
@@ -180,7 +190,7 @@ const HELP = {
   reading: "A live reading from the device pinned here.\n"
     + "E.g. Battery: the 8S 280 Ah pack's charge in %; Router: its current download speed.",
   badge: "Temperature and humidity from the room's Aqara sensor; outside 20–26 °C its floor tints.\n"
-    + "E.g. the kitchen at 31 °C while someone cooks turns orange; under 20 °C a room turns blue.\n"
+    + "E.g. 27 °C: a faint warm wash, deeper each degree up to 34 °C; under 20 °C, a cool one.\n"
     + "Tap: opens the temperature's dialog.",
   hub: "The inverter every socket runs through; the streams show where its power comes from.\n"
     + "E.g. Battery 420 W by day on the tariff; Grid at night, with the pack charging too.\n"
@@ -907,9 +917,12 @@ class FloorplanCard extends HTMLElement {
     });
 
     this._tints.forEach((T) => {
-      const band = this._comfort(T.cfg.temperature);
-      T.el.classList.toggle("on", !!band);
-      if (band) T.el.style.setProperty("--tint", `rgb(${band[2].join(", ")})`);
+      const tint = tintOf(this._num(T.cfg.temperature));
+      T.el.classList.toggle("on", !!tint);
+      if (tint) {
+        T.el.style.setProperty("--tint", `rgb(${tint.rgb.join(", ")})`);
+        T.el.style.setProperty("--alpha", tint.alpha.toFixed(3));
+      }
     });
 
     this._badges.forEach((B) => {
@@ -1011,6 +1024,18 @@ class FloorplanCard extends HTMLElement {
   }
 }
 
+/** A temperature's floor tint, {rgb, alpha}, or null inside 20-26 °C or with no reading. */
+function tintOf(t) {
+  if (t == null) return null;
+  const side = t > TINT.warm.edge ? TINT.warm : t < TINT.cool.edge ? TINT.cool : null;
+  if (!side) return null;
+  const k = Math.min(1, (t - side.edge) / side.span);
+  return {
+    rgb: side.from.map((c, i) => Math.round(c + (side.to[i] - c) * k)),
+    alpha: ALPHA[0] + (ALPHA[1] - ALPHA[0]) * k,
+  };
+}
+
 /** 380 W, 1.2 kW: a power, unsigned. */
 function watt(w) {
   const a = Math.abs(w);
@@ -1058,7 +1083,7 @@ ha-card { overflow: hidden; background: #1c1c1c; }
   opacity: 0;
   transition: opacity 0.6s ease, background-color 0.6s ease;
 }
-.tint.on { opacity: 0.22; }
+.tint.on { opacity: var(--alpha, 0.1); }
 /* An outage: the flat dims and the battery's light stands out. */
 .base, .tint { transition: filter 0.8s ease, opacity 0.6s ease, background-color 0.6s ease; }
 .stage.outage .base, .stage.outage .tint { filter: brightness(0.6); }

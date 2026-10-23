@@ -51,9 +51,10 @@ tints with it, a plug the power it draws, the TV on/off, the router and the powe
 station their readings. While an A/C runs, its air streams out of the unit into
 the room in the colour of its mode (`flow` in `rooms.py` names its piece in the
 model; `make_dashboard.py` projects the streams and keeps what the walls do not
-hide). A room with a thermometer tints its floor when it leaves 20–26 °C: blue
-below, orange above, red from 32 °C, the climate card's bands; a comfortable room
-stays untinted.
+hide). A room with a thermometer tints its floor when it leaves 20–26 °C, a little
+more with every degree: a warm wash from 26 °C, at its fullest by 34 °C, a cool
+one from 20 °C, at its fullest by 14 °C. Even at its fullest it stays a soft
+wash, never a red alarm; a comfortable room stays untinted.
 
 Everything in the flat runs through the inverter, and the plan shows how: a
 stream from the grid's entry to it and one between it and the pack (backwards

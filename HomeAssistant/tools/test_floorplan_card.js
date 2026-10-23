@@ -121,16 +121,32 @@ group = "tint: ";
   const tinted = CFG.rooms.filter((r) => r.tint);
   check("the rooms with a thermometer have a tint", tinted.length === CFG.badges.length);
   const kitchen = tinted.findIndex((r) => r.id === "kitchen");
-  const cases = [["18", "rgb(142, 197, 232)", "cool"], ["23", null, null],
-    ["26", null, null], ["28", "rgb(255, 179, 113)", "warm"], ["33", "rgb(242, 102, 74)", "hot"]];
-  for (const [t, colour, band] of cases) {
-    const r = render({ [tinted[kitchen].temperature]: S(t, { unit_of_measurement: "°C" }) });
+  const at = (t) => {
+    const r = render({ [tinted[kitchen].temperature]: S(String(t), { unit_of_measurement: "°C" }) });
     const el = r.$$(".tint")[kitchen];
-    eq(t + " °C: tinted", on(el), !!colour);
-    if (colour) eq(t + " °C: colour", el.style.getPropertyValue("--tint"), colour);
     const badge = r.card._badges.find((B) => B.cfg.room === "kitchen").el;
-    eq(t + " °C: band in the badge's tooltip", / · (cool|warm|hot)\n/.exec(badge.dataset.tip)?.[1] || null, band);
-  }
+    return {
+      on: on(el),
+      alpha: on(el) ? Number(el.style.getPropertyValue("--alpha")) : 0,
+      rgb: on(el) ? el.style.getPropertyValue("--tint").match(/\d+/g).map(Number) : null,
+      band: / · (cool|warm|hot)\n/.exec(badge.dataset.tip)?.[1] || null,
+    };
+  };
+  for (const t of [20, 23, 26]) check(t + " °C: comfortable, no tint", !at(t).on);
+  const warm = [26.5, 28, 30, 32, 34].map(at);
+  check("warm: deeper with every degree", warm.every((w, i) => i === 0 || w.alpha > warm[i - 1].alpha),
+    JSON.stringify(warm.map((w) => w.alpha)));
+  check("warm: barely there just past 26 °C", warm[0].alpha < 0.07, String(warm[0].alpha));
+  check("warm: the hue drifts warmer", warm[4].rgb[1] < warm[0].rgb[1], JSON.stringify([warm[0].rgb, warm[4].rgb]));
+  const hot = at(45);
+  eq("45 °C looks like 34 °C: the wash stops deepening", [hot.alpha, hot.rgb], [warm[4].alpha, warm[4].rgb]);
+  check("even at its fullest, a soft wash and no red", hot.alpha <= 0.2 && hot.rgb[1] >= 120 && hot.rgb[2] >= 90,
+    JSON.stringify(hot));
+  const cool = [19.5, 17, 14].map(at);
+  check("cool: deeper with every degree", cool[0].alpha < cool[1].alpha && cool[1].alpha < cool[2].alpha);
+  check("cool: blue", cool.every((c) => c.rgb[2] > c.rgb[0]));
+  eq("the badge names the climate card's band", [at(18).band, at(23).band, at(28).band, at(33).band],
+    ["cool", null, "warm", "hot"]);
   const r = render({ [tinted[kitchen].temperature]: S("unavailable", {}) });
   check("no reading: no tint", !on(r.$$(".tint")[kitchen]));
 }
