@@ -13,7 +13,7 @@
           "cards": [
             {
               "type": "custom:floorplan-card",
-              "image": "/local/floorplan/base.png?v=aec422c2",
+              "image": "/local/floorplan/base.png?v=316dcf34",
               "rooms": [
                 {
                   "id": "kitchen",
@@ -85,7 +85,7 @@
               "lights": [
                 {
                   "entity": "light.kitchen_relay",
-                  "overlay": "/local/floorplan/kitchen_ceiling.png?v=a300e357",
+                  "overlay": "/local/floorplan/kitchen_ceiling.png?v=e4c5cb3f",
                   "name": "Ceiling",
                   "icon": "mdi:ceiling-light",
                   "x": 76.6,
@@ -93,8 +93,8 @@
                   "room": "kitchen"
                 },
                 {
-                  "entity": "light.0xa4c1385443844c1e",
-                  "overlay": "/local/floorplan/kitchen_led.png?v=a125e33d",
+                  "entity": "light.led_ambient",
+                  "overlay": "/local/floorplan/kitchen_led.png?v=9acd8325",
                   "name": "LED strip",
                   "icon": "mdi:led-strip-variant",
                   "x": 81.0,
@@ -103,7 +103,7 @@
                 },
                 {
                   "entity": "light.hallway_relay",
-                  "overlay": "/local/floorplan/hallway.png?v=f4cd9095",
+                  "overlay": "/local/floorplan/hallway.png?v=ffaaea74",
                   "name": "Light",
                   "icon": "mdi:lightbulb",
                   "x": 48.8,
@@ -112,7 +112,7 @@
                 },
                 {
                   "entity": "light.bathroom_relay",
-                  "overlay": "/local/floorplan/bathroom.png?v=974a7519",
+                  "overlay": "/local/floorplan/bathroom.png?v=0f1e3e72",
                   "name": "Light",
                   "icon": "mdi:lightbulb-group",
                   "x": 69.1,
@@ -121,7 +121,7 @@
                 },
                 {
                   "entity": "media_player.samsung_7_series_43_ue43nu7090",
-                  "overlay": "/local/floorplan/living_tv.png?v=2dbcc452",
+                  "overlay": "/local/floorplan/living_tv.png?v=0dbcda90",
                   "name": "TV",
                   "icon": "mdi:television",
                   "x": 8.3,
@@ -258,7 +258,7 @@
                     "path": "M443.3 132.9 L443.3 133.4 L443.4 134.5 L443.4 136.2 L443.5 138.4 L443.6 141.2 L443.6 144.6 L443.8 148.5 L443.9 152.9 L445.3 156.6 L447.9 159.5 L451.9 161.6 L457.1 162.9 L463.5 163.4 L471.3 163.1 L480.3 162.1 L490.6 160.2 L499.8 159.0 L508.1 158.4 L515.3 158.4 L521.6 159.1 L526.8 160.4 L531.0 162.3 L534.2 164.8 L536.4 168.0 L541.4 171.5 L549.2 175.4 L559.9 179.7 L573.4 184.3 L589.7 189.2 L608.9 194.6 L630.9 200.3 L655.7 206.4 L677.8 212.1 L697.2 217.6 L713.9 222.8 L727.9 227.7 L739.2 232.2 L747.7 236.5 L753.6 240.5 L756.7 244.2 L761.9 249.0 L769.1 254.9 L778.4 261.9 L789.7 270.1 L803.0 279.3 L818.3 289.7 L835.7 301.2 L855.2 313.7 L872.4 322.3 L887.5 326.7 L900.4 327.2 L911.2 323.5 L919.7 315.8 L926.1 304.1 L930.4 288.3 L932.4 268.5 L934.2 251.1 L935.8 236.2 L937.0 223.8 L938.1 213.9 L938.8 206.5 L939.3 201.5 L939.6 199.0"
                   },
                   {
-                    "entity": "light.0xa4c1385443844c1e",
+                    "entity": "light.led_ambient",
                     "room": "kitchen",
                     "path": "M443.3 132.9 L443.3 133.4 L443.4 134.5 L443.4 136.2 L443.5 138.4 L443.6 141.2 L443.6 144.6 L443.8 148.5 L443.9 152.9 L445.3 156.6 L447.9 159.5 L451.9 161.6 L457.1 162.9 L463.5 163.4 L471.3 163.1 L480.3 162.1 L490.6 160.2 L499.8 159.0 L508.1 158.4 L515.3 158.4 L521.6 159.1 L526.8 160.4 L531.0 162.3 L534.2 164.8 L536.4 168.0 L541.4 171.5 L549.2 175.4 L559.9 179.7 L573.4 184.3 L589.7 189.2 L608.9 194.6 L630.9 200.3 L655.7 206.4 L677.8 212.1 L697.2 217.6 L713.9 222.8 L727.9 227.7 L739.2 232.2 L747.7 236.5 L753.6 240.5 L756.7 244.2 L762.9 248.7 L772.1 253.9 L784.3 260.0 L799.6 266.8 L817.9 274.4 L839.2 282.8 L863.6 291.9 L891.0 301.9 L915.0 309.8 L935.7 315.8 L953.1 319.8 L967.2 321.8 L977.9 321.8 L985.3 319.9 L989.3 315.9 L990.0 310.0 L990.7 304.8 L991.2 300.4 L991.7 296.6 L992.0 293.7 L992.3 291.5 L992.5 290.0 L992.6 289.2"
                   },

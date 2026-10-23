@@ -61,7 +61,7 @@
   const states = {};
   const put = (id, state, attributes) => { states[id] = { entity_id: id, state, attributes: attributes || {} }; };
   for (const l of card.lights) {
-    const dim = l.entity === "light.0xa4c1385443844c1e";
+    const dim = l.entity === "light.led_ambient";
     put(l.entity, isOn(l.entity) ? "on" : "off", {
       supported_color_modes: dim ? ["brightness"] : ["onoff"],
       brightness: dim && isOn(l.entity) ? bri : null });

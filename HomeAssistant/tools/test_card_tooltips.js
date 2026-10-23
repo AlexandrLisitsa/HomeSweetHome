@@ -224,7 +224,7 @@ const FIXTURES = {
         [P.dtek_start]: S("unknown", {}),
         [P.dtek_end]: S("unknown", {}),
         [P.shedding]: S("2", { loads: {
-          led: { entity: "light.0xa4c1385443844c1e", step_soc: 80, override_soc: null, plug_cut: false },
+          led: { entity: "light.led_ambient", step_soc: 80, override_soc: null, plug_cut: false },
           ac: { entity: "climate.x", plug: plug && plug.entity, plug_cut: true, step_soc: 60, override_soc: null },
         } }),
       });
