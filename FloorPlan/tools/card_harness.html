@@ -14,6 +14,7 @@
          bri=0-255  brightness of dimmable lights (default 115)
          room=<id>  the phone layout's chosen room (default all)
          hvac=<mode>[,<mode>]  what the A/Cs that are on do, in config order (default cool)
+         temp=<°C>[,<°C>]  the rooms' thermometers, in badge order (default 24.26: no tint)
          selftest=1 taps, holds, drags and switches rooms, and prints what came out.
   Every entity the config names gets a plausible state: an A/C cooling to 22,
   plugs drawing power, sensors with readings.
@@ -50,6 +51,8 @@
   const local = (u) => u.replace("/local/", "/HomeAssistant/config/www/");
   card.image = local(card.image);
   card.lights.forEach((l) => { l.overlay = local(l.overlay); });
+  card.rooms.forEach((r) => { if (r.tint) r.tint = local(r.tint); });
+  const temps = (q.get("temp") || "24.26").split(",");
 
   const states = {};
   const put = (id, state, attributes) => { states[id] = { entity_id: id, state, attributes: attributes || {} }; };
@@ -72,10 +75,10 @@
     else put(d.entity, "143.0", { unit_of_measurement: "W" });
     if (d.value) put(d.value, isOn(d.entity) ? "612" : "0", { unit_of_measurement: "W" });
   }
-  for (const b of card.badges || []) {
-    put(b.entities[0], "24.26", { unit_of_measurement: "°C" });
+  (card.badges || []).forEach((b, i) => {
+    put(b.entities[0], temps[Math.min(i, temps.length - 1)], { unit_of_measurement: "°C" });
     if (b.entities[1]) put(b.entities[1], "48.32", { unit_of_measurement: "%" });
-  }
+  });
 
   const log = [];
   const el = document.createElement("floorplan-card");

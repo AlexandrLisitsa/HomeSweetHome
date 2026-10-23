@@ -23,7 +23,9 @@
                     "y0": 11.4,
                     "x1": 100.0,
                     "y1": 66.2
-                  }
+                  },
+                  "tint": "/local/floorplan/tint_kitchen.png?v=7be8897e",
+                  "temperature": "sensor.0xa4c1383900dd497c_temperature"
                 },
                 {
                   "id": "hallway",
@@ -43,7 +45,9 @@
                     "y0": 18.7,
                     "x1": 80.6,
                     "y1": 74.0
-                  }
+                  },
+                  "tint": "/local/floorplan/tint_bedroom.png?v=195d0da7",
+                  "temperature": "sensor.0xa4c138437ae3f5a6_temperature"
                 },
                 {
                   "id": "living",
@@ -53,7 +57,9 @@
                     "y0": 6.2,
                     "x1": 52.1,
                     "y1": 70.6
-                  }
+                  },
+                  "tint": "/local/floorplan/tint_living.png?v=cc85c5bb",
+                  "temperature": "sensor.0xa4c13858c97f07f8_temperature"
                 },
                 {
                   "id": "bathroom",

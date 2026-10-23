@@ -51,7 +51,9 @@ tints with it, a plug the power it draws, the TV on/off, the router and the powe
 station their readings. While an A/C runs, its air streams out of the unit into
 the room in the colour of its mode (`flow` in `rooms.py` names its piece in the
 model; `make_dashboard.py` projects the streams and keeps what the walls do not
-hide). Tap toggles what can be toggled and opens the dialog for
+hide). A room with a thermometer tints its floor when it leaves 20–26 °C: blue
+below, orange above, red from 32 °C, the climate card's bands; a comfortable room
+stays untinted. Tap toggles what can be toggled and opens the dialog for
 the rest; holding always opens the dialog. Every icon, number, badge, chip, switch
 and slider explains itself on hover, in the house tooltip format
 ([`dashboard-tooltips.md`](../HomeAssistant/docs/dashboard-tooltips.md)).
@@ -117,7 +119,9 @@ where icons go, and which HA entity is which item in which room.
    photos were taken from a different camera than the file holds.
 5. `python FloorPlan/tools/build_overlays.py` — denoises every photo (a guided
    filter: render grain smoothed on flat surfaces, edges kept), then writes the
-   dashboard images and a mask per room. Brightness per lamp is its `gain` in `rooms.py`; changing it
+   dashboard images and a mask per room. A room with a climate badge also gets its
+   mask served, as `tint_<room>.png` (white, the mask as alpha), for the card's
+   temperature tint. Brightness per lamp is its `gain` in `rooms.py`; changing it
    needs no re-render.
 6. `python FloorPlan/tools/make_dashboard.py` — writes the card config into
    `HomeAssistant/dashboards/lovelace.dashboard_home.json`: every item at its spot,

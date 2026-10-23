@@ -35,6 +35,14 @@
  * Tapping toggles what can be toggled (lights, switches, the TV) and opens the
  * dialog for the rest; holding always opens the dialog.
  *
+ * ROOM TINT
+ * ---------
+ * A room with a `tint` (its mask from build_overlays.py, as the alpha of a
+ * white image) and a `temperature` entity colours its floor when that reading
+ * leaves 20-26 °C: blue under 20, orange over 26, red from 32, the climate
+ * card's bands. A comfortable room is not tinted at all. The tint sits under
+ * the lamps' light, so a lit room still glows on top of it.
+ *
  * TWO LAYOUTS, ONE CONFIG
  * -----------------------
  * Wide (a desktop, a tablet): the whole flat, sized to fit the screen's height,
@@ -47,7 +55,8 @@
  *   type: custom:floorplan-card
  *   image: /local/floorplan/base.png?v=1
  *   rooms:
- *     - { id: kitchen, name: Kitchen, focus: { x0: 53.5, y0: 10.2, x1: 100, y1: 63.5 } }
+ *     - { id: kitchen, name: Kitchen, focus: { x0: 53.5, y0: 10.2, x1: 100, y1: 63.5 },
+ *         tint: /local/floorplan/tint_kitchen.png?v=1, temperature: sensor.kitchen_temperature }
  *   lights:            # things with an overlay: light.*, switch.* (a relay), or a
  *                      # media_player.* whose screen glows; `color` sets the glow
  *     - { entity: light.kitchen, overlay: /local/floorplan/kitchen.png?v=1,
@@ -67,7 +76,7 @@
 const CARD = "floorplan-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "1.7.0";
+const VERSION = "1.8.0";
 
 // Glow colour for a lamp that reports none: the warm white it was rendered in.
 const WARM = [255, 180, 107];
@@ -88,6 +97,14 @@ const HVAC = {
   auto: ["Auto", [129, 199, 132]],
   heat_cool: ["Auto", [129, 199, 132]],
 };
+// A room's floor tints when its temperature leaves 20-26 °C: the climate card's
+// bands and colours (climate-console-card.js `_comfort`), so both say the same.
+// Comfortable is no tint at all, so a coloured room is one that wants attention.
+const COMFORT = [
+  [(t) => t >= 32, "hot", [242, 102, 74]],
+  [(t) => t > 26, "warm", [255, 179, 113]],
+  [(t) => t < 20, "cool", [142, 197, 232]],
+];
 const ON_GREEN = [102, 187, 106];
 const MEDIA = [186, 104, 200];
 const NEUTRAL = [144, 164, 174];
@@ -124,8 +141,8 @@ const HELP = {
     + PRESS,
   reading: "A live reading from the device pinned here.\n"
     + "E.g. Battery: the 8S 280 Ah pack's charge in %; Router: its current download speed.",
-  badge: "Temperature and humidity from the room's Aqara sensor.\n"
-    + "E.g. comfortable at 20–26 °C and 40–60 %; the kitchen reaches 31 °C while someone cooks.\n"
+  badge: "Temperature and humidity from the room's Aqara sensor; outside 20–26 °C its floor tints.\n"
+    + "E.g. the kitchen at 31 °C while someone cooks turns orange; under 20 °C a room turns blue.\n"
     + "Tap: opens the temperature's dialog.",
   chip: "Zooms the plan to this room and lists only its controls below it.\n"
     + "E.g. Bedroom: its A/C, the A/C plug, the router and the room's climate.\n"
@@ -289,6 +306,14 @@ class FloorplanCard extends HTMLElement {
     return { text: this._number(value || st), active: true, rgb: NEUTRAL };
   }
 
+  /** The COMFORT band a temperature entity is in, or null: comfortable, or no reading. */
+  _comfort(id) {
+    const st = id && this._stateObj(id);
+    if (!st || st.state === "" || isNaN(Number(st.state))) return null;
+    const t = Number(st.state);
+    return COMFORT.find(([test]) => test(t)) || null;
+  }
+
   /**
    * Everything that can change what is drawn, in one string. `set hass` fires
    * on every state change in the house; without this an unrelated sensor
@@ -310,6 +335,7 @@ class FloorplanCard extends HTMLElement {
         return [s(d.entity), st && st.attributes.temperature, st && st.attributes.hvac_action, s(d.value)];
       }),
       cfg.badges.map((b) => b.entities.map(s)),
+      cfg.rooms.map((r) => s(r.temperature)),
     ]);
   }
 
@@ -453,6 +479,12 @@ class FloorplanCard extends HTMLElement {
         this._air.setAttribute("viewBox", `0 0 ${base.naturalWidth} ${base.naturalHeight}`);
         this._layout();
       }
+    });
+    // Under the lamps' light: a tint is the room's colour, shown through its mask.
+    this._tints = cfg.rooms.filter((r) => r.tint && r.temperature).map((r) => {
+      const el = this._el("div", "tint", plane);
+      for (const p of ["mask-image", "-webkit-mask-image"]) el.style.setProperty(p, `url("${r.tint}")`);
+      return { cfg: r, el };
     });
 
     const chips = this._el("div", "chips", card);
@@ -710,6 +742,12 @@ class FloorplanCard extends HTMLElement {
       }
     });
 
+    this._tints.forEach((T) => {
+      const band = this._comfort(T.cfg.temperature);
+      T.el.classList.toggle("on", !!band);
+      if (band) T.el.style.setProperty("--tint", `rgb(${band[2].join(", ")})`);
+    });
+
     this._badges.forEach((B) => {
       const text = B.cfg.entities.map((id) => this._number(this._stateObj(id))).join(" · ");
       B.el.textContent = text;
@@ -717,7 +755,9 @@ class FloorplanCard extends HTMLElement {
       B.rowName.textContent = B.cfg.name || "Climate";
       const room = this._config.rooms.find((r) => r.id === B.cfg.room);
       const label = room ? (room.name || room.id) + " climate" : B.cfg.name || "Climate";
-      B.el.dataset.tip = B.row.dataset.tip = label + " — " + spaced(text) + "\n" + HELP.badge;
+      const band = room && room.tint ? this._comfort(room.temperature) : null;
+      B.el.dataset.tip = B.row.dataset.tip = label + " — " + spaced(text) + (band ? " · " + band[1] : "")
+        + "\n" + HELP.badge;
     });
   }
 }
@@ -756,6 +796,14 @@ ha-card { overflow: hidden; background: #1c1c1c; }
 @supports not (mix-blend-mode: plus-lighter) {
   .overlay { mix-blend-mode: screen; }
 }
+.tint {
+  position: absolute; inset: 0; pointer-events: none;
+  background: var(--tint);
+  mask-size: 100% 100%; -webkit-mask-size: 100% 100%;
+  opacity: 0;
+  transition: opacity 0.6s ease, background-color 0.6s ease;
+}
+.tint.on { opacity: 0.22; }
 .air {
   position: absolute; inset: 0; width: 100%; height: 100%;
   overflow: visible; pointer-events: none;

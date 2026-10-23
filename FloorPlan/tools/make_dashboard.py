@@ -110,8 +110,14 @@ for rid, room in ROOMS.items():
         grow = ((fx1 - fx0) * w / ASPECT[1] / h - (fy1 - fy0)) / 2
         fy0, fy1 = fy0 - grow, fy1 + grow
     clamp = lambda v: round(min(1.0, max(0.0, v)) * 100, 1)
-    rooms.append({"id": rid, "name": room["name"],
-                  "focus": {"x0": clamp(fx0), "y0": clamp(fy0), "x1": clamp(fx1), "y1": clamp(fy1)}})
+    entry = {"id": rid, "name": room["name"],
+             "focus": {"x0": clamp(fx0), "y0": clamp(fy0), "x1": clamp(fx1), "y1": clamp(fy1)}}
+    # A room with a thermometer: its floor tints by the badge's first reading, the °C.
+    badge = next((i for i in ITEMS if i["kind"] == "badge" and i["room"] == rid), None)
+    if badge:
+        entry["tint"] = url(f"tint_{rid}")
+        entry["temperature"] = badge["entities"][0]
+    rooms.append(entry)
 
 card = {"type": "custom:floorplan-card", "image": url("base"), "rooms": rooms,
         "lights": [], "devices": [], "badges": []}
