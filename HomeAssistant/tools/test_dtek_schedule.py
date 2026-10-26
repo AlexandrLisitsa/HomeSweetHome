@@ -398,6 +398,61 @@ with tempfile.TemporaryDirectory() as tmp:
           any(k in files[-1].read_text(encoding="utf-8").lower()
               for k in ("csrf", "cookie")), False)
 
+# --- 13. windows: the whole schedule, for the change alert -----------------
+# dtek_schedule_changed diffs this list between two polls, so the property
+# that matters is stability: the same schedule must give the same list at any
+# moment it is read, or the alert reports DTEK changing its mind when only the
+# clock moved.
+print("\n13. windows")
+W1 = ["2026-06-10T08:00:00+03:00", "2026-06-10T10:00:00+03:00"]
+W2 = ["2026-06-10T14:30:00+03:00", "2026-06-10T15:00:00+03:00"]
+for label, at, want in [("before both", datetime(2026, 6, 10, 7, 15, tzinfo=KYIV), [W1, W2]),
+                        ("running one keeps its start",
+                         datetime(2026, 6, 10, 8, 40, tzinfo=KYIV), [W1, W2]),
+                        ("ended exactly now: gone",
+                         datetime(2026, 6, 10, 10, 0, tzinfo=KYIV), [W2]),
+                        ("all over", datetime(2026, 6, 10, 15, 0, tzinfo=KYIV), [])]:
+    check("windows: " + label,
+          p.resolve(entry(["GPV3.2"]), {}, fact, preset, at)["windows"], want)
+
+check("no schedule in force -> []",
+      p.resolve(entry(["GPV3.2"]), {}, {"data": [], "update": "24.07.2026 08:30"},
+                preset, datetime(2026, 6, 10, 12, 0, tzinfo=KYIV))["windows"], [])
+
+# The day this was built for: 18:00-22:00 published overnight, withdrawn at
+# 15:34. The first day after the clocks went back, so +02:00.
+oct26 = date(2026, 10, 26)
+published = ["yes"] * 18 + ["no"] * 4 + ["yes"] * 2     # yyyyyyyyyyyyyyyyyynnnnyy
+r = p.resolve(entry(["GPV1.1"]), {}, fact_from({oct26: {"GPV1.1": day(published)}}),
+              preset, datetime(2026, 10, 26, 1, 5, tzinfo=KYIV))
+check("26.10 as published", r["windows"],
+      [["2026-10-26T18:00:00+02:00", "2026-10-26T22:00:00+02:00"]])
+r = p.resolve(entry(["GPV1.1"]), {}, fact_from({oct26: {"GPV1.1": day(["yes"] * 24)}}),
+              preset, datetime(2026, 10, 26, 15, 41, tzinfo=KYIV))
+check("26.10 as republished", r["windows"], [])
+
+# Across midnight it is one window, not two, or tomorrow's publication would
+# read as "23:00-00:00 cancelled, 23:00-01:00 new".
+late = ["yes"] * 23 + ["no"]
+early = ["no"] + ["yes"] * 23
+r = p.resolve(entry(["GPV3.2"]), {},
+              fact_from({today: {"GPV3.2": day(late)},
+                         today + timedelta(days=1): {"GPV3.2": day(early)}}),
+              preset, datetime(2026, 6, 10, 12, 0, tzinfo=KYIV))
+check("one window across midnight", r["windows"],
+      [["2026-06-10T23:00:00+03:00", "2026-06-11T01:00:00+03:00"]])
+r = p.resolve(entry(["GPV3.2"]), {}, fact_from({today: {"GPV3.2": day(late)}}),
+              preset, datetime(2026, 6, 10, 12, 0, tzinfo=KYIV))
+check("dark at the last slot ends where the schedule does", r["windows"],
+      [["2026-06-10T23:00:00+03:00", "2026-06-11T00:00:00+03:00"]])
+
+# Fall back: wall clock 02:00-05:00 spans the offset change.
+dst = ["yes"] * 2 + ["no"] * 3 + ["yes"] * 19
+r = p.resolve(entry(["GPV3.2"]), {}, fact_from({date(2026, 10, 25): {"GPV3.2": day(dst)}}),
+              preset, datetime(2026, 10, 25, 0, 30, tzinfo=KYIV))
+check("DST day: wall clock, offsets as they fall", r["windows"],
+      [["2026-10-25T02:00:00+03:00", "2026-10-25T05:00:00+02:00"]])
+
 
 print("\n%s" % ("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed"))
 sys.exit(1 if FAILED else 0)

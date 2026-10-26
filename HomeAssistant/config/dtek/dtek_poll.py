@@ -58,7 +58,7 @@ import re
 import sys
 import urllib.error
 import urllib.request
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -446,6 +446,34 @@ def find_edges(slots, now):
     return next_off, next_on
 
 
+def dark_windows(slots, now):
+    """Every dark run that has not ended by `now`, as [start, end] ISO pairs.
+
+    The whole schedule rather than its next edge, so that a window DTEK
+    withdraws can be told apart from one that merely comes later: on
+    26.10.2026 the 18:00-22:00 window was cancelled at 15:34 and the only
+    trace was next_outage_start going back to unknown.
+
+    A running window keeps its real start, so the list reads the same from one
+    poll to the next and a change in it is always DTEK changing its mind. A run
+    still dark at the last slot ends at that slot's end, which is midnight of
+    the last published day -- where the published schedule stops.
+    """
+    out, start = [], None
+    for moment, is_dark in slots:
+        if is_dark and start is None:
+            start = moment
+        elif not is_dark and start is not None:
+            if moment > now:
+                out.append([start.isoformat(), moment.isoformat()])
+            start = None
+    if start is not None:
+        end = slots[-1][0] + timedelta(minutes=30)
+        if end > now:
+            out.append([start.isoformat(), end.isoformat()])
+    return out
+
+
 # Time FIRST is what getHomeNum actually sends ("11:05 29.09.2026", captured in
 # tools/fixtures/dtek_emergency_20260929.json). Parsing only the date-first
 # shape turned a live emergency outage into outage_start/_end = null without a
@@ -564,7 +592,8 @@ def resolve(entry, answer, fact, preset, now):
     days = (fact or {}).get("data") or {}
     if not isinstance(days, dict) or not days or not queues:
         out.update(schedule_in_effect=False, now_state=None, today=None,
-                   tomorrow=None, next_outage_start=None, next_outage_end=None)
+                   tomorrow=None, next_outage_start=None, next_outage_end=None,
+                   windows=[])
         return out
 
     # Day keys are epoch seconds at Kyiv midnight; fact.today names the first.
@@ -594,6 +623,7 @@ def resolve(entry, answer, fact, preset, now):
         if today_idx is not None and today_idx + 1 < len(states) else None,
         next_outage_start=next_off.isoformat() if next_off else None,
         next_outage_end=next_on.isoformat() if next_on else None,
+        windows=dark_windows(slots, now),
     )
     return out
 

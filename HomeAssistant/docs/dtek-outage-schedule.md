@@ -181,11 +181,39 @@ Its sidebar *position* comes from `panelOrder` in
 by `ha_pull.sh` — the one part of that dashboard git does not record. Re-apply
 it with `tools/ha_dashboard.py --order dashboard-dtek --after dashboard-inverter`.
 
-Note that DTEK suspended stabilisation schedules on 24.07.2026, so
-`binary_sensor.dtek_schedule_in_effect` is currently off and everything
-schedule-shaped reads `unknown`. That is the correct answer, not a fault, and
-it means those code paths are exercised only by `tools/test_dtek_schedule.py`
-until the schedules return. It also means the recurring table is the only
-schedule there is to draw, and that its cells are almost all `maybe` — the
-heatmap reads orange, not red, and counts a possible outage as off exactly as
-`OFF_HALVES` and the alerts already do.
+DTEK suspended stabilisation schedules on 24.07.2026 and brought the daily ones
+back late on 25.10.2026. The first of them was queue 1.1, 18:00–22:00 on
+26.10, and DTEK withdrew it again that afternoon. While they were suspended,
+`binary_sensor.dtek_schedule_in_effect` read off and everything
+schedule-shaped read `unknown`. That is the right answer whenever it happens
+again, not a fault. The weekly table is still withheld (`hidden_reason:
+plan_off`), so the heatmap shows the reason instead of a grid, while the
+today/tomorrow block and the alerts run on `fact`. If the weekly table comes
+back, its cells are mostly `maybe`. The heatmap draws those orange, not red,
+and counts a possible outage as off, the same way `OFF_HALVES` and the alerts
+already do.
+
+## When the schedule changes
+
+`📅 DTEK schedule changed` (`dtek_schedule_changed` in the package) pushes
+whenever DTEK adds, withdraws or moves a window:
+
+> DTEK queue 1.1: cancelled 18:00–22:00 today. No windows left on the schedule.
+
+The 15-minute alerts cannot do this job. They count down to the next edge, and
+a withdrawn window just never arrives. On 26.10.2026 DTEK published
+18:00–22:00 overnight and republished the day as all `y` at 15:34. The next
+outage sensors went back to `unknown` and nobody heard a thing.
+
+It diffs the `windows` attribute between two polls. `windows` lists every
+window that has not ended yet as `[start, end]`, and it is `[]` with no
+schedule in force. A running window keeps its real start, so the list only
+changes when DTEK changes it. A window that just ends between two polls is not
+reported as cancelled, and a moved window reads as one cancelled and one new.
+The message ends with the windows the change left alone ("Still on: …").
+
+A change that only cancels goes out on the `DTEK emergency ends` channel.
+Anything with a new window goes on `DTEK emergency starts`. Each message has the
+tag `dtek_schedule`, so a schedule revised three times in one evening leaves one
+notification on the phone. Section 5g of `check_dtek_templates.py` replays
+26.10, and section 13 of `test_dtek_schedule.py` pins the list itself.
