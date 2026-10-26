@@ -153,6 +153,10 @@ command_line:
         - address
         - next_outage_start
         - next_outage_end
+        # Every window not yet ended, as [start, end]. dtek_schedule_changed
+        # diffs it between polls; the two edges above cannot show a window
+        # that was withdrawn.
+        - windows
         - fetched_at
         - stale
         - error
@@ -362,6 +366,11 @@ automation:
   # follows the outage DTEK records against this address -- the yellow box on
   # its site -- and shares the same two channels, so the design stays two
   # knobs on the phone, one per edge.
+  #
+  # The last one, at the bottom, watches the schedule itself: a window DTEK
+  # adds, withdraws or moves. The countdowns cannot see that -- a withdrawn
+  # window just never arrives -- which is how 18:00-22:00 on 26.10.2026 was
+  # cancelled at 15:34 without a word.
 
   # Fifteen minutes of warning before a scheduled window.
   #
@@ -630,4 +639,90 @@ automation:
       - service: notify.persistent_notification
         data:
           title: '⚠️ Alert: DTEK estimate passed'
+          message: "{{ message }}"
+
+  # DTEK has changed the stabilisation schedule: a window added, withdrawn or
+  # moved. Driven by the `windows` attribute, which lists every window that has
+  # not ended as [start, end] and reads the same on every poll until DTEK
+  # changes its mind (dark_windows() in dtek_poll.py).
+  #
+  # Only windows still ahead of the trigger count, so one that ends between two
+  # polls is not reported as cancelled. A moved window is one cancelled and one
+  # new, which is what it is. No from_state, or one without `windows` (restart,
+  # command_line.reload, the first poll after this shipped), is a fresh read,
+  # not a change. A failed poll keeps the last attributes, so it never fires.
+  #
+  # Cancellations alone are good news and go out on the "ends" channel;
+  # anything new is something to plan for and goes on "starts". One tag, so a
+  # schedule DTEK revises three times in an evening leaves one notification.
+  - id: dtek_schedule_changed
+    alias: '📅 DTEK schedule changed'
+    mode: queued
+    trigger:
+      - platform: state
+        entity_id: sensor.dtek_shutdowns
+        attribute: windows
+    condition:
+      - condition: template
+        value_template: >-
+          {{ trigger.from_state is not none and trigger.to_state is not none
+             and trigger.from_state.attributes.get('windows') is not none
+             and trigger.to_state.attributes.get('windows') is not none }}
+    action:
+      - variables:
+          # Each a sentence fragment rather than a list: variables render to
+          # text, and the message only ever wants them as text.
+          cancelled_line: >-
+            {% set old = trigger.from_state.attributes.get('windows') %}
+            {% set new = trigger.to_state.attributes.get('windows') %}
+            {% set ns = namespace(out=[]) %}
+            {% for w in old if w not in new and as_datetime(w[1]) > now() %}
+            {% set a = as_datetime(w[0]) | as_local %}{% set b = as_datetime(w[1]) | as_local %}
+            {% set d = 'today' if a.date() == now().date() else 'tomorrow' if a.date() == (now() + timedelta(days=1)).date() else a.strftime('%d.%m') %}
+            {% set ns.out = ns.out + [(a | as_timestamp | timestamp_custom('%H:%M')) ~ '–' ~ (b | as_timestamp | timestamp_custom('%H:%M')) ~ ' ' ~ d] %}
+            {% endfor %}
+            {{ ns.out | join(', ') }}
+          added_line: >-
+            {% set old = trigger.from_state.attributes.get('windows') %}
+            {% set new = trigger.to_state.attributes.get('windows') %}
+            {% set ns = namespace(out=[]) %}
+            {% for w in new if w not in old and as_datetime(w[1]) > now() %}
+            {% set a = as_datetime(w[0]) | as_local %}{% set b = as_datetime(w[1]) | as_local %}
+            {% set d = 'today' if a.date() == now().date() else 'tomorrow' if a.date() == (now() + timedelta(days=1)).date() else a.strftime('%d.%m') %}
+            {% set ns.out = ns.out + [(a | as_timestamp | timestamp_custom('%H:%M')) ~ '–' ~ (b | as_timestamp | timestamp_custom('%H:%M')) ~ ' ' ~ d] %}
+            {% endfor %}
+            {{ ns.out | join(', ') }}
+          # The windows this change left alone, so a cancellation does not
+          # leave you wondering whether the other one is still on. Nothing
+          # left at all is said outright; only new ones left is said already.
+          kept_line: >-
+            {% set old = trigger.from_state.attributes.get('windows') %}
+            {% set new = trigger.to_state.attributes.get('windows') %}
+            {% set ns = namespace(kept=[], left=0) %}
+            {% for w in new if as_datetime(w[1]) > now() %}
+            {% set ns.left = ns.left + 1 %}
+            {% if w in old %}{% set ns.kept = ns.kept + [w] %}{% endif %}
+            {% endfor %}
+            {% if ns.kept %}{% set a = as_datetime(ns.kept[0][0]) | as_local %}{% set b = as_datetime(ns.kept[0][1]) | as_local %}
+            {% set d = 'today' if a.date() == now().date() else 'tomorrow' if a.date() == (now() + timedelta(days=1)).date() else a.strftime('%d.%m') %}
+            Still on: {{ a | as_timestamp | timestamp_custom('%H:%M') }}–{{ b | as_timestamp | timestamp_custom('%H:%M') }} {{ d }}{% if ns.kept | count > 1 %} and {{ ns.kept | count - 1 }} more{% endif %}.
+            {% elif ns.left == 0 %}No windows left on the schedule.{% endif %}
+          channel: >-
+            {{ 'DTEK emergency ends' if added_line == '' else 'DTEK emergency starts' }}
+          message: >-
+            DTEK queue {{ states('sensor.dtek_queue') }}: {% if cancelled_line %}cancelled {{ cancelled_line }}. {% endif %}{% if added_line %}New: {{ added_line }}. {% endif %}{{ kept_line }}
+      - condition: template
+        value_template: "{{ cancelled_line != '' or added_line != '' }}"
+      - service: notify.household
+        data:
+          title: '📅 DTEK schedule changed'
+          message: "{{ message }}"
+          data:
+            ttl: 0
+            priority: high
+            channel: "{{ channel }}"
+            tag: dtek_schedule
+      - service: notify.persistent_notification
+        data:
+          title: '📅 DTEK schedule changed'
           message: "{{ message }}"

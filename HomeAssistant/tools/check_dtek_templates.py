@@ -367,10 +367,11 @@ for aid, want_channel in [("dtek_outage_starting_soon", "DTEK emergency starts")
               and x["data"]["data"].get("ttl") == 0 for x in push), True)
     check("%s also lands in HA itself" % aid,
           any(x["service"] == "notify.persistent_notification" for x in sends), True)
-# Distinct channels, or silencing one silences the other.
+# Distinct channels, or silencing one silences the other. A templated channel
+# (dtek_schedule_changed picks one of the two) is checked rendered, in 5g.
 allch = {x["data"]["data"]["channel"]
          for a in pkg["automation"] for x in a["action"]
-         if x.get("service") in PHONES}
+         if x.get("service") in PHONES and "{{" not in x["data"]["data"]["channel"]}
 check("the two channels are distinct", len(allch), 2)
 check("neither reuses the shared Emergency channel",
       sorted(allch & {"Emergency", "Emergency resolved"}), [])
@@ -578,6 +579,89 @@ check("every grid-alert message uses it",
       all("{{ dtek_line }}" in step["data"]["message"]
           for alias in ("❌ Alert: Grid Outage!", "✅ Power Restored")
           for step in grid_autos[alias]["actions"] if "action" in step), True)
+
+# --- 5g. the schedule itself changing --------------------------------------
+# 26.10.2026: 18:00-22:00 for queue 1.1, published overnight, withdrawn at
+# 15:34. The countdowns never fired and nothing else was watching.
+print("\n5g. 'DTEK schedule changed' automation")
+chg = autos["dtek_schedule_changed"]
+CANCEL_AT = datetime(2026, 10, 26, 15, 41, tzinfo=KYIV)
+EVENING = ["2026-10-26T18:00:00+02:00", "2026-10-26T22:00:00+02:00"]
+MORNING = ["2026-10-27T08:00:00+02:00", "2026-10-27T12:00:00+02:00"]
+LATE = ["2026-10-26T19:00:00+02:00", "2026-10-26T22:00:00+02:00"]
+cstates = {"sensor.dtek_queue": "1.1"}
+
+
+def change(old, new, at=CANCEL_AT, frm="ok", to="ok"):
+    """Render the automation for one windows change: (gate, sends?, vars)."""
+    trig = {"from_state": None if old is None else
+            {"state": frm, "attributes": {} if old is ... else {"windows": old}},
+            "to_state": {"state": to, "attributes": {"windows": new}}}
+    env = make_env(cstates, {}, at)
+    gate_ok = env.from_string(chg["condition"][0]["value_template"]).render(
+        trigger=trig).strip() == "True"
+    if not gate_ok:
+        return False, False, {}
+    out = {}
+    for name, tpl in chg["action"][0]["variables"].items():
+        out[name] = env.from_string(tpl).render(trigger=trig, **out).strip()
+    sends = env.from_string(chg["action"][1]["value_template"]).render(**out).strip()
+    return True, sends == "True", out
+
+
+g, s, out = change([EVENING], [])
+check("26.10 replayed: passes the gate and sends", (g, s), (True, True))
+check("26.10 replayed: message", out["message"],
+      "DTEK queue 1.1: cancelled 18:00–22:00 today. No windows left on the schedule.")
+check("26.10 replayed: good news channel", out["channel"], "DTEK emergency ends")
+
+g, s, out = change([EVENING], [EVENING, MORNING], at=CANCEL_AT.replace(hour=21, minute=0))
+check("tomorrow published", out["message"],
+      "DTEK queue 1.1: New: 08:00–12:00 tomorrow. Still on: 18:00–22:00 today.")
+check("tomorrow published: starts channel", out["channel"], "DTEK emergency starts")
+
+g, s, out = change([EVENING, MORNING], [LATE, MORNING])
+check("window moved", out["message"],
+      "DTEK queue 1.1: cancelled 18:00–22:00 today. New: 19:00–22:00 today. "
+      "Still on: 08:00–12:00 tomorrow.")
+check("window moved: starts channel", out["channel"], "DTEK emergency starts")
+
+g, s, out = change([], [EVENING], at=CANCEL_AT.replace(hour=1, minute=5))
+check("first window after none", out["message"],
+      "DTEK queue 1.1: New: 18:00–22:00 today.")
+g, s, out = change([EVENING, MORNING], [EVENING])
+check("one of two cancelled, the other kept", out["message"],
+      "DTEK queue 1.1: cancelled 08:00–12:00 tomorrow. Still on: 18:00–22:00 today.")
+g, s, out = change([EVENING], [MORNING], at=CANCEL_AT.replace(hour=12, minute=0))
+check("swapped for tomorrow: nothing kept, nothing claimed", out["message"],
+      "DTEK queue 1.1: cancelled 18:00–22:00 today. New: 08:00–12:00 tomorrow.")
+
+for label, args, want in [
+        ("same windows, stale -> ok", dict(old=[EVENING], new=[EVENING], frm="stale"),
+         (True, False)),
+        ("window ended between polls",
+         dict(old=[EVENING, MORNING], new=[MORNING],
+              at=CANCEL_AT.replace(hour=22, minute=3)), (True, False)),
+        ("entity recreated: from_state None", dict(old=None, new=[EVENING]),
+         (False, False)),
+        ("first poll after deploy: no windows before", dict(old=..., new=[EVENING]),
+         (False, False))]:
+    check("gate: " + label, change(**args)[:2], want)
+
+push = [x for x in chg["action"] if x.get("service") in PHONES]
+check("dtek_schedule_changed reaches the household group",
+      [x["service"] for x in push], ["notify.household"])
+check("dtek_schedule_changed is high priority with no ttl",
+      all(x["data"]["data"].get("priority") == "high"
+          and x["data"]["data"].get("ttl") == 0 for x in push), True)
+check("dtek_schedule_changed also lands in HA itself",
+      any(x.get("service") == "notify.persistent_notification"
+          for x in chg["action"]), True)
+check("its channel is always one of the two",
+      {change([EVENING], [])[2]["channel"], change([], [EVENING])[2]["channel"]} <= allch,
+      True)
+check("its own tag, apart from the outage record's",
+      [x["data"]["data"].get("tag") for x in push], ["dtek_schedule"])
 
 # --- 6. every template renders to one clean token where it must ------------
 print("\n6. no template leaks whitespace or a stray token")
