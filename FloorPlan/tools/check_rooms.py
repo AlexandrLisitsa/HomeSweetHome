@@ -11,7 +11,7 @@ dashboard's card config. Neither needs the other to be right, so this checks:
     the file as committed -- a picture rebuilt without re-running
     make_dashboard.py would be served stale;
   * the dashboard says what rooms.py says: the same lights, devices, badges,
-    rooms, tints, power entities and loads, in the same order -- a rooms.py
+    presence sensors, the noon picture and its sun, rooms, tints, power entities and loads, in the same order -- a rooms.py
     edit without re-running make_dashboard.py fails here. The projected
     positions and paths need the model and its render copy, which are not in
     the repo, so they are not checked;
@@ -29,7 +29,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rooms import ITEMS, LIGHTS, POWER, ROOMS, SPOTS  # noqa: E402
+from rooms import DAY, ITEMS, LIGHTS, POWER, ROOMS, SPOTS  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 WWW = ROOT / "HomeAssistant" / "config" / "www" / "floorplan"
@@ -55,6 +55,9 @@ for i, item in enumerate(ITEMS):
     check(where + ": spot", item["spot"] in SPOTS, item["spot"])
     if item["kind"] == "light":
         check(where + ": overlay", item.get("overlay") in LIGHTS, str(item.get("overlay")))
+    if item["kind"] == "presence":
+        check(where + ": a binary_sensor", item["entity"].startswith("binary_sensor."), item["entity"])
+    check(where + ": kind", item["kind"] in ("light", "device", "badge", "presence"), item["kind"])
 for name, light in LIGHTS.items():
     check("light %s: room" % name, light["room"] in ROOMS, light["room"])
 for key in ("hub", "grid_in", "battery"):
@@ -63,7 +66,7 @@ for key in ("hub", "grid_in", "battery"):
 print("images")
 doc = json.loads(DASHBOARD.read_text(encoding="utf-8"))
 card = next(c for c in doc["data"]["config"]["views"][0]["cards"] if c.get("type") == "custom:floorplan-card")
-urls = [card["image"]] + [l["overlay"] for l in card["lights"]] + [r["tint"] for r in card["rooms"] if "tint" in r]
+urls = [card["image"], card.get("day_image", "")] + [l["overlay"] for l in card["lights"]] + [r["tint"] for r in card["rooms"] if "tint" in r]
 for url in urls:
     m = re.fullmatch(r"/local/floorplan/([\w-]+\.png)\?v=([0-9a-f]{8})", url)
     if not m:
@@ -86,6 +89,9 @@ check("devices", [(who(d), d.get("value")) for d in card["devices"]]
 check("A/C airflow", [bool(d.get("flow")) for d in card["devices"]] == [bool(i.get("flow")) for i in by_kind("device")])
 check("badges", [b["entities"] for b in card["badges"]] == [i["entities"] for i in by_kind("badge")])
 badge_rooms = {i["room"]: i["entities"][0] for i in by_kind("badge")}
+check("presence", [who(p) for p in card.get("presence", [])] == [who(i) for i in by_kind("presence")])
+check("day image and sun", (card.get("day_image", "").startswith("/local/floorplan/%s.png?" % DAY["image"]),
+                            card.get("sun")) == (True, DAY["sun"]))
 check("tints", {r["id"]: r.get("temperature") for r in card["rooms"] if "tint" in r} == badge_rooms)
 power = card.get("power", {})
 want = {k: v for k, v in POWER.items() if k not in ("hub", "grid_in", "battery")}
@@ -103,6 +109,7 @@ for i in ITEMS:
     entities.update(i.get("entities", []))
     entities.update([i["value"]] if "value" in i else [])
 entities.update(v for k, v in POWER.items() if "." in str(v))
+# DAY["sun"] is left out: sun.sun has no unique id, so it is never in the registry.
 if REGISTRY.is_file():
     known = {e["entity_id"] for e in json.loads(REGISTRY.read_text(encoding="utf-8"))["data"]["entities"]}
     for e in sorted(entities):

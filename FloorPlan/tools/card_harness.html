@@ -19,6 +19,9 @@
          grid=down|returning  an outage: on battery, or mains back and waiting
          dtek=HH-HH  a DTEK window today, e.g. dtek=14-18
          shed=<entity>[:cut][,...]  what load shedding stepped down, or whose plug it cut
+         sun=<°>    the sun's elevation (default -30: night); 0 is half day, 6 and up is noon
+         seen=all|none|<entity,...>  which presence sensors see someone (default none)
+         theme=light  HA's light theme text colours on :root, to prove the card ignores them
          selftest=1 taps, holds, drags and switches rooms, and prints what came out.
   Every entity the config names gets a plausible state: an A/C cooling to 22,
   plugs drawing power, sensors with readings.
@@ -36,7 +39,17 @@
 <body>
 <div class="toolbar"></div>
 <div id="host"></div>
-<script>{ const w = new URLSearchParams(location.search).get("w"); if (w) document.getElementById("host").style.width = w + "px"; }</script>
+<script>{
+  const q = new URLSearchParams(location.search);
+  const w = q.get("w");
+  if (w) document.getElementById("host").style.width = w + "px";
+  // HA's light theme: dark text colours. A card that used them would turn unreadable here.
+  if (q.get("theme") === "light") {
+    document.documentElement.style.setProperty("--primary-text-color", "#212121");
+    document.documentElement.style.setProperty("--secondary-text-color", "#727272");
+    document.body.style.background = "#fafafa";
+  }
+}</script>
 <script type="module">
   customElements.define("ha-card", class extends HTMLElement {});
   customElements.define("ha-icon", class extends HTMLElement {});
@@ -54,6 +67,7 @@
   const card = cfg.data.config.views[0].cards.find((c) => c.type === "custom:floorplan-card");
   const local = (u) => u.replace("/local/", "/HomeAssistant/config/www/");
   card.image = local(card.image);
+  if (card.day_image) card.day_image = local(card.day_image);
   card.lights.forEach((l) => { l.overlay = local(l.overlay); });
   card.rooms.forEach((r) => { if (r.tint) r.tint = local(r.tint); });
   const temps = (q.get("temp") || "24.26").split(",");
@@ -83,6 +97,11 @@
     put(b.entities[0], temps[Math.min(i, temps.length - 1)], { unit_of_measurement: "°C" });
     if (b.entities[1]) put(b.entities[1], "48.32", { unit_of_measurement: "%" });
   });
+  const seen = q.get("seen") || "none";
+  for (const p of card.presence || []) {
+    put(p.entity, seen === "all" || (seen !== "none" && seen.split(",").includes(p.entity)) ? "on" : "off");
+  }
+  if (card.sun) put(card.sun, "x", { elevation: Number(q.get("sun") || -30) });
 
   if (card.power) {
     const P = card.power;

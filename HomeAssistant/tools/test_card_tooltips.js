@@ -209,6 +209,9 @@ const FIXTURES = {
       out[b.entities[0]] = S(i ? "24.3" : "28.4", { unit_of_measurement: "°C" });
       if (b.entities[1]) out[b.entities[1]] = S("48", { unit_of_measurement: "%" });
     });
+    // Someone in the hallway, so a presence sensor's "Detected" tooltip is checked.
+    (cfg.presence || []).forEach((p, i) => { out[p.entity] = S(i ? "off" : "on", {}); });
+    if (cfg.sun) out[cfg.sun] = S("above_horizon", { elevation: 25 });
     // An outage: on battery with hours left, the LED strip stepped down and an
     // A/C plug cut by load shedding, so every outage tooltip is checked.
     const P = cfg.power;

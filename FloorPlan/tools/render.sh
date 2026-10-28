@@ -28,9 +28,11 @@ mkdir -p "$build"
 
 # The lamp name prefixes each photo switches on. Keys are LIGHTS in rooms.py.
 shots=""
-for s in ${*:-base kitchen_led kitchen_ceiling hallway bathroom living_tv}; do
+# base_day is the lights-off shot at 12:00 Kyiv (09:00 UTC) on the night shots' date, 2026-09-22.
+for s in ${*:-base base_day kitchen_led kitchen_ceiling hallway bathroom living_tv}; do
     case $s in
         base) shots="$shots|base=" ;;
+        base_day) shots="$shots|base_day@1790067600000=" ;;
         kitchen_led) shots="$shots|kitchen_led=Kitchen LED strip" ;;
         kitchen_ceiling) shots="$shots|kitchen_ceiling=Kitchen ceiling light" ;;
         hallway) shots="$shots|hallway=Hallway light" ;;

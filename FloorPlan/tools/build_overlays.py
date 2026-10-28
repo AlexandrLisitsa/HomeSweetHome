@@ -172,6 +172,12 @@ os.makedirs(BUILD, exist_ok=True)
 json.dump({"crop": crop, "render_size": [W, H]}, open(BUILD / "layout.json", "w"))
 b = np.asarray(base, dtype=np.float32)
 base.crop(crop).save(os.path.join(OUT, "base.png"), optimize=True)
+# The same view at noon, lamps off: the card fades it over the night base by the sun.
+# Same camera, so the same crop; the lamps' overlays add onto either.
+if os.path.exists(os.path.join(SRC, "base_day.png")):
+    day = denoise(Image.open(os.path.join(SRC, "base_day.png")).convert("RGB"))
+    assert day.size == base.size, f"base_day.png is {day.size}, base.png {base.size}"
+    day.crop(crop).save(os.path.join(OUT, "base_day.png"), optimize=True)
 for rid, mk in masks.items():
     mk.crop(crop).save(os.path.join(BUILD, f"mask_{rid}.png"))
 # A room with a thermometer gets its mask served too, as the alpha of a white image:
