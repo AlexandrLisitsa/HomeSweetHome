@@ -65,6 +65,9 @@ function house(over) {
     st[b.entities[0]] = S("23", { unit_of_measurement: "°C" });
     if (b.entities[1]) st[b.entities[1]] = S("48", { unit_of_measurement: "%" });
   }
+  for (const p of CFG.presence) st[p.entity] = S("off", { device_class: "occupancy" });
+  // Night: the noon picture hidden.
+  st[CFG.sun] = S("below_horizon", { elevation: -30 });
   Object.assign(st, {
     [P.hub_entity]: S("376", W),
     [P.battery_entity]: S("64", { unit_of_measurement: "%" }),
@@ -327,6 +330,186 @@ group = "press: ";
   r.card.addEventListener("hass-more-info", (e) => opened.push(e.detail.entityId));
   fire(r.$(".status"), "click");
   eq("the outage chip opens the runtime", opened, [P.runtime]);
+}
+
+/* --- readable on any picture, under any theme ------------------------------ */
+
+group = "readability: ";
+{
+  const src = fs.readFileSync(path.join(__dirname, "..", "config", "www", "floorplan-card.js"), "utf8");
+  const style = src.slice(src.indexOf("const STYLE = `"));
+  const host = /:host \{([^}]*)\}/.exec(style)[1];
+  const token = (name) => {
+    const m = new RegExp("--fp-" + name + ":\\s*([^;]+);").exec(host);
+    if (!m) throw new Error("no --fp-" + name);
+    const v = m[1].trim();
+    const hex = /^#([0-9a-f]{6})$/i.exec(v);
+    if (hex) return [0, 2, 4].map((i) => parseInt(hex[1].slice(i, i + 2), 16)).concat(1);
+    return v.match(/[\d.]+/g).map(Number);
+  };
+  // A colour with alpha, laid over an opaque one.
+  const over = (top, under) => top.slice(0, 3).map((c, i) => c * top[3] + under[i] * (1 - top[3])).concat(1);
+  const lum = (rgb) => {
+    const [r, g, b] = rgb.slice(0, 3).map((c) => {
+      const s = c / 255;
+      return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const ratio = (a, b) => {
+    const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+  const WHITE = [255, 255, 255, 1], BLACK = [0, 0, 0, 1];
+  const surface = token("surface");
+  const pairs = [
+    ["row text on the card", token("text"), surface],
+    ["row values and titles on the card", token("text-dim"), surface],
+    ["the active room chip", token("chip-active-text"), token("chip-active")],
+    ["a plan label on its pill, over the brightest noon pixel", token("on-plan"), over(token("pill"), WHITE)],
+    ["a plan label on its pill, over the darkest night pixel", token("on-plan"), over(token("pill"), BLACK)],
+  ];
+  for (const [name, fg, bg] of pairs) {
+    const r = ratio(fg, bg);
+    check(name + ": at least 4.5:1", r >= 4.5, r.toFixed(2) + ":1");
+  }
+  check("no theme text colour (dark in HA's light theme) is used",
+    !/--(primary|secondary)-text-color/.test(style));
+  // The rule whose selector is exactly `sel`, at the start of its line.
+  const rule = (sel) => (new RegExp("\\n" + sel.replace(/[.()]/g, "\\$&") + " \\{([^}]*)\\}").exec(style) || [])[1] || "";
+  for (const sel of [".pct:not(:empty)", ".badge", ".status"]) {
+    check(sel + " sits on the dark pill", /background: var\(--fp-pill\)/.test(rule(sel)), rule(sel));
+  }
+  check("the card's surface is its own", /ha-card \{[^}]*background: var\(--fp-surface\)/.test(style));
+}
+
+/* --- day and night --------------------------------------------------------- */
+
+group = "day: ";
+{
+  check("the dashboard gives a noon picture and the sun", !!CFG.day_image && CFG.sun === "sun.sun");
+  const relay = CFG.lights.find((l) => /relay/.test(l.entity));
+  const at = (elevation, lamp) => {
+    const r = render(Object.assign({ [CFG.sun]: S("x", { elevation }) },
+      lamp ? { [relay.entity]: S("on", { supported_color_modes: ["onoff"] }) } : {}));
+    const L = r.card._lights.find((x) => x.cfg.entity === relay.entity);
+    return { day: Number(r.$(".base.day").style.opacity), lamp: Number(L.overlay.style.opacity) };
+  };
+  eq("deep night: no noon picture", at(-30).day, 0);
+  eq("-6°: dawn starts", at(-6).day, 0);
+  eq("0°: half way", at(0).day, 0.5);
+  eq("+6° and up: all noon", [at(6).day, at(40).day], [1, 1]);
+  eq("a lamp at night: full strength", at(-30, true).lamp, 1);
+  eq("the same lamp at noon: half, as a real one looks", at(40, true).lamp, 0.5);
+  {
+    const r = render({ [CFG.sun]: S("x", {}) });
+    eq("no elevation: night", Number(r.$(".base.day").style.opacity), 0);
+  }
+  {
+    const L = loadCard("floorplan-card.js");
+    const card = new L.Card();
+    const cfg = JSON.parse(JSON.stringify(CFG));
+    delete cfg.day_image;
+    delete cfg.sun;
+    card.setConfig(cfg);
+    card.hass = mkHass(house());
+    check("no noon picture configured: none drawn, night as before", !card.shadowRoot.querySelector(".base.day"));
+    let threw = false;
+    try { new L.Card().setConfig(Object.assign({}, cfg, { day_image: CFG.day_image })); } catch (e) { threw = true; }
+    check("a noon picture without a sun is refused", threw);
+  }
+  {
+    const r = render({ [CFG.sun]: S("x", { elevation: 10.2 }) });
+    const before = snapshot(r.root);
+    r.card.hass = mkHass(house({ [CFG.sun]: S("x", { elevation: 10.4 }) }));
+    eq("a fifth of a degree changes nothing drawn", snapshot(r.root), before);
+    r.card.hass = mkHass(house({ [CFG.sun]: S("x", { elevation: 1 }) }));
+    check("nine degrees does", snapshot(r.root) !== before);
+  }
+}
+
+/* --- presence ---------------------------------------------------------------- */
+
+group = "presence: ";
+{
+  check("the hallway and bathroom sensors are on the plan",
+    ["hallway", "bathroom"].every((room) => CFG.presence.some((p) => p.room === room)));
+  const hall = CFG.presence.find((p) => p.room === "hallway");
+  const X = (r) => r.card._presence.find((p) => p.cfg.entity === hall.entity);
+  let r = render();
+  check("clear: no ripple", !on(X(r).spot));
+  check("clear: its tooltip says so", /^Motion — Clear\n/.test(X(r).btn.dataset.tip), X(r).btn.dataset.tip);
+  eq("two rings behind the icon", X(r).spot.querySelectorAll(".ripple").length, 2);
+  r = render({ [hall.entity]: S("on", {}) });
+  check("detected: ripples", on(X(r).spot));
+  check("detected: its tooltip says so", /^Motion — Detected\n/.test(X(r).btn.dataset.tip));
+  eq("detected: its row too", X(r).value.textContent, "Detected");
+  check("its row is in the hallway's group", X(r).row.parentNode.dataset.room === "hallway");
+  r = render({ [hall.entity]: S("unavailable", {}) });
+  check("unavailable: greyed, no ripple", X(r).btn.classList.contains("unavailable") && !on(X(r).spot));
+  {
+    r = render();
+    const seen = [];
+    r.card.addEventListener("hass-more-info", (e) => seen.push(e.detail.entityId));
+    fire(X(r).btn, "pointerdown", { button: 0 });
+    fire(X(r).btn, "pointerup");
+    eq("a tap opens its dialog and calls nothing", [seen, r.hass.calls.length], [[hall.entity], 0]);
+  }
+  {
+    r = render();
+    const before = snapshot(r.root);
+    r.card.hass = mkHass(house({ [hall.entity]: S("on", {}) }));
+    check("a detection redraws", snapshot(r.root) !== before);
+  }
+}
+
+/* --- a lamp switching on ------------------------------------------------------ */
+
+group = "bloom: ";
+{
+  const relay = CFG.lights.find((l) => /relay/.test(l.entity));
+  const lit = { [relay.entity]: S("on", { supported_color_modes: ["onoff"] }) };
+  const spot = (r) => r.card._lights.find((x) => x.cfg.entity === relay.entity).spot;
+  let r = render(lit);
+  check("on at the first paint: no flash", !spot(r).classList.contains("blooming"));
+  r = render();
+  r.card.hass = mkHass(house(lit));
+  check("off → on: flashes", spot(r).classList.contains("blooming"));
+  r.L.flushTimers();
+  check("and clears", !spot(r).classList.contains("blooming"));
+  r.card.hass = mkHass(house(Object.assign({}, lit, { [P.grid]: S("900", W) })));
+  check("on → on (something else changed): no flash", !spot(r).classList.contains("blooming"));
+}
+
+/* --- holding still when no one looks ------------------------------------------ */
+
+group = "pause: ";
+{
+  const L = loadCard("floorplan-card.js");
+  const seen = [];
+  L.sandbox.window.IntersectionObserver = class {
+    constructor(fn) { this.fn = fn; seen.push(this); }
+    observe() {}
+    disconnect() {}
+  };
+  L.sandbox.document.addEventListener = (type, fn) => { if (type === "visibilitychange") L.sandbox.onVis = fn; };
+  L.sandbox.document.removeEventListener = () => {};
+  const card = new L.Card();
+  card.setConfig(JSON.parse(JSON.stringify(CFG)));
+  card.connectedCallback();
+  card.hass = mkHass(house());
+  const paused = () => card.shadowRoot.querySelector("ha-card").classList.contains("paused");
+  check("on screen: moving", !paused());
+  seen[0].fn([{ isIntersecting: false }]);
+  check("scrolled away: still", paused());
+  seen[0].fn([{ isIntersecting: true }]);
+  check("back in view: moving", !paused());
+  L.sandbox.document.hidden = true;
+  L.sandbox.onVis();
+  check("tab hidden: still", paused());
+  L.sandbox.document.hidden = false;
+  L.sandbox.onVis();
+  check("tab back: moving", !paused());
 }
 
 /* --- report ---------------------------------------------------------------- */

@@ -33,7 +33,9 @@ SPOTS = {
     "kitchen_led":       (650.0, 386.0, 145.0),
     "kitchen_climate":   (560.0, 450.0, 130.0),
     "hallway_light":     (299.0, 610.0, 120.0),   # the bulb is at 209; that reads as the next room
+    "hallway_presence":  (300.0, 690.0, 120.0),
     "bathroom_light":    (340.0, 375.0, 150.0),
+    "bathroom_presence": (380.0, 420.0, 120.0),
     # Both A/Cs hang on the wall between the bedroom and the living room, back to back.
     # At their real height their icons would sit over that wall and read as the other
     # room's, so they are pulled half a metre into their own room, each with its plug
@@ -72,8 +74,13 @@ POWER = {
     "dtek_end": "sensor.dtek_next_outage_end",
 }
 
+# The noon photo (renders/base_day.png, render.sh's base_day shot) and the sun entity whose
+# elevation fades it in over the night base.
+DAY = {"image": "base_day", "sun": "sun.sun"}
+
 # What the dashboard shows, room by room. `spot` is a SPOTS key; a light names its
 # overlay (a LIGHTS key); a device may name a `value` entity to show as its reading.
+# A presence item is a binary_sensor that ripples on the plan while it sees someone.
 ITEMS = [
     # Kitchen
     {"kind": "light", "room": "kitchen", "spot": "kitchen_ceiling", "overlay": "kitchen_ceiling",
@@ -85,9 +92,13 @@ ITEMS = [
     # Hallway
     {"kind": "light", "room": "hallway", "spot": "hallway_light", "overlay": "hallway",
      "entity": "light.hallway_relay", "name": "Light", "icon": "mdi:lightbulb"},
+    {"kind": "presence", "room": "hallway", "spot": "hallway_presence",
+     "entity": "binary_sensor.0xa4c1386081a8a521_occupancy", "name": "Motion", "icon": "mdi:motion-sensor"},
     # Bathroom: one relay, both downlights
     {"kind": "light", "room": "bathroom", "spot": "bathroom_light", "overlay": "bathroom",
      "entity": "light.bathroom_relay", "name": "Light", "icon": "mdi:lightbulb-group"},
+    {"kind": "presence", "room": "bathroom", "spot": "bathroom_presence",
+     "entity": "binary_sensor.0xa4c138bd02b6c32c_presence", "name": "Presence", "icon": "mdi:motion-sensor"},
     # Bedroom
     {"kind": "device", "room": "bedroom", "spot": "bedroom_ac",
      "entity": "climate.153931629566331_climate", "name": "A/C", "icon": "mdi:air-conditioner",

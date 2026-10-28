@@ -225,6 +225,7 @@ job or a nearly full Drive to `notify.household`.
 | [`docs/power-station-dashboard.md`](docs/power-station-dashboard.md) | the Power station dashboard: the inverter and battery cards, the grid-return countdown, the palette |
 | [`docs/climate-dashboard.md`](docs/climate-dashboard.md) | the climate dashboard and its checker |
 | [`docs/dashboard-tooltips.md`](docs/dashboard-tooltips.md) | the tooltip standard every custom card follows: format, scope, examples, the CI check |
+| [`docs/dashboard-visual-ideas.md`](docs/dashboard-visual-ideas.md) | the backlog of visual effects for every dashboard, its ground rules and suggested order |
 | [`docs/ac-features.md`](docs/ac-features.md) | the inventory of both A/C units' features the climate card is built from |
 | [`docs/renaming-entities.md`](docs/renaming-entities.md) | renaming entity ids across the registry, dashboards and YAML |
 | [`docs/remote-access-security.md`](docs/remote-access-security.md) | how HA is reached from the internet: the traffic flow, and how each request is accepted or denied |

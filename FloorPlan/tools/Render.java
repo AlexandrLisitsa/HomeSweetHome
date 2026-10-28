@@ -20,6 +20,8 @@ import java.util.List;
  * saved in the render copy. Each shot is `name=Lamp name prefix[,prefix...]`: every lamp
  * whose name starts with one of the prefixes is switched to POWER, every other lamp to
  * 0, and the photo is written to renders/<name>.png. `base=` is the lights-off shot.
+ * A name may carry its own camera time, `name@<epoch ms>=...`: `base_day@...=` is the
+ * lights-off shot at noon. Without one, the shot keeps the render copy's time (night).
  */
 public class Render {
     static final float POWER = 0.5f;
@@ -39,8 +41,15 @@ public class Render {
         System.out.println(width + " x " + height + ", " + lights.size() + " lamps, camera "
             + home.getCamera().getClass().getSimpleName());
 
+        long night = home.getCamera().getTime();
         for (int i = 2; i < args.length; i++) {
             String name = args[i].substring(0, args[i].indexOf('='));
+            long time = night;
+            if (name.contains("@")) {
+                time = Long.parseLong(name.substring(name.indexOf('@') + 1));
+                name = name.substring(0, name.indexOf('@'));
+            }
+            home.getCamera().setTime(time);
             String[] on = args[i].substring(args[i].indexOf('=') + 1).split(",");
             StringBuilder lit = new StringBuilder();
             for (HomeLight light : lights) {

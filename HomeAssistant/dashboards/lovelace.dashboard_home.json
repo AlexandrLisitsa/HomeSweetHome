@@ -14,6 +14,8 @@
             {
               "type": "custom:floorplan-card",
               "image": "/local/floorplan/base.png?v=316dcf34",
+              "day_image": "/local/floorplan/base_day.png?v=93289230",
+              "sun": "sun.sun",
               "rooms": [
                 {
                   "id": "kitchen",
@@ -235,6 +237,24 @@
                   "x": 13.3,
                   "y": 32.9,
                   "room": "living"
+                }
+              ],
+              "presence": [
+                {
+                  "entity": "binary_sensor.0xa4c1386081a8a521_occupancy",
+                  "name": "Motion",
+                  "icon": "mdi:motion-sensor",
+                  "x": 42.2,
+                  "y": 21.9,
+                  "room": "hallway"
+                },
+                {
+                  "entity": "binary_sensor.0xa4c138bd02b6c32c_presence",
+                  "name": "Presence",
+                  "icon": "mdi:motion-sensor",
+                  "x": 66.8,
+                  "y": 21.8,
+                  "room": "bathroom"
                 }
               ],
               "power": {

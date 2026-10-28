@@ -20,7 +20,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from rooms import ITEMS, POWER, ROOMS, SPOTS
+from rooms import DAY, ITEMS, POWER, ROOMS, SPOTS
 from sh3d_camera import load, projector
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -247,8 +247,9 @@ for rid, room in ROOMS.items():
         entry["temperature"] = badge["entities"][0]
     rooms.append(entry)
 
-card = {"type": "custom:floorplan-card", "image": url("base"), "rooms": rooms,
-        "lights": [], "devices": [], "badges": []}
+card = {"type": "custom:floorplan-card", "image": url("base"),
+        "day_image": url(DAY["image"]), "sun": DAY["sun"], "rooms": rooms,
+        "lights": [], "devices": [], "badges": [], "presence": []}
 for item in ITEMS:
     x, y = pos[item["spot"]]
     common = {"x": x, "y": y, "room": item["room"]}
@@ -265,6 +266,8 @@ for item in ITEMS:
         if item.get("flow"):
             entry["flow"] = flow(item["flow"], item["room"])
         card["devices"].append(entry)
+    elif item["kind"] == "presence":
+        card["presence"].append({"entity": item["entity"], "name": item["name"], "icon": item["icon"], **common})
     else:
         card["badges"].append({"entities": item["entities"], "name": item.get("name", "Climate"), **common})
 

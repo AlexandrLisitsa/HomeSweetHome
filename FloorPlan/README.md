@@ -100,6 +100,10 @@ black except where that lamp adds light, and the card *adds* it onto the base wi
 `mix-blend-mode: plus-lighter`. Any combination of lamps then looks the way the
 real ones do together, without a render per combination.
 
+There are two lights-off pictures: the night one (22:00) and the same view at noon.
+The card fades the noon one in over the night one by the sun's elevation, and the
+lamps' overlays add onto either.
+
 Each overlay is also clipped to its room. The render copy cuts the walls to 120 cm
 so the rooms can be seen from above, which puts every lamp above the walls — in the
 raw photo the kitchen strip lights the ground outside and the ceiling light reaches
@@ -110,7 +114,8 @@ and rises above the wall line (cabinets, fridge, lamps).
 
 **`tools/rooms.py` is the one list**: the rooms (each found in the model by a point
 inside it), the lamps with an overlay and their brightness gain, the plan points
-where icons go, and which HA entity is which item in which room.
+where icons go, and which HA entity is which item in which room. `DAY` names the noon
+picture and the sun entity.
 
 ## Changing something
 
@@ -127,15 +132,17 @@ where icons go, and which HA entity is which item in which room.
    at its best quality (`tools/Render.java`, against the jars in `SweetHome3D/lib`;
    see [Sweet Home 3D](#sweet-home-3d)), with the camera, time and size saved in the render
    copy, into `renders/`. About 25 minutes for all of them at 2400 × 1800. It takes one photo with
-   every lamp off (`base.png`), then one per `LIGHTS` key with only that lamp on at
-   power 0.5; the lamps each photo switches on are listed in `render.sh`.
+   every lamp off (`base.png`), the same at noon (`base_day.png`: a shot named
+   `name@<epoch ms>` takes its own camera time), then one per `LIGHTS` key with only
+   that lamp on at power 0.5; the lamps each photo switches on are listed in `render.sh`.
 4. `python FloorPlan/tools/check_camera.py` — must say `OK`. If it doesn't, the
    photos were taken from a different camera than the file holds.
 5. `python FloorPlan/tools/build_overlays.py` — denoises every photo (a guided
    filter: render grain smoothed on flat surfaces, edges kept), then writes the
    dashboard images and a mask per room. A room with a climate badge also gets its
    mask served, as `tint_<room>.png` (white, the mask as alpha), for the card's
-   temperature tint. Brightness per lamp is its `gain` in `rooms.py`; changing it
+   temperature tint. The noon photo gets the same denoise and crop as
+   `base_day.png`. Brightness per lamp is its `gain` in `rooms.py`; changing it
    needs no re-render.
 6. `python FloorPlan/tools/make_dashboard.py` — writes the card config into
    `HomeAssistant/dashboards/lovelace.dashboard_home.json`: every item at its spot,
@@ -160,7 +167,8 @@ where icons go, and which HA entity is which item in which room.
 
 Adding a lamp is: the lamp in the model, a shot in `render.sh`, a `LIGHTS` entry,
 a spot and an item in `rooms.py`, then the loop from step 2. A device without a
-light is only the spot and the item.
+light is only the spot and the item; so is a presence sensor (`"kind": "presence"`,
+a `binary_sensor`), which ripples on the plan while it sees someone.
 
 ## Docs
 
