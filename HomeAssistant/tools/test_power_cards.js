@@ -1986,6 +1986,73 @@ async function loadSheddingSuite() {
     eq("master toggle", r.h.calls.pop(), ["input_boolean", "toggle", { entity_id: E.master }]);
   }
 
+  group = "shed/hero-bar: ";
+  {
+    // Three devices: two step at 80 %, one at 50 %.
+    const devs = [dev("ac", AC, [{ soc: 80, action: "x" }, { soc: 60, action: "x" }]),
+      dev("lamp", LAMP, [{ soc: 80, action: "x" }, { soc: 50, action: "x" }])];
+    const bar = (soc, extra) => mk(states(Object.assign({ grid: "on", soc: String(soc), devices: devs }, extra || {})),
+      { blocks: ["hero"] });
+    const marks = (r) => r.qa(".mark").map((m) => [m.style.getPropertyValue("left"),
+      ["done", "near", "ahead"].find((k) => m.classList.contains(k)), m.textContent.trim()]);
+    let r = bar(95);
+    eq("one marker per %, names joined", marks(r),
+      [["80%", "ahead", "AC, LAMP · 80%"], ["60%", "ahead", "AC · 60%"], ["50%", "ahead", "LAMP · 50%"]]);
+    check("above every step: green fill", r.q(".fill").classList.contains("z-ok"));
+    eq("the danger zone runs to the lowest step", r.q(".danger").style.getPropertyValue("width"), "50%");
+    eq("the knob sits at the battery", [r.q(".knob").style.getPropertyValue("left"), r.q(".knob b").textContent], ["95%", "95%"]);
+    r = bar(86);
+    eq("within 10 % of a step: it lights", marks(r)[0][1], "near");
+    check("armed: the card pulses", r.q(".hero").classList.contains("live"));
+    r = bar(75, { loads: { ac: { step_soc: 80 }, lamp: { step_soc: 80 } } });
+    eq("both taken at 80: red", marks(r)[0][1], "done");
+    eq("60 is next, 15 % away: not lit yet", marks(r)[1][1], "ahead");
+    check("between steps: amber fill", r.q(".fill").classList.contains("z-warn"));
+    r = bar(78, { loads: { ac: { step_soc: 80 } } });
+    eq("only one of two taken: the shared marker is not red", marks(r)[0][1], "ahead");
+    r = bar(45, { loads: { ac: { step_soc: 60 }, lamp: { step_soc: 50 } } });
+    check("below the lowest step: red fill", r.q(".fill").classList.contains("z-bad"));
+    eq("the battery tile follows the zone", r.qa(".tile .v")[0].classList.contains("z-bad"), true);
+    r = mk(states({ grid: "off", soc: "86", devices: devs }), { blocks: ["hero"] });
+    check("standing by: lit, but no pulse", marks(r)[0][1] === "near" && !r.q(".hero").classList.contains("live"));
+    eq("standing by: green", r.q(".hero").classList.contains("k-ok"), true);
+    r = mk(states({ master: "off", devices: devs }), { blocks: ["hero"] });
+    eq("off: grey", r.q(".hero").classList.contains("k-off"), true);
+    r = mk(states({ soc: "50", devices: [] }), { blocks: ["hero"] });
+    eq("no rules: no danger zone, no markers", [r.q(".danger"), r.qa(".mark").length], [null, 0]);
+    r = mk(states({ soc: "unknown", devices: devs }), { blocks: ["hero"] });
+    eq("unknown battery: no knob", r.q(".knob"), null);
+    r = mk(states({ soc: "50", devices: [dev("x", AC, [{ soc: 92, action: "x" }]), dev("y", LAMP, [{ soc: 8, action: "x" }])] }),
+      { blocks: ["hero"] });
+    eq("labels near the ends hang inward", r.qa(".mark").map((m) => ["right", "left"].find((k) => m.classList.contains(k)) || null),
+      ["right", "left"]);
+  }
+
+  group = "shed/readable: ";
+  {
+    const src = fs.readFileSync(path.join(__dirname, "..", "config", "www", "load-shedding-card.js"), "utf8");
+    const style = src.slice(src.indexOf("const STYLE = `"));
+    const host = /:host \{([^}]*)\}/.exec(style)[1];
+    const hex = (name) => {
+      const m = new RegExp("--ls-" + name + ":\\s*#([0-9a-f]{6});").exec(host);
+      return [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16));
+    };
+    const lum = (c) => c.map((v) => v / 255).map((v) => (v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)))
+      .reduce((t, v, i) => t + v * [0.2126, 0.7152, 0.0722][i], 0);
+    const ratio = (a, b) => { const [x, y] = [lum(hex(a)), lum(hex(b))].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+    for (const fg of ["text", "text2", "muted", "ok-hi", "warn-hi", "bad-hi", "link"]) {
+      for (const bg of ["panel", "inner"]) {
+        const v = ratio(fg, bg);
+        check("--ls-" + fg + " on --ls-" + bg + " is at least 4.5:1", v >= 4.5, v.toFixed(2) + ":1");
+      }
+    }
+    // The primary button's dark text on the sage fill.
+    const btn = (lum(hex("ok")) + 0.05) / (lum([8, 17, 12]) + 0.05);
+    check("Save's dark text on sage is at least 4.5:1", btn >= 4.5, btn.toFixed(2) + ":1");
+    eq("no theme text colour in the styles", /--(primary|secondary|disabled)-text-color/.test(style), false);
+    check("the panels are the card's own", /ha-card \{[^}]*background: var\(--ls-panel\)/.test(style));
+  }
+
   group = "shed/upcoming-html: ";
   {
     const steps = [{ soc: 50, action: "climate.set_temperature", data: { temperature: 28 } }, { soc: 30, action: "climate.turn_off" }];
