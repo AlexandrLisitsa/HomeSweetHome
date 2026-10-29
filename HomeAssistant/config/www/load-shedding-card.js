@@ -21,6 +21,13 @@
  * on one view share ONE draft (SHARED below), so the Backup block's Import
  * lands in the Rules block's editor.
  *
+ * Nothing is ever switched on: a step runs only while its device is on (by
+ * its guard's running sensor where it has one, since an IR A/C only believes
+ * its mode), and the grid's return puts back only what is on or what a step
+ * switched off. The editor says so under every device. Three actions are the
+ * panel's own (PSEUDO): Change temperature by, Fan only, and Dim to, which
+ * only ever lowers a lamp.
+ *
  * Editing is on a local draft: nothing reaches Home Assistant until Save,
  * which calls script.load_shedding_save_config. That script validates and
  * raises on a bad config; the error is shown under the Save bar.
@@ -33,7 +40,7 @@
 const CARD = "load-shedding-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "4.0.0";
+const VERSION = "4.1.0";
 
 // Text colours, so the bright variants: they must read at 4.5:1 on the panels.
 const RED = "var(--ls-bad-hi)";
@@ -107,11 +114,28 @@ const ICONS = {
 
 // The one action that is not a real service: relative to the setpoint the
 // device had before its first step, resolved by the package.
-const ADJUST = {
-  name: "Change temperature by",
-  fields: { by: { required: true,
-    selector: { number: { min: -10, max: 10, step: 0.5, unit_of_measurement: "°" } } } },
+// The panel's own actions, each a real service underneath, resolved by
+// load_shed_apply in the package. All three only ever reduce: the setpoint is
+// relative to the one before the first step; Dim to never brightens; Fan only,
+// like every step, runs only while the unit is on. `at` is where each goes in
+// its domain's list.
+const PSEUDO = {
+  "climate.adjust_temperature": { name: "Change temperature by", at: 2,
+    fields: { by: { required: true,
+      selector: { number: { min: -10, max: 10, step: 0.5, unit_of_measurement: "°" } } } } },
+  "climate.fan_only": { name: "Fan only", at: 3, fields: {} },
+  "light.dim_to": { name: "Dim to", at: 0,
+    fields: { brightness_pct: { required: true,
+      selector: { number: { min: 1, max: 100, step: 1, unit_of_measurement: "%" } } } } },
 };
+
+/** Could this step switch the device on, were it off? The engine never lets it. */
+function couldSwitchOn(step) {
+  const a = String((step && step.action) || "");
+  const mode = step && step.data && step.data.hvac_mode;
+  return a.endsWith(".turn_on") || a === "climate.fan_only" || a === "light.dim_to"
+    || (a === "climate.set_hvac_mode" && !!mode && mode !== "off");
+}
 
 /*
  * Lines 2-4 of every tooltip (docs/dashboard-tooltips.md); line 1, the name
@@ -366,10 +390,9 @@ class LoadSheddingCard extends HTMLElement {
     const rank = (s) => (s === "turn_off" ? 0 : s === "turn_on" ? 1 : 2);
     names.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
     const list = names.map((s) => ({ action: domain + "." + s, name: this._svcName(domain, s), def: all[s] }));
-    if (domain === "climate") {
-      list.splice(Math.min(list.length, 2), 0,
-        { action: "climate.adjust_temperature", name: ADJUST.name, def: ADJUST });
-    }
+    Object.entries(PSEUDO).filter(([action]) => action.split(".")[0] === domain)
+      .sort((a, b) => a[1].at - b[1].at)
+      .forEach(([action, def]) => list.splice(Math.min(list.length, def.at), 0, { action, name: def.name, def }));
     return list;
   }
 
@@ -843,7 +866,7 @@ class LoadSheddingCard extends HTMLElement {
     if (!step) return "deepest step reached";
     const domain = d.entity.split(".")[0];
     const svc = String(step.action || "").split(".")[1] || "";
-    const name = step.action === "climate.adjust_temperature" ? ADJUST.name : this._svcName(domain, svc);
+    const name = PSEUDO[step.action] ? PSEUDO[step.action].name : this._svcName(domain, svc);
     const data = step.data || {};
     const bits = Object.entries(data).map(([k, v]) => k.replace(/_/g, " ") + " " + v);
     return name + (bits.length ? " (" + bits.join(", ") + ")" : "");
@@ -1036,6 +1059,9 @@ class LoadSheddingCard extends HTMLElement {
           <button class="btn small" data-act="add-step" data-dev="${i}"${
             this._tip("+ Add step", (d.steps || []).length + ((d.steps || []).length === 1 ? " step" : " steps"),
               "add_step")}>+ Add step</button>
+          <p class="only-on">Applies only while it is on${g.running
+            ? ` (measured by <code>${this._esc(g.running)}</code>)` : ""}. Never switches it on, and the grid's
+            return never switches on what you switched off.</p>
         </div>
         <div class="guard">
           <button class="link" data-act="guard" data-dev="${i}"${
@@ -1104,6 +1130,7 @@ class LoadSheddingCard extends HTMLElement {
         <select class="sel" data-kind="action" data-dev="${i}" data-step="${si}"${
           this._tip("Action", cur ? cur.name : s.action || "not set", "step_action")}>${options}</select>
         <span class="flds">${fieldsHTML}</span>
+        ${couldSwitchOn(s) ? '<span class="note-on">only while on</span>' : ""}
         ${more}
         <button class="icon" data-act="remove-step" data-dev="${i}" data-step="${si}"${
           this._tip("Remove step", Number.isFinite(soc) && s.soc !== null ? "at " + soc + " %" : "", "step_remove")}>✕</button>
@@ -1362,6 +1389,11 @@ b { font-weight: 600; }
 .step { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding: 8px 10px;
   border-radius: 8px; background: var(--ls-panel); border: 1px solid var(--ls-line); }
 .at, .arrow, .u { color: var(--ls-muted); font-size: 13px; }
+/* What the engine guarantees, said where the steps are written. */
+.only-on { margin: 2px 0 0; font-size: 12px; color: var(--ls-muted); max-width: 70ch; }
+.only-on code { color: var(--ls-text2); }
+.note-on { font: 500 10.5px/1 var(--ls-mono); color: var(--ls-text2); padding: 4px 8px; border-radius: 999px;
+  border: 1px dashed var(--ls-line2); white-space: nowrap; }
 .flds { display: contents; }
 .fld { display: inline-flex; flex-direction: column; gap: 2px; }
 .fld .in { display: inline-flex; align-items: center; gap: 4px; }

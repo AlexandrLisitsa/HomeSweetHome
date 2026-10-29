@@ -47,9 +47,17 @@
 # verdict, binary_sensor.powmr_inverter_grid_condition_safe, whose `on` means
 # UNSAFE. A brownout counts: the inverter is on battery then too.
 #
-# A device is only acted on while it is on (or, with a guard, while its
-# `running` sensor says so). An A/C that is already off is left alone, so it
-# is not "restored" into running when the grid comes back.
+# Nothing is ever switched on. A device is only acted on while it is on, and
+# where it has a guard `running` sensor, that measurement decides alone: the
+# IR A/C only *believes* its mode, and switched off by its remote it still
+# believes "cool" -- a fan-only step would switch it back on. The decision
+# checks this, and load_shed_apply checks it again right before acting. When
+# the grid returns, a device that is off is put back only if a step switched
+# it off; one you switched off during the outage stays off.
+#
+# Two of the panel's own actions only ever reduce: `light.dim_to`
+# {brightness_pct} lowers the brightness to at most that (never brightens),
+# and `climate.fan_only` is fan-only mode for a unit that is running.
 #
 # ---------------------------------------------------------------------------
 # The guard
@@ -358,12 +366,32 @@ script:
         value_template: >-
           {{ step is mapping and not (prev is mapping and prev.override_soc is none
              and prev.step_soc | float(-1) == soc | float) }}
+      - condition: template
+        # Still on, right before acting, by the same measured-beats-believed
+        # rule as the decision: a step never switches anything on. A device
+        # found off stops here (the trace says so) and is not recorded.
+        value_template: >-
+          {% set g = dev.guard if dev.guard is mapping else {} %}
+          {% set meter = states(g.running) if g.running is defined and g.running else 'none' %}
+          {{ (meter == 'on') if meter in ['on', 'off']
+             else states(e) not in ['off', 'unavailable', 'unknown'] }}
       - variables:
+          # Three actions are the panel's own, each a real service underneath:
+          # adjust_temperature is relative to the setpoint before the first
+          # step; dim_to only ever lowers the brightness; fan_only is the
+          # fan-only mode, which the check above keeps to a running unit.
           service: >-
-            {{ 'climate.set_temperature' if step.action == 'climate.adjust_temperature' else step.action }}
+            {{ {'climate.adjust_temperature': 'climate.set_temperature',
+                'light.dim_to': 'light.turn_on',
+                'climate.fan_only': 'climate.set_hvac_mode'}.get(step.action, step.action) }}
           data: >-
             {% if step.action == 'climate.adjust_temperature' %}
               {{ {'temperature': (snapshot.temperature | float(24)) + (step.data.by | float(0))} }}
+            {% elif step.action == 'light.dim_to' %}
+              {% set now_pct = ((state_attr(e, 'brightness') | float(255)) / 255 * 100) | round(0) %}
+              {{ {'brightness_pct': [step.data.brightness_pct | float(100), now_pct] | min | int} }}
+            {% elif step.action == 'climate.fan_only' %}
+              {{ {'hvac_mode': 'fan_only'} }}
             {% else %}{{ step.data if step.data is mapping else {} }}{% endif %}
           # Does this step switch the device off? Only then does the guard act.
           turns_off: >-
@@ -467,6 +495,20 @@ script:
           - delay: "00:00:10"
       - condition: template
         value_template: "{{ rec.snapshot is mapping and rec.snapshot.state not in ['unavailable', 'unknown'] }}"
+      # Never switch on what you switched off: put back a device that is on
+      # now, or one a step switched off itself (its plug cut, or an off step).
+      # Measured beats believed here too, through the device's running sensor.
+      - condition: template
+        value_template: >-
+          {% set dev = (state_attr('sensor.load_shedding_config', 'devices') or [])
+                       | selectattr('entity', 'eq', rec.entity) | first | default({}) %}
+          {% set g = dev.guard if dev is mapping and dev.guard is mapping else {} %}
+          {% set meter = states(g.running) if g.running is defined and g.running else 'none' %}
+          {% set on = (meter == 'on') if meter in ['on', 'off']
+                      else states(rec.entity) not in ['off', 'unavailable', 'unknown'] %}
+          {% set ap = rec.applied if rec.applied is mapping else {} %}
+          {{ on or rec.plug_cut | default(false)
+             or ap.state | default('') == 'off' or ap.hvac_mode | default('') == 'off' }}
       - service: scene.apply
         continue_on_error: true
         data:
@@ -589,8 +631,12 @@ automation:
                 {% set d = r.d %}
                 {% set e = d.entity %}
                 {% set g = d.guard if d.guard is mapping else {} %}
-                {% set on = states(e) not in ['off', 'unavailable', 'unknown']
-                            or (g.running is defined and g.running and is_state(g.running, 'on')) %}
+                {# Measured beats believed: a running sensor that reads on/off
+                   decides alone. An IR A/C switched off by its remote still
+                   *believes* cool, and a step would switch it back on. #}
+                {% set meter = states(g.running) if g.running is defined and g.running else 'none' %}
+                {% set on = (meter == 'on') if meter in ['on', 'off']
+                            else states(e) not in ['off', 'unavailable', 'unknown'] %}
                 {% set rec = shed.get(d.id) %}
                 {# Where it fires next: a hold waits for override_step lower,
                    otherwise the highest step below the battery that is deeper
@@ -711,9 +757,33 @@ automation:
               {% set ns.ids = ns.ids + [k] %}
             {% endfor %}
             {{ ns.ids }}
+          # Of those, the ones load_shed_restore_one will leave off: off now
+          # (by the running sensor where there is one), and not by a step's
+          # doing. You switched them off during the outage; they stay off.
+          stay_off: >-
+            {% set devs = state_attr('sensor.load_shedding_config', 'devices') or [] %}
+            {% set ns = namespace(ids=[]) %}
+            {% for k in back %}
+              {% set rec = shed[k] %}
+              {% set dev = devs | selectattr('entity', 'eq', rec.entity) | first | default({}) %}
+              {% set g = dev.guard if dev is mapping and dev.guard is mapping else {} %}
+              {% set meter = states(g.running) if g.running is defined and g.running else 'none' %}
+              {% set on = (meter == 'on') if meter in ['on', 'off']
+                          else states(rec.entity) not in ['off', 'unavailable', 'unknown'] %}
+              {% set ap = rec.applied if rec.applied is mapping else {} %}
+              {% if not (on or rec.plug_cut | default(false)
+                         or ap.state | default('') == 'off' or ap.hvac_mode | default('') == 'off') %}
+                {% set ns.ids = ns.ids + [k] %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.ids }}
           names: >-
             {% set ns = namespace(n=[]) %}
-            {% for k in back %}{% set ns.n = ns.n + [shed[k].name | default(k)] %}{% endfor %}
+            {% for k in back if k not in stay_off %}{% set ns.n = ns.n + [shed[k].name | default(k)] %}{% endfor %}
+            {{ ns.n | join(', ') }}
+          off_names: >-
+            {% set ns = namespace(n=[]) %}
+            {% for k in stay_off %}{% set ns.n = ns.n + [shed[k].name | default(k)] %}{% endfor %}
             {{ ns.n | join(', ') }}
       - repeat:
           for_each: "{{ back }}"
@@ -732,7 +802,10 @@ automation:
             value_template: "{{ back | count > 0 }}"
         then:
           - variables:
-              message: "Grid is back: {{ names }} put back the way they were."
+              message: >-
+                Grid is back:
+                {%- if names %} {{ names }} put back the way they were{{ ';' if off_names else '.' }}{% endif %}
+                {%- if off_names %} {{ off_names }} left off: switched off during the outage.{% endif %}
           - service: notify.household
             data:
               title: "🔌 Load shedding"

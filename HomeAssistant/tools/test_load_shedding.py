@@ -13,6 +13,8 @@ every rule the header promises:
     step, and which have been overridden
   * the rules validator (script.load_shedding_save_config)
   * load_shed_apply's snapshot, service resolution and "turns off" test
+  * that nothing is ever switched on: measured (running sensor) beats
+    believed, in the decision, right before a step, and on restore
   * both stores, and the restore list
 
 Same approach as test_outage_precharge.py.
@@ -46,17 +48,29 @@ def automation(aid):
     return next(a for a in PACKAGE["automation"] if a["id"] == aid)
 
 
-def script_vars(name, i):
-    return PACKAGE["script"][name]["sequence"][i]["variables"]
+def script_vars(name, key):
+    """The script's first `variables` step that defines `key`: by content, not position."""
+    return next(st["variables"] for st in PACKAGE["script"][name]["sequence"]
+                if isinstance(st, dict) and key in (st.get("variables") or {}))
+
+
+def script_check(name, marker):
+    """The template of the script's first condition whose text contains `marker`."""
+    return next(st["value_template"] for st in PACKAGE["script"][name]["sequence"]
+                if isinstance(st, dict) and st.get("condition") == "template"
+                and marker in st["value_template"])
 
 
 DECISION = automation("load_shedding_evaluate")["action"][0]["variables"]["decision"]
 RESTORE = automation("load_shedding_restore")["action"][0]["variables"]
 STORE = PACKAGE["template"][1]["action"][0]["variables"]["loads"]
-VALIDATE = script_vars("load_shedding_save_config", 0)["errors"]
-APPLY0 = script_vars("load_shed_apply", 0)
-APPLY2 = script_vars("load_shed_apply", 2)
-APPLY4 = script_vars("load_shed_apply", 4)
+VALIDATE = script_vars("load_shedding_save_config", "errors")["errors"]
+APPLY0 = script_vars("load_shed_apply", "keys")
+APPLY2 = script_vars("load_shed_apply", "snapshot")
+APPLY4 = script_vars("load_shed_apply", "service")
+# Measured beats believed, checked again right before a step, and before a restore.
+APPLY_ON = script_check("load_shed_apply", "meter")
+RESTORE_OK = script_check("load_shed_restore_one", "meter")
 SEED = PACKAGE["script"]["load_shedding_seed"]["sequence"][0]["data"]["config"]
 
 
@@ -191,6 +205,16 @@ check("A/C 'off' but its guard says running (IR missed) -> still due",
       due(soc=78, ac="off", running="on"), [{"id": "ac", "soc": 80.0}])
 check("LED off -> left alone", [d for d in due(soc=30, led="off") if d["id"] == "led"], [])
 
+print("measured beats believed")
+check("IR A/C believes 'cool' but its meter says off (remote) -> left alone",
+      due(soc=78, ac="cool", running="off"), [])
+check("...and gets no warning either", decide(soc=81, ac="cool", running="off", devices=[ac_dev()])["warn"], [])
+check("meter unavailable -> the belief decides: 'cool' is due",
+      due(soc=78, ac="cool", running="unavailable"), [{"id": "ac", "soc": 80.0}])
+check("meter unavailable and belief 'off' -> left alone", due(soc=78, ac="off", running="unavailable"), [])
+check("stepped at 80, then switched off by remote at 58 -> the deeper step is not sent",
+      due(soc=58, ac="cool", ac_temp=27, running="off", devices=[ac_dev()], shed={"ac": rec(80, applied=AC_APPLIED)}), [])
+
 print("already stepped")
 check("at step 80, still 75% -> nothing",
       due(soc=75, ac_temp=27, shed={"ac": rec(80, applied=AC_APPLIED)}), [])
@@ -295,6 +319,10 @@ check("warn margin out of range", errors({"warn_margin": 25, "devices": []}),
       ["warn_margin must be 0-20"])
 check("adjust_temperature is a climate action, so it passes",
       errors({"devices": [ac_dev(steps=((80, "climate.adjust_temperature", {"by": 2}),))]}), [])
+check("dim_to is a light action, so it passes",
+      errors({"devices": [dict(led_dev(), steps=[{"soc": 70, "action": "light.dim_to", "data": {"brightness_pct": 30}}])]}), [])
+check("fan_only is a climate action, so it passes",
+      errors({"devices": [ac_dev(steps=((80, "climate.fan_only", {}),))]}), [])
 
 print("applying a step")
 
@@ -329,6 +357,33 @@ check("hvac_mode fan_only does not", resolve("climate.set_hvac_mode", {"hvac_mod
 check("light.turn_off counts as switching off", resolve("light.turn_off", {})[2], True)
 check("a dim does not", resolve("light.turn_on", {"brightness_pct": 30})[2], False)
 
+
+def dim_to(pct, brightness):
+    """light.dim_to against a lamp at `brightness` (0-255, None = no reading)."""
+    step = {"action": "light.dim_to", "data": {"brightness_pct": pct}}
+    svc = render(APPLY4["service"], step=step)
+    d = render(APPLY4["data"], {LED: "on"}, {(LED, "brightness"): brightness}, step=step, e=LED, snapshot={})
+    return svc, d, render(APPLY4["turns_off"], service=svc, data=d)
+
+
+check("dim_to 30 on a lamp at 80 % -> light.turn_on 30 %",
+      dim_to(30, 204), ("light.turn_on", {"brightness_pct": 30}, False))
+check("dim_to 30 on a lamp already at 20 % -> stays 20 %, never brighter",
+      dim_to(30, 51)[1], {"brightness_pct": 20})
+check("dim_to 30 on a lamp reporting no brightness -> 30 %", dim_to(30, None)[1], {"brightness_pct": 30})
+check("fan_only -> set_hvac_mode fan_only, not an off step",
+      resolve("climate.fan_only", {}), ("climate.set_hvac_mode", {"hvac_mode": "fan_only"}, False))
+
+
+def still_on(dev, states):
+    return render(APPLY_ON, states, {}, dev=dev, e=dev["entity"])
+
+
+check("right before a step: meter on -> go", still_on(ac_dev(), {AC: "cool", RUN: "on"}), True)
+check("right before a step: believed 'cool', meter off -> stop", still_on(ac_dev(), {AC: "cool", RUN: "off"}), False)
+check("right before a step: no meter, lamp off -> stop", still_on(led_dev(), {LED: "off"}), False)
+check("right before a step: no meter, lamp on -> go", still_on(led_dev(), {LED: "on"}), True)
+
 print("stores and restore")
 
 
@@ -360,7 +415,31 @@ check("reset forgets the warnings", warned(["ac@60.0"], reset=True), [])
 
 shed = {"ac": rec(80), "led": dict(rec(70), name="LED", override_soc=55)}
 check("only what was not overridden comes back", render(RESTORE["back"], shed=shed), ["ac"])
-check("names for the message", render(RESTORE["names"], shed=shed, back=["ac", "led"]), "x, LED")
+check("names for the message", render(RESTORE["names"], shed=shed, back=["ac", "led"], stay_off=[]), "x, LED")
+
+print("restore never switches on")
+CFG = {("sensor.load_shedding_config", "devices"): [ac_dev(), led_dev()]}
+FAN = {"state": "fan_only"}
+
+
+def restores(r, states):
+    return render(RESTORE_OK, states, CFG, rec=r)
+
+
+check("A/C running now -> put back", restores(rec(80, applied=FAN), {AC: "fan_only", RUN: "on"}), True)
+check("A/C fan-only step, then off by remote (meter off) -> left off",
+      restores(rec(80, applied=FAN), {AC: "fan_only", RUN: "off"}), False)
+check("A/C off because a step switched it off -> put back",
+      restores(rec(60, applied={"state": "off"}), {AC: "off", RUN: "off"}), True)
+check("A/C off because its plug was cut -> put back", restores(rec(60, plug_cut=True), {AC: "off", RUN: "off"}), True)
+LED_REC = dict(rec(70, applied={"state": "on", "brightness": 76}), entity=LED, name="LED")
+check("LED dimmed, then switched off by hand -> left off", restores(LED_REC, {LED: "off"}), False)
+check("LED dimmed and still on -> put back", restores(LED_REC, {LED: "on"}), True)
+both = {"ac": rec(80, applied=FAN), "led": LED_REC}
+st = {AC: "fan_only", RUN: "off", LED: "on"}
+check("the message's left-off list", render(RESTORE["stay_off"], st, CFG, shed=both, back=["ac", "led"]), ["ac"])
+check("...and its put-back list", render(RESTORE["names"], shed=both, back=["ac", "led"], stay_off=["ac"]), "LED")
+check("...named", render(RESTORE["off_names"], shed=both, stay_off=["ac"]), "x")
 
 
 print("corner cases")

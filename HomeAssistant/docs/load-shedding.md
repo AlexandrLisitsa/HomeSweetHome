@@ -76,14 +76,23 @@ brownout, because the inverter is on battery then too. The master switch is
 
   Only the fields the device supports are shown. **more fields** reveals the
   advanced ones.
-- **`climate.adjust_temperature`** (shown as "Change temperature by") is the one
-  extra. It sets the setpoint to what it was *before the first step* plus `by`,
-  so "+3°" never stacks.
+- **Three actions are the panel's own**, each a real service underneath, and
+  each only ever reduces:
+  - **Change temperature by** (`climate.adjust_temperature`) sets the setpoint
+    to what it was *before the first step* plus `by`, so "+3°" never stacks;
+  - **Fan only** (`climate.fan_only`) is fan-only mode;
+  - **Dim to** (`light.dim_to`) sets the brightness to at most that %: a lamp
+    already dimmer stays as it is. It never brightens, unlike "Turn on 30 %".
 - **The deepest step reached wins.** At 70 % the device above is 3° warmer, and
   at 60 % it's off. If an outage starts at 55 %, it goes straight to off.
   Devices go in the order of their first step.
-- **A device that is off is left alone,** so it isn't "restored" into running
-  when the grid comes back.
+- **Nothing is ever switched on.** A step runs only while its device is on,
+  and where the device has a guard `running` sensor, that measurement decides
+  alone. The IR hall A/C only *believes* its mode: switched off by its remote,
+  it still believes "cool", and a "Fan only" step would switch it back on. The
+  engine checks this when it decides, and again right before it acts. The
+  editor says so under every device ("Applies only while it is on…"), and a
+  step that would switch an off device on carries an "only while on" note.
 
 Rules live in `sensor.load_shedding_config`, a trigger-based template sensor
 that HA restores across restarts. The panel writes them only through
@@ -142,8 +151,12 @@ firmware's 5 minutes of stable voltage. Every device the system changed, and
 you didn't override or hold, is put back with `scene.apply` from the snapshot
 taken before its first step. That is Home Assistant's own reproduce-state, so it
 restores any domain correctly. The same check runs when HA starts, so an outage
-that ended while HA was down is still cleaned up. One message lists what was put
-back.
+that ended while HA was down is still cleaned up.
+
+It never switches on what you switched off. A device that is off now (by its
+`running` sensor where it has one) is put back only if a step switched it off:
+an off step, or its plug cut. An A/C you switched off by its remote during the
+outage stays off. One message lists what was put back and what was left off.
 
 ## Backup
 
