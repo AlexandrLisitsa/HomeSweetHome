@@ -134,8 +134,9 @@ SERVICE_VERBS = {
     "set_value", "turn_on", "turn_off", "toggle", "reload", "select_option",
     "increment", "decrement", "publish", "create", "dismiss", "set_datetime",
     "set_hvac_mode", "set_temperature",
-    # Not a service: load_shedding.yaml's relative-setpoint pseudo-action.
-    "adjust_temperature",
+    # Not services: load_shedding.yaml's pseudo-actions (relative setpoint,
+    # fan-only mode). Its light.dim_to needs no entry: light. is not scanned.
+    "adjust_temperature", "fan_only",
 }
 
 EXTERNAL = {
