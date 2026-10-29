@@ -68,7 +68,7 @@ flag publishes a schedule DTEK has withdrawn — which is what this did until
 overrides the page applies locally on top of the flags
 (`discon-schedule.js:48-53` and `:1107-1112`) and the `tableHidden()` cases at
 `:413`. It publishes `week_in_effect`, `schedule_visible`, `hidden_reason` and
-the six flags verbatim; the card gates the heatmap and the two week-derived
+the six flags verbatim; the card gates the weekly grid and the two week-derived
 hero tiles on the first of those. **A hidden grid is a normal state of the
 world, not a fault** — `binary_sensor.dtek_data_stale` stays off through it.
 
@@ -84,23 +84,38 @@ dead.
 
 `dashboards/lovelace.dashboard_dtek.json` is the **Shutdowns** dashboard,
 sitting directly under Power station in the sidebar. Almost all of it is one
-custom card, `config/www/dtek-shutdowns-card.js`, in four stacked full-width
-blocks:
+custom card, `config/www/dtek-shutdowns-card.js`, placed twice: `[hero,
+timeline, week]` and `[source]`.
 
-- `hero`: a status banner with the headline, the applied-schedule note, DTEK's
-  stated reason, and three stat tiles.
-- `days`: today and tomorrow as DTEK has applied them (`today` / `tomorrow`,
-  from `fact`), in the same hour grid as the weekly table. This is what DTEK's
-  own site shows under "Графік відключень". An unpublished tomorrow is drawn
-  hatched with a dash for its total. It shows whenever `schedule_in_effect` is
-  true, whatever `hidden_reason` says, because `plan_off` only withdraws the
-  weekly table.
-- `week`: the 7×24 heatmap of DTEK's recurring weekly table. When DTEK is
-  withholding it, the reason why takes the grid's place and the card stays.
+- `hero`: the headline, the applied-schedule note, DTEK's stated reason and
+  notice, a status pill, and a **24-hour clock** of today: each hour an arc
+  coloured from the applied schedule (else the weekly table, else grey), split
+  where DTEK splits the hour, the past dimmed, a hand at now, and the countdown
+  to the next change in the middle. Three stat tiles under it.
+- `timeline`: the section the feature exists for. Today, 00:00–24:00, on four
+  rows against the clock's hours: grid down (the inverter's measurement), DTEK's
+  live notice (`binary_sensor.dtek_outage_now`), the schedule
+  (`binary_sensor.dtek_scheduled_dark`, plus the rest of today from the row), and
+  outages nobody announced (`binary_sensor.grid_outage_unscheduled`). The past
+  comes from one `history/history_during_period` request for the four since
+  midnight, made only while the card is on screen: again when one of them
+  changes, and at most every 5 minutes otherwise. Without an answer it says so
+  and still draws the schedule. It replaced the stock `history-graph`.
+- `week`: DTEK's recurring weekly table, a column per day with the hours down
+  the side. While a schedule is applied (`today` / `tomorrow`, from `fact`),
+  today's and tomorrow's columns show it instead, and their tooltips say so; an
+  unpublished tomorrow keeps the recurring row. When DTEK withholds the table,
+  the reason takes its place, followed by just today and tomorrow when a
+  schedule is applied, because `plan_off` only withdraws the weekly table.
+- `days`: today and tomorrow alone, as the week block draws them. Kept so an
+  older config still renders; the dashboard no longer uses it.
 - `source`: where the data came from.
 
-Below the card is the section the feature exists for: DTEK's claim and the
-inverter's measurement on one `history-graph` axis.
+The card is drawn in the house's console palette (graphite, muted sage / amber
+/ red, IBM Plex from `config/www/fonts/`), like the Power station. Its colours
+are its own (`--ds-*`), not the HA theme's, so it reads the same under the
+light theme; `tools/test_dtek_card.js` holds every text colour to 4.5:1 on both
+panel shades. Animations pause while the card is off screen or the tab hidden.
 
 The hero ranks its states, highest first:
 
@@ -114,7 +129,9 @@ The hero ranks its states, highest first:
    17:00", in orange. On 17.10.2026 the window opened at 13:30 and the mains
    lasted until 13:42. Before this rule the card said "The power is on" for
    the whole window.
-4. Otherwise **"The power is on"**, in green.
+4. Otherwise **"The power is on"**, in green, turning amber with an "Outage
+   soon" pill an hour before the next window starts, so the page warns before
+   the alert does.
 
 The "Next window" tile reads the running window while inside one ("now, ends
 in 3h 21m"). `next_outage_start` is null then, because the window has already
@@ -129,14 +146,14 @@ inside the window says "Back early".
 Note what is deliberately *not* there: the raw entity values. The second design
 iteration dropped the Entities list, and the tile grids went with the first, so
 `sensor.dtek_next_outage_start` and friends are now only in the badges, the
-comparison graph, and Developer Tools. That is a display decision, not a hint
+timeline, and Developer Tools. That is a display decision, not a hint
 that something broke.
 
 It is a custom card and not markdown cards because HA sanitises markdown
 through `filterXSS` (`frontend/src/resources/markdown-worker.ts`) and that
 allowlist has no `style` attribute, no `<style>` tag and no `title` on
 `div`/`span`. There is no inline CSS to be had in a markdown card, and no core
-card draws a heatmap. The first iteration drew the same tables with block
+card draws an hour grid. The first iteration drew the same tables with block
 characters inside a code fence for exactly that reason; this replaces them.
 
 **`www/` is the one part of `/config` that is deployed rather than pulled.** It
@@ -187,11 +204,10 @@ back late on 25.10.2026. The first of them was queue 1.1, 18:00–22:00 on
 `binary_sensor.dtek_schedule_in_effect` read off and everything
 schedule-shaped read `unknown`. That is the right answer whenever it happens
 again, not a fault. The weekly table is still withheld (`hidden_reason:
-plan_off`), so the heatmap shows the reason instead of a grid, while the
-today/tomorrow block and the alerts run on `fact`. If the weekly table comes
-back, its cells are mostly `maybe`. The heatmap draws those orange, not red,
-and counts a possible outage as off, the same way `OFF_HALVES` and the alerts
-already do.
+plan_off`), so the week block shows the reason and then today and tomorrow,
+while the alerts run on `fact`. If the weekly table comes back, its cells are
+mostly `maybe`. The grid draws those as amber hatching, not red, and counts a
+possible outage as off, the same way `OFF_HALVES` and the alerts already do.
 
 ## When the schedule changes
 

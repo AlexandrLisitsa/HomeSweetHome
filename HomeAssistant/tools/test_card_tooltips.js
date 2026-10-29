@@ -68,7 +68,7 @@ const READ_ONLY = {
     ".st-v", ".ch-name", ".win", ".dial", ".dial-v", ".rmark", ".fine", "#bed-fan-fine",
     ".cost-c", ".feat-l"],
   "dtek-shutdowns-card.js": [".eyebrow", ".ident", "h1", ".reason", ".tile", ".c", ".dtot",
-    ".legend span", ".stamp", ".kv div"],
+    ".legend span", ".stamp", ".kv div", ".arc", ".ctr", ".tlname", ".blk"],
   "floorplan-card.js": [".badge", ".row .value", ".pct"],
 };
 

@@ -762,25 +762,29 @@ else:
 
     check("the custom card is on the dashboard", CARD_TYPE in types, True)
 
-    # The card is placed twice on purpose: [hero, week] above the
-    # claim-against-measurement section and [source] below it, because that
-    # section is a sibling and a card cannot reorder around it. What must hold
-    # is that between them every block is drawn exactly once -- a typo in one
-    # `blocks` list would silently drop a third of the dashboard, or draw the
-    # hero twice, and both still render without an error.
+    # The card is placed twice: [hero, timeline, week] and [source] below.
+    # What must hold is that between them every block is drawn exactly once --
+    # a typo in one `blocks` list would silently drop part of the dashboard, or
+    # draw the hero twice, and both still render without an error. `days` is
+    # folded into the week since 2.0 and stays only for old configs.
     ours = [n for n in nodes if n["type"] == CARD_TYPE]
     drawn = []
     for c in ours:
-        drawn += c.get("blocks") or ["hero", "days", "week", "source"]
+        drawn += c.get("blocks") or ["hero", "timeline", "week", "source"]
     check("every block drawn exactly once", sorted(drawn),
-          ["days", "hero", "source", "week"])
+          ["hero", "source", "timeline", "week"])
     check("and each instance draws at least one", min(
         len(c.get("blocks") or [1, 2, 3]) for c in ours) > 0, True)
 
-    # Every entity id the dashboard names, from badges, tiles and the
-    # history-graph alike. The custom card names none of its own: its defaults
-    # live in the JS, which section 8 checks separately.
+    # Every entity id the dashboard names, plus the four the card's timeline
+    # draws by default: since 2.0 the card replaces the history-graph that used
+    # to name them, so they are read out of its DEFAULTS instead.
     named = set()
+    card_js = CARD_JS.read_text(encoding="utf-8") if CARD_JS.exists() else ""
+    timeline = re.findall(r'^\s*(grid|outage|scheduled|unscheduled)_entity:\s*"([^"]+)"', card_js, re.M)
+    check("the timeline's four rows have entities", sorted(k for k, _ in timeline),
+          ["grid", "outage", "scheduled", "unscheduled"])
+    named |= {eid for _, eid in timeline}
     for node in nodes:
         if isinstance(node.get("entity"), str):
             named.add(node["entity"])
@@ -800,7 +804,7 @@ else:
               "cover the non-DTEK entities too")
         named = {e for e in named if e in known}
 
-    check("the dashboard names entities at all", len(named) > 0, True)
+    check("the dashboard and the card name entities", len(named) > 0, True)
     check("every one of them exists", sorted(named - known), [])
 
     # Markdown survives only in the comparison section. Deliberately
