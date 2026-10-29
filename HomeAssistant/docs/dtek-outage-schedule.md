@@ -91,7 +91,11 @@ timeline, week]` and `[source]`.
   notice, a status pill, and a **24-hour clock** of today: each hour an arc
   coloured from the applied schedule (else the weekly table, else grey), split
   where DTEK splits the hour, the past dimmed, a hand at now, and the countdown
-  to the next change in the middle. Three stat tiles under it.
+  to the next change in the middle. While DTEK's live notice is up (an
+  emergency outage has no schedule behind it), its span is drawn over the hours
+  as a hatched red arc, to the minute, and the countdown runs to the notice's
+  end time ("until back", or "overdue" once it has passed). Three stat tiles
+  under it.
 - `timeline`: the section the feature exists for. Today, 00:00–24:00, on four
   rows against the clock's hours: grid down (the inverter's measurement), DTEK's
   live notice (`binary_sensor.dtek_outage_now`), the schedule
