@@ -159,6 +159,12 @@ console.log("an emergency outage on the clock (29.10.2026: no schedule, notice 1
     ["arc emerg past", "arc emerg past", "arc emerg"]);
   eq("... drawn from the top of the ring",
     /^M 120\.00 16\.00 /.test(x.root.querySelector(".arc.emerg").getAttribute("d")), true);
+  x = render("22:45", notice({ outage_start: at(21, 19), outage_end: new Date(2026, 9, 18, 1, 19).toISOString() }),
+    { gridDown: true, blocks: ["hero"] });
+  eq("ends after midnight: centre counts to 01:19", ctr(x), ["2h 34m", "until back"]);
+  eq("... and the span runs on past the top", emerg(x), ["arc emerg past", "arc emerg"]);
+  const tail = x.root.querySelectorAll(".arc.emerg")[1].getAttribute("d").match(/A 104 104 0 0 1 ([\d.]+) ([\d.]+)/);
+  eq("... ending at 01:19, right of the top", [Number(tail[1]) > 150, Number(tail[2]) < 30], [true, true]);
   x = render("14:08", notice({ outage_active: false }), { gridDown: true, blocks: ["hero"] });
   eq("no notice: no span", emerg(x), []);
 }

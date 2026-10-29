@@ -45,7 +45,7 @@
 const CARD = "dtek-shutdowns-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "2.1.0";
+const VERSION = "2.1.1";
 
 /*
  * The grid shows the NORMAL condition, not the exception: a cell is green when
@@ -1007,15 +1007,19 @@ class DtekShutdownsCard extends HTMLElement {
     const left = (ms) => fmtIn(Math.round(ms / 60000)).replace(/^in /, "");
     // DTEK's live notice on the ring: an emergency outage has no schedule
     // behind it, and on 29.10.2026 the clock sat grey and said "OFF" while the
-    // notice already had the power back by 17:54. Hours of today, clamped to
-    // the ring; with no end time it runs to the hand.
+    // notice already had the power back by 17:54. Hours of today; the start is
+    // clamped to midnight, but the end is not: on 29.10.2026 a 21:19-01:19
+    // notice stopped at the top of the ring while the centre said 2h 33m. Past
+    // 24 the span wraps on round to tomorrow's hours, at most a full turn from
+    // its start. With no end time it runs to the hand.
     const noticeStart = dtekOutage ? parseDate(outageStart) : null;
     const noticeEnd = dtekOutage ? parseDate(outageEnd) : null;
     const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-    const toH = (t) => Math.min(24, Math.max(0, (t - midnight) / 36e5));
+    const toH = (t) => (t - midnight) / 36e5;
+    const startH = noticeStart ? Math.min(24, Math.max(0, toH(noticeStart.getTime()))) : 0;
     const emergency = noticeStart ? {
-      start: toH(noticeStart.getTime()),
-      end: noticeEnd ? toH(noticeEnd.getTime()) : nowH,
+      start: startH,
+      end: noticeEnd ? Math.min(startH + 24, Math.max(0, toH(noticeEnd.getTime()))) : nowH,
       label: (reason || OUTAGE_TYPE[a.outage_type] || "Outage") + ", "
         + fmtClock(outageStart) + DASH + (noticeEnd ? fmtClock(outageEnd) : "?"),
     } : null;
