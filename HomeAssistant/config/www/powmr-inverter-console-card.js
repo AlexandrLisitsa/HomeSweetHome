@@ -76,7 +76,7 @@ const CARD = "powmr-inverter-console-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 import { ramp, rampCss } from "./card-ramp.js?v=1.0.0";
 
-const VERSION = "2.11.6";
+const VERSION = "2.12.0";
 
 /*
  * Brand colours stay literal: they identify a leg of the diagram (amber =
@@ -141,6 +141,11 @@ const DEFAULTS = {
   meter_night: "sensor.electricity_meter_tariff_night",
   meter_total: "sensor.electricity_meter_energy",
   meter_tariff: "select.electricity_meter_tariff",
+  // The pack's lifetime kWh in and out (Riemann sums of the inverter's
+  // charging / discharging power). Read through their hourly statistics for
+  // the Saved by battery row; see _loadSavings.
+  battery_out: "sensor.powmr_inverter_battery_energy_out",
+  battery_in: "sensor.powmr_inverter_battery_energy_in",
   // Controls
   max_charge_current: "select.powmr_inverter_max_ac_charge_current",
   power_priority: "select.powmr_inverter_power_priority",
@@ -280,6 +285,8 @@ const HELP = {
     + "\nE.g. 123.46 kWh at 4.32 ₴/kWh is 533.35 ₴; marked active from 07:00 to 23:00.",
   erow_night: "Grid energy the meter counted on the night tariff, 23:00–07:00, this month."
     + "\nE.g. 78.90 kWh at 2.16 ₴/kWh is 170.42 ₴; marked active from 23:00 to 07:00.",
+  erow_saved: "kWh the pack gave out 07:00–23:00 this month, at day price less the night refill."
+    + "\nE.g. 91.83 kWh × (4.32 − 2.16 ÷ 0.95) = 187.90 ₴; under it, the total since records began.",
   erow_total: "The meter's own register: the whole flat's lifetime grid energy, both tariffs."
     + "\nE.g. 15234.6 kWh, the same figure as the total on the meter's display.",
   // History
@@ -353,10 +360,12 @@ const SERIES = [
  * from the electricity meter -- what YASNO bills -- not the inverter's
  * estimate, which misses the boiler's circuit. The tariff rows are this
  * month's, with their cost at the Energy dashboard's price when it has one.
+ * Saved by battery is the one row not off the meter: see _loadSavings.
  */
 const ENERGY = [
   { key: "mtr_d", cfg: "meter_day", priced: true, short: "Day this month", unit: "kWh", dec: 2, tariff: "day", help: "erow_day" },
   { key: "mtr_n", cfg: "meter_night", priced: true, short: "Night this month", unit: "kWh", dec: 2, tariff: "night", help: "erow_night" },
+  { key: "saved", cfg: "battery_out", saved: true, short: "Saved by battery", unit: "kWh", dec: 2, help: "erow_saved" },
   { key: "mtr_t", cfg: "meter_total", short: "Meter total", unit: "kWh", dec: 1, help: "erow_total" },
 ];
 
@@ -693,6 +702,11 @@ select:disabled { cursor: not-allowed; color: #5C616B; }
 .erow .tag { font-family: var(--mono); font-size: calc(9px * var(--s)); letter-spacing: .16em; text-transform: uppercase; color: ${LOAD_C}; }
 .erow .ev { font-family: var(--mono); font-size: calc(14px * var(--s)); color: ${LOAD_C}; white-space: nowrap; }
 .erow .ev small { font-size: calc(12px * var(--s)); color: #8A7550; margin-left: 6px; }
+/* Saved by battery: the tariff rows' shape in the pack's green, a second line under the name. */
+.erow .el.col { flex-direction: column; align-items: flex-start; gap: 1px; }
+.erow .esub { font-family: var(--mono); font-size: calc(11px * var(--s)); color: #6E737E; }
+.erow.saved .ev { color: ${BATT_C}; }
+.erow.saved .ev small { color: #7FC493; }
 
 /* --- history ------------------------------------------------------------ */
 .hhead { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px; }
@@ -816,6 +830,11 @@ class PowmrInverterConsoleCard extends HTMLElement {
     this._prices = null;
     this._pricesAt = 0;
     this._pricesBusy = false;
+    // The pack's day-hour kWh out, this month and since records began; see
+    // _loadSavings. `failed` once the recorder said no.
+    this._savings = null;
+    this._savingsAt = 0;
+    this._savingsBusy = false;
     // Where the cursor is, so a redraw can put the readout back under it
     // rather than being held off until the pointer leaves.
     this._hovering = false;
@@ -876,6 +895,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
   set hass(hass) {
     this._hass = hass;
     this._loadPrices();
+    this._loadSavings();
     if (this._config) this._render();
   }
 
@@ -926,6 +946,72 @@ class PowmrInverterConsoleCard extends HTMLElement {
       })
       .then(() => {
         this._pricesBusy = false;
+        if (this._config && this._hass) this._render();
+      });
+  }
+
+  /*
+   * What the pack saved: the charger only fills it 23:00-07:00
+   * (`night_charging_only`), so every kWh it gives back 07:00-23:00 is one not
+   * bought at the day price, less what refilling it cost at night, grossed up
+   * for the round trip:
+   *
+   *     saved = kWh out by day × (day price − night price ÷ efficiency)
+   *
+   * Outage hours count too: that power would have been bought at the day
+   * price had the grid been there. Efficiency is the pack's own lifetime
+   * out ÷ in, read when the statistics are. No helper entity: the hourly
+   * `change` of the lifetime counter, split by the hour it started in, is
+   * the whole of it. Asked hourly like the prices, and again when the month
+   * turns.
+   */
+  _loadSavings() {
+    const c = this._config;
+    if (!c || !this._hass || typeof this._hass.callWS !== "function" || this._savingsBusy) return;
+    const now = new Date();
+    const month0 = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    if (this._savings && this._savings.month0 === month0
+        && Date.now() - this._savingsAt < 3600000) return;
+    this._savingsBusy = true;
+    this._savingsAt = Date.now();
+    const id = c.battery_out;
+    Promise.resolve()
+      .then(() => this._hass.callWS({
+        type: "recorder/statistics_during_period",
+        start_time: "2020-01-01T00:00:00Z",
+        statistic_ids: [id],
+        period: "hour",
+        types: ["change"],
+      }))
+      .then((reply) => {
+        const rows = (reply && reply[id]) || [];
+        let month = 0;
+        let life = 0;
+        let since = null;
+        rows.forEach((r) => {
+          const t = new Date(r.start);
+          const ch = Number(r.change);
+          if (isNaN(t.getTime()) || !Number.isFinite(ch)) return;
+          if (since === null) since = t;
+          const h = t.getHours();
+          if (h < 7 || h >= 23) return;
+          life += ch;
+          if (t.getTime() >= month0) month += ch;
+        });
+        const out = this._num(c.battery_out);
+        const inn = this._num(c.battery_in);
+        const eta = out !== null && inn ? Math.min(1, out / inn) : null;
+        this._savings = rows.length
+          ? { month, life, since, eta: eta > 0 ? eta : 1, month0 }
+          : { failed: "no statistics", month0 };
+      })
+      .catch(() => {
+        // Kept as a failure, not dropped, so the row says so and this is
+        // not asked again until the hour is up.
+        this._savings = { failed: "unavailable", month0 };
+      })
+      .then(() => {
+        this._savingsBusy = false;
         if (this._config && this._hass) this._render();
       });
   }
@@ -1499,10 +1585,11 @@ ${ch.dots ? "" : `
           </div>
         </div>`).join("")}
         <div class="erows">${ENERGY.map((e, i) => `
-          <div class="erow" data-ref="erow${i}" data-more="${c[e.cfg]}" role="button" tabindex="0">
-            <span class="el">
+          <div class="erow${e.saved ? " saved" : ""}" data-ref="erow${i}" data-more="${c[e.cfg]}" role="button" tabindex="0">
+            <span class="el${e.saved ? " col" : ""}">
               <span class="en">${e.short}</span>
-              <span class="tag" data-ref="etag${i}"></span>
+              ${e.saved ? `<span class="esub" data-ref="esub${i}"></span>`
+                : `<span class="tag" data-ref="etag${i}"></span>`}
             </span>
             <span class="ev" data-ref="eval${i}"></span>
           </div>`).join("")}
@@ -1672,7 +1759,47 @@ ${ch.dots ? "" : `
       + "|" + this._state(c.adaptive_charge) + "|" + this._state(c.adaptive_plan)
       + "|" + ad.current + "|" + ad.until + "|" + ad.reason
       + "|" + prices.join(",")
+      + "|" + (this._savings ? this._savingsAt : "")
       + "|" + this._range + "|" + this._sel;
+  }
+
+  /*
+   * The Saved by battery row: kWh and ₴ like the tariff rows, in the pack's
+   * green, and the total since records began on a line under the name. With
+   * no Energy prices it is kWh alone; with no statistics it says so rather
+   * than showing a 0 that reads as a measured month.
+   */
+  _patchSaved(e, i) {
+    const el = this._el;
+    const s = this._savings;
+    const row = el["erow" + i];
+    const val = el["eval" + i];
+    const sub = el["esub" + i];
+    if (!s || s.failed) {
+      const word = s ? s.failed : "loading";
+      val.textContent = s ? "—" : "…";
+      sub.textContent = word;
+      row.dataset.tip = tip(e.short + " — " + word, e.help);
+      return;
+    }
+    const pDay = this._price(this._config.meter_day);
+    const pNight = this._price(this._config.meter_night);
+    const per = pDay !== null && pNight !== null ? pDay - pNight / s.eta : null;
+    const month = per !== null ? s.month * per : null;
+    const life = per !== null ? s.life * per : null;
+    const since = s.since
+      ? String(s.since.getDate()).padStart(2, "0") + "." + String(s.since.getMonth() + 1).padStart(2, "0")
+      : "the start";
+    val.innerHTML = this._esc(this._fmt(s.month, e.dec) + " " + e.unit)
+      + (month !== null ? "<small>" + this._esc(month.toFixed(2)) + " ₴</small>" : "");
+    sub.textContent = "since " + since + " · "
+      + (life !== null ? Math.round(life) + " ₴" : this._fmt(s.life, 1) + " kWh");
+    // Line 1 is clipped at 90 characters, so the kWh stay on the row.
+    row.dataset.tip = tip(e.short + " — "
+      + (month !== null
+        ? month.toFixed(2) + " ₴ · " + life.toFixed(2) + " ₴ since " + since
+          + " · efficiency " + Math.round(s.eta * 100) + " %"
+        : this._fmt(s.month, e.dec) + " kWh, no Energy prices set"), e.help);
   }
 
   _patch() {
@@ -1854,6 +1981,10 @@ ${ch.dots ? "" : `
     ENERGY.forEach((e, i) => {
       const row = el["erow" + i];
       if (!row) return;
+      if (e.saved) {
+        this._patchSaved(e, i);
+        return;
+      }
       const active = e.tariff && e.tariff === tariff;
       row.classList.toggle("on", !!active);
       el["etag" + i].textContent = active ? "active" : "";

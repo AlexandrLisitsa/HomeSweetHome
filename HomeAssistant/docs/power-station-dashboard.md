@@ -53,6 +53,16 @@ estimate (load + 30 W + charging) and only sees what goes through the inverter.
   its cost in ₴ from the Energy dashboard, and the meter's lifetime total. The
   row of the current tariff (`select.electricity_meter_tariff`) is marked
   **active**. The month counters started on 2026-10-04, so October reads low.
+- **Saved by battery**, between Night and the total, is what the pack saved
+  this month: the kWh it gave out 07:00–23:00 (outages included) × (day price
+  − night price ÷ efficiency). The charger only fills it at night, so each of
+  those kWh was bought at the night rate instead of the day one; efficiency is
+  the pack's lifetime out ÷ in (≈ 95 %). The kWh come from the hourly
+  statistics of `sensor.powmr_inverter_battery_energy_out`, split by the hour
+  they fell in, and the prices are the same Energy-dashboard ones as the rows
+  above. The line under the name is the same sum since records began
+  (2026-05-02). The card asks the recorder at most hourly; if it cannot, the
+  row says `unavailable` rather than showing 0 ₴.
 
 On a phone (under ~900 px) the tiles stack: Grid, Inverter, House load,
 Battery, then Meter last, without its run (stacked, a run from Grid would

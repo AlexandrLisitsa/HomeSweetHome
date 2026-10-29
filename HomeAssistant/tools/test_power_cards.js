@@ -854,20 +854,20 @@ async function inverterSuite() {
   {
     const r = mk(base());
     check("day row active", r.el.erow0.classList.contains("on") && !r.el.erow1.classList.contains("on"));
-    eq("day tag", [r.el.etag0.textContent, r.el.etag1.textContent, r.el.etag2.textContent], ["active", "", ""]);
-    eq("values and decimals", [r.el.eval0.textContent, r.el.eval1.textContent, r.el.eval2.textContent],
+    eq("day tag", [r.el.etag0.textContent, r.el.etag1.textContent, r.el.etag3.textContent], ["active", "", ""]);
+    eq("values and decimals", [r.el.eval0.textContent, r.el.eval1.textContent, r.el.eval3.textContent],
       ["123.46 kWh", "78.90 kWh", "202.3 kWh"]);
     check("labelled as this month's, from the meter",
-      r.c.shadowRoot.querySelectorAll(".erow .en").map((n) => n.textContent).join("|") === "Day this month|Night this month|Meter total");
-    eq("rows open the meter's entities", [0, 1, 2].map((i) => r.el["erow" + i].getAttribute("data-more")), [E.td, E.tn, E.tot]);
+      r.c.shadowRoot.querySelectorAll(".erow .en").map((n) => n.textContent).join("|") === "Day this month|Night this month|Saved by battery|Meter total");
+    eq("rows open the meter's entities", [0, 1, 3].map((i) => r.el["erow" + i].getAttribute("data-more")), [E.td, E.tn, E.tot]);
     eq("no Energy prices: no cost", r.el.eval0.innerHTML.indexOf("<small>"), -1);
     rerender(r, (s) => { s[E.tariff] = S("night"); });
     check("night row active", !r.el.erow0.classList.contains("on") && r.el.erow1.classList.contains("on"));
     rerender(r, (s) => { s[E.tariff] = S("unavailable"); s[E.td] = S("unknown"); });
-    check("unknown tariff: no row active", [0, 1, 2].every((i) => !r.el["erow" + i].classList.contains("on")));
+    check("unknown tariff: no row active", [0, 1, 3].every((i) => !r.el["erow" + i].classList.contains("on")));
     eq("unknown meter", r.el.eval0.textContent, "— kWh");
-    check("the total never shows a cost", r.el.eval2.innerHTML.indexOf("<small>") < 0);
-    check("the total is never 'active'", !r.el.erow2.classList.contains("on"));
+    check("the total never shows a cost", r.el.eval3.innerHTML.indexOf("<small>") < 0);
+    check("the total is never 'active'", !r.el.erow3.classList.contains("on"));
   }
 
   /* --- energy rows: cost at the Energy dashboard's price ---------------------- */
@@ -889,7 +889,7 @@ async function inverterSuite() {
     eq("kWh times price", [r.el.eval0.textContent, r.el.eval1.textContent], ["123.46 kWh533.33 ₴", "78.90 kWh170.42 ₴"]);
     eq("cost is its own element", r.el.eval0.innerHTML, "123.46 kWh<small>533.33 ₴</small>");
     check("cost in the tooltip", head(r.el.erow0.dataset.tip).indexOf("533.33 ₴") > 0, r.el.erow0.dataset.tip);
-    check("the total never shows a cost", r.el.eval2.innerHTML.indexOf("<small>") < 0);
+    check("the total never shows a cost", r.el.eval3.innerHTML.indexOf("<small>") < 0);
     // The bug: HA's own *_cost sensors restart at 0. They are not read at all.
     rerender(r, (s) => { s["sensor.electricity_meter_tariff_day_cost"] = S("0.0"); });
     eq("a restarted *_cost sensor changes nothing", r.el.eval0.textContent, "123.46 kWh533.33 ₴");
@@ -911,6 +911,67 @@ async function inverterSuite() {
     const r3 = mk(base(), {}, { callWS: (m) => { if (m.type === "energy/get_prefs") throw new Error("unauthorized"); return {}; } });
     await flush();
     eq("prefs refused: kWh only", r3.el.eval0.textContent, "123.46 kWh");
+  }
+
+  /* --- energy rows: what the battery saved ----------------------------------------- */
+  group = "inverter/battery saved: ";
+  {
+    const OUT = "sensor.powmr_inverter_battery_energy_out";
+    const IN = "sensor.powmr_inverter_battery_energy_in";
+    const prefs = { energy_sources: [
+      { type: "grid", stat_energy_from: E.td, number_energy_price: 4.32 },
+      { type: "grid", stat_energy_from: E.tn, number_energy_price: 2.16 },
+    ] };
+    const nowD = new Date();
+    const y = nowD.getFullYear();
+    const m = nowD.getMonth();
+    const row = (d, h, change) => ({ start: d === "prev" ? new Date(y, m - 1, 15, h).getTime()
+      : new Date(y, m, d, h).getTime(), change });
+    // This month: 2 + 3 kWh by day, 5 + 1 at night. Last month: 4 by day.
+    const stats = { [OUT]: [row("prev", 10, 4), row(1, 3, 1), row(1, 8, 2), row(1, 12, 3), row(1, 23, 5)] };
+    const pad = (n) => String(n).padStart(2, "0");
+    const since = "15." + pad(new Date(y, m - 1, 15).getMonth() + 1);
+    const st = () => Object.assign(base(), { [OUT]: S("95"), [IN]: S("100") });
+    const ws = (opts) => (msg) => {
+      if (msg.type === "energy/get_prefs") return opts.prefs === false ? {} : prefs;
+      if (msg.type === "recorder/statistics_during_period" && msg.types[0] === "change") {
+        if (opts.fail) throw new Error("recorder busy");
+        return stats;
+      }
+      return {};
+    };
+    let r = mk(st(), {}, { callWS: ws({}) });
+    await flush();
+    const asked = r.h.ws.filter((x) => x.type === "recorder/statistics_during_period" && x.types[0] === "change");
+    eq("one hourly change request for the out counter", asked.map((x) => [x.statistic_ids, x.period]), [[[OUT], "hour"]]);
+    eq("the row sits between Night and the total", r.el.erow2.classList.contains("saved"), true);
+    eq("opens the out counter", r.el.erow2.getAttribute("data-more"), OUT);
+    // 5 kWh × (4.32 − 2.16 ÷ 0.95) = 10.23; 9 kWh = 18.42.
+    eq("day-hour kWh this month, ₴ beside it", r.el.eval2.innerHTML, "5.00 kWh<small>10.23 ₴</small>");
+    eq("since records began underneath", r.el.esub2.textContent, "since " + since + " · 18 ₴");
+    check("both sums and the efficiency in the tooltip",
+      head(r.el.erow2.dataset.tip) === "Saved by battery — 10.23 ₴ · 18.42 ₴ since " + since + " · efficiency 95 %",
+      r.el.erow2.dataset.tip);
+    check("line 1 fits the 90-character tooltip line", head(r.el.erow2.dataset.tip).length <= 90);
+    rerender(r, (s) => { s[OUT] = S("96"); });
+    check("not asked again within the hour",
+      r.h.ws.filter((x) => x.type === "recorder/statistics_during_period" && x.types[0] === "change").length === 1);
+
+    r = mk(st(), {}, { callWS: ws({ prefs: false }) });
+    await flush();
+    eq("no Energy prices: kWh only", r.el.eval2.innerHTML, "5.00 kWh");
+    eq("... and the lifetime in kWh", r.el.esub2.textContent, "since " + since + " · 9.0 kWh");
+
+    r = mk(Object.assign(base(), { [OUT]: S("95") }), {}, { callWS: ws({}) });
+    await flush();
+    eq("no in counter: efficiency 1", r.el.eval2.innerHTML, "5.00 kWh<small>10.80 ₴</small>");
+
+    r = mk(st(), {}, { callWS: ws({ fail: true }) });
+    await flush();
+    eq("statistics refused: says so, no 0 ₴", [r.el.eval2.textContent, r.el.esub2.textContent], ["—", "unavailable"]);
+    r = mk(st());
+    await flush();
+    eq("no statistics at all", [r.el.eval2.textContent, r.el.esub2.textContent], ["—", "no statistics"]);
   }
 
   /* --- the Meter tile ------------------------------------------------------------ */
@@ -1092,7 +1153,7 @@ async function inverterSuite() {
     eq(v + "battery", [el.socVal.textContent, el.battState.textContent, el.battSub.textContent],
       ["—%", "IDLE · NO DATA", "— V · — W idle"]);
     check(v + "selects disabled", el.maxChg.disabled && el.prio.disabled && el.acMode.disabled);
-    eq(v + "energy", el.eval2.textContent, "— kWh");
+    eq(v + "energy", el.eval3.textContent, "— kWh");
     check(v + "no chip on", [0, 1, 2].every((i) => !el["chip" + i].classList.contains("on")));
     check(v + "no icon lit", ["Nt", "Ad", "Pc"].every((k) => !el["chip" + k + "2"].classList.contains("on")));
     check(v + "adaptive dimmed", el.chipAd2.classList.contains("dis"));
