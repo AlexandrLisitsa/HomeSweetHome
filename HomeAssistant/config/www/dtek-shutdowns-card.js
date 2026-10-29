@@ -45,7 +45,7 @@
 const CARD = "dtek-shutdowns-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "2.0.2";
+const VERSION = "2.1.0";
 
 /*
  * The grid shows the NORMAL condition, not the exception: a cell is green when
@@ -176,8 +176,10 @@ const HELP = {
     + "E.g. green: mains present and nothing scheduled within the hour.",
   clock_hour: "One hour of today on the clock: the applied schedule, else the weekly table.\n"
     + "E.g. red 14:00–15:00: DTEK has the power off then; dim hours are already past.",
+  clock_emergency: "The outage in DTEK's live notice, from its start to the time it gives for power back.\n"
+    + "E.g. hatched red 13:50–17:54: emergency repairs, drawn over whatever the schedule says.",
   clock_center: "The countdown to the next change, or the state when nothing is ahead.\n"
-    + "E.g. 2h 30m to outage: the next scheduled window starts in two and a half hours.",
+    + "E.g. 3h 46m until back: DTEK's notice has the power back in under four hours.",
   tl_row: "One of four claims about today, 00:00–24:00, against the same hours as the clock.\n"
     + "E.g. Grid down is the inverter's measurement; the other three are what DTEK says.\n"
     + "Tap the name or the bar: opens the sensor's dialog, with its history.",
@@ -1003,8 +1005,31 @@ class DtekShutdownsCard extends HTMLElement {
       : weekLive && week[todayIdx] ? { row: week[todayIdx], source: "weekly table" }
       : null;
     const left = (ms) => fmtIn(Math.round(ms / 60000)).replace(/^in /, "");
+    // DTEK's live notice on the ring: an emergency outage has no schedule
+    // behind it, and on 29.10.2026 the clock sat grey and said "OFF" while the
+    // notice already had the power back by 17:54. Hours of today, clamped to
+    // the ring; with no end time it runs to the hand.
+    const noticeStart = dtekOutage ? parseDate(outageStart) : null;
+    const noticeEnd = dtekOutage ? parseDate(outageEnd) : null;
+    const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const toH = (t) => Math.min(24, Math.max(0, (t - midnight) / 36e5));
+    const emergency = noticeStart ? {
+      start: toH(noticeStart.getTime()),
+      end: noticeEnd ? toH(noticeEnd.getTime()) : nowH,
+      label: (reason || OUTAGE_TYPE[a.outage_type] || "Outage") + ", "
+        + fmtClock(outageStart) + DASH + (noticeEnd ? fmtClock(outageEnd) : "?"),
+    } : null;
+    if (emergency && emergency.end <= emergency.start) emergency.end = emergency.start;
     let center;
-    if (gridDown) {
+    if (noticeEnd) {
+      // The notice beats the schedule: it is about this outage, not a pattern.
+      const ms = noticeEnd.getTime() - now.getTime();
+      center = ms >= 60000
+        ? { big: left(ms), small: gridDown ? "until back" : "until it ends" }
+        : ms > -60000
+          ? { big: gridDown ? "OFF" : "NOW", small: "due back now" }
+          : { big: left(-ms), small: "overdue" };
+    } else if (gridDown) {
       center = schedNow && !schedNow.open
         ? { big: left(schedNow.end.getTime() - now.getTime()), small: "until back" }
         : { big: "OFF", small: unscheduled ? "not announced" : "no mains" };
@@ -1017,7 +1042,7 @@ class DtekShutdownsCard extends HTMLElement {
     }
 
     return {
-      kind, pill, todayRow, center, nowH,
+      kind, pill, todayRow, center, nowH, emergency,
       // Orange when only DTEK says it is off: a claim, not a measurement.
       accent: gridDown ? RED : dtekOutage || schedNow ? ORANGE : GREEN,
       // The accent in words, for the eyebrow's tooltip.
@@ -1151,6 +1176,24 @@ class DtekShutdownsCard extends HTMLElement {
           + arc(h + half / 2, h + (half + 1) / 2, half ? 0 : GAP, half ? GAP : 0) + '"' + t + "></path>";
       }
     }
+    // DTEK's notice over the hours, to the minute: the gone-by part dims like
+    // the hours under it. Halves of twelve hours at most, so a whole day of
+    // outage never asks SVG for an arc that ends where it starts.
+    const e = d.emergency;
+    if (e && e.end > e.start) {
+      const t = tip("DTEK notice", e.label, "clock_emergency");
+      const span = (h0, h1, cls) => {
+        if (h1 - h0 < 0.01) return "";
+        if (h1 - h0 > 12) return span(h0, h0 + 12, cls) + span(h0 + 12, h1, cls);
+        const a0 = angle(h0);
+        const a1 = angle(h1);
+        return '<path class="arc emerg' + cls + '" d="M ' + at(R1, a0) + " A " + R1 + " " + R1
+          + " 0 0 1 " + at(R1, a1) + " L " + at(R0, a1) + " A " + R0 + " " + R0
+          + " 0 0 0 " + at(R0, a0) + ' Z"' + t + "></path>";
+      };
+      const cut = Math.min(Math.max(d.nowH, e.start), e.end);
+      segs += span(e.start, cut, " past") + span(cut, e.end, "");
+    }
     let ticks = "";
     for (const h of [0, 6, 12, 18]) {
       ticks += '<text class="tick" x="' + at(R1 + 11, angle(h)).split(" ")[0] + '" y="'
@@ -1159,6 +1202,9 @@ class DtekShutdownsCard extends HTMLElement {
     }
     const c = d.center;
     return '<div class="clock"><svg viewBox="-8 -8 256 256" role="img" aria-label="Today, 00:00 to 24:00">'
+      + '<defs><pattern id="ds-hatch" width="6" height="6" patternUnits="userSpaceOnUse"'
+      + ' patternTransform="rotate(45)"><rect class="hatch-bg" width="6" height="6"></rect>'
+      + '<rect class="hatch-fg" width="3" height="6"></rect></pattern></defs>'
       + '<circle class="face" cx="120" cy="120" r="' + (R0 - 6) + '"></circle>'
       + segs + ticks
       // A short pointer across the ring, not a line from the middle: a full hand
@@ -1472,6 +1518,9 @@ a:hover { text-decoration: underline; }
 .arc.on { fill: var(--ds-ok); }
 .arc.out { fill: var(--ds-bad); }
 .arc.maybe { fill: var(--ds-warn); }
+.arc.emerg { fill: url(#ds-hatch); }
+.hatch-bg { fill: var(--ds-bad); }
+.hatch-fg { fill: var(--ds-bad-hi); }
 .arc.past { opacity: .35; }
 .arc:hover { filter: brightness(1.3); }
 .tick { fill: var(--ds-muted); font: 600 10px var(--ds-mono); }

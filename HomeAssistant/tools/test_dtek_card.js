@@ -131,6 +131,38 @@ eq("no schedule in force: one sentence", r.text(".days .note"),
   "No stabilisation schedule is in force, so DTEK has applied nothing to today or tomorrow.");
 eq("... and a green hero", r.text("h1"), "The power is on.");
 
+console.log("an emergency outage on the clock (29.10.2026: no schedule, notice 13:50-17:54)");
+{
+  const at = (hh, mm) => new Date(2026, 9, 17, hh, mm).toISOString();
+  const notice = (extra) => Object.assign({
+    schedule_in_effect: false, today: null, outage_active: true, outage_type: 2,
+    outage_reason: "Аварійні ремонтні роботи", outage_start: at(13, 50), outage_end: at(17, 54),
+  }, extra);
+  const ctr = (x) => x.root.querySelectorAll(".ctr text").map((t) => t.textContent);
+  const emerg = (x) => x.root.querySelectorAll(".arc.emerg").map((p) => p.getAttribute("class"));
+  let x = render("14:08", notice(), { gridDown: true, blocks: ["hero"] });
+  eq("centre counts down to DTEK's end", ctr(x), ["3h 46m", "until back"]);
+  eq("the span is on the ring, gone-by part dim", emerg(x), ["arc emerg past", "arc emerg"]);
+  eq("... with the notice in its tooltip",
+    /Аварійні ремонтні роботи, 13:50–17:54/.test(x.root.querySelector(".arc.emerg").getAttribute("data-tip")), true);
+  x = render("14:08", notice(), { blocks: ["hero"] });
+  eq("mains still there: until it ends", ctr(x), ["3h 46m", "until it ends"]);
+  x = render("18:20", notice(), { gridDown: true, blocks: ["hero"] });
+  eq("past DTEK's end: overdue", ctr(x), ["26m", "overdue"]);
+  eq("... and the whole span is past", emerg(x), ["arc emerg past"]);
+  x = render("14:08", notice({ outage_end: null }), { gridDown: true, blocks: ["hero"] });
+  eq("no end time: the old OFF", ctr(x), ["OFF", "no mains"]);
+  eq("... and the span runs to the hand", emerg(x), ["arc emerg past"]);
+  x = render("14:08", notice({ outage_start: new Date(2026, 9, 16, 22, 0).toISOString() }),
+    { gridDown: true, blocks: ["hero"] });
+  eq("started yesterday: the ring starts at midnight, 14 h past in two halves", emerg(x),
+    ["arc emerg past", "arc emerg past", "arc emerg"]);
+  eq("... drawn from the top of the ring",
+    /^M 120\.00 16\.00 /.test(x.root.querySelector(".arc.emerg").getAttribute("d")), true);
+  x = render("14:08", notice({ outage_active: false }), { gridDown: true, blocks: ["hero"] });
+  eq("no notice: no span", emerg(x), []);
+}
+
 console.log("debug_state on overrides the schedule");
 {
   const L = loadCard(FILE, { Date: pinnedDate(13, 39) });
