@@ -1,10 +1,10 @@
 /**
  * DTEK Shutdowns card.
  *
- * Draws the whole Shutdowns page: a hero status banner, the 7x24 heatmap of
- * DTEK's recurring weekly table, where the data came from, and the raw
- * entities. Registered as a Lovelace resource, so it is handed `hass` directly
- * -- no token, no iframe, no CORS.
+ * Draws the whole Shutdowns page: the power now beside a 24-hour clock of
+ * today, today's timeline of DTEK's claims against the inverter, DTEK's weekly
+ * table and where the data came from. Registered as a Lovelace resource, so it
+ * is handed `hass` directly -- no token, no iframe, no CORS.
  *
  * WHY THIS IS NOT MARKDOWN CARDS
  * ------------------------------
@@ -22,13 +22,30 @@
  * strings, Monday first -- exists only there; it is deliberately not
  * re-exposed on sensor.dtek_schedule_state_now.
  *
- * Colours follow the HA theme. Only the four semantic ones are literal.
+ * THE LOOK (2.0)
+ * -------------
+ * The house's console palette, like the Power station cards: graphite panels,
+ * muted sage / amber / red, IBM Plex Sans and Mono served from /local/fonts/.
+ * The colours are the card's own (--ds-* on :host), not the HA theme's, so the
+ * page reads the same under the light theme; the tests check every text pair
+ * against 4.5:1. Blocks, in the order a config lists them:
+ *
+ *   hero      what the power is doing, in words, beside a 24-hour clock of
+ *             today's schedule with a hand at now and the countdown inside;
+ *   timeline  today 00-24 on four rows: grid down (measured), DTEK's live
+ *             notice, the schedule, and outages nobody announced. The past
+ *             comes from the recorder (history/history_during_period),
+ *             fetched only while the card is on screen;
+ *   week      DTEK's recurring table, a column per day; while a schedule is
+ *             applied, today's and tomorrow's columns show it instead;
+ *   days      the applied today and tomorrow alone (kept for old configs);
+ *   source    where the data comes from.
  */
 
 const CARD = "dtek-shutdowns-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "1.6.0";
+const VERSION = "2.0.2";
 
 /*
  * The grid shows the NORMAL condition, not the exception: a cell is green when
@@ -41,9 +58,41 @@ const VERSION = "1.6.0";
  * redefines them instead of arguing with it. The fallbacks are the default
  * dark theme's values.
  */
-const GREEN = "var(--success-color, #43a047)";
-const RED = "var(--error-color, #db4437)";
-const ORANGE = "var(--warning-color, #ffa600)";
+const GREEN = "var(--ds-ok)";
+const RED = "var(--ds-bad)";
+const ORANGE = "var(--ds-warn)";
+
+/*
+ * IBM Plex, served from /local/fonts/ like the Power station cards. Chrome
+ * ignores an @font-face declared inside a shadow tree (see the long note in
+ * jkbms-battery-console-card.js), so the faces go on document.head, once.
+ */
+const FONT_STYLE_ID = "dtek-shutdowns-card-fonts";
+// Each file covers one script: without its unicode-range the later face would
+// claim every character and the other script would fall back.
+const LATIN = "U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, "
+  + "U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD";
+const CYRILLIC = "U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116";
+const FONTS = [
+  ["IBM Plex Mono", 400, "ibm-plex-mono-400-latin.woff2", LATIN],
+  ["IBM Plex Mono", 500, "ibm-plex-mono-500-latin.woff2", LATIN],
+  ["IBM Plex Mono", 600, "ibm-plex-mono-600-latin.woff2", LATIN],
+  ["IBM Plex Mono", 400, "ibm-plex-mono-400-cyrillic.woff2", CYRILLIC],
+  ["IBM Plex Sans", "400 600", "ibm-plex-sans-latin.woff2", LATIN],
+  ["IBM Plex Sans", "400 600", "ibm-plex-sans-cyrillic.woff2", CYRILLIC],
+].map(([family, weight, file, range]) => "@font-face{font-family:'" + family + "';font-style:normal;"
+  + "font-weight:" + weight + ";font-display:swap;src:url('/local/fonts/" + file + "') format('woff2');"
+  + "unicode-range:" + range + "}")
+  .join("\n");
+
+function installFonts() {
+  if (typeof document === "undefined" || !document.head) return;
+  if (document.getElementById(FONT_STYLE_ID)) return;
+  const style = document.createElement("style");
+  style.id = FONT_STYLE_ID;
+  style.textContent = FONTS;
+  document.head.appendChild(style);
+}
 
 /*
  * Mirrors STATE_LETTER and OFF_HALVES in config/dtek/dtek_poll.py.
@@ -123,8 +172,17 @@ const WILL_RETURN = ["plan_off", "table_off", "empty_preset",
  * Keep in step with docs/dtek-outage-schedule.md.
  */
 const HELP = {
-  now: "The dot and the bar: red with no mains, orange for a DTEK notice only, else green.\n"
-    + "E.g. green and pulsing: mains present and no outage recorded for this address.",
+  now: "The pill and the glow: red without mains, amber for a DTEK claim or a window soon.\n"
+    + "E.g. green: mains present and nothing scheduled within the hour.",
+  clock_hour: "One hour of today on the clock: the applied schedule, else the weekly table.\n"
+    + "E.g. red 14:00–15:00: DTEK has the power off then; dim hours are already past.",
+  clock_center: "The countdown to the next change, or the state when nothing is ahead.\n"
+    + "E.g. 2h 30m to outage: the next scheduled window starts in two and a half hours.",
+  tl_row: "One of four claims about today, 00:00–24:00, against the same hours as the clock.\n"
+    + "E.g. Grid down is the inverter's measurement; the other three are what DTEK says.\n"
+    + "Tap the name or the bar: opens the sensor's dialog, with its history.",
+  tl_block: "A stretch of today when this row says the power is off.\n"
+    + "E.g. 14:00–18:00, 4h 0m on the schedule row: DTEK's window for this afternoon.",
   ident: "The street and house as DTEK spells them, and the outage queue DTEK puts us in.\n"
     + "E.g. comes from secrets.yaml on the box, so the address is never typed into git.",
   headline: "Mains as the inverter measures it; DTEK's notice counts only while mains is up.\n"
@@ -165,6 +223,8 @@ const HELP = {
     + "E.g. red at Mo 19:00: no grid from 19:00 to 20:00, for certain.",
   legend_half: "A split cell: the green half is the half hour DTEK says the power is on.\n"
     + "E.g. green on top, grey below: power until :30, then a possible outage.",
+  legend_unsched: "Off while DTEK's schedule and its notices both said the power would be on.\n"
+    + "E.g. 10:15–11:00 amber: the inverter lost the grid and nobody had announced it.",
   legend_now: "The outlined cell is the current hour, in today's highlighted column.\n"
     + "E.g. at 14:20 on a Monday the Mo 14:00 cell is outlined.",
   last_poll: "When the poller last got a good answer from DTEK; it asks every 5 minutes.\n"
@@ -191,18 +251,22 @@ const DEFAULTS = {
   grid_entity: "binary_sensor.powmr_inverter_grid_condition_safe",
   unscheduled_entity: "binary_sensor.grid_outage_unscheduled",
   stale_entity: "binary_sensor.dtek_data_stale",
+  // The timeline's other two rows: DTEK's live notice, and the schedule.
+  outage_entity: "binary_sensor.dtek_outage_now",
+  scheduled_entity: "binary_sensor.dtek_scheduled_dark",
   poll_interval: 5, // minutes; matches scan_interval: 300 on the sensor
   debug_state: null, // on | outage | dtek | unscheduled | stale -- render only
   // Which of the three blocks this instance draws, in the order given.
   //
   // It exists so the provenance block can sit BELOW the claim-against-
   // measurement section, which is a separate dashboard section and cannot be
-  // reordered from inside a card. Two instances: [hero, week] above it,
-  // [source] below. Not a styling knob -- see BLOCKS.
-  blocks: ["hero", "days", "week", "source"],
+  // reordered from inside a card. Not a styling knob -- see BLOCKS.
+  blocks: ["hero", "timeline", "week", "source"],
 };
 
-const BLOCKS = ["hero", "days", "week", "source"];
+const BLOCKS = ["hero", "timeline", "days", "week", "source"];
+// How often the timeline asks the recorder again while nothing it shows changed.
+const HISTORY_TTL = 5 * 60000;
 
 const DEBUG_STATES = ["on", "outage", "dtek", "unscheduled", "stale"];
 
@@ -271,6 +335,28 @@ const isOff = (letter) => {
   const st = STATE[letter];
   return !!st && st.off > 0;
 };
+
+/**
+ * The stretches an entity was "on", from a history_during_period answer, as
+ * [start, end] in ms, clipped to [from, to]. minimal_response rows are {s, lu}
+ * (lu in seconds); full rows are {state, last_changed}. Each state lasts until
+ * the next row, the last one until `to`.
+ */
+function onSpans(rows, from, to) {
+  if (!Array.isArray(rows)) return [];
+  const pts = rows.map((r) => ({
+    on: (r.s !== undefined ? r.s : r.state) === "on",
+    t: r.lu !== undefined ? r.lu * 1000 : Date.parse(r.last_changed || r.last_updated),
+  })).filter((p) => !isNaN(p.t)).sort((a, b) => a.t - b.t);
+  const out = [];
+  pts.forEach((p, i) => {
+    if (!p.on) return;
+    const a = Math.max(from, p.t);
+    const b = Math.min(to, i + 1 < pts.length ? pts[i + 1].t : to);
+    if (b > a) out.push([a, b]);
+  });
+  return out;
+}
 
 /** Hours of darkness in one 24-character day string. */
 function offHours(row) {
@@ -363,8 +449,33 @@ class DtekShutdownsCard extends HTMLElement {
     super();
     this.attachShadow({ mode: "open" });
     cardTip(this, this.shadowRoot);
+    installFonts();
     this._fingerprint = null;
     this._timer = null;
+    // Today's history for the timeline: { day, key, at, spans, note } once fetched.
+    this._hist = null;
+    this._histBusy = false;
+    // Off screen or in a hidden tab: nothing moves and nothing is fetched.
+    this._offscreen = false;
+    this._onVisibility = () => this._pause();
+    // Anything carrying data-more opens HA's own dialog for that entity, as the
+    // stock history-graph's rows did. One listener on the root: innerHTML is
+    // replaced on every redraw, so per-element listeners would be lost.
+    const open = (ev) => {
+      let el = ev.target;
+      while (el && el !== this.shadowRoot && !(el.getAttribute && el.getAttribute("data-more"))) {
+        el = el.parentNode;
+      }
+      if (!el || el === this.shadowRoot) return false;
+      this.dispatchEvent(new CustomEvent("hass-more-info", {
+        detail: { entityId: el.getAttribute("data-more") }, bubbles: true, composed: true,
+      }));
+      return true;
+    };
+    this.shadowRoot.addEventListener("click", open);
+    this.shadowRoot.addEventListener("keydown", (ev) => {
+      if ((ev.key === "Enter" || ev.key === " ") && open(ev)) ev.preventDefault();
+    });
   }
 
   setConfig(config) {
@@ -396,15 +507,41 @@ class DtekShutdownsCard extends HTMLElement {
     // The "now" ring and the countdown move on their own. Nothing else does,
     // so 30s is enough to keep the minute in the fingerprint honest.
     if (!this._timer) this._timer = window.setInterval(() => this._render(), 30000);
+    if (!this._seen && window.IntersectionObserver) {
+      this._seen = new window.IntersectionObserver((entries) => {
+        this._offscreen = !entries[entries.length - 1].isIntersecting;
+        this._pause();
+      });
+    }
+    if (this._seen) this._seen.observe(this);
+    if (typeof document.addEventListener === "function") {
+      document.addEventListener("visibilitychange", this._onVisibility);
+    }
   }
 
   disconnectedCallback() {
     if (this._timer) window.clearInterval(this._timer);
     this._timer = null;
+    if (this._seen) this._seen.disconnect();
+    if (typeof document.removeEventListener === "function") {
+      document.removeEventListener("visibilitychange", this._onVisibility);
+    }
+  }
+
+  /** Every animation holds while no one can see the card; coming back catches up. */
+  _pause() {
+    const paused = this._offscreen || !!document.hidden;
+    if (paused) this.setAttribute("paused", "");
+    else this.removeAttribute("paused");
+    if (!paused) this._render();
+  }
+
+  get _paused() {
+    return this.hasAttribute("paused");
   }
 
   getCardSize() {
-    const per = { hero: 5, days: 15, week: 15, source: 4 };
+    const per = { hero: 6, timeline: 4, days: 15, week: 15, source: 4 };
     return this._config
       ? this._config.blocks.reduce((t, b) => t + (per[b] || 0), 0)
       : 22;
@@ -435,19 +572,71 @@ class DtekShutdownsCard extends HTMLElement {
   _fingerprintOf(now) {
     const cfg = this._config;
     const main = this._stateObj(cfg.entity);
-    const watched = [cfg.grid_entity, cfg.unscheduled_entity, cfg.stale_entity];
+    const watched = [cfg.grid_entity, cfg.unscheduled_entity, cfg.stale_entity,
+      cfg.outage_entity, cfg.scheduled_entity];
     return JSON.stringify([
       main ? main.state : null,
       main ? main.attributes : null,
       watched.map((id) => this._state(id)),
       now.getDay(), now.getHours(), now.getMinutes(),
       cfg.debug_state,
+      this._hist && [this._hist.at, this._hist.note],
     ]);
+  }
+
+  // --- the timeline's history ----------------------------------------------
+
+  /** The four entities the timeline draws, in row order. */
+  _timelineEntities() {
+    const c = this._config;
+    return [c.grid_entity, c.outage_entity, c.scheduled_entity, c.unscheduled_entity];
+  }
+
+  /**
+   * Whether to ask the recorder again: never while hidden or already asking;
+   * otherwise on a new day, when one of the four states changed since the last
+   * answer, or every HISTORY_TTL.
+   */
+  _wantHistory(now) {
+    if (this._config.blocks.indexOf("timeline") < 0) return false;
+    if (this._paused || this._histBusy || !this._hass || typeof this._hass.callWS !== "function") return false;
+    const h = this._hist;
+    const key = this._timelineEntities().map((id) => this._state(id)).join("|");
+    return !h || h.day !== now.toDateString() || h.key !== key || now.getTime() - h.at > HISTORY_TTL;
+  }
+
+  /** One recorder request for the four entities since midnight; redraws when it answers. */
+  async _loadHistory(now) {
+    this._histBusy = true;
+    const ids = this._timelineEntities();
+    const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const key = ids.map((id) => this._state(id)).join("|");
+    let spans = null;
+    let note = null;
+    try {
+      const reply = await this._hass.callWS({
+        type: "history/history_during_period",
+        start_time: midnight.toISOString(),
+        end_time: now.toISOString(),
+        entity_ids: ids,
+        minimal_response: true,
+        no_attributes: true,
+        significant_changes_only: false,
+      });
+      spans = ids.map((id) => onSpans((reply || {})[id], midnight.getTime(), now.getTime()));
+    } catch (err) {
+      note = "History is unavailable" + (err && err.message ? " (" + err.message + ")" : "")
+        + ", so only the schedule is drawn.";
+    }
+    this._hist = { day: now.toDateString(), key, at: Date.now(), spans, note };
+    this._histBusy = false;
+    this._render();
   }
 
   _render() {
     if (!this._hass || !this._config) return;
     const now = new Date();
+    if (this._wantHistory(now)) this._loadHistory(now);
     const print = this._fingerprintOf(now);
     if (print === this._fingerprint) return;
     this._fingerprint = print;
@@ -534,6 +723,16 @@ class DtekShutdownsCard extends HTMLElement {
     // be 168 allocations a minute for a card showing three rows of text.
     const wantCells = cfg.blocks.indexOf("week") >= 0;
     const todayIdx = (now.getDay() + 6) % 7; // 0 = Monday, as `week` is
+    const nowH = now.getHours() + now.getMinutes() / 60;
+    // A cell of today that has gone by is drawn dim, in the week and the days alike.
+    const past = (isToday, h) => (isToday && h + 1 <= nowH ? " past" : "");
+
+    // What DTEK has applied to today and tomorrow, when a schedule is in force:
+    // it beats the recurring pattern in those two columns of the week.
+    const inEffect = a.schedule_in_effect === true;
+    const appliedRow = (row) => (inEffect && typeof row === "string" && row.length === 24 ? row : null);
+    const appliedToday = appliedRow(a.today);
+    const appliedTmrw = appliedRow(a.tomorrow);
 
     // --- the grid and its totals
     const days = [];
@@ -544,7 +743,8 @@ class DtekShutdownsCard extends HTMLElement {
       for (let di = 0; di < 7; di++) {
         const date = new Date(monday.getFullYear(), monday.getMonth(),
                               monday.getDate() + di);
-        const row = week[di] || "";
+        const own = di === todayIdx ? appliedToday : di === todayIdx + 1 ? appliedTmrw : null;
+        const row = own || week[di] || "";
         const cells = [];
         let off = 0;
         for (let h = 0; h < 24; h++) {
@@ -552,12 +752,15 @@ class DtekShutdownsCard extends HTMLElement {
           off += st.off;
           if (!wantCells) continue;
           cells.push({
-            cls: st.cls + (di === todayIdx && h === now.getHours() ? " now" : ""),
+            cls: st.cls + (di === todayIdx && h === now.getHours() ? " now" : "")
+              + past(di === todayIdx, h),
             name: DAY_SHORT[di] + " " + pad2(h) + ":00",
-            label: st.label,
+            label: own ? st.label + ", applied schedule" : st.label,
+            key: own ? "sched_cell" : "cell",
           });
         }
-        weekOff += off;
+        // The tile counts the recurring week; a column shows what applies to it.
+        weekOff += (week[di] ? offHours(week[di]) : 0);
         days.push({
           name: DAY_SHORT[di],
           cls: di === todayIdx ? "today" : di === todayIdx + 1 ? "tmrw" : "",
@@ -565,12 +768,13 @@ class DtekShutdownsCard extends HTMLElement {
             : pad2(date.getDate()) + "." + pad2(date.getMonth() + 1),
           cells,
           total: fmtHours(off),
+          heavy: off >= 10,
+          applied: !!own,
         });
       }
     }
 
     // --- the applied schedule: today and tomorrow, and whether now is dark
-    const inEffect = a.schedule_in_effect === true;
     const schedNow = inEffect && dbg !== "on"
       ? scheduleWindow(a.today, a.tomorrow, now) : null;
     const schedEnd = schedNow
@@ -580,8 +784,10 @@ class DtekShutdownsCard extends HTMLElement {
       ? fmtClock(schedNow.start.toISOString()) + DASH + schedEnd : null;
     const schedLeft = schedNow
       ? fmtIn(Math.round((schedNow.end.getTime() - now.getTime()) / 60000)) : null;
+    // Today and tomorrow on their own: the "days" block, and the week block's
+    // view when DTEK applies a schedule but draws no recurring table.
     const applied = [];
-    if (inEffect && cfg.blocks.indexOf("days") >= 0) {
+    if (inEffect && (cfg.blocks.indexOf("days") >= 0 || (wantCells && !weekLive))) {
       [a.today, a.tomorrow].forEach((row, di) => {
         const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() + di);
         const name = di === 0 ? "Today" : "Tomorrow";
@@ -590,15 +796,17 @@ class DtekShutdownsCard extends HTMLElement {
         for (let h = 0; h < 24; h++) {
           const st = ok ? STATE[row[h]] || STATE["?"] : STATE["?"];
           cells.push({
-            cls: st.cls + (di === 0 && h === now.getHours() ? " now" : ""),
+            cls: st.cls + (di === 0 && h === now.getHours() ? " now" : "") + past(di === 0, h),
             name: name + " " + pad2(h) + ":00",
             label: ok ? st.label : "not published yet",
+            key: "sched_cell",
           });
         }
+        const off = ok ? offHours(row) : 0;
         applied.push({
           name, cls: di === 0 ? "today" : "tmrw",
           sub: pad2(date.getDate()) + "." + pad2(date.getMonth() + 1),
-          cells, total: ok ? fmtHours(offHours(row)) : MDASH, published: ok,
+          cells, total: ok ? fmtHours(off) : MDASH, published: ok, heavy: off >= 10,
         });
       });
     }
@@ -615,6 +823,7 @@ class DtekShutdownsCard extends HTMLElement {
       win = {
         label: schedSpan, at: fmtClock(schedNow.start.toISOString()),
         when: "now, ends " + schedLeft, whenShort: "now", certain: schedNow.certain,
+        start: schedNow.start,
       };
     } else if (appliedStart) {
       const appliedEnd = parseDate(a.next_outage_end);
@@ -623,7 +832,7 @@ class DtekShutdownsCard extends HTMLElement {
       win = {
         label: at + DASH + (appliedEnd
           ? pad2(appliedEnd.getHours()) + ":" + pad2(appliedEnd.getMinutes()) : "?"),
-        at, when: when.long, whenShort: when.short, certain: true,
+        at, when: when.long, whenShort: when.short, certain: true, start: appliedStart,
       };
     } else if (weekLive) {
       const nowAbs = todayIdx * 24 + now.getHours();
@@ -642,7 +851,7 @@ class DtekShutdownsCard extends HTMLElement {
             + (w.endHalf ? clock(w.end, true) : clock(w.end + 1, false))
             + (crosses > 0 ? "+" + crosses : ""),
           at: clock(w.start, w.startHalf),
-          when: when.long, whenShort: when.short, certain: w.certain,
+          when: when.long, whenShort: when.short, certain: w.certain, start,
         };
       }
     }
@@ -776,7 +985,39 @@ class DtekShutdownsCard extends HTMLElement {
                       : " and " + fmtHours(m) + " tomorrow") + ".";
     }
 
+    // --- the pill, the glow and the clock
+    //
+    // Minutes to the next window, when one is ahead and not running yet.
+    const toNext = win && win.start && !schedNow
+      ? Math.round((win.start.getTime() - now.getTime()) / 60000) : null;
+    // Amber an hour ahead of a window, so the page warns before the alert does.
+    const soon = !gridDown && !dtekOutage && !schedNow && toNext !== null && toNext <= 60;
+    const kind = gridDown ? "bad" : dtekOutage || schedNow || soon ? "warn" : "ok";
+    const pill = gridDown ? (unscheduled ? "Off · not announced" : "Power off")
+      : dtekOutage ? "DTEK notice"
+      : schedNow ? (schedNow.certain ? "Scheduled outage" : "Possible outage")
+      : soon ? (win.certain ? "Outage soon" : "Possible outage soon")
+      : "Power on";
+    // The clock's ring is today: what DTEK applied, else the recurring row.
+    const todayRow = appliedToday ? { row: appliedToday, source: "applied schedule" }
+      : weekLive && week[todayIdx] ? { row: week[todayIdx], source: "weekly table" }
+      : null;
+    const left = (ms) => fmtIn(Math.round(ms / 60000)).replace(/^in /, "");
+    let center;
+    if (gridDown) {
+      center = schedNow && !schedNow.open
+        ? { big: left(schedNow.end.getTime() - now.getTime()), small: "until back" }
+        : { big: "OFF", small: unscheduled ? "not announced" : "no mains" };
+    } else if (schedNow) {
+      center = { big: left(schedNow.end.getTime() - now.getTime()), small: "until it ends" };
+    } else if (toNext !== null && toNext <= 36 * 60) {
+      center = { big: left(toNext * 60000), small: win.certain ? "to outage" : "to maybe off" };
+    } else {
+      center = { big: "ON", small: todayRow ? "nothing ahead" : "no schedule" };
+    }
+
     return {
+      kind, pill, todayRow, center, nowH,
       // Orange when only DTEK says it is off: a claim, not a measurement.
       accent: gridDown ? RED : dtekOutage || schedNow ? ORANGE : GREEN,
       // The accent in words, for the eyebrow's tooltip.
@@ -793,7 +1034,8 @@ class DtekShutdownsCard extends HTMLElement {
       stale,
       warnings,
       feedLabel: stale ? "Stale" : warnings.length ? "Drift" : "Healthy",
-      feedColor: stale || warnings.length ? ORANGE : GREEN,
+      // The bright variants: this colour is text, and must read at 4.5:1.
+      feedColor: stale || warnings.length ? "var(--ds-warn-hi)" : "var(--ds-ok-hi)",
       feedSentence: stale
         ? "The poller has not returned fresh data"
           + (a.error ? " (" + a.error + ")" : "")
@@ -817,14 +1059,15 @@ class DtekShutdownsCard extends HTMLElement {
     const cfg = this._config;
     const main = this._stateObj(cfg.entity);
     if (!main) {
-      return '<ha-card><div class="pad"><h2>DTEK Shutdowns</h2>'
+      return '<div class="wrap k-warn"><ha-card><div class="pad"><h2>DTEK Shutdowns</h2>'
         + '<p class="note err">' + esc(cfg.entity) + " does not exist. Is "
-        + "packages/dtek_shutdowns.yaml loaded?</p></div></ha-card>";
+        + "packages/dtek_shutdowns.yaml loaded?</p></div></ha-card></div>";
     }
     const d = this._derive(now, main.attributes || {});
-    const draw = { hero: () => this._hero(d), days: () => this._daysCard(d),
-                   week: () => this._weekCard(d), source: () => this._sourceCard(d) };
-    return '<div class="wrap" style="--accent:' + d.accent + '">'
+    const draw = { hero: () => this._hero(d), timeline: () => this._timelineCard(d, now),
+                   days: () => this._daysCard(d), week: () => this._weekCard(d),
+                   source: () => this._sourceCard(d) };
+    return '<div class="wrap k-' + d.kind + '" style="--accent:' + d.accent + '">'
       + this._config.blocks.map((b) => draw[b]()).join("")
       + "</div>";
   }
@@ -841,10 +1084,11 @@ class DtekShutdownsCard extends HTMLElement {
 
     return '<ha-card class="hero"><div class="pad">'
       + '<div class="hero-left">'
-      // The eyebrow's tooltip covers the dot and "Right now"; the address chip
-      // means something else and carries its own.
+      // The eyebrow's tooltip covers the pill; the address chip means something
+      // else and carries its own.
       + '<div class="eyebrow"' + tip("Right now", d.nowWord, "now") + '>'
-      + '<span class="dot"></span><span class="lbl">Right now</span>'
+      + '<span class="pill"><span class="dot"></span><span class="lbl">' + esc(d.pill)
+      + "</span></span>"
       + (d.identity ? '<span class="ident"' + tip("Address and queue", d.identity, "ident")
         + ">" + esc(d.identity) + "</span>" : "")
       + "</div>"
@@ -860,6 +1104,7 @@ class DtekShutdownsCard extends HTMLElement {
         + '<span class="k">' + esc(k) + '</span><span class="v">' + esc(v)
         + "</span></div>").join("")
       + "</div>"
+      + this._clock(d)
       + '<div class="tiles">'
       // Both of these are read off the recurring pattern. When DTEK withdraws
       // it they have no answer, and a dash is the honest one -- "0h off" would
@@ -873,44 +1118,179 @@ class DtekShutdownsCard extends HTMLElement {
       + "</div></div></ha-card>";
   }
 
-  _daysCard(d) {
-    // Same grid as the weekly table, two columns: what DTEK has actually
-    // applied, which is what the site shows under "Графік відключень".
-    let inner;
-    if (!d.inEffect) {
-      inner = '<p class="note">No stabilisation schedule is in force, so DTEK '
-        + "has applied nothing to today or tomorrow.</p>";
-    } else {
-      let hours = '<div class="hours">';
-      for (let h = 0; h < 24; h++) hours += '<div class="hr">' + pad2(h) + "</div>";
-      hours += "</div>";
-      let cols = "";
-      d.applied.forEach((day) => {
-        let cells = '<div class="cells">';
-        day.cells.forEach((c) => {
-          cells += '<div class="c ' + c.cls + '"' + tip(c.name, c.label, "sched_cell") + "></div>";
-        });
-        cells += "</div>";
-        cols += '<div class="day ' + day.cls + '">'
-          + '<div class="dhead"><span class="dname">' + esc(day.name) + "</span>"
-          + '<span class="dsub">' + esc(day.sub) + "</span></div>"
-          + cells
-          + '<div class="dtot"' + tip(day.name + " total",
-            day.published ? day.total + " off" : "not published", "sched_total")
-          + ">" + esc(day.total) + "</div></div>";
-      });
-      const item = (cls, text, key) => "<span" + tip(text, null, key) + ">"
-        + '<span class="sw ' + cls + '"></span>' + esc(text) + "</span>";
-      inner = '<div class="grid">' + hours + cols + "</div>"
-        + '<div class="legend">'
-        + item("on", "Power on", "legend_on")
-        + item("out", "Scheduled outage", "legend_out")
-        + item("maybe", "Possible outage", "legend_maybe")
-        + item("out-2", "Off for half the hour", "legend_half")
-        + item("unknown", "Not published", "sched_total")
-        + item("nowsw", "Now", "legend_now")
-        + "</div>";
+  /**
+   * Today as a 24-hour ring, midnight at the top: each hour an arc in two
+   * halves (DTEK's half-hour letters split it), the past dimmed, a hand at now
+   * and the countdown in the middle. Drawn in the SVG's own 240-unit box.
+   */
+  _clock(d) {
+    const C = 120;
+    const R1 = 104;
+    const R0 = 84;
+    const GAP = 0.014; // radians between hours, none between the halves of one
+    const at = (r, a) => (C + r * Math.cos(a)).toFixed(2) + " " + (C + r * Math.sin(a)).toFixed(2);
+    const angle = (h) => (h / 24) * 2 * Math.PI - Math.PI / 2;
+    const arc = (h0, h1, g0, g1) => {
+      const a0 = angle(h0) + g0;
+      const a1 = angle(h1) - g1;
+      return "M " + at(R1, a0) + " A " + R1 + " " + R1 + " 0 0 1 " + at(R1, a1)
+        + " L " + at(R0, a1) + " A " + R0 + " " + R0 + " 0 0 0 " + at(R0, a0) + " Z";
+    };
+    const row = d.todayRow ? d.todayRow.row : null;
+    let segs = "";
+    for (let h = 0; h < 24; h++) {
+      const letter = row ? row[h] : null;
+      const st = letter ? STATE[letter] || STATE["?"] : null;
+      const t = tip(pad2(h) + ":00" + DASH + pad2(h + 1) + ":00",
+                    st ? st.label + ", " + d.todayRow.source : "no schedule published", "clock_hour");
+      for (const half of [0, 1]) {
+        const cls = !st || st.cls === "unknown" ? "none"
+          : halfDark(letter, half) ? (CERTAIN.indexOf(letter) >= 0 ? "out" : "maybe") : "on";
+        const past = h + (half + 1) / 2 <= d.nowH ? " past" : "";
+        segs += '<path class="arc ' + cls + past + '" d="'
+          + arc(h + half / 2, h + (half + 1) / 2, half ? 0 : GAP, half ? GAP : 0) + '"' + t + "></path>";
+      }
     }
+    let ticks = "";
+    for (const h of [0, 6, 12, 18]) {
+      ticks += '<text class="tick" x="' + at(R1 + 11, angle(h)).split(" ")[0] + '" y="'
+        + (Number(at(R1 + 11, angle(h)).split(" ")[1]) + 3.5).toFixed(2)
+        + '" text-anchor="middle">' + pad2(h) + "</text>";
+    }
+    const c = d.center;
+    return '<div class="clock"><svg viewBox="-8 -8 256 256" role="img" aria-label="Today, 00:00 to 24:00">'
+      + '<circle class="face" cx="120" cy="120" r="' + (R0 - 6) + '"></circle>'
+      + segs + ticks
+      // A short pointer across the ring, not a line from the middle: a full hand
+      // would cross the countdown twice a day.
+      + '<g class="hand" transform="rotate(' + ((d.nowH / 24) * 360).toFixed(1) + ' 120 120)">'
+      + '<line x1="120" y1="' + (C - R0 + 10) + '" x2="120" y2="' + (C - R1 - 5) + '"></line>'
+      + '<circle class="nub" cx="120" cy="' + (C - R1 - 5) + '" r="3"></circle></g>'
+      + '<g class="ctr"' + tip("Countdown", c.big + " " + c.small, "clock_center") + ">"
+      + '<text class="big' + (c.big.length > 5 ? " long" : "") + '" x="120" y="122" text-anchor="middle">'
+      + esc(c.big) + "</text>"
+      + '<text class="small" x="120" y="142" text-anchor="middle">' + esc(c.small) + "</text></g>"
+      + "</svg></div>";
+  }
+
+  /**
+   * Today, 00:00-24:00, on four rows against the clock's hours: what the
+   * inverter measured, DTEK's live notice, the schedule, and what nobody
+   * announced. The past is the recorder's; the schedule row also shows the
+   * rest of the day from today's row.
+   */
+  _timelineCard(d, now) {
+    const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const DAY = 864e5;
+    const nowMs = now.getTime();
+    const pct = (ms) => (((ms - midnight) / DAY) * 100).toFixed(3);
+    const hm = (ms) => (ms - midnight >= DAY ? "24:00"
+      : pad2(new Date(ms).getHours()) + ":" + pad2(new Date(ms).getMinutes()));
+    const h = this._hist;
+    const fresh = !!(h && h.day === now.toDateString() && h.spans);
+
+    // The schedule's dark runs over today, half hour by half hour, by class.
+    const runs = [];
+    if (d.todayRow) {
+      let open = null;
+      for (let i = 0; i <= 48; i++) {
+        const letter = d.todayRow.row[Math.floor(i / 2)];
+        const cls = i < 48 && halfDark(letter, i % 2)
+          ? (CERTAIN.indexOf(letter) >= 0 ? "out" : "maybe") : null;
+        if (open && open.cls !== cls) { runs.push([open.from, midnight + i * 18e5, open.cls]); open = null; }
+        if (cls && !open) open = { from: midnight + i * 18e5, cls };
+      }
+    }
+    const clip = (list, a, b, extra) => list
+      .map(([s, e, cls]) => [Math.max(s, a), Math.min(e, b), (cls || "out") + (extra || "")])
+      .filter(([s, e]) => e > s);
+    const span = (i) => (fresh ? h.spans[i].map(([s, e]) => [s, e, null]) : []);
+
+    const schedPast = fresh ? span(2) : clip(runs, midnight, nowMs, " past");
+    const rows = [
+      ["Grid down", "measured by the inverter", clip(span(0), midnight, nowMs), this._config.grid_entity],
+      ["DTEK says outage", "its live notice", clip(span(1), midnight, nowMs), this._config.outage_entity],
+      ["On the schedule", d.todayRow ? d.todayRow.source : "no schedule",
+        clip(schedPast, midnight, nowMs).concat(clip(runs, nowMs, midnight + DAY)), this._config.scheduled_entity],
+      ["Unscheduled", "down, and nobody said so",
+        clip(span(3), midnight, nowMs).map(([s, e]) => [s, e, "warn"]), this._config.unscheduled_entity],
+    ];
+    const nowLine = '<span class="nowline" style="left:calc(' + pct(nowMs) + '% - 1px)"></span>';
+    let body = "";
+    rows.forEach(([name, sub, blocks, entity]) => {
+      const on = this._state(entity) === "on";
+      // The name and the bar both open the sensor's own dialog; a block inside
+      // the bar keeps its own tooltip and opens the same dialog.
+      const more = ' data-more="' + esc(entity) + '" role="button" tabindex="0"'
+        + tip(name, on ? "off now" : "clear now", "tl_row");
+      body += '<div class="tlname"' + more + ">"
+        + esc(name) + "<small>" + esc(sub) + "</small></div>"
+        + '<div class="bar"' + more + ">"
+        + blocks.map(([s, e, cls]) => '<span class="blk ' + cls + '" style="left:' + pct(s)
+          + "%;width:" + (((e - s) / DAY) * 100).toFixed(3) + '%"'
+          + tip(name, hm(s) + DASH + hm(e) + ", " + fmtIn(Math.round((e - s) / 60000)).replace(/^in /, ""),
+                "tl_block") + "></span>").join("")
+        + nowLine + "</div>";
+    });
+    const item = (cls, text, key) => "<span" + tip(text, null, key) + ">"
+      + '<span class="sw ' + cls + '"></span>' + esc(text) + "</span>";
+    return '<ha-card class="timeline"><div class="pad">'
+      + '<div class="head"><h2>Today</h2></div>'
+      + '<p class="blurb">DTEK\'s claim against the inverter\'s measurement.</p>'
+      + (fresh ? "" : '<p class="note">' + esc(h && h.note ? h.note : "Loading today's history from the recorder.")
+        + "</p>")
+      + '<div class="tl">' + body
+      + '<div class="axis"><span>00</span><span>06</span><span>12</span><span>18</span><span>24</span></div>'
+      + "</div>"
+      + '<div class="legend">'
+      + item("out", "Off", "legend_out")
+      + item("maybe", "Possible outage", "legend_maybe")
+      + item("warn", "Off, not announced", "legend_unsched")
+      + "</div></div></ha-card>";
+  }
+
+  /** Hours down the side, a column per day, the legend under it. */
+  _grid(cols, totalKey, withUnknown) {
+    let hours = '<div class="hours">';
+    for (let h = 0; h < 24; h++) hours += '<div class="hr">' + pad2(h) + "</div>";
+    hours += "</div>";
+    let out = "";
+    cols.forEach((day) => {
+      let cells = '<div class="cells">';
+      day.cells.forEach((c) => {
+        cells += '<div class="c ' + c.cls + '"' + tip(c.name, c.label, c.key) + "></div>";
+      });
+      cells += "</div>";
+      out += '<div class="day ' + day.cls + (day.applied ? " applied" : "") + '">'
+        + '<div class="dhead"><span class="dname">' + esc(day.name) + "</span>"
+        + '<span class="dsub">' + esc(day.sub) + "</span></div>"
+        + cells
+        + '<div class="dtot' + (day.heavy ? " heavy" : "") + '"'
+        + tip(day.name + " total", day.published === false ? "not published" : day.total + " off",
+              day.applied || totalKey === "sched_total" ? "sched_total" : totalKey)
+        + ">" + esc(day.total) + "</div></div>";
+    });
+    // The swatch inherits its item's tooltip.
+    const item = (cls, text, key) => "<span" + tip(text, null, key) + ">"
+      + '<span class="sw ' + cls + '"></span>' + esc(text) + "</span>";
+    return '<div class="grid">' + hours + out + "</div>"
+      + '<div class="legend">'
+      + item("on", "Power on", "legend_on")
+      + item("out", "Scheduled outage", "legend_out")
+      + item("maybe", "Possible outage", "legend_maybe")
+      + item("out-2", "Off for half the hour", "legend_half")
+      + (withUnknown ? item("unknown", "Not published", "sched_total") : "")
+      + item("nowsw", "Now", "legend_now")
+      + "</div>";
+  }
+
+  _daysCard(d) {
+    // What DTEK has actually applied, which is what the site shows under
+    // "Графік відключень": the week's grid, two columns.
+    const inner = d.inEffect && d.applied.length
+      ? this._grid(d.applied, "sched_total", true)
+      : '<p class="note">No stabilisation schedule is in force, so DTEK '
+        + "has applied nothing to today or tomorrow.</p>";
     return '<ha-card class="week days"><div class="pad">'
       + '<div class="head"><h2>Today and tomorrow</h2>'
       + '<span class="stamp"' + tip("Schedule published", d.published, "published")
@@ -919,65 +1299,37 @@ class DtekShutdownsCard extends HTMLElement {
   }
 
   _weekCard(d) {
-    // The card, its heading and the Published stamp stay in all three branches.
+    // The card, its heading and the Published stamp stay in every branch.
     // DTEK does the same -- discon-schedule.js:708 empties #tableRenderElem and
     // leaves the section standing -- and on the one screen anybody opens during
     // a blackout, a card that vanished is indistinguishable from a broken one.
     let inner;
-    let blurb;
+    let blurb = null;
+    // With the table withdrawn, what DTEK applied to today and tomorrow is all
+    // there is to draw.
+    const appliedOnly = d.inEffect && d.applied.length
+      ? '<p class="blurb">DTEK has applied a schedule to today and tomorrow:</p>'
+        + this._grid(d.applied, "sched_total", true) : "";
     if (!d.week) {
-      blurb = null;
       inner = '<p class="note">DTEK publishes no recurring table for this '
-        + "address.</p>";
+        + "address.</p>" + appliedOnly;
     } else if (!d.weekLive) {
-      blurb = null;
       inner = '<p class="note">' + esc(WITHHELD[d.hiddenReason] || WITHHELD.plan_off)
         + (WILL_RETURN.indexOf(d.hiddenReason) >= 0
-           ? " Last published " + esc(d.published) + "." : "") + "</p>";
+           ? " Last published " + esc(d.published) + "." : "") + "</p>" + appliedOnly;
     } else {
-      blurb = true;
-      let hours = '<div class="hours">';
-      for (let h = 0; h < 24; h++) hours += '<div class="hr">' + pad2(h) + "</div>";
-      hours += "</div>";
-
-      let cols = "";
-      d.days.forEach((day) => {
-        let cells = '<div class="cells">';
-        day.cells.forEach((c) => {
-          cells += '<div class="c ' + c.cls + '"' + tip(c.name, c.label, "cell") + "></div>";
-        });
-        cells += "</div>";
-        cols += '<div class="day ' + day.cls + '">'
-          + '<div class="dhead"><span class="dname">' + esc(day.name) + "</span>"
-          + '<span class="dsub">' + esc(day.sub) + "</span></div>"
-          + cells
-          + '<div class="dtot"' + tip(day.name + " total", day.total + " off", "day_total")
-          + ">" + esc(day.total) + "</div></div>";
-      });
-
-      // The swatch inherits its item's tooltip.
-      const item = (cls, text, key) => "<span" + tip(text, null, key) + ">"
-        + '<span class="sw ' + cls + '"></span>' + esc(text) + "</span>";
-      inner = '<div class="grid">' + hours + cols + "</div>"
-        + '<div class="legend">'
-        + item("on", "Power on", "legend_on")
-        + item("maybe", "Possible outage", "legend_maybe")
-        + item("out", "Scheduled outage", "legend_out")
-        + item("maybe-2", "On for half the hour", "legend_half")
-        + item("nowsw", "Now", "legend_now")
-        + "</div>";
+      blurb = "The pattern DTEK last published for " + d.queue + ". Today and tomorrow "
+        + "are highlighted" + (d.days.some((x) => x.applied)
+          ? " and show the schedule DTEK applied to them" : "")
+        + "; every other column repeats weekly until a new schedule arrives. Possible "
+        + "outages count as off in the totals, the same call the alerts make.";
+      inner = this._grid(d.days, "day_total", false);
     }
-
     return '<ha-card class="week"><div class="pad">'
       + '<div class="head"><h2>Recurring weekly schedule</h2>'
       + '<span class="stamp"' + tip("Schedule published", d.published, "published")
       + ">Published " + esc(d.published) + "</span></div>"
-      + (blurb === null ? ""
-         : '<p class="blurb">The pattern DTEK last published for '
-           + esc(d.queue) + ". Today and tomorrow are highlighted; every other "
-           + "column repeats weekly until a new schedule arrives. Possible "
-           + "outages count as off in the totals, the same call the alerts "
-           + "make.</p>")
+      + (blurb === null ? "" : '<p class="blurb">' + esc(blurb) + "</p>")
       + inner + "</div></ha-card>";
   }
 
@@ -1016,197 +1368,242 @@ class DtekShutdownsCard extends HTMLElement {
 
 // --- styles ----------------------------------------------------------------
 //
-// Greys map onto theme variables so the card follows a theme change instead of
-// staying a black rectangle on a light one. The four semantic colours stay
-// literal: they mean something, and a theme must not repaint an outage green.
+// The console palette is the card's own (--ds-* on :host), not the HA theme's:
+// the panels are graphite whatever the theme, so their text must not take the
+// theme's text colours, which are dark in the light theme. test_dtek_card.js
+// checks every text/background pair below for 4.5:1.
 const STYLE = `
-:host { display: block; }
+:host {
+  display: block; container-type: inline-size;
+  --ds-ground: #080909;
+  --ds-panel: #0b0c0f;
+  --ds-inner: #0e1014;
+  --ds-line: #1c1e24;
+  --ds-line2: #23262e;
+  --ds-text: #e8eaed;
+  --ds-text2: #a9b5c3;
+  --ds-muted: #8a909b;
+  --ds-dim: #2a2e36;
+  --ds-ok: #589569;
+  --ds-ok-hi: #62d6a8;
+  --ds-warn: #ae8446;
+  --ds-warn-hi: #f2be62;
+  --ds-bad: #bb635b;
+  --ds-bad-hi: #ff928a;
+  --ds-hatch: #5a4520;
+  --ds-link: #86b3e3;
+  --ds-sans: "IBM Plex Sans", system-ui, "Segoe UI", sans-serif;
+  --ds-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+/* Off screen or in a hidden tab: every loop holds where it is. */
+:host([paused]) *, :host([paused]) *::before { animation-play-state: paused !important; }
 .wrap {
-  --mono: var(--code-font-family, ui-monospace, "Roboto Mono", SFMono-Regular, Consolas, monospace);
-  /* Not a colour for anything -- it is what a cell looks like with no green
-     in it. Mid-grey at low alpha so it reads the same on a light theme. */
-  --dim-cell: rgba(127, 127, 127, .16);
-  display: flex; flex-direction: column; gap: 16px;
-  font-family: var(--paper-font-body1_-_font-family, Roboto, system-ui, sans-serif);
-  font-size: 14px; line-height: 1.45; color: var(--primary-text-color);
+  --k: var(--ds-ok); --k-hi: var(--ds-ok-hi);
+  display: flex; flex-direction: column; gap: 12px;
+  font-family: var(--ds-sans); font-size: 14px; line-height: 1.45; color: var(--ds-text);
   -webkit-font-smoothing: antialiased;
 }
-.pad { padding: 20px 22px; display: flex; flex-direction: column; gap: 14px; }
-h1 { margin: 0; font-size: 34px; font-weight: 300; line-height: 1.15; }
-h2 { margin: 0; font-size: 17px; font-weight: 500; }
+.wrap.k-warn { --k: var(--ds-warn); --k-hi: var(--ds-warn-hi); }
+.wrap.k-bad { --k: var(--ds-bad); --k-hi: var(--ds-bad-hi); }
+/* Outer-tree rules win over ha-card's own :host styles, border included. */
+ha-card {
+  display: block; background: var(--ds-panel); color: var(--ds-text);
+  border: 1px solid var(--ds-line); border-radius: 12px; box-shadow: none;
+}
+.pad { padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; }
+h1 { margin: 0; font: 600 clamp(22px, 4cqi, 30px)/1.15 var(--ds-sans); text-wrap: balance; }
+h2 { margin: 0; font: 600 15px/1.3 var(--ds-sans); }
 p { margin: 0; }
-code { font-family: var(--mono); }
-a { color: #03a9f4; text-decoration: none; }
+code { font-family: var(--ds-mono); }
+a { color: var(--ds-link); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
-/* Outer-tree rules win over ha-card's own :host styles, border included. */
-.hero { border-left: 4px solid var(--accent); }
+/* --- the hero: words, the clock, the tiles --- */
+.hero { position: relative; overflow: hidden; border-color: color-mix(in srgb, var(--k) 55%, var(--ds-line)); }
+/* A slow glow in the state's colour; faster when the power is off. */
+.hero::before {
+  content: ""; position: absolute; inset: -40% -10% auto auto; width: 70%; height: 180%;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--k) 30%, transparent), transparent);
+  animation: breathe 5s ease-in-out infinite; pointer-events: none;
+}
+.k-bad .hero::before { animation-duration: 2.6s; }
+@keyframes breathe { 0%, 100% { opacity: .35; transform: scale(.96); } 50% { opacity: .9; transform: scale(1.04); } }
 .hero .pad {
-  padding: 24px 28px; flex-direction: row; flex-wrap: wrap; gap: 32px;
-  align-items: center;
+  position: relative; display: grid; gap: 18px 28px; padding: 22px 24px;
+  grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "copy clock" "tiles tiles";
 }
-.hero-left {
-  flex: 1 1 380px; min-width: 240px; display: flex; flex-direction: column;
-  gap: 10px;
-}
-.eyebrow { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
-.eyebrow .lbl {
-  font-size: 12px; letter-spacing: .12em; text-transform: uppercase;
-  color: var(--secondary-text-color);
-}
-/* The address and queue this schedule is for -- what the removed badge said. */
-.ident {
-  font-family: var(--mono); font-size: 12px; color: var(--secondary-text-color);
-  border: 1px solid var(--divider-color); border-radius: 14px; padding: 3px 10px;
+.hero-left { grid-area: copy; display: flex; flex-direction: column; gap: 9px; min-width: 0; }
+.eyebrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.pill {
+  display: inline-flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px;
+  font: 600 10.5px/1 var(--ds-mono); letter-spacing: .06em; text-transform: uppercase;
+  color: var(--k-hi); background: color-mix(in srgb, var(--k) 18%, transparent);
 }
 .dot {
-  width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto;
-  background: var(--accent); animation: dtekpulse 2.4s ease-in-out infinite;
+  width: 6px; height: 6px; border-radius: 50%; background: var(--k); box-shadow: 0 0 8px var(--k);
+  animation: dtekpulse 2.4s ease-in-out infinite;
 }
 @keyframes dtekpulse { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }
-@media (prefers-reduced-motion: reduce) { .dot { animation: none } }
-.lede { font-size: 16px; opacity: .82; max-width: 46ch; text-wrap: pretty; }
-.note {
-  margin-top: 4px; font-size: 13px; color: var(--secondary-text-color);
-  max-width: 52ch; text-wrap: pretty;
+/* The address and queue this schedule is for. */
+.ident {
+  font: 500 11.5px/1 var(--ds-mono); color: var(--ds-muted);
+  border: 1px solid var(--ds-line2); border-radius: 999px; padding: 4px 10px;
 }
-.note.err { color: var(--warning-color, #ffa600); }
+.lede { font-size: 15px; color: var(--ds-text); max-width: 56ch; text-wrap: pretty; }
+.note { font-size: 13px; color: var(--ds-muted); max-width: 60ch; text-wrap: pretty; }
+.note.err { color: var(--ds-warn-hi); }
 .reason {
-  display: flex; align-items: baseline; gap: 8px; margin-top: 6px;
-  padding-top: 12px; border-top: 1px solid var(--divider-color); max-width: 52ch;
+  display: flex; align-items: baseline; gap: 8px; margin-top: 4px;
+  padding-top: 10px; border-top: 1px solid var(--ds-line); max-width: 60ch;
 }
-.reason .k {
-  font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
-  color: var(--secondary-text-color); white-space: nowrap;
+.reason .k, .tile .k {
+  font: 600 10.5px/1.2 var(--ds-mono); letter-spacing: .08em; text-transform: uppercase;
+  color: var(--ds-muted); white-space: nowrap;
 }
-.reason .v { font-size: 13px; text-wrap: pretty; }
-.reason .v.dim { color: var(--disabled-text-color); }
-/* The notice rows under the reason: same row, no second rule above it. */
+.reason .v { font-size: 13px; color: var(--ds-text2); text-wrap: pretty; }
+.reason .v.dim, .tile .v.dim { color: var(--ds-muted); }
 .reason.sub { margin-top: 0; padding-top: 0; border-top: 0; }
-.reason.sub .v { font-family: var(--mono); }
-.tile .v.dim { color: var(--disabled-text-color); }
-.tiles { flex: 1 1 420px; display: flex; flex-wrap: wrap; gap: 12px; }
-.tile {
-  flex: 1 1 130px; background: var(--secondary-background-color, rgba(127,127,127,.12));
-  border-radius: 10px; padding: 14px 16px; display: flex;
-  flex-direction: column; gap: 4px;
-}
-.tile .k {
-  font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
-  color: var(--secondary-text-color);
-}
-.tile .v { font-size: 22px; font-weight: 400; font-family: var(--mono); }
-.tile .s { font-size: 12px; color: var(--secondary-text-color); }
+.reason.sub .v { font-family: var(--ds-mono); }
 
-.head { display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; }
+.clock { grid-area: clock; width: clamp(180px, 26cqi, 232px); align-self: center; }
+.clock svg { display: block; width: 100%; height: auto; overflow: visible; }
+.face { fill: var(--ds-inner); stroke: var(--ds-line2); }
+.arc { fill: var(--ds-dim); }
+.arc.on { fill: var(--ds-ok); }
+.arc.out { fill: var(--ds-bad); }
+.arc.maybe { fill: var(--ds-warn); }
+.arc.past { opacity: .35; }
+.arc:hover { filter: brightness(1.3); }
+.tick { fill: var(--ds-muted); font: 600 10px var(--ds-mono); }
+.hand line { stroke: var(--ds-text); stroke-width: 2.5; stroke-linecap: round; }
+.nub { fill: var(--ds-text); }
+.ctr .big { fill: var(--ds-text); font: 600 26px var(--ds-mono); }
+.ctr .big.long { font-size: 21px; }
+.ctr .small { fill: var(--ds-text2); font: 500 11px var(--ds-sans); }
+
+.tiles { grid-area: tiles; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.tile {
+  background: var(--ds-inner); border: 1px solid var(--ds-line2); border-radius: 8px;
+  padding: 11px 13px; display: flex; flex-direction: column; gap: 5px; min-width: 0;
+}
+.tile .v { font: 600 18px/1.2 var(--ds-mono); font-variant-numeric: tabular-nums; color: var(--ds-text); }
+.tile .s { font-size: 12px; color: var(--ds-muted); }
+
+/* --- headings shared by the lower blocks --- */
+.head { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; }
 .head h2 { flex: 1 1 auto; }
-.stamp { font-size: 12px; color: var(--secondary-text-color); }
-.blurb {
-  font-size: 13px; color: var(--secondary-text-color); max-width: 70ch;
-  text-wrap: pretty;
+.stamp { font: 500 11.5px var(--ds-mono); color: var(--ds-muted); }
+.blurb { font-size: 13px; color: var(--ds-text2); max-width: 70ch; text-wrap: pretty; }
+
+/* --- the timeline: four rows on the clock's hours --- */
+.tl { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 8px 12px; align-items: center; }
+.tlname { font: 500 12.5px/1.25 var(--ds-sans); color: var(--ds-text2); }
+.tlname small { display: block; font-size: 11px; color: var(--ds-muted); }
+/* A row opens its sensor's dialog, as the stock history graph did. */
+[data-more] { cursor: pointer; border-radius: 5px; }
+.tlname:hover { color: var(--ds-text); }
+.bar:hover { border-color: var(--ds-muted); }
+[data-more]:focus-visible { outline: 2px solid var(--ds-ok-hi); outline-offset: 2px; }
+.bar {
+  position: relative; height: 22px; border-radius: 5px; overflow: hidden;
+  background: var(--ds-inner); border: 1px solid var(--ds-line2);
+}
+.blk { position: absolute; top: 3px; bottom: 3px; border-radius: 3px; min-width: 2px; }
+.blk.out { background: var(--ds-bad); }
+.blk.warn { background: var(--ds-warn); }
+.blk.maybe { background: repeating-linear-gradient(135deg, var(--ds-warn) 0 3px, var(--ds-hatch) 3px 6px); }
+.blk.past { opacity: .45; }
+.nowline { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--ds-text); box-shadow: 0 0 6px var(--ds-text); }
+.axis {
+  grid-column: 2; display: flex; justify-content: space-between;
+  font: 500 10.5px var(--ds-mono); color: var(--ds-muted);
 }
 
 /*
- * overflow-x is kept even though the design dropped it. At any width where the
- * grid fits it is invisible, and at phone widths it is the only thing keeping
- * 168 cells from widening the whole page: below ~370px the grid needs more
- * room than the card has, and without this the body scrolls sideways instead
- * of the grid panning inside its own card.
+ * The week. overflow-x stays: below ~370px the grid needs more room than the
+ * card has, and without it the body scrolls sideways instead of the grid
+ * panning inside its own card.
  */
-.grid {
-  display: flex; gap: 6px; align-items: stretch; overflow-x: auto;
-  padding-bottom: 4px; width: 100%;
-}
-.hours {
-  flex: 0 0 42px; display: flex; flex-direction: column; gap: 3px;
-  padding-top: 42px;
-}
+.grid { display: flex; gap: 5px; align-items: stretch; overflow-x: auto; padding-bottom: 4px; width: 100%; }
+.hours { flex: 0 0 24px; display: flex; flex-direction: column; gap: 3px; padding-top: 40px; }
 .hr {
-  height: 15px; display: flex; align-items: center; justify-content: flex-end;
-  font-family: var(--mono); font-size: 10px; color: var(--disabled-text-color);
+  height: 12px; display: flex; align-items: center; justify-content: flex-end;
+  font: 500 9.5px var(--ds-mono); color: var(--ds-muted); font-variant-numeric: tabular-nums;
 }
-.day {
-  flex: 1 1 0; min-width: 34px; display: flex; flex-direction: column;
-  border-radius: 8px; padding: 0 4px;
+.day { flex: 1 1 0; min-width: 30px; display: flex; flex-direction: column; border-radius: 8px; padding: 6px 4px; }
+.days .grid { max-width: 360px; }
+.day.today {
+  background: color-mix(in srgb, var(--ds-ok) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ds-ok) 35%, transparent);
 }
-.days .grid { max-width: 420px; }
-.day.today { background: rgba(3, 169, 244, .09); }
-.day.tmrw { background: rgba(127, 127, 127, .07); }
-.dhead {
-  height: 38px; display: flex; flex-direction: column; align-items: center;
-  justify-content: center; gap: 1px;
-}
-.dname {
-  font-size: 12px; font-weight: 500; letter-spacing: .04em;
-  color: var(--secondary-text-color);
-}
-.day.today .dname { color: #03a9f4; }
-.day.tmrw .dname { color: var(--primary-text-color); }
-.dsub {
-  font-size: 10px; letter-spacing: .04em; color: var(--disabled-text-color);
-}
+.day.tmrw { background: rgba(255, 255, 255, .035); box-shadow: inset 0 0 0 1px var(--ds-line2); }
+.dhead { height: 34px; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 2px; }
+.dname { font: 600 12.5px/1.1 var(--ds-sans); color: var(--ds-text); }
+.dsub { font: 500 10px/1.1 var(--ds-mono); color: var(--ds-muted); white-space: nowrap; }
+.day.today .dname, .day.today .dsub { color: var(--ds-ok-hi); }
+.day.tmrw .dsub { color: var(--ds-text2); }
 .cells { display: flex; flex-direction: column; gap: 3px; }
 .dtot {
-  height: 26px; display: flex; align-items: center; justify-content: center;
-  font-family: var(--mono); font-size: 11px; color: var(--secondary-text-color);
+  height: 22px; display: flex; align-items: flex-end; justify-content: center;
+  font: 600 11px var(--ds-mono); color: var(--ds-text2); font-variant-numeric: tabular-nums;
 }
+.dtot.heavy { color: var(--ds-warn-hi); }
 
-.c { height: 15px; border-radius: 3px; }
-/* Green = the power is confirmed on. Everything else is the lack of it. */
-.on { background: var(--success-color, #43a047); }
-/* Possible outage. Deliberately not a warning colour: DTEK hedges most of the
-   week, and painting all of it orange said nothing except "look at me". */
-.maybe { background: var(--dim-cell); }
-/* The one state DTEK actually commits to. Rare enough to be worth alarm --
-   there is not a single one in this queue's current table. */
-.out { background: var(--error-color, #db4437); }
-.out-1 {
-  background: linear-gradient(to bottom, var(--error-color, #db4437) 50%,
-    var(--success-color, #43a047) 50%);
-}
-.out-2 {
-  background: linear-gradient(to bottom, var(--success-color, #43a047) 50%,
-    var(--error-color, #db4437) 50%);
-}
-.maybe-1 {
-  background: linear-gradient(to bottom, var(--dim-cell) 50%,
-    var(--success-color, #43a047) 50%);
-}
-.maybe-2 {
-  background: linear-gradient(to bottom, var(--success-color, #43a047) 50%,
-    var(--dim-cell) 50%);
-}
-/* Neither on nor off: a gap in what DTEK published. Hatched rather than tinted
-   so it cannot be mistaken for a possible outage. */
-.unknown {
-  background: repeating-linear-gradient(45deg,
-    rgba(127, 127, 127, .28) 0 2px, transparent 2px 4px);
-}
-/* outline, not box-shadow: .maybe already owns the inset shadow. */
-.now { outline: 1.5px solid #03a9f4; outline-offset: -1.5px; }
+.c { height: 12px; border-radius: 3px; background: var(--ds-dim); }
+/* Green = the power is confirmed on; red, DTEK commits to it being off. */
+.on { background: color-mix(in srgb, var(--ds-ok) 72%, transparent); }
+.out { background: var(--ds-bad); }
+/* Possible outage: amber hatching, so it never passes for an empty cell. */
+.maybe { background: repeating-linear-gradient(135deg, var(--ds-warn) 0 3px, var(--ds-hatch) 3px 6px); }
+/* Half hours, as DTEK draws them: the dark half is the half without power. */
+.out-1 { background: linear-gradient(var(--ds-bad) 0 50%, color-mix(in srgb, var(--ds-ok) 72%, transparent) 50%); }
+.out-2 { background: linear-gradient(color-mix(in srgb, var(--ds-ok) 72%, transparent) 0 50%, var(--ds-bad) 50%); }
+.maybe-1 { background: linear-gradient(var(--ds-warn) 0 50%, color-mix(in srgb, var(--ds-ok) 72%, transparent) 50%); }
+.maybe-2 { background: linear-gradient(color-mix(in srgb, var(--ds-ok) 72%, transparent) 0 50%, var(--ds-warn) 50%); }
+/* A gap in what DTEK published: grey hatching, unlike any state. */
+.unknown { background: repeating-linear-gradient(45deg, rgba(169, 181, 195, .28) 0 2px, transparent 2px 4px); }
+.c.past { opacity: .35; }
+.now { box-shadow: 0 0 0 1.5px var(--ds-text), 0 0 8px rgba(255, 255, 255, .35); }
 
 .legend {
-  display: flex; flex-wrap: wrap; gap: 18px; align-items: center;
-  border-top: 1px solid var(--divider-color); padding-top: 14px;
-  font-size: 12px; color: var(--secondary-text-color);
+  display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center;
+  border-top: 1px solid var(--ds-line); padding-top: 10px;
+  font-size: 12px; color: var(--ds-text2);
 }
 .legend > span { display: flex; align-items: center; gap: 7px; }
-/* After the cell rules, so the swatch height wins over .c. */
-.sw { width: 14px; height: 14px; border-radius: 3px; flex: 0 0 auto; }
-.sw.nowsw {
-  background: rgba(3, 169, 244, .16); box-shadow: inset 0 0 0 1px rgba(3, 169, 244, .5);
-}
+/* After the cell rules, so the swatch's size wins over .c. */
+.sw { width: 12px; height: 12px; border-radius: 3px; flex: 0 0 auto; }
+.sw.warn { background: var(--ds-warn); }
+.sw.nowsw { box-shadow: 0 0 0 1.5px var(--ds-text); }
 
-.kv { display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+/* --- where it comes from --- */
+.kv { display: flex; flex-direction: column; gap: 7px; font-size: 13px; }
 .kv > div { display: flex; justify-content: space-between; gap: 12px; }
-.kv .k { color: var(--secondary-text-color); }
-.kv .v { font-family: var(--mono); }
-.kv .warn .k, .kv .warn .v { color: var(--warning-color, #ffa600); }
+.kv .k { color: var(--ds-text2); }
+.kv .v { font: 500 12.5px var(--ds-mono); font-variant-numeric: tabular-nums; color: var(--ds-text); text-align: right; }
+.kv .warn .k, .kv .warn .v { color: var(--ds-warn-hi); }
 .foot {
-  border-top: 1px solid var(--divider-color); padding-top: 12px;
-  font-size: 12px; color: var(--secondary-text-color); line-height: 1.6;
+  border-top: 1px solid var(--ds-line); padding-top: 10px;
+  font-size: 12px; color: var(--ds-muted); line-height: 1.6;
 }
 
+/* --- narrow cards: a phone, or a column of a wide dashboard --- */
+@container (max-width: 640px) {
+  .hero .pad { grid-template-columns: 1fr; grid-template-areas: "clock" "copy" "tiles"; justify-items: center; }
+  .hero-left { align-items: center; text-align: center; }
+  .eyebrow { justify-content: center; }
+  .tiles { grid-template-columns: 1fr 1fr; width: 100%; }
+  .tl { grid-template-columns: 1fr; gap: 4px; }
+  .axis { grid-column: 1; }
+  .grid { gap: 2px; }
+  .hours { flex-basis: 18px; }
+  .day { min-width: 0; padding: 5px 2px; }
+  .dsub { font-size: 9px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dot, .hero::before { animation: none; }
+  .hero::before { opacity: .6; }
+}
 `;
 
 if (!customElements.get(CARD)) customElements.define(CARD, DtekShutdownsCard);
@@ -1216,8 +1613,8 @@ if (!window.customCards.some((c) => c.type === CARD)) {
   window.customCards.push({
     type: CARD,
     name: "DTEK Shutdowns",
-    description: "Hero status, the recurring weekly outage heatmap, provenance "
-      + "and the raw DTEK entities.",
+    description: "The power now beside a 24-hour clock of today's schedule, today's "
+      + "timeline of DTEK against the inverter, the weekly table and where it comes from.",
     preview: false,
     documentationURL: "https://www.dtek-dnem.com.ua/ua/shutdowns",
   });
