@@ -1787,18 +1787,24 @@ async function loadSheddingSuite() {
     const c = new Card();
     c.setConfig({});
     c._hass = mkHass({}, { services: SERVICES });
-    eq("climate order: off, on, adjust, then a-z; reload/toggle hidden", c._services("climate").map((s) => s.action),
-      ["climate.turn_off", "climate.turn_on", "climate.adjust_temperature", "climate.set_fan_mode",
+    eq("climate order: off, on, adjust, fan only, then a-z; reload/toggle hidden", c._services("climate").map((s) => s.action),
+      ["climate.turn_off", "climate.turn_on", "climate.adjust_temperature", "climate.fan_only", "climate.set_fan_mode",
         "climate.set_hvac_mode", "climate.set_temperature"]);
-    eq("names from the service id", c._services("climate").map((s) => s.name).slice(0, 4),
-      ["Turn off", "Turn on", "Change temperature by", "Set fan mode"]);
+    eq("names from the service id", c._services("climate").map((s) => s.name).slice(0, 5),
+      ["Turn off", "Turn on", "Change temperature by", "Fan only", "Set fan mode"]);
+    eq("light: Dim to first, then off, on", c._services("light").map((s) => s.action),
+      ["light.dim_to", "light.turn_off", "light.turn_on"]);
+    eq("Dim to's one field is a 1-100 % number",
+      c._fields(c._services("light")[0].def).map((f) => [f.key, f.f.selector.number.max]),
+      [["brightness_pct", 100]]);
     eq("switch", c._services("switch").map((s) => s.action), ["switch.turn_off", "switch.turn_on"]);
     eq("unknown domain", c._services("vacuum"), []);
     c._hass = mkHass({}, { services: { climate: { set_temperature: {} } } });
-    eq("climate with one service: adjust goes after it", c._services("climate").map((s) => s.action),
-      ["climate.set_temperature", "climate.adjust_temperature"]);
+    eq("climate with one service: the panel's two go after it", c._services("climate").map((s) => s.action),
+      ["climate.set_temperature", "climate.adjust_temperature", "climate.fan_only"]);
     c._hass = mkHass({}, { services: {} });
-    eq("climate with no services: adjust alone", c._services("climate").map((s) => s.action), ["climate.adjust_temperature"]);
+    eq("climate with no services: the panel's two alone", c._services("climate").map((s) => s.action),
+      ["climate.adjust_temperature", "climate.fan_only"]);
     c._hass = { states: {} };
     eq("no services map at all", c._services("switch"), []);
     c._hass = mkHass({}, { services: SERVICES, localize: (k) => (k === "component.switch.services.turn_off.name" ? "Localized turn off" : "") });
@@ -2126,6 +2132,30 @@ async function loadSheddingSuite() {
 
     r = mk(states({ devices: [] }), { blocks: ["rules"] });
     eq("no devices", r.q(".empty").textContent, "No devices yet. Add one below.");
+  }
+
+  group = "shed/only-while-on: ";
+  {
+    const devs = [
+      dev("ac", AC, [{ soc: 80, action: "climate.fan_only", data: {} },
+        { soc: 60, action: "climate.set_hvac_mode", data: { hvac_mode: "off" } }],
+        { guard: { running: "binary_sensor.ac_running" } }),
+      dev("lamp", LAMP, [{ soc: 70, action: "light.dim_to", data: { brightness_pct: 30 } },
+        { soc: 40, action: "light.turn_on", data: { brightness_pct: 10 } }, { soc: 20, action: "light.turn_off" }]),
+    ];
+    const r = mk(states({ devices: devs }), { blocks: ["rules"] });
+    const line = (i) => r.qa(".dev")[i].querySelector(".only-on").textContent.replace(/\s+/g, " ").trim();
+    eq("each device says it applies only while on, measured where it can be", line(0),
+      "Applies only while it is on (measured by binary_sensor.ac_running). Never switches it on, "
+      + "and the grid's return never switches on what you switched off.");
+    check("...without a meter, no measured-by", !/measured/.test(line(1)));
+    const notes = (i) => r.qa(".dev")[i].querySelectorAll(".step").map((s) => !!s.querySelector(".note-on"));
+    eq("A/C: fan only noted, the off step not", notes(0), [true, false]);
+    eq("lamp: dim to and turn on noted, turn off not", notes(1), [true, true, false]);
+    eq("the panel's actions are selected by name", r.qa(".dev")[0].querySelector("select.sel").value, "climate.fan_only");
+    const c = r.c;
+    eq("step labels", [c._stepLabel(devs[0], devs[0].steps[0]), c._stepLabel(devs[1], devs[1].steps[0])],
+      ["Fan only", "Dim to (brightness pct 30)"]);
   }
 
   group = "shed/editing: ";
