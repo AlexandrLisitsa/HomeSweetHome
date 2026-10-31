@@ -66,7 +66,7 @@ POWER = {
     "grid": "sensor.powmr_inverter_grid_real_power_calculated",
     "battery_power": "sensor.jkbms_gateway_bms_power",
     "priority": "select.powmr_inverter_power_priority",
-    "down": "binary_sensor.powmr_inverter_grid_condition_safe",   # on = grid DOWN
+    "down": "binary_sensor.house_on_battery",   # on = the grid put the house on the pack
     "returning": "binary_sensor.powmr_inverter_grid_voltage_in_range",
     "runtime": "sensor.battery_runtime_remaining",
     "shedding": "sensor.load_shedding",

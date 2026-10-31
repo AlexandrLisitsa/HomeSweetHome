@@ -131,7 +131,7 @@ const FIXTURES = {
           step_soc: 80, plug_cut: false, override_soc: 70 },
       } }),
       "input_boolean.load_shedding_enabled": S("on"),
-      "binary_sensor.powmr_inverter_grid_condition_safe": S("on"),
+      "binary_sensor.house_on_battery": S("on"),
       "sensor.jkbms_gateway_bms_state_of_charge": S("61"),
       "sensor.battery_runtime_remaining": S("4.3"),
     };
@@ -184,7 +184,7 @@ const FIXTURES = {
         week: week, week_in_effect: true, schedule_visible: false, hidden_reason: null,
         fetched_at: new Date(now).toISOString(), stale: false, error: null,
       }),
-      "binary_sensor.powmr_inverter_grid_condition_safe": S("off", {}),
+      "binary_sensor.grid_down": S("off", {}),
       "binary_sensor.grid_outage_unscheduled": S("off", {}),
       "binary_sensor.dtek_data_stale": S("off", {}),
     };

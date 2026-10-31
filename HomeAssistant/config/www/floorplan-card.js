@@ -116,7 +116,7 @@
  *   power:             # optional; written by make_dashboard.py from rooms.py POWER
  *     hub_entity: sensor.inverter_output, battery_entity: sensor.battery_soc,
  *     grid: sensor.grid_power, battery_power: sensor.battery_power,
- *     down: binary_sensor.grid_unsafe, returning: binary_sensor.grid_in_range,
+ *     down: binary_sensor.house_on_battery, returning: binary_sensor.grid_in_range,
  *     runtime: sensor.battery_runtime, shedding: sensor.load_shedding,
  *     priority: select.power_priority, dtek_start: sensor.next_start, dtek_end: sensor.next_end,
  *     grid_path: "M ...", battery_path: "M ...",

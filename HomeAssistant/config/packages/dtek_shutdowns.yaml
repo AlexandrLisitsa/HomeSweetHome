@@ -8,7 +8,7 @@
 #
 # Everything here is DTEK's *claim*. The measurement lives elsewhere:
 #
-#     binary_sensor.powmr_inverter_grid_condition_safe   (ESPHome, grid volts)
+#     binary_sensor.grid_down   (packages/grid_state.yaml, under 150 V)
 #
 # ---------------------------------------------------------------------------
 # Why this file exists
@@ -258,10 +258,9 @@ template:
 
       # The grid is down and nobody said it would be.
       #
-      # POLARITY WARNING, and this is not a typo: the ESPHome sensor is called
-      # "Grid Condition Safe" but it reports on for UNSAFE. Its lambda in
-      # PowerStation/power-station.yaml returns true when the voltage is OUT of
-      # the 185-250 V band. Anything that touches that entity needs this note.
+      # Down means no mains (grid_down, under 150 V). Not the ESPHome "Grid
+      # Condition Safe" sensor: that is the 185-250 V quality check, on for
+      # UNSAFE, and a low but live grid trips it for hours.
       #
       # With schedules suspended this is true for every outage, which is
       # correct — right now every outage genuinely is unscheduled.
@@ -270,7 +269,7 @@ template:
         device_class: problem
         icon: mdi:flash-alert
         state: >-
-          {{ is_state('binary_sensor.powmr_inverter_grid_condition_safe', 'on')
+          {{ is_state('binary_sensor.grid_down', 'on')
              and not is_state('binary_sensor.dtek_scheduled_dark', 'on')
              and not is_state('binary_sensor.dtek_outage_now', 'on') }}
 
@@ -539,9 +538,9 @@ automation:
             {% set of = state_attr('sensor.dtek_shutdowns', 'street_houses') %}
             {% if n is number and of is number and n > 0 %}{% if n == 1 %}Only this building on the street.{% else %}{{ n }} of {{ of }} houses on the street.{% endif %}{% endif %}
           # The claim against the measurement, the whole point of this package.
-          # on = UNSAFE -- see the POLARITY WARNING above.
+          # on = no mains (grid_down).
           grid_line: >-
-            {% if is_state('binary_sensor.powmr_inverter_grid_condition_safe', 'on') %}The inverter sees no mains.{% else %}The inverter still sees mains.{% endif %}
+            {% if is_state('binary_sensor.grid_down', 'on') %}The inverter sees no mains.{% else %}The inverter still sees mains.{% endif %}
           battery_line: >-
             {% set r = states('sensor.battery_runtime_remaining') %}
             {% set s = states('sensor.jkbms_gateway_bms_state_of_charge') %}
@@ -582,7 +581,7 @@ automation:
     action:
       - variables:
           grid_line: >-
-            {% if is_state('binary_sensor.powmr_inverter_grid_condition_safe', 'on') %}The inverter still sees no mains.{% else %}The inverter sees mains.{% endif %}
+            {% if is_state('binary_sensor.grid_down', 'on') %}The inverter still sees no mains.{% else %}The inverter sees mains.{% endif %}
           message: >-
             DTEK no longer reports an outage for queue {{ states('sensor.dtek_queue') }}. {{ grid_line }}
       - service: notify.household
@@ -624,7 +623,7 @@ automation:
           reason_line: >-
             {{ state_attr('sensor.dtek_shutdowns', 'outage_reason') or 'Outage' }}
           grid_line: >-
-            {% if is_state('binary_sensor.powmr_inverter_grid_condition_safe', 'on') %}The inverter sees no mains.{% else %}The inverter still sees mains.{% endif %}
+            {% if is_state('binary_sensor.grid_down', 'on') %}The inverter sees no mains.{% else %}The inverter still sees mains.{% endif %}
           message: >-
             DTEK's {{ end_line }} estimate has passed and the outage is still on record ({{ reason_line }}, queue {{ states('sensor.dtek_queue') }}). {{ grid_line }}
       - service: notify.household

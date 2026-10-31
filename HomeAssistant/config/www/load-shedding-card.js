@@ -40,7 +40,7 @@
 const CARD = "load-shedding-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "4.1.0";
+const VERSION = "4.1.1";
 
 // Text colours, so the bright variants: they must read at 4.5:1 on the panels.
 const RED = "var(--ls-bad-hi)";
@@ -84,8 +84,8 @@ const DEFAULTS = {
   master: "input_boolean.load_shedding_enabled",
   soc: "sensor.jkbms_gateway_bms_state_of_charge",
   runtime: "sensor.battery_runtime_remaining",
-  // on = UNSAFE (device_class: safety)
-  grid_unsafe: "binary_sensor.powmr_inverter_grid_condition_safe",
+  // on = the grid has put the house on the pack (packages/grid_state.yaml)
+  on_battery: "binary_sensor.house_on_battery",
   save_script: "load_shedding_save_config",
   hold_script: "load_shedding_hold",
   release_script: "load_shedding_release",
@@ -442,7 +442,7 @@ class LoadSheddingCard extends HTMLElement {
   _fingerprint() {
     const c = this._config;
     const rules = this._rules();
-    const ids = [c.config, c.state, c.master, c.soc, c.runtime, c.grid_unsafe];
+    const ids = [c.config, c.state, c.master, c.soc, c.runtime, c.on_battery];
     const parts = ids.map((id) => {
       const st = this._obj(id);
       return st ? st.state + JSON.stringify(st.attributes) : "-";
@@ -730,7 +730,7 @@ class LoadSheddingCard extends HTMLElement {
   _heroHTML() {
     const c = this._config;
     const master = this._state(c.master) === "on";
-    const gridDown = this._state(c.grid_unsafe) === "on";
+    const gridDown = this._state(c.on_battery) === "on";
     const soc = this._num(c.soc);
     const runtime = this._num(c.runtime);
     const shed = this._shed();
@@ -873,7 +873,7 @@ class LoadSheddingCard extends HTMLElement {
   }
 
   _upcomingHTML() {
-    const outage = this._state(this._config.grid_unsafe) === "on";
+    const outage = this._state(this._config.on_battery) === "on";
     const armed = this._state(this._config.master) === "on";
     const margin = this._stored().warn_margin;
     const rows = this._upcoming();

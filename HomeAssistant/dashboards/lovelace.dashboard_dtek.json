@@ -124,7 +124,7 @@
                       "name": "Battery"
                     },
                     {
-                      "entity": "binary_sensor.powmr_inverter_grid_condition_safe",
+                      "entity": "binary_sensor.grid_down",
                       "name": "Grid down (measured)"
                     },
                     {

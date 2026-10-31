@@ -194,11 +194,11 @@ check("unavailable when no schedule",
       render(ents["DTEK scheduled dark"]["availability"], {},
              base_attrs(schedule_in_effect=False), NOON), "False")
 
-# --- 3. the polarity trap --------------------------------------------------
-# binary_sensor.powmr_inverter_grid_condition_safe is `on` for UNSAFE.
-print("\n3. Grid outage unscheduled: on == UNSAFE, not safe")
+# --- 3. grid down, unscheduled --------------------------------------------------
+# binary_sensor.grid_down is `on` for no mains.
+print("\n3. Grid outage unscheduled: on == grid down")
 unsched = ents["Grid outage unscheduled"]["state"]
-GRID = "binary_sensor.powmr_inverter_grid_condition_safe"
+GRID = "binary_sensor.grid_down"
 for label, grid, sched_dark, dtek_out, want in [
         ("grid up, nothing scheduled", "off", "off", "off", "False"),
         ("grid DOWN, nothing scheduled", "on", "off", "off", "True"),

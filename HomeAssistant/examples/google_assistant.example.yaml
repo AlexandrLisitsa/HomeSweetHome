@@ -50,7 +50,7 @@ entity_config:
     expose: true
 
   # --- BINARY SENSORS AND SELECTS ---
-  binary_sensor.powmr_inverter_grid_condition_safe:
+  binary_sensor.grid_down:
     name: "Grid status"
     aliases: ["Is there power", "Mains power", "City power"]
     expose: true

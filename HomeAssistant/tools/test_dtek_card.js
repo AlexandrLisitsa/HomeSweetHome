@@ -14,7 +14,7 @@
 const { fire, loadCard, mkHass, S } = require("./fake_dom");
 
 const FILE = "dtek-shutdowns-card.js";
-const GRID = "binary_sensor.powmr_inverter_grid_condition_safe";
+const GRID = "binary_sensor.grid_down";
 const TODAY = "yyyyyyyyyyyyysnnnyyyyyyy"; // 17.10.2026: 13:30-17:00 off
 let failed = 0;
 let passed = 0;

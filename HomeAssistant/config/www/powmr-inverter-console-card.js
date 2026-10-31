@@ -33,7 +33,9 @@
  *
  *   - binary_sensor.powmr_inverter_grid_condition_safe is `device_class:
  *     safety`, so ON means UNSAFE. Reading it the obvious way inverts the
- *     grid tile.
+ *     grid tile. And it is the 185-250 V quality check, not "mains present":
+ *     a live 180 V grid trips it. No mains is binary_sensor.grid_down
+ *     (HomeAssistant/config/packages/grid_state.yaml).
  *   - sensor.powmr_inverter_grid_real_power_calculated is derived, not
  *     measured. It returns 0 below 150 V of grid and adds a hardcoded +30 W of
  *     inverter overhead, and it is import-only -- there is no export on this
@@ -76,7 +78,7 @@ const CARD = "powmr-inverter-console-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 import { ramp, rampCss } from "./card-ramp.js?v=1.0.0";
 
-const VERSION = "2.12.0";
+const VERSION = "2.13.0";
 
 /*
  * Brand colours stay literal: they identify a leg of the diagram (amber =
@@ -115,6 +117,10 @@ const DEFAULTS = {
   grid_voltage: "sensor.powmr_inverter_grid_voltage",
   grid_frequency: "sensor.powmr_inverter_grid_frequency",
   grid_power: "sensor.powmr_inverter_grid_real_power_calculated",
+  // No mains: under 150 V (packages/grid_state.yaml).
+  grid_down: "binary_sensor.grid_down",
+  // The firmware's 185-250 V quality check, ON = unsafe. It moves the house
+  // to battery only while Protect is on.
   grid_safe: "binary_sensor.powmr_inverter_grid_condition_safe",
   // Unfiltered 185-250 V check. ON while grid_safe is still unsafe means the
   // firmware's delayed_off is running; the header counts it down.
@@ -181,7 +187,7 @@ const DEFAULTS = {
  * The design had a fifth chip ("Quiet / night fan limit"). This system has no
  * such switch and it is deliberately not faked. The badge row's other three
  * entries are elsewhere in this card: uptime and tariff in the header, and
- * grid_condition_safe in the Grid tile's status word.
+ * grid_down in the Grid tile's status word.
  */
 const CHIPS = [
   { label: "Auto", cfg: "chip_auto", ent: "switch.powmr_inverter_auto_tariff_mode", icon: "mdi:clock-check-outline", color: BATT_C },
@@ -218,7 +224,7 @@ const HELP = {
   uptime: "How long the PowerStation controller has run in total, across reboots and updates."
     + "\nE.g. up 41d 6h; a hard power cut loses at most the last 5 min of it.",
   pill: "Whether the inverter trusts the grid, with its AC input mode and the clock."
-    + "\nE.g. Grid down after 5 s under 185 V; back in range, Grid returning counts 5:00.",
+    + "\nE.g. Grid down under 150 V; Grid unsafe at 170 V under Protect, then Grid returning 5:00.",
   ret: "Time left until the firmware trusts the grid again: 5 min of stable voltage."
     + "\nE.g. voltage back at 14:02: it counts down from 5:00 and the grid is trusted at 14:07.",
   // Chips and the AC charge chip's icons
@@ -254,7 +260,7 @@ const HELP = {
   tile_batt: "The 8S 280 Ah pack's state of charge, as the BMS reports it."
     + "\nE.g. 87 %: green from 70 %, amber below, red under 20 %.",
   volt_state: "The voltage band: NOMINAL 220–240 V, LOW or HIGH out to 200 or 250 V, then UNDER/OVER."
-    + "\nE.g. 243.0 V reads HIGH in amber; on Grid, NO GRID once the inverter calls it unsafe.",
+    + "\nE.g. 243.0 V reads HIGH in amber; on Grid, NO GRID once the mains is gone (under 150 V).",
   load_state: "How hard the circuit is worked: NORMAL to 60 %, ELEVATED to 85 %, HEAVY, OVERLOAD."
     + "\nE.g. House load 2100 W of 2400 W is 87.5 %: HEAVY; Meter reads HEAVY above 5100 W.",
   batt_state: "Whether the pack charges, discharges or idles (within ±2 W), then its charge band."
@@ -1131,13 +1137,19 @@ class PowmrInverterConsoleCard extends HTMLElement {
   }
 
   /**
-   * True when there is no usable mains. Two independent tells, because either
-   * can lag: the safety binary_sensor (ON = unsafe) and the voltage itself,
-   * below the 150 V the firmware treats as "no grid".
+   * True when there is no mains. Two tells, because grid_down holds 5 s: the
+   * sensor and the voltage itself, below the 150 V the firmware treats as
+   * "no grid". Not grid_safe: a live but low grid trips that one.
    */
   _gridDown() {
     const v = this._num(this._config.grid_voltage);
-    return this._state(this._config.grid_safe) === "on" || (v !== null && v < 150);
+    return this._state(this._config.grid_down) === "on" || (v !== null && v < 150);
+  }
+
+  /** Mains there but out of 185–250 V, and Protect has moved the house to battery. */
+  _gridUnsafe() {
+    const c = this._config;
+    return !this._gridDown() && this._state(c.grid_safe) === "on" && this._state(c.chip_protect) === "on";
   }
 
   /*
@@ -1270,6 +1282,8 @@ class PowmrInverterConsoleCard extends HTMLElement {
     const safe = this._stateObj(c.grid_safe);
     const rng = this._stateObj(c.grid_in_range);
     if (!safe || !rng || safe.state !== "on" || rng.state !== "on") return null;
+    // Without Protect the firmware never left the grid: nothing to return to.
+    if (this._state(c.chip_protect) !== "on") return null;
     const t = Date.parse(rng.last_changed || "");
     if (!Number.isFinite(t)) return null;
     return Math.max(0, Math.min(c.grid_return_s, c.grid_return_s - (Date.now() - t) / 1000));
@@ -1383,9 +1397,10 @@ class PowmrInverterConsoleCard extends HTMLElement {
     const el = this._el;
     const left = this._returnLeft();
     const down = this._gridDown();
-    const word = left !== null ? "Grid returning" : down ? "Grid down" : "Grid connected";
+    const unsafe = this._gridUnsafe();
+    const word = left !== null ? "Grid returning" : down ? "Grid down" : unsafe ? "Grid unsafe" : "Grid connected";
     if (el.mode) el.mode.textContent = word + " · " + this._state(c.ac_input_mode);
-    if (el.livedot) el.livedot.style.background = left !== null ? WARN : down ? BAD : OK;
+    if (el.livedot) el.livedot.style.background = left !== null || unsafe ? WARN : down ? BAD : OK;
     let count = "";
     if (el.ret) {
       el.ret.hidden = el.retsep.hidden = left === null;
@@ -1398,7 +1413,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
     }
     if (el.pill) {
       el.pill.dataset.tip = tip("Grid — " + (left !== null ? "returning" + (count ? ", " + count + " left" : "")
-        : down ? "down" : "connected") + " · " + this._state(c.ac_input_mode), "pill");
+        : down ? "down" : unsafe ? "unsafe, on battery" : "connected") + " · " + this._state(c.ac_input_mode), "pill");
     }
   }
 
@@ -1448,7 +1463,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
           </div>
           <div class="title">${this._esc(c.title)}</div>
         </div>
-        <div class="pill" data-ref="pill" data-more="${c.grid_safe}" role="button" tabindex="0">
+        <div class="pill" data-ref="pill" data-more="${c.grid_down}" role="button" tabindex="0">
           <div class="livedot" data-ref="livedot"></div>
           <span class="mono" data-ref="mode"></span>
           <span class="vsep" data-ref="retsep" hidden></span>
@@ -1744,7 +1759,7 @@ ${ch.dots ? "" : `
   _fingerprint() {
     const c = this._config;
     const ids = [
-      c.grid_voltage, c.grid_frequency, c.grid_power, c.grid_safe, c.grid_in_range,
+      c.grid_voltage, c.grid_frequency, c.grid_power, c.grid_down, c.grid_safe, c.grid_in_range,
       c.ac_output_voltage, c.load_power, c.load_percentage, c.uptime,
       c.battery_power, c.battery_soc, c.battery_voltage,
       c.charge_current, c.discharge_current,

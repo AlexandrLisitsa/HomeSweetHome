@@ -45,7 +45,7 @@
 const CARD = "dtek-shutdowns-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "2.1.1";
+const VERSION = "2.1.2";
 
 /*
  * The grid shows the NORMAL condition, not the exception: a cell is green when
@@ -250,7 +250,7 @@ const DEFAULTS = {
   // on = UNSAFE. That is the ESPHome firmware's polarity, see the POLARITY
   // WARNING in packages/dtek_shutdowns.yaml. This is the measurement; the DTEK
   // attributes are the claim, and the hero is driven by the measurement.
-  grid_entity: "binary_sensor.powmr_inverter_grid_condition_safe",
+  grid_entity: "binary_sensor.grid_down",
   unscheduled_entity: "binary_sensor.grid_outage_unscheduled",
   stale_entity: "binary_sensor.dtek_data_stale",
   // The timeline's other two rows: DTEK's live notice, and the schedule.
@@ -671,7 +671,7 @@ class DtekShutdownsCard extends HTMLElement {
     const cfg = this._config;
     const dbg = cfg.debug_state;
 
-    let gridDown = this._state(cfg.grid_entity) === "on"; // on = UNSAFE
+    let gridDown = this._state(cfg.grid_entity) === "on"; // on = no mains
     let unscheduled = this._state(cfg.unscheduled_entity) === "on";
     let dtekOutage = a.outage_active === true;
     let stale = this._state(cfg.stale_entity) === "on" || a.stale === true;
