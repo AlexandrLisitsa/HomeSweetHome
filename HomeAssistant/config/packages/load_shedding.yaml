@@ -43,9 +43,12 @@
 #
 # The state of charge alone does not say the grid is gone. Auto Tariff Mode
 # runs the house off the pack every day on purpose (PowerStation
-# docs/architecture.md, rule 4). So everything is gated on the inverter's own
-# verdict, binary_sensor.powmr_inverter_grid_condition_safe, whose `on` means
-# UNSAFE. A brownout counts: the inverter is on battery then too.
+# docs/architecture.md, rule 4). So everything is gated on
+# binary_sensor.house_on_battery (packages/grid_state.yaml): no mains, or the
+# grid out of 185-250 V with grid protection on, which forces the inverter to
+# battery. A low grid with protection off does not count: the house runs on
+# it, and on 31 Oct this gate read the bare quality check and stood armed at
+# 24% SoC with 2 kW coming in from a 180 V grid.
 #
 # Nothing is ever switched on. A device is only acted on while it is on, and
 # where it has a guard `running` sensor, that measurement decides alone: the
@@ -533,7 +536,7 @@ script:
       # Only during an outage: the store is wiped when the grid returns, and a
       # hold placed with the grid up would otherwise wait for the next outage.
       - condition: template
-        value_template: "{{ dev is mapping and is_state('binary_sensor.powmr_inverter_grid_condition_safe', 'on') }}"
+        value_template: "{{ dev is mapping and is_state('binary_sensor.house_on_battery', 'on') }}"
       - if:
           - condition: template
             value_template: "{{ prev is mapping and prev.snapshot is mapping and prev.override_soc is none }}"
@@ -576,7 +579,7 @@ automation:
       - platform: state
         entity_id: sensor.jkbms_gateway_bms_state_of_charge
       - platform: state
-        entity_id: binary_sensor.powmr_inverter_grid_condition_safe
+        entity_id: binary_sensor.house_on_battery
         to: "on"
       - platform: state
         entity_id:
@@ -592,7 +595,7 @@ automation:
         entity_id: input_boolean.load_shedding_enabled
         state: "on"
       - condition: state
-        entity_id: binary_sensor.powmr_inverter_grid_condition_safe
+        entity_id: binary_sensor.house_on_battery
         state: "on"
     action:
       - variables:
@@ -611,7 +614,7 @@ automation:
                           'volume_level': 0.03, 'color_temp_kelvin': 50} %}
             {% set out = namespace(due=[], over=[], warn=[]) %}
             {% if is_state('input_boolean.load_shedding_enabled', 'on')
-                  and is_state('binary_sensor.powmr_inverter_grid_condition_safe', 'on')
+                  and is_state('binary_sensor.house_on_battery', 'on')
                   and soc_s | is_number %}
               {% set soc = soc_s | float %}
               {% set rows = namespace(list=[]) %}
@@ -736,14 +739,14 @@ automation:
     mode: single
     trigger:
       - platform: state
-        entity_id: binary_sensor.powmr_inverter_grid_condition_safe
+        entity_id: binary_sensor.house_on_battery
         from: "on"
         to: "off"
       - platform: homeassistant
         event: start
     condition:
       - condition: state
-        entity_id: binary_sensor.powmr_inverter_grid_condition_safe
+        entity_id: binary_sensor.house_on_battery
         state: "off"
       - condition: template
         value_template: "{{ (state_attr('sensor.load_shedding', 'loads') or {}) | count > 0 }}"

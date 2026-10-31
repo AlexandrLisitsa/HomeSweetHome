@@ -145,7 +145,7 @@ def decide(soc=70, devices=None, shed=None, grid_bad=True, master=True,
            margin=1):
     states = {
         "sensor.jkbms_gateway_bms_state_of_charge": soc,
-        "binary_sensor.powmr_inverter_grid_condition_safe": "on" if grid_bad else "off",
+        "binary_sensor.house_on_battery": "on" if grid_bad else "off",
         "input_boolean.load_shedding_enabled": "on" if master else "off",
         AC: ac, RUN: running, PLUG: plug, LED: led,
     }
@@ -454,12 +454,12 @@ check("battery 0 -> every device at its deepest step",
       due(soc=0), [{"id": "ac", "soc": 60.0}, {"id": "led", "soc": 40.0}])
 check("grid sensor 'unavailable' -> nothing (only 'on' is an outage)",
       render(DECISION, {"sensor.jkbms_gateway_bms_state_of_charge": 10,
-                        "binary_sensor.powmr_inverter_grid_condition_safe": "unavailable",
+                        "binary_sensor.house_on_battery": "unavailable",
                         "input_boolean.load_shedding_enabled": "on", AC: "cool", LED: "on"},
              {("sensor.load_shedding_config", "devices"): [ac_dev(), led_dev()]})["due"], [])
 check("no rules at all (devices attribute missing) -> nothing",
       render(DECISION, {"sensor.jkbms_gateway_bms_state_of_charge": 10,
-                        "binary_sensor.powmr_inverter_grid_condition_safe": "on",
+                        "binary_sensor.house_on_battery": "on",
                         "input_boolean.load_shedding_enabled": "on"}, {}),
       {"due": [], "overridden": [], "warn": []})
 check("step % written as a string '80' -> still a step",

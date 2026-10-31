@@ -97,6 +97,7 @@ async function inverterSuite() {
     gv: "sensor.powmr_inverter_grid_voltage",
     gf: "sensor.powmr_inverter_grid_frequency",
     gp: "sensor.powmr_inverter_grid_real_power_calculated",
+    down: "binary_sensor.grid_down",
     safe: "binary_sensor.powmr_inverter_grid_condition_safe",
     rng: "binary_sensor.powmr_inverter_grid_voltage_in_range",
     acv: "sensor.powmr_inverter_ac_output_voltage",
@@ -131,7 +132,7 @@ async function inverterSuite() {
   function base() {
     return {
       [E.gv]: S("230.0"), [E.gf]: S("50.00"), [E.gp]: S("300"),
-      [E.safe]: S("off"), [E.rng]: S("on"),
+      [E.down]: S("off"), [E.safe]: S("off"), [E.rng]: S("on"),
       [E.acv]: S("230.0"), [E.lw]: S("500"), [E.lp]: S("21"), [E.up]: S("3.5"),
       [E.bw]: S("0"), [E.soc]: S("80"), [E.bv]: S("26.8"), [E.cc]: S("0"), [E.dc]: S("0"),
       [E.td]: S("123.456"), [E.tn]: S("78.9"), [E.tot]: S("202.3457"),
@@ -403,7 +404,8 @@ async function inverterSuite() {
       ["exactly 2 W is not charging", { [E.bw]: "2" }, false],
       ["discharging", { [E.bw]: "-500" }, false],
       ["battery power unavailable", { [E.bw]: "unavailable" }, false],
-      ["grid unsafe (safe=on)", { [E.bw]: "800", [E.safe]: "on" }, false],
+      ["grid down (grid_down=on)", { [E.bw]: "800", [E.down]: "on" }, false],
+      ["grid out of range but live (safe=on)", { [E.bw]: "800", [E.safe]: "on" }, true],
       ["grid at 149.9 V", { [E.bw]: "800", [E.gv]: "149.9" }, false],
       ["grid at exactly 150 V is up", { [E.bw]: "800", [E.gv]: "150" }, true],
       ["voltage unknown, safe off: up", { [E.bw]: "800", [E.gv]: "unknown" }, true],
@@ -432,13 +434,15 @@ async function inverterSuite() {
     c.setConfig({});
     const g = (o) => { c._hass = mkHass(Object.assign(base(), o)); return c._gridDown(); };
     eq("healthy", g({}), false);
-    eq("safety sensor on means down", g({ [E.safe]: S("on") }), true);
+    eq("grid_down on means down", g({ [E.down]: S("on") }), true);
+    eq("the 185-250 V check alone is not down", g({ [E.safe]: S("on") }), false);
     eq("149 V is down", g({ [E.gv]: S("149") }), true);
     eq("0 V is down", g({ [E.gv]: S("0") }), true);
     eq("150 V is up", g({ [E.gv]: S("150") }), false);
-    eq("nothing known is not down", g({ [E.gv]: S("unknown"), [E.safe]: S("unknown") }), false);
+    eq("nothing known is not down", g({ [E.gv]: S("unknown"), [E.down]: S("unknown") }), false);
 
     const st = base();
+    st[E.down] = S("on");
     st[E.safe] = S("on");
     st[E.rng] = S("off");
     st[E.gv] = S("0");
@@ -449,6 +453,24 @@ async function inverterSuite() {
     eq("down: tile red", r.el.gridVal.style.color, BAD_C);
     check("down: no countdown", r.el.ret.hidden);
     eq("down: mark clamps at the left", r.el.gridMark.style.left, "0.00%");
+
+    // 31 Oct: the grid came back at 180-199 V. Live, just low.
+    const low = (prot) => {
+      const s2 = base();
+      s2[E.gv] = S("186.3");
+      s2[E.safe] = S("on");
+      s2[E.rng] = S("off");
+      s2[E.prot] = S(prot, {});
+      return mk(s2);
+    };
+    let r2 = low("off");
+    eq("low, Protect off: tile word", r2.el.gridState.textContent, "UNDERVOLTAGE");
+    eq("low, Protect off: header word", r2.el.mode.textContent, "Grid connected · UPS");
+    eq("low, Protect off: dot green", r2.el.livedot.style.background, OK_C);
+    r2 = low("on");
+    eq("low, Protect on: tile word", r2.el.gridState.textContent, "UNDERVOLTAGE");
+    eq("low, Protect on: header word", r2.el.mode.textContent, "Grid unsafe · UPS");
+    eq("low, Protect on: dot amber", r2.el.livedot.style.background, WARN_C);
   }
 
   group = "inverter/return: ";
@@ -474,6 +496,10 @@ async function inverterSuite() {
     eq("garbage last_changed", rl("on", "on", "not a date"), null);
     eq("missing safe sensor", rl(null, "on", ago(60)), null);
     eq("missing range sensor", rl("on", null, ago(60)), null);
+    c.setConfig({});
+    c._hass = mkHass(Object.assign(base(), { [E.safe]: S("on"), [E.prot]: S("off", {}),
+      [E.rng]: S("on", {}, { last_changed: ago(60) }) }));
+    eq("Protect off: the firmware never left the grid, nothing counting", c._returnLeft(), null);
     const l2 = rl("on", "on", ago(60), { grid_return_s: 600 });
     check("grid_return_s is honoured", l2 > 539 && l2 <= 540, String(l2));
     const skew = rl("on", "on", new Date(Date.now() + 60000).toISOString());
@@ -650,7 +676,7 @@ async function inverterSuite() {
     check("Night only on, pack charging: pulses", act("Nt", el) && el.chipNt2.classList.contains("on"));
     check("Night only off, pack charging: still", !act("Nt", run({ [E.night]: S("off"), [E.bw]: S("900") })));
     check("Night only on, charging but grid down: still",
-      !act("Nt", run({ [E.night]: S("on"), [E.bw]: S("900"), [E.safe]: S("on") })));
+      !act("Nt", run({ [E.night]: S("on"), [E.bw]: S("900"), [E.down]: S("on") })));
     // Adaptive: on AND its plan charging.
     check("adaptive on, plan charging: pulses",
       act("Ad", run({ [E.ad]: S("on"), [E.aplan]: S("charging", { current: 20, until: until }) })));
@@ -731,7 +757,7 @@ async function inverterSuite() {
     fire(q(".tile.t-grid .t-val"), "click");
     eq("a tile's child opens the tile's entity", r.c.dispatched.pop().detail.entityId, E.gv);
     fire(q(".pill"), "click");
-    eq("header pill opens grid_safe", r.c.dispatched.pop().detail.entityId, E.safe);
+    eq("header pill opens grid_down", r.c.dispatched.pop().detail.entityId, E.down);
     fire(r.el.battSub, "click");
     eq("battery sub opens what it shows", r.c.dispatched.pop().detail.entityId, E.bv);
     const d1 = r.c.dispatched.length, n1 = ncalls();
@@ -1727,7 +1753,7 @@ async function loadSheddingSuite() {
     master: "input_boolean.load_shedding_enabled",
     soc: "sensor.jkbms_gateway_bms_state_of_charge",
     rt: "sensor.battery_runtime_remaining",
-    grid: "binary_sensor.powmr_inverter_grid_condition_safe",
+    grid: "binary_sensor.house_on_battery",
   };
   const AC = "climate.hall_ac";
   const BOILER = "switch.boiler";

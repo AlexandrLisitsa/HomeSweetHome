@@ -1,0 +1,59 @@
+# ---------------------------------------------------------------------------
+# What the grid is doing to the house, as two plain answers
+#
+#     binary_sensor.grid_down         — no mains at the inverter input
+#     binary_sensor.house_on_battery  — the grid has put the house on the pack
+#
+# Reads PowerStation entities only:
+#
+#     sensor.powmr_inverter_grid_voltage
+#     binary_sensor.powmr_inverter_grid_condition_safe   (on = UNSAFE)
+#     switch.powmr_inverter_auto_grid_protection
+#
+# ---------------------------------------------------------------------------
+# Why not grid_condition_safe
+#
+# Everything used to read "grid down" off grid_condition_safe. That sensor is
+# the firmware's 185-250 V quality check, the input to grid protection
+# (PowerStation/docs/architecture.md section 4), not a mains-present flag. On
+# 31 Oct the grid came back from a DTEK outage at 180-199 V: it stayed
+# "unsafe" for hours while the inverter ran the house off it at 2 kW with
+# protection off, and the Grid Outage alert said the house was on battery.
+#
+# So the two questions are split:
+#
+#   grid_down         voltage under 150 V, the firmware's own no-grid line
+#                     (power-station.yaml, Grid Real Power). An outage reads
+#                     0-3 V, so the line has room both ways. 5 s on, like
+#                     grid_safe's delayed_on, so one bad packet is not an
+#                     outage; off at once, the alerts hold their own time.
+#                     Unavailable while the voltage is not a number: a dead
+#                     inverter link is not an outage.
+#
+#   house_on_battery  grid_down, or the grid out of range while protection is
+#                     on: then the firmware forces SBU Battery and holds it
+#                     until 5 steady minutes in range (grid_safe's
+#                     delayed_off), which this covers too. Auto Tariff's daily
+#                     SBU is left out on purpose -- that is the plan, not the
+#                     grid (load_shedding.yaml explains why it matters).
+# ---------------------------------------------------------------------------
+
+template:
+  - binary_sensor:
+      - name: "Grid down"
+        unique_id: grid_down
+        device_class: problem
+        icon: mdi:transmission-tower-off
+        availability: "{{ states('sensor.powmr_inverter_grid_voltage') | is_number }}"
+        state: "{{ states('sensor.powmr_inverter_grid_voltage') | float(0) < 150 }}"
+        delay_on:
+          seconds: 5
+
+      - name: "House on battery"
+        unique_id: house_on_battery
+        icon: mdi:home-battery
+        availability: "{{ states('binary_sensor.grid_down') in ['on', 'off'] }}"
+        state: >-
+          {{ is_state('binary_sensor.grid_down', 'on')
+             or (is_state('binary_sensor.powmr_inverter_grid_condition_safe', 'on')
+                 and is_state('switch.powmr_inverter_auto_grid_protection', 'on')) }}

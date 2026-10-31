@@ -475,7 +475,7 @@ FLAG_CLEAR = find(PACKAGE["automation"], "id", "adaptive_charge_outage_flag_clea
 PAUSED = "input_boolean.adaptive_charge_outage_paused"
 DARK = "binary_sensor.dtek_scheduled_dark"
 DTEK_NOW = "binary_sensor.dtek_outage_now"
-GRID_UNSAFE = "binary_sensor.powmr_inverter_grid_condition_safe"  # on = no mains
+GRID_DOWN = "binary_sensor.grid_down"  # on = no mains
 
 h = outage_house()
 runs = Simulator(h, [OUTAGE_OFF]).fire(
@@ -492,7 +492,7 @@ def resume_house(pre="charging", paused="on", adaptive="off", dark="off", grid="
     h.set(PRECHARGE, pre)
     h.set(DARK, dark)
     h.set(DTEK_NOW, dtek)
-    h.set(GRID_UNSAFE, grid)
+    h.set(GRID_DOWN, grid)
     return h
 
 
@@ -511,7 +511,7 @@ check("... schedule lit -> resumes", h.state(ENABLED), "on")
 h = resume_house(grid="on")
 sim = Simulator(h, [RESUME])
 check("window over but no mains -> waits", sim.fire(h.change(PRECHARGE, "idle")), [])
-sim.fire(h.change(GRID_UNSAFE, "off"))
+sim.fire(h.change(GRID_DOWN, "off"))
 check("... mains back -> resumes", h.state(ENABLED), "on")
 h = resume_house(dtek="on")
 check("DTEK still records an outage -> waits",
@@ -523,8 +523,8 @@ h = resume_house(paused="off")
 check("never paused (adaptive was off anyway) -> never turned on",
       (Simulator(h, [RESUME]).fire(h.change(PRECHARGE, "idle")), h.state(ENABLED)), ([], "off"))
 h = resume_house(pre="off")
-Simulator(h, [RESUME]).fire(h.change(GRID_UNSAFE, "on"))
-Simulator(h, [RESUME]).fire(h.change(GRID_UNSAFE, "off"))
+Simulator(h, [RESUME]).fire(h.change(GRID_DOWN, "on"))
+Simulator(h, [RESUME]).fire(h.change(GRID_DOWN, "off"))
 check("pre-charge switched off counts as no window -> resumes", h.state(ENABLED), "on")
 h = resume_house(pre="idle")
 Simulator(h, [RESUME]).fire(START)

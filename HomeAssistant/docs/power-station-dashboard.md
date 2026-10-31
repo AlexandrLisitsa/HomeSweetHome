@@ -68,12 +68,13 @@ On a phone (under ~900 px) the tiles stack: Grid, Inverter, House load,
 Battery, then Meter last, without its run (stacked, a run from Grid would
 point at the wrong tile).
 
-**The grid-return countdown.** After an outage the firmware waits for five minutes
-of stable voltage before it trusts the grid again (`delayed_off: 300s` on
+**The grid-return countdown.** With grid protection on, the firmware waits for five
+minutes of stable voltage before it trusts the grid again (`delayed_off: 300s` on
 `binary_sensor.powmr_inverter_grid_condition_safe`). The unfiltered
 `binary_sensor.powmr_inverter_grid_voltage_in_range` turns on the moment the
 voltage is back, so while it is on and the safe sensor is still unsafe, the pill
-counts down from its `last_changed`. It is shown only in that window. The delay
+counts down from its `last_changed`. It is shown only in that window, and only
+while Protect is on: without it the inverter never left the grid. The delay
 is the card option `grid_return_s` (default 300) and must match the firmware.
 
 **The AC charge chip carries the charger's features, as small icons.**
@@ -127,7 +128,12 @@ plan.
 
 Two firmware quirks the card handles:
 
-- `grid_condition_safe` is `device_class: safety`, so **on means unsafe**.
+- `grid_condition_safe` is `device_class: safety`, so **on means unsafe**. It
+  is the 185–250 V quality check that drives grid protection, not "mains
+  present": a live 180 V grid trips it. NO GRID and "Grid down" come from
+  `binary_sensor.grid_down` (under 150 V, `packages/grid_state.yaml`). The
+  pill reads "Grid unsafe" when the grid is out of range and Protect has moved
+  the house to battery.
 - `sensor.powmr_inverter_grid_real_power_calculated` is derived, not measured: it
   returns 0 below 150 V and adds a fixed 30 W of inverter overhead. There is no
   export and no PV on this system, and the card draws neither.

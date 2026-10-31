@@ -42,9 +42,11 @@ the battery bar shows the battery against the steps:
 The battery level alone doesn't mean there's an outage. By day, Auto Tariff mode
 runs the house off the pack on purpose
 ([PowerStation architecture, rule 4](../../PowerStation/docs/architecture.md#3-the-logic-brain--evaluate_power_mode)).
-So nothing happens unless the inverter itself reports the grid as unsafe
-(`binary_sensor.powmr_inverter_grid_condition_safe` is `on`). That includes a
-brownout, because the inverter is on battery then too. The master switch is
+So nothing happens unless the grid has put the house on the pack:
+`binary_sensor.house_on_battery` (`packages/grid_state.yaml`) is `on`. That is
+no mains (under 150 V), or a grid outside 185–250 V while grid protection is on,
+because the firmware then moves the house to battery. A low grid with
+protection off does not count: the house still runs on it. The master switch is
 `input_boolean.load_shedding_enabled`, the toggle in the hero.
 
 ## The rules

@@ -193,7 +193,7 @@ fine.
 `debug_state: outage | unscheduled | stale | on` in the card config forces the
 hero into one of those layouts, render-only. It exists because the honest way
 to see the outage layout would be to set
-`binary_sensor.powmr_inverter_grid_condition_safe` to `on` in Developer Tools,
+`binary_sensor.grid_down` to `on` in Developer Tools,
 which fires `❌ Alert: Grid Outage!` and pushes to both phones. Take it out
 again afterwards.
 

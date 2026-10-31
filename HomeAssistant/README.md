@@ -25,7 +25,9 @@ read before it goes live, and a `git revert` if it was wrong.
   ([`docs/dtek-outage-schedule.md`](docs/dtek-outage-schedule.md)).
 - **Outage pre-charge**: when DTEK schedules an outage, the battery is charged
   to full before it starts, at the lowest current that makes it and at night
-  rates when they suffice ([`docs/outage-precharge.md`](docs/outage-precharge.md)).
+  rates when they suffice. While DTEK has an emergency outage on record, it
+  charges on grid at full current instead
+  ([`docs/outage-precharge.md`](docs/outage-precharge.md)).
 - **Adaptive night charge**: the night-tariff charge runs at the lowest current
   that still fills the pack by 07:00, re-sized every 10 minutes
   ([`docs/adaptive-charge.md`](docs/adaptive-charge.md)).
@@ -124,6 +126,7 @@ sh tools/ha_get.sh /api/config
 | `tools/test_dtek_schedule.py` | fixture tests for `config/dtek/dtek_poll.py`'s schedule maths | no — no network |
 | `tools/test_outage_precharge.py` | renders the outage pre-charge plan in `packages/outage_precharge.yaml` and runs its drive and started automations through the simulator | no — pure local |
 | `tools/test_adaptive_charge.py` | renders the adaptive night charge plan in `packages/adaptive_charge.yaml` and runs its drive, outage-off and guard automations through the simulator, DST included | no — pure local |
+| `tools/test_grid_state.py` | renders `packages/grid_state.yaml`: `grid_down` (no mains, under 150 V) and `house_on_battery` (no mains, or out of range with grid protection on), including the low-but-live grid of 31 Oct | no — pure local |
 | `tools/test_battery_runtime.py` | renders `packages/battery_runtime.yaml`: runtime remaining, time to full and its edge triggers, against idle, unavailable, flat and full packs | no — pure local |
 | `tools/test_tariff_switch.py` | runs the day/night tariff automations (`automations.yaml`, `electricity_meter.yaml`) at 07:00 / 23:00, on HA start and over DST weekends, and the A/C meters' day/night/battery switch (`ac_tariffs.yaml`) with its 30 s hold; also pins the simulator's `for:` | no — pure local |
 | `tools/test_electricity_submit.py` | the monthly YASNO reading: `config/electricity/electricity_submit.py`'s window and month, the same window in `packages/electricity_submit.yaml` for every day of three years, and its button handler's parsing | no — pure local |
@@ -168,6 +171,7 @@ python tools/check_dtek_templates.py
 python tools/test_dtek_schedule.py
 python tools/test_outage_precharge.py
 python tools/test_adaptive_charge.py
+python tools/test_grid_state.py
 python tools/test_battery_runtime.py
 python tools/test_tariff_switch.py
 python tools/test_gas_submit.py
