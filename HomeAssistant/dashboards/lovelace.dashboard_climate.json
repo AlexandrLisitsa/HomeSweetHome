@@ -14,6 +14,9 @@
               "cards": [
                 {
                   "type": "custom:climate-console-card",
+                  "fx": [
+                    "tinted_rooms"
+                  ],
                   "tab": "rooms"
                 }
               ]
@@ -38,6 +41,9 @@
               "cards": [
                 {
                   "type": "custom:climate-console-card",
+                  "fx": [
+                    "gradient_dial"
+                  ],
                   "tab": "hall"
                 }
               ]
@@ -62,6 +68,9 @@
               "cards": [
                 {
                   "type": "custom:climate-console-card",
+                  "fx": [
+                    "gradient_dial"
+                  ],
                   "tab": "bedroom"
                 }
               ]

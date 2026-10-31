@@ -76,9 +76,10 @@
 
 const CARD = "powmr-inverter-console-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
+import { fxConfig, fxOn, fxSetup, FX_CSS } from "./card-fx.js?v=1.1.0";
 import { ramp, rampCss } from "./card-ramp.js?v=1.0.0";
 
-const VERSION = "2.13.0";
+const VERSION = "2.14.2";
 
 /*
  * Brand colours stay literal: they identify a leg of the diagram (amber =
@@ -492,6 +493,31 @@ function installFonts() {
   document.head.appendChild(style);
 }
 
+/*
+ * Effect styles (card-fx.js). Appended to STYLE only when the card has an fx
+ * key, and each rule is gated on the host's data-fx, so a switch flips them
+ * without touching the DOM.
+ */
+const FX_STYLE = `
+/* power_glow: --fxg runs 0..1 with the watts through the tile */
+:host([data-fx~="power_glow"]) .tile { transition: box-shadow .6s, border-color .15s; }
+:host([data-fx~="power_glow"]) .tile.t-grid, :host([data-fx~="power_glow"]) .tile.t-dir { --fxgc: 174,132,70; }
+:host([data-fx~="power_glow"]) .tile.t-batt { --fxgc: 88,149,105; }
+:host([data-fx~="power_glow"]) .tile.t-load { --fxgc: 110,168,254; }
+:host([data-fx~="power_glow"]) .tile.t-inv { --fxgc: 154,160,171; }
+:host([data-fx~="power_glow"]) .tile {
+  box-shadow: 0 0 calc(var(--fxg, 0) * 34px) calc(var(--fxg, 0) * 2px) rgba(var(--fxgc, 154,160,171), calc(var(--fxg, 0) * .45)); }
+:host([data-fx~="power_glow"]) .run.x i { height: calc(2px + var(--fxg, 0) * 3px);
+  filter: drop-shadow(0 0 calc(var(--fxg, 0) * 6px) var(--c)); }
+:host([data-fx~="power_glow"]) .run.y i { width: calc(2px + var(--fxg, 0) * 3px);
+  filter: drop-shadow(0 0 calc(var(--fxg, 0) * 6px) var(--c)); }
+/* chart_polish */
+.fx-dot { position: absolute; width: 8px; height: 8px; margin: -4px 0 0 -4px; border-radius: 50%;
+  background: var(--fxc, ${OK}); pointer-events: none; animation: fxRing 1.8s ease-out infinite; }
+@keyframes fxRing { 0% { box-shadow: 0 0 0 0 var(--fxc, ${OK}); } 100% { box-shadow: 0 0 0 10px transparent; } }
+@media (prefers-reduced-motion: reduce) { .fx-dot { animation: none !important; } }
+`;
+
 const STYLE = `
 :host { display: block; container-type: inline-size; container-name: pmcard; }
 
@@ -886,7 +912,9 @@ class PowmrInverterConsoleCard extends HTMLElement {
         }
       }
     });
+    cfg.fx = fxConfig(CARD, cfg.fx);
     this._config = cfg;
+    this._fxWire();
     // A changed config means a changed DOM, so drop the built tree.
     this._built = false;
     this._print = null;
@@ -1035,11 +1063,64 @@ class PowmrInverterConsoleCard extends HTMLElement {
     installFonts();
     // The clock is the only thing that moves without a state change.
     if (!this._timer) this._timer = window.setInterval(() => this._tick(), 1000);
+    this._fxWire();
   }
 
   disconnectedCallback() {
     if (this._timer) window.clearInterval(this._timer);
     this._timer = null;
+    if (this._fxOff) this._fxOff();
+    this._fxOff = null;
+  }
+
+  /** Effects (card-fx.js): data-fx on the host and the off-screen pause. */
+  _fxWire() {
+    if (this._fxOff) this._fxOff();
+    this._fxOff = null;
+    if (!this.isConnected || !this._config) return;
+    this._fxOff = fxSetup(this, this._config.fx);
+  }
+
+  /**
+   * Glow follows power: --fxg 0..1 on a tile and its run, by the watts
+   * against the same ceiling the run's speed uses. Cleared when off.
+   */
+  _fxGlow(nodes, watts, max) {
+    const on = fxOn(this._config.fx, "power_glow");
+    const g = watts === null ? 0 : Math.max(0, Math.min(1, Math.abs(watts) / max));
+    nodes.forEach((n) => {
+      if (!n) return;
+      if (on) n.style.setProperty("--fxg", g.toFixed(3));
+      else n.style.removeProperty("--fxg");
+    });
+  }
+
+  /**
+   * Chart polish: the fill fades from the line's colour to nothing, and a dot
+   * pulses on the latest reading. The dot is HTML, not SVG, because the plot
+   * stretches (preserveAspectRatio none) and an SVG circle would be an oval.
+   */
+  _fxChart(col, xy) {
+    const el = this._el;
+    const on = fxOn(this._config.fx, "chart_polish");
+    if (el.fxStop0) {
+      el.fxStop0.setAttribute("stop-color", col);
+      el.fxStop0.setAttribute("stop-opacity", "0.38");
+      el.fxStop1.setAttribute("stop-color", col);
+      el.fxStop1.setAttribute("stop-opacity", "0");
+    }
+    if (on) {
+      el.chArea.setAttribute("fill", "url(#pmfxgrad)");
+      el.chArea.setAttribute("fill-opacity", "1");
+    }
+    if (!el.fxDot) return;
+    const last = on && xy && xy.length ? xy[xy.length - 1] : null;
+    el.fxDot.hidden = !last;
+    if (last) {
+      el.fxDot.style.left = (last[0] / CH_W * 100).toFixed(3) + "%";
+      el.fxDot.style.top = (last[1] / CH_H * 100).toFixed(3) + "%";
+      el.fxDot.style.setProperty("--fxc", col);
+    }
   }
 
   getCardSize() {
@@ -1645,7 +1726,9 @@ ${ch.dots ? "" : `
             <svg class="ch" data-ref="chSvg" viewBox="0 0 ${CH_W} ${CH_H}" preserveAspectRatio="none">
               <defs><clipPath id="plotclip">
                 <rect x="0" y="0" width="${CH_W}" height="${CH_H}"></rect>
-              </clipPath></defs>
+              </clipPath>${c.fx ? `<linearGradient id="pmfxgrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" data-ref="fxStop0"></stop><stop offset="1" data-ref="fxStop1"></stop>
+              </linearGradient>` : ""}</defs>
               ${gy}
               <g clip-path="url(#plotclip)">
                 <path data-ref="chArea" stroke="none" fill-opacity="0.08"></path>
@@ -1654,7 +1737,7 @@ ${ch.dots ? "" : `
               </g>
             </svg>
             <div class="hv hvline" data-ref="hvLine"></div>
-            <div class="hv hvdot" data-ref="hvDot"></div>
+            <div class="hv hvdot" data-ref="hvDot"></div>${c.fx ? '<div class="fx-dot" data-ref="fxDot"></div>' : ""}
             <div class="tip" data-ref="tip"></div>
             <div class="note" data-ref="chNote"></div>
             <div class="xax" data-ref="xax"></div>
@@ -1668,7 +1751,7 @@ ${ch.dots ? "" : `
       has("history") ? " Drag the chart to move through time, pinch or scroll to zoom;"
         + " double-click or pick a range to go back to live." : ""}</div>`);
 
-    this.shadowRoot.innerHTML = "<style>" + STYLE + "</style>"
+    this.shadowRoot.innerHTML = "<style>" + STYLE + (c.fx ? FX_CSS + FX_STYLE : "") + "</style>"
       + '<ha-card><div class="root">' + parts.join("") + "</div></ha-card>";
 
     this._el = {};
@@ -1829,6 +1912,12 @@ ${ch.dots ? "" : `
     this._setFlow(el.runLoad, loadW, c.max_load_w, false);
     this._setFlow(el.runBatt, battW, c.max_batt_w, true);
     this._setFlow(el.runDir, this._num(c.meter_power), c.max_meter_w, false);
+    if (c.fx) {
+      this._fxGlow([el.gridTile, el.gridRun], gridW, c.max_grid_w);
+      this._fxGlow([el.invTile, el.loadTile, el.loadRun], loadW, c.max_load_w);
+      this._fxGlow([el.battTile, el.battRun], battW, c.max_batt_w);
+      this._fxGlow([el.dirTile, el.dirRun], this._num(c.meter_power), c.max_meter_w);
+    }
 
     const print = this._fingerprint();
     if (print === this._print) return;
@@ -2798,6 +2887,7 @@ ${ch.dots ? "" : `
     if (!pts.length) {
       el.chLine.setAttribute("d", "");
       el.chArea.setAttribute("d", "");
+      this._fxChart(col, []);
       el.yax.innerHTML = "";
       el.xax.innerHTML = "";
       el.stats.innerHTML = "";
@@ -2813,6 +2903,7 @@ ${ch.dots ? "" : `
     el.chLine.setAttribute("d", p.line);
     el.chArea.setAttribute("d", p.area);
     el.chArea.setAttribute("fill-opacity", p.ranged ? "0.22" : "0.08");
+    this._fxChart(col, p.xy);
     this._hv = { spec: spec, span: d.t1 - d.t0, pts: pts, xy: p.xy, col: col };
 
     const span = p.hi - p.lo;

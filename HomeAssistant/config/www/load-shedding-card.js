@@ -39,8 +39,9 @@
 
 const CARD = "load-shedding-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
+import { fxConfig, fxOn, fxSetup, FX_CSS } from "./card-fx.js?v=1.1.0";
 
-const VERSION = "4.1.1";
+const VERSION = "4.2.2";
 
 // Text colours, so the bright variants: they must read at 4.5:1 on the panels.
 const RED = "var(--ls-bad-hi)";
@@ -291,7 +292,9 @@ class LoadSheddingCard extends HTMLElement {
         || cfg.blocks.some((b) => BLOCKS.indexOf(b) < 0)) {
       throw new Error(CARD + ": blocks must be a non-empty list of " + BLOCKS.join(", "));
     }
+    cfg.fx = fxConfig(CARD, cfg.fx);
     this._config = cfg;
+    this._fxWire();
     this._print = null;
     if (this._hass) this._render(true);
   }
@@ -299,6 +302,14 @@ class LoadSheddingCard extends HTMLElement {
   set hass(hass) {
     this._hass = hass;
     if (this._config) this._render(false);
+  }
+
+  /** Effects (card-fx.js): only with an `fx` key, so the real tab is untouched. */
+  _fxWire() {
+    if (this._fxOff) this._fxOff();
+    this._fxOff = null;
+    if (!this.isConnected || !this._config) return;
+    this._fxOff = fxSetup(this, this._config.fx);
   }
 
   connectedCallback() {
@@ -313,6 +324,7 @@ class LoadSheddingCard extends HTMLElement {
     if (typeof document.addEventListener === "function") {
       document.addEventListener("visibilitychange", this._onVisibility);
     }
+    this._fxWire();
   }
 
   disconnectedCallback() {
@@ -321,6 +333,8 @@ class LoadSheddingCard extends HTMLElement {
     if (typeof document.removeEventListener === "function") {
       document.removeEventListener("visibilitychange", this._onVisibility);
     }
+    if (this._fxOff) this._fxOff();
+    this._fxOff = null;
   }
 
   /** Every animation holds while no one can see the card. */
@@ -709,7 +723,8 @@ class LoadSheddingCard extends HTMLElement {
     const render = { hero: () => this._heroHTML(), upcoming: () => this._upcomingHTML(),
       rules: () => this._rulesHTML(), backup: () => this._backupHTML() };
     const parts = this._config.blocks.map((b) => render[b]());
-    this.shadowRoot.innerHTML = `<style>${STYLE}</style><div class="wrap">${parts.join("")}</div>`;
+    const fx = this._config.fx ? FX_CSS + FX_STYLE : "";
+    this.shadowRoot.innerHTML = `<style>${STYLE}${fx}</style><div class="wrap">${parts.join("")}</div>`;
   }
 
   /** Every enabled device's steps, for the bar. */
@@ -776,7 +791,10 @@ class LoadSheddingCard extends HTMLElement {
       const names = m.names.join(", ");
       // A label near either end hangs inward, so it never leaves the card.
       const edge = m.soc >= 85 ? " right" : m.soc <= 15 ? " left" : "";
-      return `<div class="mark ${st} ${i % 2 ? "alt" : ""}${edge}" style="left:${m.soc}%"${
+      // Live thresholds: how close, 0 at NEAR % away to 1 on the step.
+      const prox = near && fxOn(this._config.fx, "live_thresholds")
+        ? ";--fxp:" + (1 - (level - m.soc) / NEAR).toFixed(3) : "";
+      return `<div class="mark ${st} ${i % 2 ? "alt" : ""}${edge}" style="left:${m.soc}%${prox}"${
         this._tip(names + " at " + Math.round(m.soc) + " %", m.done ? "taken" : near ? "close" : "ahead", "mark")}>
         <span><i class="nm">${this._esc(names)} · </i>${Math.round(m.soc)}%</span></div>`;
     }).join("");
@@ -1253,6 +1271,33 @@ class LoadSheddingCard extends HTMLElement {
 // on :host), not the HA theme's: the panels are graphite whatever the theme, so
 // their text must not take the theme's text colours, which are dark in the
 // light theme. test_power_cards.js checks every text colour for 4.5:1.
+/*
+ * Effect styles (card-fx.js), appended only when the card has an fx key and
+ * gated on the host's data-fx.
+ *
+ * Both effects improve on something the tab already draws: the near markers
+ * glow (pulsing only during an outage) and the band below the lowest step is
+ * hatched. live_thresholds scales the glow with how close the battery is and
+ * pulses whenever a step is near; danger_zone deepens the band to a red that
+ * fades toward the step, with the hatch drifting.
+ */
+const FX_STYLE = `
+:host([data-fx~="live_thresholds"]) .mark.near {
+  box-shadow: 0 0 calc(4px + var(--fxp, 0) * 18px) calc(var(--fxp, 0) * 3px) var(--ls-warn-hi);
+  animation: fxNear calc(2.4s - var(--fxp, 0) * 1.6s) ease-in-out infinite; }
+@keyframes fxNear { 50% { opacity: .55; } }
+:host([data-fx~="danger_zone"]) .danger {
+  background: repeating-linear-gradient(135deg, rgba(255, 146, 138, .38) 0 4px, transparent 4px 10px) 0 0 / 14px 14px,
+    linear-gradient(90deg, color-mix(in srgb, var(--ls-bad) 55%, transparent), color-mix(in srgb, var(--ls-bad) 12%, transparent));
+  box-shadow: inset -2px 0 0 var(--ls-bad-hi), 0 0 14px color-mix(in srgb, var(--ls-bad) 45%, transparent);
+  animation: fxHatch 3s linear infinite; }
+@keyframes fxHatch { to { background-position: 14px 0, 0 0; } }
+:host([paused]) .mark.near, :host([paused]) .danger { animation-play-state: paused; }
+@media (prefers-reduced-motion: reduce) {
+  :host([data-fx]) .mark.near, :host([data-fx]) .danger { animation: none !important; }
+}
+`;
+
 const STYLE = `
 :host {
   display: block; color-scheme: dark; container-type: inline-size;
