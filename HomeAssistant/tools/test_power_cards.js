@@ -1493,6 +1493,21 @@ async function batterySuite() {
     eq("rails idle", [el.railBus.style._props["--play"], el.railPack.style._props["--play"]], ["paused", "paused"]);
   }
 
+  group = "battery/rate: ";
+  {
+    const c = new Card();
+    c.setConfig({});
+    eq("60 A -> 2m 48s", c._perPercent(60), "2m 48s");
+    eq("-6.5 A -> 25m 51s", c._perPercent(-6.5), "25m 51s");
+    eq("2 A -> 1h 24m", c._perPercent(2), "1h 24m");
+    eq("0.2 A -> 14h 00m", c._perPercent(0.2), "14h 00m");
+    eq("0.19 A -> nothing (noise)", c._perPercent(0.19), null);
+    eq("0 A -> nothing", c._perPercent(0), null);
+    eq("no reading -> nothing", c._perPercent(null), null);
+    const idle = mk(Object.assign(base(), { [E.a]: S("0.1"), [E.w]: S("2") }));
+    eq("idle: both lines empty", [idle.el.ttfRate.textContent, idle.el.rtlRate.textContent], ["", ""]);
+  }
+
   group = "battery/flow: ";
   {
     const r = mk(Object.assign(base(), { [E.a]: S("-50"), [E.w]: S("-1300"), [E.dc]: S("48.5"), [E.rtl]: S("2.5"), [E.ttf]: S("3") }));
@@ -1509,6 +1524,8 @@ async function batterySuite() {
     check("runtime clock shown", /^\d{4}-\d\d-\d\d \d\d:\d\d$/.test(el.rtlAt.textContent), el.rtlAt.textContent);
     eq("time to full grey while draining", el.ttf.style.color, MUTED);
     eq("no 'full at' clock while draining", el.ttfAt.textContent, "");
+    eq("rate: -50 A loses 1% every 3m 22s", el.rtlRate.textContent, "−1% every 3m 22s");
+    eq("rate: no charge line while draining", el.ttfRate.textContent, "");
     eq("discharge chip lit", el.dot1.classList.contains("live"), true);
     eq("discharge chip title", el.chip1.dataset.tip.split("\n")[0], "Discharging — on · discharging now");
 
@@ -1520,6 +1537,10 @@ async function batterySuite() {
     eq("time to full green", el.ttf.style.color, OK);
     check("full-at clock shown", el.ttfAt.textContent !== "");
     eq("runtime clock hidden while charging", el.rtlAt.textContent, "");
+    eq("rate: 60 A gains 1% every 2m 48s", el.ttfRate.textContent, "+1% every 2m 48s");
+    eq("rate: no drain line while charging", el.rtlRate.textContent, "");
+    check("rate: in the time-to-full tooltip", el.ttfTile.dataset.tip.includes("+1% every 2m 48s"),
+      el.ttfTile.dataset.tip.split("\n")[0]);
     eq("charge chip lit", el.dot0.classList.contains("live"), true);
     eq("charge dot colour", el.dot0.style._props["--dc"], OK);
 
