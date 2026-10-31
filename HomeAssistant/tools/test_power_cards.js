@@ -528,6 +528,20 @@ async function inverterSuite() {
   }
 
   /* --- Pre-charge sub-label ------------------------------------------------- */
+  group = "inverter/fx: ";
+  {
+    let r = mk(base());
+    check("off: no effect styles", !r.c.shadowRoot.innerHTML.includes("fxRing"));
+    eq("off: no glow", r.el.gridTile.style.getPropertyValue("--fxg"), "");
+    // As lovelace.dashboard_inverter.json lists them.
+    r = mk(base(), { fx: ["power_glow", "chart_polish"] });
+    check("on: effect styles", r.c.shadowRoot.innerHTML.includes("fxRing"));
+    eq("the grid value is plain text", r.el.gridVal.innerHTML, "230.0<i>V</i>");
+    check("glow: set on the grid tile and its run",
+      r.el.gridTile.style.getPropertyValue("--fxg") !== "" && r.el.gridRun.style.getPropertyValue("--fxg") !== "");
+    check("chart: gradient and dot nodes exist", !!r.el.fxStop0 && !!r.el.fxDot);
+  }
+
   group = "inverter/precharge: ";
   {
     const until = localIso(9, 30);
@@ -1493,6 +1507,44 @@ async function batterySuite() {
     eq("rails idle", [el.railBus.style._props["--play"], el.railPack.style._props["--play"]], ["paused", "paused"]);
   }
 
+  group = "battery/fx: ";
+  {
+    // No fx key -- every real dashboard: no effect node, no effect style.
+    let r = mk(Object.assign(base(), { [E.a]: S("60"), [E.w]: S("1600") }));
+    const html = () => r.c.shadowRoot.innerHTML;
+    check("off: no effect styles", !html().includes("fx-shim") && !html().includes("fxShimmer"));
+    eq("off: no effect nodes", [!!r.el.fxShim, !!r.el.fxDot, !!r.el.fxStop0], [false, false, false]);
+    throws("unknown effect", () => new Card().setConfig({ fx: ["sparkle"] }), /unknown fx sparkle/);
+
+    throws("the dropped odometer", () => new Card().setConfig({ fx: ["odometer"] }), /unknown fx odometer/);
+
+    // As lovelace.dashboard_inverter.json lists them.
+    const ALL = ["power_glow", "liquid_soc", "balance_pulse", "chart_polish"];
+    r = mk(Object.assign(base(), { [E.a]: S("60"), [E.w]: S("1600") }), { fx: ALL });
+    check("on: effect styles", html().includes("fx-shim") && html().includes("fxShimmer"));
+    eq("numbers stay plain text", [r.el.mVal0.innerHTML, r.el.busIn.innerHTML], ["55", "1600.0"]);
+    eq("glow: full at max_power_w", r.el.busCard.style.getPropertyValue("--fxg"), "1.000");
+    check("liquid: shimmer while charging", r.el.fxShim.classList.contains("on"));
+    rerender(r, (st) => { st[E.a] = S("-20"); st[E.w] = S("-400"); });
+    check("liquid: no shimmer while draining", !r.el.fxShim.classList.contains("on"));
+    eq("glow: a quarter at 400 W", r.el.packCard.style.getPropertyValue("--fxg"), "0.250");
+
+    // Balancer on, 25 mV spread: the top cells pulse.
+    const cells = [3.402, 3.39, 3.385, 3.38, 3.377, 3.38, 3.4, 3.39];
+    r = mk(Object.assign(base(cells), { [E.d]: S("0.025"), [E.cmax]: S("3.402") }), { fx: ALL });
+    eq("balancing: the top cells pulse (within 2 mV)",
+      cells.map((_v, i) => r.el["pcellWrap" + i].classList.contains("fx-bal")),
+      [true, false, false, false, false, false, true, false]);
+    r = mk(Object.assign(base(cells), { [E.d]: S("0.025"), [E.swb]: S("off") }), { fx: ALL });
+    check("balancer off: nothing pulses",
+      cells.every((_v, i) => !r.el["pcellWrap" + i].classList.contains("fx-bal")));
+    r = mk(Object.assign(base(cells), { [E.d]: S("0.025") }), { fx: ["liquid_soc"] });
+    check("balance_pulse not listed: nothing pulses",
+      cells.every((_v, i) => !r.el["pcellWrap" + i].classList.contains("fx-bal")));
+    eq("power_glow not listed: no --fxg", r.el.busCard.style.getPropertyValue("--fxg"), "");
+
+  }
+
   group = "battery/rate: ";
   {
     const c = new Card();
@@ -2098,6 +2150,19 @@ async function loadSheddingSuite() {
     eq("rounded", r.qa(".tile .v")[0].textContent, "100%");
     fire(r.q(".sw"), "click");
     eq("master toggle", r.h.calls.pop(), ["input_boolean", "toggle", { entity_id: E.master }]);
+  }
+
+  group = "shed/fx: ";
+  {
+    const devs = [dev("ac", AC, [{ soc: 80, action: "x" }, { soc: 50, action: "x" }])];
+    let r = mk(states({ grid: "on", soc: "84", devices: devs }), { blocks: ["hero"] });
+    check("off: no effect styles", !r.root.innerHTML.includes("fxHatch"));
+    eq("off: no proximity on the near mark", r.q(".mark.near").style.getPropertyValue("--fxp"), "");
+    r = mk(states({ grid: "on", soc: "84", devices: devs }), { blocks: ["hero"], fx: ["live_thresholds", "danger_zone"] });
+    check("on: effect styles", r.root.innerHTML.includes("fxHatch"));
+    eq("live thresholds: 4 % above an 80 % step reads 0.6 close",
+      r.q(".mark.near").style.getPropertyValue("--fxp"), "0.600");
+    eq("the danger band is still the lowest step", r.q(".danger").style.getPropertyValue("width"), "50%");
   }
 
   group = "shed/hero-bar: ";

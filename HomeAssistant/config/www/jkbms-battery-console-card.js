@@ -89,8 +89,9 @@
 const CARD = "jkbms-battery-console-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 import { ramp, rampCss } from "./card-ramp.js?v=1.0.0";
+import { fxConfig, fxOn, fxSetup, FX_CSS } from "./card-fx.js?v=1.1.0";
 
-const VERSION = "1.7.0";
+const VERSION = "1.8.2";
 
 /*
  * The design's palette, literal. Names are what the design calls them: two
@@ -488,6 +489,44 @@ function installFonts() {
   style.textContent = FONTS;
   document.head.appendChild(style);
 }
+
+/*
+ * Effect styles (card-fx.js). Appended to STYLE only when the card has an fx
+ * key, and each rule is gated on the host's data-fx, so a switch flips them
+ * without touching the DOM.
+ */
+const FX_STYLE = `
+/* power_glow: --fxg runs 0..1 with the watts on the bus */
+:host([data-fx~="power_glow"]) .fcard {
+  box-shadow: 0 0 calc(var(--fxg, 0) * 30px) calc(var(--fxg, 0) * 2px) rgba(88,149,105, calc(var(--fxg, 0) * .5));
+  transition: box-shadow .6s; }
+:host([data-fx~="power_glow"]) .fcard .rail { height: calc(3px + var(--fxg, 0) * 3px); }
+/* liquid_soc: a taller bar with a glassy top, a wavy edge, a shimmer while charging */
+:host([data-fx~="liquid_soc"]) .meters > .meter:first-child .track { height: 14px; border-radius: 7px; }
+:host([data-fx~="liquid_soc"]) .meters > .meter:first-child .fill {
+  background-image: linear-gradient(180deg, rgba(255,255,255,.22), rgba(255,255,255,0) 55%, rgba(0,0,0,.18)); }
+:host([data-fx~="liquid_soc"]) .meters > .meter:first-child .fill::after {
+  content: ""; position: absolute; top: 0; bottom: 0; right: -6px; width: 12px;
+  background: radial-gradient(circle at 0 50%, transparent 5px, currentcolor 5.5px) 0 0 / 12px 8px repeat-y;
+  color: inherit; opacity: .55; animation: fxWave 1.6s linear infinite; }
+.fx-shim { position: absolute; top: 0; bottom: 0; overflow: hidden; pointer-events: none; display: none; }
+:host([data-fx~="liquid_soc"]) .fx-shim.on { display: block; }
+.fx-shim.on::before { content: ""; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.35), transparent);
+  animation: fxShimmer 2.2s ease-in-out infinite; }
+/* balance_pulse */
+:host([data-fx~="balance_pulse"]) .pcell.fx-bal { border-color: ${WARN}; }
+:host([data-fx~="balance_pulse"]) .pcell.fx-bal i { animation: fxPulse 1.4s ease-in-out infinite; }
+/* chart_polish */
+.fx-dot { position: absolute; width: 8px; height: 8px; margin: -4px 0 0 -4px; border-radius: 50%;
+  background: var(--fxc, ${OK}); box-shadow: 0 0 0 0 var(--fxc, ${OK}); pointer-events: none;
+  animation: fxRing 1.8s ease-out infinite; }
+@keyframes fxRing { 0% { box-shadow: 0 0 0 0 var(--fxc, ${OK}); } 100% { box-shadow: 0 0 0 10px transparent; } }
+@media (prefers-reduced-motion: reduce) {
+  .fx-dot, .fx-shim.on::before, .pcell.fx-bal i,
+  .meters > .meter:first-child .fill::after { animation: none !important; }
+}
+`;
 
 const STYLE = `
 :host { display: block; container-type: inline-size; container-name: bcard; }
@@ -898,7 +937,9 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
         }
       }
     });
+    cfg.fx = fxConfig(CARD, cfg.fx);
     this._config = cfg;
+    this._fxWire();
     // A changed config means a changed DOM, so drop the built tree.
     this._built = false;
     this._print = null;
@@ -915,6 +956,14 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
     if (this._config) this._render();
   }
 
+  /** Effects (card-fx.js): data-fx on the host and the off-screen pause. */
+  _fxWire() {
+    if (this._fxOff) this._fxOff();
+    this._fxOff = null;
+    if (!this.isConnected || !this._config) return;
+    this._fxOff = fxSetup(this, this._config.fx);
+  }
+
   connectedCallback() {
     // Cheap and idempotent. Done here as well as at module load because a
     // module can be evaluated before <head> exists, and because this is the
@@ -922,11 +971,14 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
     installFonts();
     // The clock is the only thing that moves without a state change.
     if (!this._timer) this._timer = window.setInterval(() => this._tick(), 1000);
+    this._fxWire();
   }
 
   disconnectedCallback() {
     if (this._timer) window.clearInterval(this._timer);
     this._timer = null;
+    if (this._fxOff) this._fxOff();
+    this._fxOff = null;
   }
 
   getCardSize() {
@@ -1397,7 +1449,8 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
             </div>
             <div class="m-sub" data-ref="mSub${i}"></div>
             <div class="track${m.mid ? " mid" : ""}" style="background:${m.track}">
-              <div class="fill" data-ref="mFill${i}"></div>
+              <div class="fill" data-ref="mFill${i}"></div>${c.fx && i === 0
+                ? '<div class="fx-shim" data-ref="fxShim"></div>' : ""}
             </div>
             <div class="ticks">${m.ticks.map(([t, p]) =>
               `<span class="${p <= 0 ? "l0" : p >= 100 ? "r0" : ""}"
@@ -1568,7 +1621,9 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
             <svg class="ch" data-ref="chSvg" viewBox="0 0 ${CH_W} ${CH_H}" preserveAspectRatio="none">
               <defs><clipPath id="bcplotclip">
                 <rect x="0" y="0" width="${CH_W}" height="${CH_H}"></rect>
-              </clipPath></defs>
+              </clipPath>${c.fx ? `<linearGradient id="bcfxgrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" data-ref="fxStop0"></stop><stop offset="1" data-ref="fxStop1"></stop>
+              </linearGradient>` : ""}</defs>
               ${gy}
               <g clip-path="url(#bcplotclip)">
                 <path data-ref="chArea" stroke="none" fill-opacity="0.10"></path>
@@ -1577,7 +1632,7 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
               </g>
             </svg>
             <div class="hv hvline" data-ref="hvLine"></div>
-            <div class="hv hvdot" data-ref="hvDot"></div>
+            <div class="hv hvdot" data-ref="hvDot"></div>${c.fx ? '<div class="fx-dot" data-ref="fxDot"></div>' : ""}
             <div class="tip" data-ref="tip"></div>
             <div class="note" data-ref="chNote"></div>
             <div class="xax" data-ref="xax"></div>
@@ -1591,7 +1646,7 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
       has("history") ? " Drag the chart to move through time, pinch or scroll to zoom;"
         + " double-click or pick a range to go back to live." : ""}</div>`);
 
-    this.shadowRoot.innerHTML = "<style>" + STYLE + "</style>"
+    this.shadowRoot.innerHTML = "<style>" + STYLE + (c.fx ? FX_CSS + FX_STYLE : "") + "</style>"
       + '<ha-card><div class="root">' + parts.join("") + "</div></ha-card>";
 
     this._el = {};
@@ -1763,6 +1818,12 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
       el.mFill0.style.left = "0%";
       el.mFill0.style.width = (soc === null ? 0 : Math.max(0, Math.min(100, soc))).toFixed(2) + "%";
       el.mFill0.style.background = socCol;
+      if (el.fxShim) {
+        el.fxShim.classList.toggle("on", fxOn(c.fx, "liquid_soc") && dir > 0);
+        el.fxShim.style.left = "0%";
+        el.fxShim.style.width = el.mFill0.style.width;
+        el.mFill0.style.color = socCol;
+      }
       if (el.meter0) {
         el.meter0.dataset.tip = this._tip("Capacity — " + (soc === null ? "no reading"
           : this._fmt(soc, 0) + " % · " + this._socLabel(soc)), "cap");
@@ -1879,6 +1940,20 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
       }
     }
 
+    // Glow follows power: 0 idle, 1 at max_power_w, on both flow tiles.
+    const glow = fxOn(c.fx, "power_glow") && watts !== null
+      ? Math.min(1, Math.abs(watts) / c.max_power_w) : null;
+    [el.busCard, el.packCard].forEach((n) => {
+      if (!n) return;
+      if (glow === null) n.style.removeProperty("--fxg");
+      else n.style.setProperty("--fxg", glow.toFixed(3));
+    });
+    // Balancing pulse: the balancer bleeds the top cells, so those pulse,
+    // and only while the card's own "balancer has work" test says so.
+    const balancing = fxOn(c.fx, "balance_pulse")
+      && !!this._activity("balance", this._state(c.sw_balancer) === "on");
+    const top = known.length ? Math.max.apply(null, known) : null;
+
     if (el.packV) {
       const vCol = this._cellColor(perCell);
       el.packV.textContent = this._fmt(volts, 3) + " V";
@@ -1900,6 +1975,9 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
         if (v !== null && (!this._cellOk(v) || drift)) out++;
         const wrap = el["pcellWrap" + i];
         if (wrap) wrap.dataset.tip = this._tip("C" + (i + 1) + " — " + this._reading(v, 3, "V"), "cell");
+        if (wrap && c.fx) {
+          wrap.classList.toggle("fx-bal", balancing && v !== null && Math.round((top - v) * 1000) <= 2);
+        }
       });
       const tolerance = !known.length ? "no cell data"
         : out ? out + (out === 1 ? " cell" : " cells") + " out of tolerance"
@@ -2808,6 +2886,34 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
     });
   }
 
+  /**
+   * Chart polish: the fill fades from the line's colour to nothing, and a dot
+   * pulses on the latest reading. The dot is HTML, not SVG, because the plot
+   * stretches (preserveAspectRatio none) and an SVG circle would be an oval.
+   */
+  _fxChart(col, xy) {
+    const el = this._el;
+    const on = fxOn(this._config.fx, "chart_polish");
+    if (el.fxStop0) {
+      el.fxStop0.setAttribute("stop-color", col);
+      el.fxStop0.setAttribute("stop-opacity", "0.38");
+      el.fxStop1.setAttribute("stop-color", col);
+      el.fxStop1.setAttribute("stop-opacity", "0");
+    }
+    if (on) {
+      el.chArea.setAttribute("fill", "url(#bcfxgrad)");
+      el.chArea.setAttribute("fill-opacity", "1");
+    }
+    if (!el.fxDot) return;
+    const last = on && xy && xy.length ? xy[xy.length - 1] : null;
+    el.fxDot.hidden = !last;
+    if (last) {
+      el.fxDot.style.left = (last[0] / CH_W * 100).toFixed(3) + "%";
+      el.fxDot.style.top = (last[1] / CH_H * 100).toFixed(3) + "%";
+      el.fxDot.style.setProperty("--fxc", col);
+    }
+  }
+
   _drawChart(spec, rec) {
     const el = this._el;
     // Belt and braces for the token: no history block, nothing to draw on.
@@ -2840,6 +2946,7 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
     if (!pts.length) {
       el.chLine.setAttribute("d", "");
       el.chArea.setAttribute("d", "");
+      this._fxChart(col, []);
       el.yax.innerHTML = "";
       el.xax.innerHTML = "";
       el.stats.innerHTML = "";
@@ -2855,6 +2962,7 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
     el.chLine.setAttribute("d", p.line);
     el.chArea.setAttribute("d", p.area);
     el.chArea.setAttribute("fill-opacity", p.ranged ? "0.22" : "0.10");
+    this._fxChart(col, p.xy);
     this._hv = { spec: spec, span: d.t1 - d.t0, pts: pts, xy: p.xy, col: col };
 
     const span = p.hi - p.lo;

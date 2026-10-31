@@ -159,6 +159,11 @@ class Element extends Node0 {
   getAttribute(n) { return this._attrs.has(n) ? this._attrs.get(n) : null; }
   hasAttribute(n) { return this._attrs.has(n); }
   removeAttribute(n) { this._attrs.delete(n); }
+  toggleAttribute(n, force) {
+    const on = force === undefined ? !this._attrs.has(n) : !!force;
+    if (on) this._attrs.set(n, ""); else this._attrs.delete(n);
+    return on;
+  }
   setAttribute(n, v) {
     this._attrs.set(n, String(v));
     if (n === "style") {
@@ -442,6 +447,9 @@ function loadCard(file, extra) {
     },
     document: {
       head: null,
+      hidden: false,
+      addEventListener: () => {},
+      removeEventListener: () => {},
       getElementById: () => null,
       createElement: (t) => { const e = new Element(t); created.push(e); return e; },
       createElementNS: (_ns, t) => { const e = new Element(t); created.push(e); return e; },
