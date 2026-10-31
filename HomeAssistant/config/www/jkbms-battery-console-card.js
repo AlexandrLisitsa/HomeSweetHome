@@ -90,7 +90,7 @@ const CARD = "jkbms-battery-console-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 import { ramp, rampCss } from "./card-ramp.js?v=1.0.0";
 
-const VERSION = "1.6.3";
+const VERSION = "1.7.0";
 
 /*
  * The design's palette, literal. Names are what the design calls them: two
@@ -313,11 +313,11 @@ const HELP = {
   cellDelta: "The spread: highest cell minus lowest, as the BMS reports it.\n"
     + "E.g. 2.0 mV is level; amber past 20 mV, red past 50 mV.\n"
     + "Past 10 mV the Balancer chip's dot lights: it has work to do.",
-  ttf: "Hours until 280 Ah at the current charge rate, recomputed every 30 s.\n"
-    + "E.g. 140 Ah short at 20 A reads 7h 0m, with the clock time it lands on.\n"
+  ttf: "Hours until 280 Ah at the current charge rate (every 30 s); below, 1% at the live current.\n"
+    + "E.g. 140 Ah short at 20 A: 7h 0m, the clock time, and +1% every 8m 24s.\n"
     + "Unknown while discharging, idle or under 0.2 A; capped at 99 h.",
-  rtl: "Hours until the pack is flat at the current draw, recomputed every 30 s.\n"
-    + "E.g. 140 Ah left at a 10 A draw reads 14h 0m, with the clock time it lands on.\n"
+  rtl: "Hours until flat at the current draw (every 30 s); below, 1% at the live current.\n"
+    + "E.g. 140 Ah left at a 10 A draw: 14h 0m, the clock time, and −1% every 16m 48s.\n"
     + "Unknown while charging, idle or under 0.2 A; capped at 99 h.",
   temp: "A BMS temperature probe on the pack; the bar runs 0–60 °C.\n"
     + "E.g. 25 °C is green; amber under 10 °C or over 40 °C, red under 0 °C or over 50 °C.\n"
@@ -714,6 +714,10 @@ ha-card {
 .ttile span { font-family: var(--mono); font-size: calc(26px * var(--s)); min-width: 0; }
 .ttile i { font-family: var(--mono); font-style: normal; font-size: calc(19px * var(--s));
   color: ${MUTED}; white-space: nowrap; margin-left: auto; }
+/* The rate under it: how long one percent takes at the live current. */
+.ttile small { display: block; font-family: var(--mono); font-size: calc(13px * var(--s));
+  color: ${MUTED}; margin-top: 6px; }
+.ttile small:empty { display: none; }
 
 /* --- temperatures ------------------------------------------------------- */
 .trows { display: flex; flex-direction: column; gap: 16px; margin-top: 16px; }
@@ -1105,6 +1109,21 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
     return w > 2 ? 1 : w < -2 ? -1 : 0;
   }
 
+  /**
+   * How long one percent of the pack takes at `amps`, either sign: 1% of
+   * pack_capacity_ah over the live current. "2m 48s" under an hour, where the
+   * seconds are the difference between 50 and 60 A; "1h 05m" past it. null
+   * under 0.2 A, the runtime sensors' own floor, where it is noise.
+   */
+  _perPercent(amps) {
+    if (amps === null || Math.abs(amps) < 0.2) return null;
+    const secs = Math.round(this._config.pack_capacity_ah / 100 / Math.abs(amps) * 3600);
+    const p = (n) => String(n).padStart(2, "0");
+    if (secs < 3600) return Math.floor(secs / 60) + "m " + p(secs % 60) + "s";
+    const mins = Math.round(secs / 60);
+    return Math.floor(mins / 60) + "h " + p(mins % 60) + "m";
+  }
+
   _pct(v, lo, span) {
     if (v === null) return 0;
     return Math.max(0, Math.min(100, (v - lo) / span * 100));
@@ -1463,10 +1482,12 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
           <div class="ttile" data-ref="ttfTile" data-more="${c.time_to_full}" role="button" tabindex="0">
             <b>Time to full</b>
             <div class="tline"><span data-ref="ttf"></span><i data-ref="ttfAt"></i></div>
+            <small data-ref="ttfRate"></small>
           </div>
           <div class="ttile" data-ref="rtlTile" data-more="${c.runtime_left}" role="button" tabindex="0">
             <b>Runtime left</b>
             <div class="tline"><span data-ref="rtl"></span><i data-ref="rtlAt"></i></div>
+            <small data-ref="rtlRate"></small>
           </div>
         </div>
       </div>`;
@@ -1987,9 +2008,18 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
       const when = (on, ent) => (on ? this._clockAfter(this._num(ent)) : "");
       if (el.ttfAt) el.ttfAt.textContent = when(charging, c.time_to_full);
       if (el.rtlAt) el.rtlAt.textContent = when(draining, c.runtime_left);
+      // The rate follows the live current, not the 30 s sensors, so it also
+      // shows at the top of a charge where time to full reads unknown.
+      const rate = this._perPercent(amps);
+      const up = rate && dir > 0 && amps > 0 ? "+1% every " + rate : "";
+      const down = rate && dir < 0 && amps < 0 ? "−1% every " + rate : "";
+      if (el.ttfRate) el.ttfRate.textContent = up;
+      if (el.rtlRate) el.rtlRate.textContent = down;
       const at = (t) => (t && t.textContent ? " · " + t.textContent : "");
-      if (el.ttfTile) el.ttfTile.dataset.tip = this._tip("Time to full — " + f.text + at(el.ttfAt), "ttf");
-      if (el.rtlTile) el.rtlTile.dataset.tip = this._tip("Runtime left — " + r.text + at(el.rtlAt), "rtl");
+      if (el.ttfTile) el.ttfTile.dataset.tip = this._tip("Time to full — " + f.text + at(el.ttfAt)
+        + (up ? " · " + up : ""), "ttf");
+      if (el.rtlTile) el.rtlTile.dataset.tip = this._tip("Runtime left — " + r.text + at(el.rtlAt)
+        + (down ? " · " + down : ""), "rtl");
     }
 
     // --- temperatures ------------------------------------------------------
