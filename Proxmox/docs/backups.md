@@ -12,8 +12,9 @@ nor the loss of the host's only disk loses the home.
 | Home Assistant full backup: config, add-ons, database, `media`, `share` | HA's own disk (`hassio.local`) | daily, HA's automatic backup | 3 | ~175 MB each |
 | the same backup | Google Drive, folder `Home Assistant` | same run | 14 | ~175 MB each |
 | LXC 101, 102, 103 dumps | host, storage `local` | weekly, Sun 03:30 (job `offsite-lxc`) | 2 per guest | 245–280 MB each |
-| the same dumps + host config tarball + MeterCam state | Drive `proxmox/weekly/` (encrypted) | after each weekly run | 29 days (4 runs) | ~790 MB per run |
-| MeterCam (LXC 104) state: `.env`, Telegram session, ROIs, reference, firmware, models | inside the LXC run above, as `metercam-state-*.tar.zst` | weekly, with `offsite-lxc` | as `weekly/` and `monthly/` | ~2.7 MB |
+| the same dumps + host config tarball + MeterCam and MeterBots state | Drive `proxmox/weekly/` (encrypted) | after each weekly run | 29 days (4 runs) | ~790 MB per run |
+| MeterCam (LXC 104) state: `.env`, ROIs, reference, firmware, models | inside the LXC run above, as `metercam-state-*.tar.zst` | weekly, with `offsite-lxc` | as `weekly/` and `monthly/` | ~2.7 MB |
+| MeterBots (LXC 105) state: `.env`, Telegram session | inside the LXC run above, as `meterbots-state-*.tar.zst` | weekly, with `offsite-lxc` | as `weekly/` and `monthly/` | a few KB |
 | the same, first Sunday of the month | Drive `proxmox/monthly/` (encrypted) | copied in the same run | 93 days (3 runs) | ~790 MB per run |
 | VM 100 (Home Assistant OS) dump | host, storage `local` | weekly, Sun 04:00 (job `ha-vm`) | 1 | 4.9 GB |
 | the same, first Sunday of the month | Drive `proxmox/monthly-vm/` (encrypted) | copied in the same run | 1, replaced each month | 4.9 GB |
@@ -35,15 +36,22 @@ file left nothing in the Trash).
 **MeterCam is not dumped, on purpose.** A full LXC 104 dump is ~400 MB, almost
 all of it a Docker image that `deploy.sh` rebuilds from git, and Drive is close
 to its limit. What cannot be rebuilt is in `metercam-state-*.tar.zst`: the
-`.env` (Home Assistant token, gas-bot token, Telegram `api_id`/`api_hash`),
-`data/telegram/gasbot.session` (a logged-in Telegram account, which is why it
-only ever travels encrypted), `config.json` with its matching `data/ref/`, the
-OTA firmware and the models. The archived photos are left out. To restore,
+`.env` (the Home Assistant token), `config.json` with its matching
+`data/ref/`, the OTA firmware and the models. The archived photos are left out. To restore,
 provision a fresh LXC (`MeterCam/docs/deployment.md`), unpack the archive into
 `/opt/metercam`, and run `deploy.sh`. To see what goes off-site without a
 backup run: `vzdump-offsite.sh metercam-state /tmp`. If the archive can't be
 made, for example because 104 is stopped, the other guests are still uploaded
 and the job is marked failed.
+
+**MeterBots is not dumped either**, for the same reason: its image rebuilds
+from git. What cannot be rebuilt is `meterbots-state-*.tar.zst`: the `.env`
+(Telegram `api_id`/`api_hash`, the bots' tokens and account numbers) and
+`data/telegram/telegram.session`, a logged-in Telegram account, which is why it
+only ever travels encrypted. To restore, provision a fresh LXC 105
+(`MeterBots/docs/deployment.md`), unpack the archive into `/opt/meterbots`,
+and run `deploy.sh`. Restore the session only after making sure nothing else is
+running it. By hand: `vzdump-offsite.sh meterbots-state /tmp`.
 
 **Not backed up:** the Proxmox host OS itself. vzdump can't image it and it
 doesn't need to be imaged: a fresh Proxmox install plus the host config tarball
@@ -81,14 +89,34 @@ flowchart LR
      apt sources, `vzdump.conf`, the hook itself), copies the dumps (with their
      `.log` and `.notes`) and the tarball to `weekly/`, and on the month's first
      run (day 1–7) to `monthly/` as well; then deletes files older than 29 days
-     from `weekly/` and older than 93 days from `monthly/`;
+     from `weekly/` and older than 93 days from `monthly/`, but **not from a
+     folder that missed an upload this run** (that would trade an old copy for
+     nothing);
   2. for the VM run, only on the month's first run: copies the dump to
      `monthly-vm/`, then **lists the remote to confirm the new `.vma` is really
      there**, and only then deletes the previous month's copy, so there is
      always one complete copy. rclone's exit status alone is not proof: a
      `copy --include` that matches nothing uploads nothing and still exits 0.
-- Any failed upload makes the hook exit non-zero, and **vzdump marks the whole
-  job as failed**: it shows red in Datacenter → Backup and in the task log.
+- **A failed upload doesn't stop the others.** Every guest, the host config
+  and both state archives are still tried; only then does the hook exit
+  non-zero, and **vzdump marks the whole job as failed** (red in Datacenter →
+  Backup and in the task log). A VM copy that didn't land leaves the previous
+  month's copy in place.
+- **The household hears about it.** A failure, an aborted job, or a Drive past
+  90 % full goes to Home Assistant's `notify.household`, through a webhook
+  ([`HomeAssistant/config/packages/backup_alerts.yaml`](../../HomeAssistant/config/packages/backup_alerts.yaml)).
+  The hook reads the webhook URL from `/etc/default/vzdump-offsite` on the host
+  (root-only, not in git):
+
+  ```sh
+  HA_WEBHOOK_URL=http://<ha-ip>:8123/api/webhook/<backup_alert_webhook_id>
+  DRIVE_WARN_PCT=90     # optional, the default
+  ```
+
+  The id is the webhook's only protection: a long random string, also in HA's
+  `secrets.yaml` as `backup_alert_webhook_id`. Without the file the hook works
+  as before, just silently. Drive is shared with Gmail and Photos, so "full" is
+  measured as total minus free, not by what rclone uploaded.
 - Retention on Drive is by file age, so a run that fails doesn't delete
   anything extra; the next successful run catches up.
 
@@ -155,7 +183,10 @@ rclone copy gdrive-crypt:weekly/ /var/lib/vz/dump/ --include "vzdump-lxc-101-<da
 pct restore 101 /var/lib/vz/dump/vzdump-lxc-101-<date>.tar.zst --storage local-lvm
 ```
 
-Test a restore on a spare ID (for example 901), start it, then remove it.
+To test one: restore to a spare ID with `--unique 1`, **delete its network
+before starting it** (`pct set 901 --delete net0`: the copy has the original's
+static address), start it, look inside, then `pct destroy 901 --purge`. The
+record of the last test is under [Restore tests](#restore-tests).
 
 ### Home Assistant, from Drive
 
@@ -180,10 +211,36 @@ top of it, since that one is at most a day old.
    `/etc/pve` over wholesale: it holds the old node's keys.
 4. Restore the guests as above.
 
+## Restore tests
+
+A backup nobody has restored is a hope. Results go here, newest first.
+
+<!-- restore-tests -->
+
+**2026-10-04, from Drive, on this host.** Off tonight's scheduled run (the
+first with the failure-tolerant hook, which logged `done, Drive 59% used`):
+
+- `vzdump-lxc-101-2026_10_04-03_30_08` (AdGuard) copied back from
+  `gdrive-crypt:weekly/`: byte-identical to the local dump, so the crypt
+  remote decrypts. `pct restore 901 … --unique 1`, `net0` deleted, started:
+  booted, Debian 13, `/opt/AdGuardHome` present. Stopped and destroyed.
+- `meterbots-state`, `metercam-state` and `pve-host-config` copied back and
+  listed (not extracted): the Telegram session and `.env`; MeterCam's `.env`,
+  `config.json` and `gas-cam-7.bin`; `/etc/pve/jobs.cfg` and the hook.
+
+Not tested: `qmrestore` of `monthly-vm/` (5 GB; needs a spare ID with 64 GB of
+thin space), and decrypting on a machine other than this host with the crypt
+password from the password manager. The second is the one that matters if the
+host itself is lost.
+
 ## Checks
 
 - **HA:** Settings → System → Backups shows both locations and the last
   successful automatic backup; Drive's `Home Assistant` folder has at most 14.
+- **Alerts:** `sh Proxmox/tools/test_vzdump_offsite.sh` runs the hook against
+  a fake Drive and a fake Proxmox in Docker (CI runs it too). To send one real
+  alert: `. /etc/default/vzdump-offsite; curl -X POST -H 'Content-Type:
+  application/json' -d '{"message": "test"}' "$HA_WEBHOOK_URL"` on the host.
 - **Proxmox:** Datacenter → Backup shows the last run of each job; on the host,
   `rclone lsf -R gdrive-crypt:` lists the off-site files by their real names,
   and `rclone lsf -R gdrive:proxmox` only by encrypted ones.

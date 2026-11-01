@@ -16,29 +16,51 @@ read before it goes live, and a `git revert` if it was wrong.
 - **Custom Lovelace cards** in `config/www/`: the Power station (inverter and
   battery, [`docs/power-station-dashboard.md`](docs/power-station-dashboard.md)),
   Climate, Shutdowns (DTEK) and Home (floor plan, see
-  [`../FloorPlan`](../FloorPlan)) dashboards. Each card is versioned
-  (see [MANIFEST, Versions](../MANIFEST.md#6-versions)).
+  [`../FloorPlan`](../FloorPlan)) dashboards, plus `card-tip.js`, the tooltip
+  every card imports ([`docs/dashboard-tooltips.md`](docs/dashboard-tooltips.md)), and
+  `card-ramp.js`, the colour fade the two power cards share.
+  Each card is versioned (see [MANIFEST, Versions](../MANIFEST.md#6-versions)).
 - **The DTEK outage schedule**: a poller for the distributor's queue and hourly
-  schedule, so a planned outage can be told apart from a fault
+  schedule, so a planned outage can be told apart from a fault, plus
+  Ukrenergo's emergency outages, which DTEK announces only in a popup on its
+  home page, with an alert when they start and end
   ([`docs/dtek-outage-schedule.md`](docs/dtek-outage-schedule.md)).
 - **Outage pre-charge**: when DTEK schedules an outage, the battery is charged
   to full before it starts, at the lowest current that makes it and at night
-  rates when they suffice ([`docs/outage-precharge.md`](docs/outage-precharge.md)).
+  rates when they suffice. While DTEK has an emergency outage on record, it
+  charges on grid at full current instead
+  ([`docs/outage-precharge.md`](docs/outage-precharge.md)).
 - **Adaptive night charge**: the night-tariff charge runs at the lowest current
-  that still fills the pack by 07:00, re-sized every hour
+  that still fills the pack by 07:00, re-sized every 10 minutes
   ([`docs/adaptive-charge.md`](docs/adaptive-charge.md)).
 - **Load shedding**: during an outage, devices step down one by one as the
   battery drains, with a warning one step ahead and everything put back when
   the grid returns. The rules are built on the Shutdowns dashboard: any device,
   any number of steps, any action it supports
   ([`docs/load-shedding.md`](docs/load-shedding.md)).
+- **Electricity from the meter itself**: a photodiode on its imp/kWh LED,
+  over MQTT, split day/night for the Energy dashboard
+  ([`docs/electricity-meter.md`](docs/electricity-meter.md)).
 - **Gas and water on the Energy dashboard**, from hand-read meters
   ([`docs/gas-and-water-meters.md`](docs/gas-and-water-meters.md)).
 - **Monthly gas reading to Gazmerezhi**: on the 1st the phone shows the meter
   photo and the number, and one button sends it through the operator's Telegram bot
   ([`docs/gas-reading-submission.md`](docs/gas-reading-submission.md)).
+- **Monthly electricity reading to YASNO**: at the end of the month the phone
+  shows the meter's day and night readings, and one button sends them through
+  YASNO's Telegram bot
+  ([`docs/electricity-reading-submission.md`](docs/electricity-reading-submission.md)).
+  Every Monday `packages/meterbots_session.yaml` asks MeterBots whether its
+  Telegram session is still logged in, and notifies if not, so a dead session
+  is found before the month-end ask.
 - **Two air conditioners**: an infrared one through [`../IRBridge`](../IRBridge)
   and a networked one ([`docs/climate-dashboard.md`](docs/climate-dashboard.md)).
+- **Kitchen light button**: an Aqara double rocker. Left toggles the kitchen
+  light, right toggles the LED strip, clicking both switches both, and holding
+  a rocker glides the strip dimmer or brighter ([`docs/kitchen-button.md`](docs/kitchen-button.md)).
+- **TV power-on**: the Samsung TV can't be woken over its own API, so
+  `packages/tv_wake.yaml` turns it on with a wake-on-LAN packet. That is what
+  lets a tap on the floor plan, or Google, switch it on.
 - **Google Home and Gemini**: entities exposed through the Google Assistant
   integration, with the spoken names kept in a git-ignored file
   ([`docs/private-files.md`](docs/private-files.md)). Google reaches the box
@@ -99,17 +121,28 @@ sh tools/ha_get.sh /api/config
 | `tools/ha_call.sh` | calls a service — **changes the house** | yes, deliberately |
 | `tools/ha_dashboard.py` | create / push / reorder Lovelace dashboards over the WebSocket API — **changes the house** | yes, deliberately |
 | `tools/ha_registry.py` | lists orphaned registry rows and open repairs; `--remove` / `--clear-stats` **change the house** | reads: no. writes: yes |
+| `tools/check_automations.py` | renders and shape-checks `automations.yaml` and the packages' automations: the tariff on start, the grid and battery alerts, the leak alarm, the kitchen helpers, the IR phone's charging, the weekly MeterBots session check | no — pure local |
+| `tools/check_shared_constants.py` | the night tariff hours, the 280 Ah pack and the charge-current steps, in every file that repeats them, against their sources (the firmware's substitutions and select, `battery_runtime.yaml`) | no — pure local |
 | `tools/check_dtek_templates.py` | renders every Jinja template in `packages/dtek_shutdowns.yaml` and the DTEK dashboard against fake states | no — pure local |
 | `tools/check_climate_card.py` | cross-references every entity `climate-console-card.js` names against `/api/states` | no — GET-only |
 | `tools/test_dtek_schedule.py` | fixture tests for `config/dtek/dtek_poll.py`'s schedule maths | no — no network |
 | `tools/test_outage_precharge.py` | renders the outage pre-charge plan in `packages/outage_precharge.yaml` and runs its drive and started automations through the simulator | no — pure local |
 | `tools/test_adaptive_charge.py` | renders the adaptive night charge plan in `packages/adaptive_charge.yaml` and runs its drive, outage-off and guard automations through the simulator, DST included | no — pure local |
+| `tools/test_grid_state.py` | renders `packages/grid_state.yaml`: `grid_down` (no mains, under 150 V) and `house_on_battery` (no mains, or out of range with grid protection on), including the low-but-live grid of 31 Oct | no — pure local |
 | `tools/test_battery_runtime.py` | renders `packages/battery_runtime.yaml`: runtime remaining, time to full and its edge triggers, against idle, unavailable, flat and full packs | no — pure local |
-| `tools/test_tariff_switch.py` | runs the day/night tariff automation in `config/automations.yaml` at 07:00 / 23:00, on HA start and over DST weekends | no — pure local |
-| `tools/ha_automation_sim.py` | not a command: a small simulator the tests above use to run a package's `automation:` list against a fake house (limits in its docstring) | — |
+| `tools/test_tariff_switch.py` | runs the day/night tariff automations (`automations.yaml`, `electricity_meter.yaml`) at 07:00 / 23:00, on HA start and over DST weekends, and the A/C meters' day/night/battery switch (`ac_tariffs.yaml`) with its 30 s hold; also pins the simulator's `for:` | no — pure local |
+| `tools/test_electricity_submit.py` | the monthly YASNO reading: `config/electricity/electricity_submit.py`'s window and month, the same window in `packages/electricity_submit.yaml` for every day of three years, and its button handler's parsing | no — pure local |
+| `tools/test_gas_submit.py` | `config/gas/gas_submit.py` against a fake MeterCam on localhost: where it finds MeterCam, the month, the photo, the state file | no — localhost only |
+| `tools/ha_automation_sim.py` | not a command: a small simulator the tests above use to run a package's `automation:` list against a fake house, `for:` timers on state triggers included (limits in its docstring) | — |
 | `tools/test_power_cards.js` | render and logic tests for the inverter, battery and load-shedding cards against a fake `hass` and a small DOM | no — pure local |
 | `tools/test_load_shedding.py` | renders the load-shedding engine's templates in `packages/load_shedding.yaml` (decision, warnings, validator, stores, restore) against fake states | no — pure local |
 | `tools/test_climate_chart.js` | fixture tests for the climate card's chart and dial maths | no — no network |
+| `tools/test_console_history.js` | the inverter and battery cards' history: raw states inside the recorder's window, hourly statistics past it | no — pure local |
+| `tools/test_dtek_card.js` | the DTEK card's hero, Next window tile and today/tomorrow grid against the applied schedule, on a pinned clock | no — pure local |
+| `tools/test_card_fx.js` | `config/www/card-fx.js`, the cards' visual effects: the `fx` key, data-fx on the host, the off-screen pause | no — pure local |
+| `tools/test_card_tooltips.js` | renders every custom card and checks each meaningful element's tooltip against [the standard](docs/dashboard-tooltips.md); `tools/fake_dom.js` is the small DOM it, `test_power_cards.js` and `test_floorplan_card.js` share | no — pure local |
+| `tools/test_floorplan_card.js` | the Home floor plan card with its real config: room tints, the power path's streams and labels, the DTEK chip, outage mode with load shedding's marks, patching and taps | no — pure local |
+| `tools/ha_www_push.sh` | pushes `config/www/` (the custom cards) to the box over SSH; follow with `ha_dashboard.py --card` to bump the resource version — **changes the house** | yes, deliberately |
 
 `ha_pull.sh` extracts to a temp dir and swaps, so a failed pull leaves the old
 mirror intact, and a file deleted on the box shows up as a deletion in git
@@ -129,19 +162,32 @@ The one-shot IRBridge installer (`ha_preflight.sh` → `ha_deploy.sh` →
 2026-08-23 and has since been removed; it is in git history if it is ever
 needed again.
 
-Local checks worth running before any transfer, all read-only:
+Local checks worth running before any transfer, all read-only. CI
+(`.github/workflows/checks.yml`) runs every one of them on each push:
 
 ```sh
 python ../IRBridge/tools/check_ha_entities.py config
 python ../IRBridge/tools/check_ha_templates.py
+python tools/check_automations.py
+python tools/check_shared_constants.py
 python tools/check_dtek_templates.py
 python tools/test_dtek_schedule.py
 python tools/test_outage_precharge.py
 python tools/test_adaptive_charge.py
+python tools/test_grid_state.py
 python tools/test_battery_runtime.py
 python tools/test_tariff_switch.py
+python tools/test_gas_submit.py
+python tools/test_electricity_submit.py
 python tools/test_load_shedding.py
 node tools/test_power_cards.js
+node tools/test_dtek_card.js
+node tools/test_console_history.js
+node tools/test_climate_chart.js
+node tools/test_card_fx.js
+node tools/test_card_tooltips.js
+node tools/test_floorplan_card.js
+python ../FloorPlan/tools/check_rooms.py
 ```
 
 The DTEK, pre-charge, adaptive-charge and load-shedding ones need `python -m pip install -r tools/requirements.txt`;
@@ -167,19 +213,27 @@ The mirror in `config/` is not a backup: it leaves out the database,
 restore HA onto a fresh VM, is in
 [`../Proxmox/docs/backups.md`](../Proxmox/docs/backups.md).
 
+The Proxmox host's off-site backups report here: `packages/backup_alerts.yaml`
+takes a webhook from the backup hook and passes a failed upload, an aborted
+job or a nearly full Drive to `notify.household`.
+
 ## Docs
 
 | Doc | About |
 | --- | --- |
 | [`docs/private-files.md`](docs/private-files.md) | what is never mirrored into git, and the household-language files kept out of it |
 | [`docs/dtek-outage-schedule.md`](docs/dtek-outage-schedule.md) | the DTEK outage-schedule poller, its sensors and its card |
-| [`docs/outage-precharge.md`](docs/outage-precharge.md) | charging the battery to full before a scheduled DTEK outage, and the Pre-charge chip |
-| [`docs/adaptive-charge.md`](docs/adaptive-charge.md) | the night charge at the lowest current that fills the pack by 07:00, and the AC charge chip's second dot |
+| [`docs/outage-precharge.md`](docs/outage-precharge.md) | charging the battery to full before a scheduled DTEK outage, and its icon on the AC charge chip |
+| [`docs/adaptive-charge.md`](docs/adaptive-charge.md) | the night charge at the lowest current that fills the pack by 07:00, and its icon on the AC charge chip |
 | [`docs/load-shedding.md`](docs/load-shedding.md) | the load-shedding engine and its constructor tab: steps, warnings, holds, overrides, restore, backup |
+| [`docs/electricity-meter.md`](docs/electricity-meter.md) | the meter-reading board's entities, the day/night split, the Energy dashboard swap, correcting the register |
 | [`docs/gas-and-water-meters.md`](docs/gas-and-water-meters.md) | hand-read gas and water meters on the Energy dashboard |
 | [`docs/gas-reading-submission.md`](docs/gas-reading-submission.md) | the monthly gas reading to Gazmerezhi's Telegram bot, confirmed from the phone |
+| [`docs/electricity-reading-submission.md`](docs/electricity-reading-submission.md) | the monthly day/night electricity reading to YASNO's Telegram bot: the T21/T22 registers, calibrating them, the ask and the buttons |
+| [`docs/dashboard-effects.md`](docs/dashboard-effects.md) | the console cards' visual effects and the `fx` key that switches them on per card |
 | [`docs/power-station-dashboard.md`](docs/power-station-dashboard.md) | the Power station dashboard: the inverter and battery cards, the grid-return countdown, the palette |
 | [`docs/climate-dashboard.md`](docs/climate-dashboard.md) | the climate dashboard and its checker |
+| [`docs/dashboard-tooltips.md`](docs/dashboard-tooltips.md) | the tooltip standard every custom card follows: format, scope, examples, the CI check |
 | [`docs/ac-features.md`](docs/ac-features.md) | the inventory of both A/C units' features the climate card is built from |
 | [`docs/renaming-entities.md`](docs/renaming-entities.md) | renaming entity ids across the registry, dashboards and YAML |
 | [`docs/remote-access-security.md`](docs/remote-access-security.md) | how HA is reached from the internet: the traffic flow, and how each request is accepted or denied |

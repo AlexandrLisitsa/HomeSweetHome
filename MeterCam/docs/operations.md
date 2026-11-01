@@ -20,9 +20,16 @@ read gas fw=gas-cam-6 -> None refused: align: too few inliers
 ```
 
 `curl -s localhost:8770/health` shows `last_read_s_ago`: anything well over
-1800 means the board has not woken, or cannot reach the service. In Home
-Assistant, `input_number.gas_meter_camera_reading` moves with every accepted
-wake.
+1800 means the board has not woken, or cannot reach the service. Next to it,
+`last_accepted_s_ago` counts from the last reading that was *accepted*, so a
+run of refusals shows there even while the board wakes on time; it survives a
+restart. In Home Assistant, `input_number.gas_meter_camera_reading` moves with
+every accepted wake.
+
+**Home Assistant alerts on it** (`HomeAssistant/config/packages/metercam_watch.yaml`):
+`sensor.gas_camera_last_accepted` is that age in minutes, polled every 10
+minutes, and the household is notified once it passes 6 hours (twelve wakes),
+or when MeterCam has not answered for an hour.
 
 An occasional refusal is the design working. A frame caught while the last drum
 was rolling, or two frames that disagreed, costs half an hour, and the next

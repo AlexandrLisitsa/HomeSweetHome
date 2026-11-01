@@ -12,6 +12,7 @@ and no browser can keep showing the old one.
 Also marks every spot and zoom box on build/icon_check.png, to check by eye.
 """
 import hashlib
+import heapq
 import json
 import math
 import re
@@ -19,7 +20,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from rooms import ITEMS, ROOMS, SPOTS
+from rooms import DAY, ITEMS, POWER, ROOMS, SPOTS
 from sh3d_camera import load, projector
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -92,6 +93,133 @@ def flow(piece, room):
     return paths
 
 
+# The power path runs like real wiring: along the tops of the walls, which the render copy
+# cuts to WALL_Z, and only at the end straight to the thing's icon, from the point on a
+# wall top that looks nearest to it in the picture, so the bit in the air is as short as
+# it can be. The walls are a graph: the model does not split a wall where another meets it
+# mid-length, draws some twice, and stops some a few cm short of the wall they meet, so
+# every wall is split at every wall end lying on it and points closer than SNAP (a wall's
+# thickness) are one node. A doorway is no gap: the model's wall runs on through it, as
+# wiring runs over the lintel. Shared walls carry overlapping wires, so a run reads as one
+# trunk. Paths are in pixels of the picture.
+WALL_Z = 120.0
+SNAP = 8.0
+STEP = 5.0
+HUB = POWER["hub"]
+
+
+def pixel(x, y, z):
+    u, v = pct(x, y, z)
+    return (u / 100 * w, v / 100 * h)
+
+
+def wall_graph():
+    walls = []
+    for tag in re.findall(r"<wall [^>]*>", xml):
+        a = dict(re.findall(r" (\w+)='([^']*)'", tag))
+        walls.append(((float(a["xStart"]), float(a["yStart"])), (float(a["xEnd"]), float(a["yEnd"])),
+                      float(a["thickness"])))
+    nodes, edges = [], {}
+
+    def node(p):
+        for i, q in enumerate(nodes):
+            if math.dist(p, q) < SNAP:
+                return i
+        nodes.append(p)
+        edges[len(nodes) - 1] = {}
+        return len(nodes) - 1
+
+    ends = [p for a, b, _ in walls for p in (a, b)]
+    for a, b, thick in walls:
+        length = math.dist(a, b)
+        if length < SNAP:
+            continue
+        ux, uy = (b[0] - a[0]) / length, (b[1] - a[1]) / length
+        on = []
+        for p in ends:
+            t = (p[0] - a[0]) * ux + (p[1] - a[1]) * uy
+            if -SNAP <= t <= length + SNAP and abs((p[0] - a[0]) * uy - (p[1] - a[1]) * ux) <= thick / 2 + 1:
+                on.append(min(length, max(0.0, t)))
+        stops = sorted({node((a[0] + ux * t, a[1] + uy * t)) for t in on + [0.0, length]},
+                       key=lambda i: (nodes[i][0] - a[0]) * ux + (nodes[i][1] - a[1]) * uy)
+        for i, j in zip(stops, stops[1:]):
+            if i != j:
+                edges[i][j] = edges[j][i] = math.dist(nodes[i], nodes[j])
+    return nodes, edges
+
+
+def attach(graph, spot):
+    """The node on a wall top that looks nearest the icon of `spot`, splitting that wall there."""
+    nodes, edges = graph
+    icon = pixel(*spot)
+    best = None
+    for i in edges:
+        for j in edges[i]:
+            if i > j:
+                continue
+            (ax, ay), (bx, by) = nodes[i], nodes[j]
+            n = max(1, int(math.dist(nodes[i], nodes[j]) / STEP))
+            for s in range(n + 1):
+                q = (ax + (bx - ax) * s / n, ay + (by - ay) * s / n)
+                d = math.dist(icon, pixel(*q, WALL_Z))
+                if best is None or d < best[0]:
+                    best = (d, q, i, j)
+    _, q, i, j = best
+    for k in (i, j):
+        if math.dist(q, nodes[k]) < SNAP:
+            return k
+    nodes.append(q)
+    k = len(nodes) - 1
+    del edges[i][j], edges[j][i]
+    edges[k] = {i: math.dist(q, nodes[i]), j: math.dist(q, nodes[j])}
+    edges[i][k], edges[j][k] = edges[k][i], edges[k][j]
+    return k
+
+
+def shortest(graph, a, b):
+    nodes, edges = graph
+    dist, back, todo = {a: 0.0}, {}, [(0.0, a)]
+    while todo:
+        d, i = heapq.heappop(todo)
+        if i == b:
+            break
+        if d > dist[i]:
+            continue
+        for j, length in sorted(edges[i].items()):
+            if d + length < dist.get(j, math.inf):
+                dist[j], back[j] = d + length, i
+                heapq.heappush(todo, (d + length, j))
+    path = [b]
+    while path[-1] != a:
+        path.append(back[path[-1]])
+    return path[::-1]
+
+
+def bevel(points, r=5.0):
+    """Corners cut by r px each way: crisp like wiring, without a hairline spike."""
+    out = [points[0]]
+    for prev, p, nxt in zip(points, points[1:], points[2:]):
+        for q in (prev, nxt):
+            d = math.dist(p, q)
+            k = min(r, d / 2) / d if d else 0
+            out.append((p[0] + (q[0] - p[0]) * k, p[1] + (q[1] - p[1]) * k))
+    out.append(points[-1])
+    return "M" + " L".join(f"{u:.1f} {v:.1f}" for u, v in out)
+
+
+WALLS = wall_graph()
+ATTACHED = {}
+
+
+def route(start, end):
+    """From the icon at spot `start`, up onto the wall tops, along them, down to spot `end`."""
+    for s in (start, end):
+        if s not in ATTACHED:
+            ATTACHED[s] = attach(WALLS, SPOTS[s])
+    on_walls = [WALLS[0][i] for i in shortest(WALLS, ATTACHED[start], ATTACHED[end])]
+    return bevel([pixel(*SPOTS[start])] + [pixel(x, y, WALL_Z) for x, y in on_walls] + [pixel(*SPOTS[end])])
+
+
 # A room's zoom box: its mask's bounding box, grown by a margin so the icons near its
 # edge are not cut off, then brought to between 4:3 and 3:2 by growing its short side:
 # a narrow room would be a sliver, a wide one a strip a phone shows 150 px tall.
@@ -110,11 +238,18 @@ for rid, room in ROOMS.items():
         grow = ((fx1 - fx0) * w / ASPECT[1] / h - (fy1 - fy0)) / 2
         fy0, fy1 = fy0 - grow, fy1 + grow
     clamp = lambda v: round(min(1.0, max(0.0, v)) * 100, 1)
-    rooms.append({"id": rid, "name": room["name"],
-                  "focus": {"x0": clamp(fx0), "y0": clamp(fy0), "x1": clamp(fx1), "y1": clamp(fy1)}})
+    entry = {"id": rid, "name": room["name"],
+             "focus": {"x0": clamp(fx0), "y0": clamp(fy0), "x1": clamp(fx1), "y1": clamp(fy1)}}
+    # A room with a thermometer: its floor tints by the badge's first reading, the °C.
+    badge = next((i for i in ITEMS if i["kind"] == "badge" and i["room"] == rid), None)
+    if badge:
+        entry["tint"] = url(f"tint_{rid}")
+        entry["temperature"] = badge["entities"][0]
+    rooms.append(entry)
 
-card = {"type": "custom:floorplan-card", "image": url("base"), "rooms": rooms,
-        "lights": [], "devices": [], "badges": []}
+card = {"type": "custom:floorplan-card", "image": url("base"),
+        "day_image": url(DAY["image"]), "sun": DAY["sun"], "rooms": rooms,
+        "lights": [], "devices": [], "badges": [], "presence": []}
 for item in ITEMS:
     x, y = pos[item["spot"]]
     common = {"x": x, "y": y, "room": item["room"]}
@@ -131,8 +266,28 @@ for item in ITEMS:
         if item.get("flow"):
             entry["flow"] = flow(item["flow"], item["room"])
         card["devices"].append(entry)
+    elif item["kind"] == "presence":
+        card["presence"].append({"entity": item["entity"], "name": item["name"], "icon": item["icon"], **common})
     else:
         card["badges"].append({"entities": item["entities"], "name": item.get("name", "Climate"), **common})
+
+# What the inverter feeds: every lamp, plug and screen, each by its own path. A sensor
+# is not a load, and an A/C draws through its plug, so the plug carries its stream.
+loads = []
+for item in ITEMS:
+    domain = item.get("entity", "").split(".")[0]
+    if item["kind"] == "light" or domain in ("switch", "media_player"):
+        load = {"entity": item["entity"], "room": item["room"], "path": route(HUB, item["spot"])}
+        if item.get("value"):
+            load["value"] = item["value"]
+        loads.append(load)
+card["power"] = {
+    **{k: v for k, v in POWER.items() if k not in ("hub", "grid_in", "battery")},
+    "grid_path": route(POWER["grid_in"], HUB),
+    "battery_path": route(POWER["battery"], HUB),
+    "battery_entity": next(i["entity"] for i in ITEMS if i.get("spot") == POWER["battery"]),
+    "loads": loads,
+}
 
 doc = json.load(open(DASHBOARD, encoding="utf-8"))
 cards = doc["data"]["config"]["views"][0]["cards"]
@@ -155,4 +310,7 @@ for name, (px, py) in pos.items():
 for dev in card["devices"]:
     for path in dev.get("flow", []):
         d.line([tuple(map(float, p.split())) for p in path[1:].split(" L")], fill=(80, 255, 160), width=2)
+for path, colour in ([(l["path"], (110, 168, 254)) for l in loads]
+                     + [(card["power"]["grid_path"], (174, 132, 70)), (card["power"]["battery_path"], (88, 149, 105))]):
+    d.line([tuple(map(float, p.split())) for p in path[1:].split(" L")], fill=colour, width=2)
 im.save(ROOT / "build" / "icon_check.png")

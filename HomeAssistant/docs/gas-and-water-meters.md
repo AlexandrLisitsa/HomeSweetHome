@@ -44,6 +44,15 @@ retire the notification, because the issue is only re-evaluated at startup;
 being non-persistent, it is dropped by the next `ha core restart` and not
 recreated once the units agree.
 
+**Cameras feed the same sensors.** MeterCam's gas camera writes
+`input_number.gas_meter_camera_reading`, and `sensor.gas_meter_reading` takes the
+higher of that and the hand-typed helper. Cold water has the same pair ready for
+its camera ([`WaterMeter/`](../../WaterMeter/README.md)):
+`input_number.water_meter_cold_camera_reading` beside the manual helper, and
+`sensor.cold_water_meter_reading` takes the higher of the two. Until the camera
+writes, its helper sits at 0 and the sensor is the typed reading alone.
+`tools/check_automations.py` section 12 renders both templates.
+
 **Gas keeps one entity across both eras.** `sensor.gas_meter_reading` is the only
 gas entity the dashboard is pointed at. Long-term statistics are keyed by
 statistic id and the Energy dashboard stores that id, so if counting hardware

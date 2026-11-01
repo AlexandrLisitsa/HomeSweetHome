@@ -35,8 +35,16 @@ jobs:
         run: python HomeAssistant/tools/check_dtek_templates.py
       - name: Automations and IR bridge scripts
         run: python HomeAssistant/tools/check_automations.py
+      - name: Tariff hours, pack size and charge steps agree with their sources
+        run: python HomeAssistant/tools/check_shared_constants.py
       - name: Entity references across the config
         run: python IRBridge/tools/check_ha_entities.py HomeAssistant/config
+      - name: IR A/C energy templates
+        run: python IRBridge/tools/check_ha_templates.py
+      # A Python mirror of Codecs.kt against real protocol timings (the
+      # SmartIR real-frame checks skip without a checkout).
+      - name: IR codecs
+        run: python IRBridge/tools/verify_codecs.py
       - name: Outage pre-charge plan and automations
         run: python HomeAssistant/tools/test_outage_precharge.py
       - name: Adaptive night charge plan and automations
@@ -47,6 +55,10 @@ jobs:
         run: python HomeAssistant/tools/test_battery_runtime.py
       - name: Day/night tariff switch
         run: python HomeAssistant/tools/test_tariff_switch.py
+      - name: Monthly gas reading, the local half
+        run: python HomeAssistant/tools/test_gas_submit.py
+      - name: Monthly electricity reading window and buttons
+        run: python HomeAssistant/tools/test_electricity_submit.py
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -56,6 +68,15 @@ jobs:
         run: node HomeAssistant/tools/test_console_history.js
       - name: Inverter, battery and load-shedding cards
         run: node HomeAssistant/tools/test_power_cards.js
+      - name: DTEK card against the applied schedule
+        run: node HomeAssistant/tools/test_dtek_card.js
+      - name: Dashboard tooltips
+        run: node HomeAssistant/tools/test_card_tooltips.js
+      - name: Floor plan card
+        run: node HomeAssistant/tools/test_floorplan_card.js
+      # The entity check inside it skips here: the registry is gitignored.
+      - name: Floor plan rooms.py agrees with the dashboard and its images
+        run: python FloorPlan/tools/check_rooms.py
 
   power-station:
     name: PowerStation firmware logic
@@ -70,6 +91,69 @@ jobs:
       # own g++ (the script falls back to the gcc:13 image only without one).
       - name: Extract, compile and run
         run: python PowerStation/tools/test_firmware_logic.py
+
+  electricity-meter:
+    name: ElectricityMeter firmware logic
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The firmware's detector and MQTT sources, compiled with the runner's
+      # g++: the golden captures, the commands, the discovery payloads.
+      - name: Detector on the golden captures, MQTT behaviour and discovery
+        run: python ElectricityMeter/tools/test_firmware.py
+
+  meterbots:
+    name: MeterBots and MeterCam services
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install flask
+      # Fake bots and a fake Telegram client: no network, no Telethon.
+      - name: The gas bot's walk
+        run: python MeterBots/tests/test_gasbot.py
+      - name: The YASNO bot's walk
+        run: python MeterBots/tests/test_yasnobot.py
+      - name: The shared Telegram walker and its lock
+        run: python MeterBots/tests/test_tgclient.py
+      - name: Routes and tokens
+        run: python MeterBots/tests/test_app.py
+      # The water cabinet (no Telegram): a fake dneprvoda.com.ua on localhost.
+      - name: MeterBots water cabinet
+        run: python MeterBots/tests/test_waterweb.py
+      # Every shell script in the repo, not just MeterBots': deploy scripts,
+      # MeterCam's model fetch, FloorPlan's render, the HA and Proxmox tools.
+      - name: Shell scripts parse
+        run: git ls-files -z '*.sh' | xargs -0 -n1 sh -n
+      # MeterCam stays a camera service: its routes, read without OpenCV, and
+      # one firmware channel per meter.
+      - name: MeterCam routes and firmware channels
+        run: python MeterCam/tests/test_routes.py
+      # The carry rule and the plausibility gate: the failure that cannot be
+      # undone is a misread that comes out as a decrease. Pure arithmetic; the
+      # OpenCV and model sections skip here and run in the container.
+      - name: MeterCam reading arithmetic
+        run: python MeterCam/tests/test_reader.py
+      # Gas and water boards from one source: neither may take the other's build.
+      - name: MeterCam firmware builds
+        run: python MeterCam/tests/test_firmware_config.py
+
+  proxmox:
+    name: Proxmox backup hook
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host scripts parse
+        run: for f in Proxmox/tools/*.sh; do sh -n "$f"; done
+      # The hook deletes off-site copies: its failure paths, against a fake
+      # Drive and a fake Proxmox in a throwaway Debian container.
+      - name: The off-site hook, failures included
+        run: sh Proxmox/tools/test_vzdump_offsite.sh
 
   irbridge:
     name: IRBridge Android build

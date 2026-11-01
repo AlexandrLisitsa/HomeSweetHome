@@ -1,0 +1,109 @@
+# The cards. Every {{HOMEPAGE_VAR_*}} comes from /opt/portal/.env on the box
+# (template: Portal/.env.example), so no LAN address or token is committed.
+#
+# `siteMonitor` is an HTTP check made by Homepage's server, and `widget` a
+# call to the service's API -- both only while a browser has the page open.
+# Nothing here polls in the background. Reference: https://gethomepage.dev/configs/services/
+
+- Infrastructure:
+    - Proxmox:
+        icon: proxmox.png
+        href: http://pve.lan
+        description: The host. Every guest below runs on it.
+        siteMonitor: https://{{HOMEPAGE_VAR_PVE_ADDR}}
+        widget:
+          type: proxmox
+          url: https://{{HOMEPAGE_VAR_PVE_ADDR}}
+          username: "{{HOMEPAGE_VAR_PVE_TOKEN_ID}}"
+          password: "{{HOMEPAGE_VAR_PVE_TOKEN_SECRET}}"
+    - AdGuard Home:
+        icon: adguard-home.png
+        href: http://adguard.lan
+        description: CT 101 · DNS and ad blocking for the house; answers the .lan names.
+        siteMonitor: http://{{HOMEPAGE_VAR_ADGUARD_ADDR}}
+        proxmoxNode: proxmox
+        proxmoxVMID: 101
+        proxmoxType: lxc
+        widget:
+          type: adguard
+          url: http://{{HOMEPAGE_VAR_ADGUARD_ADDR}}
+          username: "{{HOMEPAGE_VAR_ADGUARD_USER}}"
+          password: "{{HOMEPAGE_VAR_ADGUARD_PASSWORD}}"
+    - Tailscale:
+        icon: tailscale.png
+        href: https://login.tailscale.com/admin/machines
+        description: CT 102 · the way in from outside. Subnet router for the LAN.
+        proxmoxNode: proxmox
+        proxmoxVMID: 102
+        proxmoxType: lxc
+    - Cloudflare tunnel:
+        icon: cloudflare.png
+        href: https://one.dash.cloudflare.com/
+        description: CT 103 · Home Assistant's public hostname, for Google Home.
+        proxmoxNode: proxmox
+        proxmoxVMID: 103
+        proxmoxType: lxc
+    - Portal:
+        icon: homepage.png
+        description: CT 106 · this page and the .lan names.
+        proxmoxNode: proxmox
+        proxmoxVMID: 106
+        proxmoxType: lxc
+
+- Home:
+    - Home Assistant:
+        icon: home-assistant.png
+        href: http://ha.lan
+        description: VM 100 · the house itself.
+        siteMonitor: http://{{HOMEPAGE_VAR_HA_ADDR}}
+        proxmoxNode: proxmox
+        proxmoxVMID: 100
+        widget:
+          type: homeassistant
+          url: http://{{HOMEPAGE_VAR_HA_ADDR}}
+          key: "{{HOMEPAGE_VAR_HA_TOKEN}}"
+          custom:
+            - state: sensor.jkbms_gateway_bms_state_of_charge
+              label: Battery
+            - state: sensor.powmr_inverter_ac_output_power
+              label: Load
+            # A template, not `state`: the inverter reports 235.899993896484.
+            - template: "{{ states('sensor.powmr_inverter_grid_voltage') | float(0) | round(0) | int }} V"
+              label: Grid
+
+- Meters:
+    - ElectricityMeter:
+        icon: mdi-flash
+        href: http://meter.lan
+        description: The board on the meter's LED. Its page shows the live level.
+        siteMonitor: http://{{HOMEPAGE_VAR_METER_ADDR}}
+    - MeterCam:
+        icon: mdi-camera-iris
+        href: http://cam.lan
+        description: CT 104 · reads the gas meter from the ESP32-CAM's photos.
+        siteMonitor: http://{{HOMEPAGE_VAR_METERCAM_ADDR}}/health
+        proxmoxNode: proxmox
+        proxmoxVMID: 104
+        proxmoxType: lxc
+        # /health needs no token. Fetched only while this page is open, once
+        # a minute: MeterCam does nothing between camera wakes otherwise.
+        widget:
+          type: customapi
+          url: http://{{HOMEPAGE_VAR_METERCAM_ADDR}}/health
+          refreshInterval: 60000
+          mappings:
+            - field:
+                last_accepted_s_ago: gas
+              label: Last read
+              format: duration
+            - field: firmware
+              label: Firmware
+            - field: status
+              label: Service
+    - MeterBots:
+        icon: mdi-robot
+        description: CT 105 · files the monthly readings with the suppliers' bots.
+        siteMonitor: http://{{HOMEPAGE_VAR_METERBOTS_ADDR}}/health
+        proxmoxNode: proxmox
+        proxmoxVMID: 105
+        proxmoxType: lxc

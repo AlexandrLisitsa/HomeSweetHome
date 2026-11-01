@@ -145,7 +145,10 @@ def base_attrs(**over):
             "hidden_reason": None, "updated_at": "12:00 01.09.2026",
             "dtek_flags": {k: True for k in dtek_poll.FLAG_KEYS},
             "fetched_at": "2026-09-01T12:00:00+03:00", "stale": False,
-            "error": None}
+            "error": None, "banner_title": None, "banner_text": None,
+            "banner_scope": None, "banner_emergency": False,
+            "banner_checked_at": "2026-09-01T12:00:00+03:00",
+            "banner_error": None}
     data.update(over)
     return {(SENSOR, k): v for k, v in data.items()}
 
@@ -194,11 +197,11 @@ check("unavailable when no schedule",
       render(ents["DTEK scheduled dark"]["availability"], {},
              base_attrs(schedule_in_effect=False), NOON), "False")
 
-# --- 3. the polarity trap --------------------------------------------------
-# binary_sensor.powmr_inverter_grid_condition_safe is `on` for UNSAFE.
-print("\n3. Grid outage unscheduled: on == UNSAFE, not safe")
+# --- 3. grid down, unscheduled --------------------------------------------------
+# binary_sensor.grid_down is `on` for no mains.
+print("\n3. Grid outage unscheduled: on == grid down")
 unsched = ents["Grid outage unscheduled"]["state"]
-GRID = "binary_sensor.powmr_inverter_grid_condition_safe"
+GRID = "binary_sensor.grid_down"
 for label, grid, sched_dark, dtek_out, want in [
         ("grid up, nothing scheduled", "off", "off", "off", "False"),
         ("grid DOWN, nothing scheduled", "on", "off", "off", "True"),
@@ -234,6 +237,25 @@ check("no upcoming outage -> None", render(nxt, {}, base_attrs(), NOON), "None")
 check("upcoming outage passes through",
       render(nxt, {}, base_attrs(next_outage_start="2026-09-01T14:00:00+03:00"), NOON),
       "2026-09-01T14:00:00+03:00")
+
+# The announcement banner. The flag itself is decided in dtek_poll.py; what
+# this template adds is refusing to vouch for a banner nobody has read lately.
+emerg = ents["DTEK emergency shutdowns"]
+on = base_attrs(banner_emergency=True, banner_scope="city", banner_text="x")
+check("emergency banner -> on", render(emerg["state"], {SENSOR: "ok"}, on, NOON), "True")
+check("no banner -> off", render(emerg["state"], {SENSOR: "ok"}, base_attrs(), NOON), "False")
+check("a missing flag reads off, never on",
+      render(emerg["state"], {SENSOR: "ok"}, base_attrs(banner_emergency=None), NOON), "False")
+avail = emerg["availability"]
+check("read 5 min ago -> available",
+      render(avail, {SENSOR: "ok"}, on, NOON + timedelta(minutes=5)), "True")
+check("not read for 25 min -> unavailable, not a stale on",
+      render(avail, {SENSOR: "ok"}, on, NOON + timedelta(minutes=25)), "False")
+check("never read -> unavailable",
+      render(avail, {SENSOR: "ok"}, base_attrs(banner_checked_at=None), NOON), "False")
+check("sensor itself down -> unavailable",
+      render(avail, {SENSOR: "unavailable"}, on, NOON), "False")
+check("two polls must agree before it turns on", emerg.get("delay_on"), {"minutes": 10})
 
 reason = ents["DTEK outage reason"]["state"]
 check("long reason truncated to fit a state",
@@ -354,7 +376,9 @@ for aid, want_channel in [("dtek_outage_starting_soon", "DTEK emergency starts")
                           ("dtek_outage_ending_soon", "DTEK emergency ends"),
                           ("dtek_outage_reported", "DTEK emergency starts"),
                           ("dtek_outage_cleared", "DTEK emergency ends"),
-                          ("dtek_outage_overdue", "DTEK emergency starts")]:
+                          ("dtek_outage_overdue", "DTEK emergency starts"),
+                          ("dtek_emergency_announced", "DTEK emergency starts"),
+                          ("dtek_emergency_lifted", "DTEK emergency ends")]:
     a = {x["id"]: x for x in pkg["automation"]}[aid]
     sends = [x for x in a["action"] if x.get("service", "").startswith("notify.")]
     push = [x for x in sends if x["service"] in PHONES]
@@ -367,10 +391,11 @@ for aid, want_channel in [("dtek_outage_starting_soon", "DTEK emergency starts")
               and x["data"]["data"].get("ttl") == 0 for x in push), True)
     check("%s also lands in HA itself" % aid,
           any(x["service"] == "notify.persistent_notification" for x in sends), True)
-# Distinct channels, or silencing one silences the other.
+# Distinct channels, or silencing one silences the other. A templated channel
+# (dtek_schedule_changed picks one of the two) is checked rendered, in 5g.
 allch = {x["data"]["data"]["channel"]
          for a in pkg["automation"] for x in a["action"]
-         if x.get("service") in PHONES}
+         if x.get("service") in PHONES and "{{" not in x["data"]["data"]["channel"]}
 check("the two channels are distinct", len(allch), 2)
 check("neither reuses the shared Emergency channel",
       sorted(allch & {"Emergency", "Emergency resolved"}), [])
@@ -506,6 +531,38 @@ check("scope lands in the message",
       "15:25. Only this building on the street. The inverter still sees mains. "
       "Battery 87.0%, about 9.4 h left at the current draw.")
 
+# --- 5h. Ukrenergo's emergency outages, from the announcement popup --------
+# The flag is the binary sensor's; what these must get right is firing only on
+# a real off<->on edge -- never out of unknown after a restart or unavailable
+# after an unread banner -- and quoting DTEK's first line, not the whole popup.
+print("\n5h. 'Ukrenergo emergency outages' automations")
+for aid, frm, to in [("dtek_emergency_announced", "off", "on"),
+                     ("dtek_emergency_lifted", "on", "off")]:
+    trg = autos[aid]["trigger"]
+    check("%s fires on %s -> %s only" % (aid, frm, to),
+          [(t["entity_id"], t.get("from"), t.get("to")) for t in trg],
+          [("binary_sensor.dtek_emergency_shutdowns", frm, to)])
+    check("%s replaces the other on the lock screen" % aid,
+          {x["data"]["data"]["tag"] for x in autos[aid]["action"]
+           if x.get("service") in PHONES}, {"dtek_emergency_banner"})
+BAN = dict(GOLD)
+BAN.update(base_attrs(banner_text="За рішенням Укренерго запроваджено екстрені відключення "
+                                  "по місту Дніпро.\nЯкщо у вашій оселі є світло – споживайте "
+                                  "його свідомо та ощадливо."))
+v = fire(autos["dtek_emergency_announced"], rstates, BAN, {})
+check("announced: DTEK's first line, then what it means",
+      v["message"],
+      "За рішенням Укренерго запроваджено екстрені відключення по місту Дніпро. "
+      "No schedule applies and DTEK gives no end time. The inverter still sees mains. "
+      "Battery 87.0%, about 9.4 h left at the current draw.")
+v = fire(autos["dtek_emergency_announced"], rstates, base_attrs(banner_text=None), {})
+check("announced with the text gone already: still a sentence",
+      v["message"].startswith("No schedule applies"), True)
+v = fire(autos["dtek_emergency_lifted"], dict(rstates, **{GRID: "on"}), BAN, {})
+check("lifted", v["message"],
+      "DTEK no longer announces emergency outages here; schedules apply again where "
+      "published. The inverter still sees no mains.")
+
 # --- 5e. the estimate passing ----------------------------------------------
 print("\n5e. 'DTEK estimate passed' automation")
 over = autos["dtek_outage_overdue"]
@@ -541,17 +598,126 @@ check("outage alert, DTEK has it",
       dtek_line("❌ Alert: Grid Outage!", {"binary_sensor.dtek_outage_now": "on"}),
       "DTEK: Аварійні ремонтні роботи, expected back by 15:25.")
 check("outage alert, DTEK has nothing",
-      dtek_line("❌ Alert: Grid Outage!", {"binary_sensor.dtek_outage_now": "off"}),
-      "DTEK has nothing on record yet.")
+      dtek_line("❌ Alert: Grid Outage!", {"binary_sensor.dtek_outage_now": "off",
+                                          "binary_sensor.dtek_scheduled_dark": "off"}),
+      "DTEK has nothing on record and the schedule has this hour lit, so it is unscheduled.")
+# 17.10.2026: a stabilisation window, which DTEK never records as an outage,
+# so the alert said "nothing on record" with the schedule dark until 17:00.
+SCHED = {**GOLD, (SENSOR, "next_outage_end"): "2026-09-29T17:00:00+03:00"}
+
+
+def dtek_line_sched(alias, states):
+    for step in grid_autos[alias]["actions"]:
+        if "variables" in step and "dtek_line" in step["variables"]:
+            return render(step["variables"]["dtek_line"], states, SCHED, AT)
+    return None
+
+
+check("outage alert, on the schedule",
+      dtek_line_sched("❌ Alert: Grid Outage!", {"binary_sensor.dtek_outage_now": "off",
+                                               "binary_sensor.dtek_scheduled_dark": "on"}),
+      "On DTEK's schedule (queue 1.1): off until 17:00.")
+check("outage alert, a live DTEK notice outranks the schedule",
+      dtek_line("❌ Alert: Grid Outage!", {"binary_sensor.dtek_outage_now": "on",
+                                          "binary_sensor.dtek_scheduled_dark": "on"}),
+      "DTEK: Аварійні ремонтні роботи, expected back by 15:25.")
+check("restored inside the scheduled window",
+      dtek_line_sched("✅ Power Restored", {"binary_sensor.dtek_outage_now": "off",
+                                           "binary_sensor.dtek_scheduled_dark": "on"}),
+      "Back early: DTEK's schedule has it off until 17:00.")
 check("restored, DTEK still has it",
       dtek_line("✅ Power Restored", {"binary_sensor.dtek_outage_now": "on"}),
       "DTEK still reports an outage until 15:25.")
 check("restored, DTEK agrees", dtek_line("✅ Power Restored",
-      {"binary_sensor.dtek_outage_now": "off"}), "")
+      {"binary_sensor.dtek_outage_now": "off",
+       "binary_sensor.dtek_scheduled_dark": "off"}), "")
 check("every grid-alert message uses it",
       all("{{ dtek_line }}" in step["data"]["message"]
           for alias in ("❌ Alert: Grid Outage!", "✅ Power Restored")
           for step in grid_autos[alias]["actions"] if "action" in step), True)
+
+# --- 5g. the schedule itself changing --------------------------------------
+# 26.10.2026: 18:00-22:00 for queue 1.1, published overnight, withdrawn at
+# 15:34. The countdowns never fired and nothing else was watching.
+print("\n5g. 'DTEK schedule changed' automation")
+chg = autos["dtek_schedule_changed"]
+CANCEL_AT = datetime(2026, 10, 26, 15, 41, tzinfo=KYIV)
+EVENING = ["2026-10-26T18:00:00+02:00", "2026-10-26T22:00:00+02:00"]
+MORNING = ["2026-10-27T08:00:00+02:00", "2026-10-27T12:00:00+02:00"]
+LATE = ["2026-10-26T19:00:00+02:00", "2026-10-26T22:00:00+02:00"]
+cstates = {"sensor.dtek_queue": "1.1"}
+
+
+def change(old, new, at=CANCEL_AT, frm="ok", to="ok"):
+    """Render the automation for one windows change: (gate, sends?, vars)."""
+    trig = {"from_state": None if old is None else
+            {"state": frm, "attributes": {} if old is ... else {"windows": old}},
+            "to_state": {"state": to, "attributes": {"windows": new}}}
+    env = make_env(cstates, {}, at)
+    gate_ok = env.from_string(chg["condition"][0]["value_template"]).render(
+        trigger=trig).strip() == "True"
+    if not gate_ok:
+        return False, False, {}
+    out = {}
+    for name, tpl in chg["action"][0]["variables"].items():
+        out[name] = env.from_string(tpl).render(trigger=trig, **out).strip()
+    sends = env.from_string(chg["action"][1]["value_template"]).render(**out).strip()
+    return True, sends == "True", out
+
+
+g, s, out = change([EVENING], [])
+check("26.10 replayed: passes the gate and sends", (g, s), (True, True))
+check("26.10 replayed: message", out["message"],
+      "DTEK queue 1.1: cancelled 18:00–22:00 today. No windows left on the schedule.")
+check("26.10 replayed: good news channel", out["channel"], "DTEK emergency ends")
+
+g, s, out = change([EVENING], [EVENING, MORNING], at=CANCEL_AT.replace(hour=21, minute=0))
+check("tomorrow published", out["message"],
+      "DTEK queue 1.1: New: 08:00–12:00 tomorrow. Still on: 18:00–22:00 today.")
+check("tomorrow published: starts channel", out["channel"], "DTEK emergency starts")
+
+g, s, out = change([EVENING, MORNING], [LATE, MORNING])
+check("window moved", out["message"],
+      "DTEK queue 1.1: cancelled 18:00–22:00 today. New: 19:00–22:00 today. "
+      "Still on: 08:00–12:00 tomorrow.")
+check("window moved: starts channel", out["channel"], "DTEK emergency starts")
+
+g, s, out = change([], [EVENING], at=CANCEL_AT.replace(hour=1, minute=5))
+check("first window after none", out["message"],
+      "DTEK queue 1.1: New: 18:00–22:00 today.")
+g, s, out = change([EVENING, MORNING], [EVENING])
+check("one of two cancelled, the other kept", out["message"],
+      "DTEK queue 1.1: cancelled 08:00–12:00 tomorrow. Still on: 18:00–22:00 today.")
+g, s, out = change([EVENING], [MORNING], at=CANCEL_AT.replace(hour=12, minute=0))
+check("swapped for tomorrow: nothing kept, nothing claimed", out["message"],
+      "DTEK queue 1.1: cancelled 18:00–22:00 today. New: 08:00–12:00 tomorrow.")
+
+for label, args, want in [
+        ("same windows, stale -> ok", dict(old=[EVENING], new=[EVENING], frm="stale"),
+         (True, False)),
+        ("window ended between polls",
+         dict(old=[EVENING, MORNING], new=[MORNING],
+              at=CANCEL_AT.replace(hour=22, minute=3)), (True, False)),
+        ("entity recreated: from_state None", dict(old=None, new=[EVENING]),
+         (False, False)),
+        ("first poll after deploy: no windows before", dict(old=..., new=[EVENING]),
+         (False, False))]:
+    check("gate: " + label, change(**args)[:2], want)
+
+push = [x for x in chg["action"] if x.get("service") in PHONES]
+check("dtek_schedule_changed reaches the household group",
+      [x["service"] for x in push], ["notify.household"])
+check("dtek_schedule_changed is high priority with no ttl",
+      all(x["data"]["data"].get("priority") == "high"
+          and x["data"]["data"].get("ttl") == 0 for x in push), True)
+check("dtek_schedule_changed also lands in HA itself",
+      any(x.get("service") == "notify.persistent_notification"
+          for x in chg["action"]), True)
+check("its channel is always one of the two",
+      {change([EVENING], [])[2]["channel"], change([], [EVENING])[2]["channel"]} <= allch,
+      True)
+check("its own tag, apart from the outage record's",
+      [x["data"]["data"].get("tag") for x in push], ["dtek_schedule"])
 
 # --- 6. every template renders to one clean token where it must ------------
 print("\n6. no template leaks whitespace or a stray token")
@@ -591,7 +757,9 @@ _probe = dtek_poll.resolve(
     {"data": [], "update": "24.07.2026 08:30"}, {}, NOON)
 # Written by poll(), after resolve() returns.
 _probe.update(address=None, status="ok", fetched_at=None, stale=False,
-              error=None)
+              error=None, banner_title=None, banner_text=None,
+              banner_scope=None, banner_emergency=False,
+              banner_checked_at=None, banner_error=None)
 _listed = set()
 for _block in pkg.get("command_line") or []:
     for _item in _block.values():
@@ -652,25 +820,29 @@ else:
 
     check("the custom card is on the dashboard", CARD_TYPE in types, True)
 
-    # The card is placed twice on purpose: [hero, week] above the
-    # claim-against-measurement section and [source] below it, because that
-    # section is a sibling and a card cannot reorder around it. What must hold
-    # is that between them every block is drawn exactly once -- a typo in one
-    # `blocks` list would silently drop a third of the dashboard, or draw the
-    # hero twice, and both still render without an error.
+    # The card is placed twice: [hero, timeline, week] and [source] below.
+    # What must hold is that between them every block is drawn exactly once --
+    # a typo in one `blocks` list would silently drop part of the dashboard, or
+    # draw the hero twice, and both still render without an error. `days` is
+    # folded into the week since 2.0 and stays only for old configs.
     ours = [n for n in nodes if n["type"] == CARD_TYPE]
     drawn = []
     for c in ours:
-        drawn += c.get("blocks") or ["hero", "week", "source"]
+        drawn += c.get("blocks") or ["hero", "timeline", "week", "source"]
     check("every block drawn exactly once", sorted(drawn),
-          ["hero", "source", "week"])
+          ["hero", "source", "timeline", "week"])
     check("and each instance draws at least one", min(
         len(c.get("blocks") or [1, 2, 3]) for c in ours) > 0, True)
 
-    # Every entity id the dashboard names, from badges, tiles and the
-    # history-graph alike. The custom card names none of its own: its defaults
-    # live in the JS, which section 8 checks separately.
+    # Every entity id the dashboard names, plus the four the card's timeline
+    # draws by default: since 2.0 the card replaces the history-graph that used
+    # to name them, so they are read out of its DEFAULTS instead.
     named = set()
+    card_js = CARD_JS.read_text(encoding="utf-8") if CARD_JS.exists() else ""
+    timeline = re.findall(r'^\s*(grid|outage|scheduled|unscheduled)_entity:\s*"([^"]+)"', card_js, re.M)
+    check("the timeline's four rows have entities", sorted(k for k, _ in timeline),
+          ["grid", "outage", "scheduled", "unscheduled"])
+    named |= {eid for _, eid in timeline}
     for node in nodes:
         if isinstance(node.get("entity"), str):
             named.add(node["entity"])
@@ -690,7 +862,7 @@ else:
               "cover the non-DTEK entities too")
         named = {e for e in named if e in known}
 
-    check("the dashboard names entities at all", len(named) > 0, True)
+    check("the dashboard and the card name entities", len(named) > 0, True)
     check("every one of them exists", sorted(named - known), [])
 
     # Markdown survives only in the comparison section. Deliberately
@@ -749,10 +921,12 @@ else:
     check("both week-derived tiles can blank",
           len(re.findall(r'tile\("(?:Next window|Off this week)"', js)), 2)
     # green = all good, warn = DTEK has a notice but mains is present, red =
-    # the power is actually off. In that order of precedence.
-    check("hero accent: red, then warn for a DTEK notice, then green",
-          bool(re.search(r"accent:\s*gridDown\s*\?\s*RED\s*:\s*dtekOutage\s*\?"
-                         r"\s*ORANGE\s*:\s*GREEN", js)), True)
+    # the power is actually off. In that order of precedence. Ukrenergo's
+    # emergency outages are a claim like a notice: warn, never red.
+    check("hero accent: red, then warn for a DTEK notice, schedule or emergency, then green",
+          bool(re.search(r"accent:\s*gridDown\s*\?\s*RED\s*:\s*dtekOutage\s*\|\|"
+                         r"\s*schedNow\s*\|\|\s*emergencyOn\s*\?\s*ORANGE\s*:\s*GREEN", js)),
+          True)
     check("weekOff is null rather than 0h when withheld",
           bool(re.search(r"weekOff:\s*weekLive\s*\?", js)), True)
 

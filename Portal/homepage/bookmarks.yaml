@@ -1,0 +1,11 @@
+# Links to things that do not live in the house.
+- Outside:
+    - GitHub:
+        - icon: github.png
+          href: https://github.com/AlexandrLisitsa/HomeSweetHome
+    - Tailscale admin:
+        - icon: tailscale.png
+          href: https://login.tailscale.com/admin
+    - Cloudflare:
+        - icon: cloudflare.png
+          href: https://dash.cloudflare.com/

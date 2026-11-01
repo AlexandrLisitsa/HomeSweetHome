@@ -1,8 +1,9 @@
 # The SSH write path
 
 The API token is `PVEAuditor`: it can read every node, guest, config and metric,
-and change nothing. Anything that has to change the host, such as creating
-MeterCam's container, goes over SSH as root instead, through `tools/pve_ssh.sh`.
+and change nothing. Anything that has to change the host, such as creating and
+deploying MeterCam's and MeterBots' containers (104, 105), goes over SSH as root
+instead, through `tools/pve_ssh.sh`.
 
 | | Credential | Can | Used by |
 | --- | --- | --- | --- |
@@ -48,4 +49,5 @@ sh tools/pve_ssh.sh 'pct exec 104 -- docker ps'
 sh tools/pve_ssh.sh 'qm config 100'
 ```
 
-Its first consumer is `MeterCam/deploy/`, which creates and provisions LXC 104.
+Its consumers are `MeterCam/deploy/` and `MeterBots/deploy/`, which create
+and provision LXC 104 and 105.

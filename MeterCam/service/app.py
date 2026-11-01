@@ -32,13 +32,20 @@ on the network, not a determined attacker.
 If METERCAM_TOKEN is unset, auth is OFF and `/health` says so out loud. With
 it off, `/last.jpg` and `/archive` hand photographs of the house to anything on
 the LAN that asks.
+
+The control panel (panel.py) is the exception, on purpose: it is open on the
+LAN like the house dashboard at home.lan, and everything that matters to the
+camera -- /read, /last.jpg, /archive, the firmware download -- keeps the token.
 """
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import pathlib
+import re
+import sys
 import threading
 import time
 import urllib.error
@@ -47,16 +54,12 @@ import zipfile
 
 from flask import Flask, Response, jsonify, request, send_file
 
-from . import digits, gasbot, reader
+from . import digits, panel, reader
 
 APP = Flask(__name__)
 
 CONFIG_PATH = os.environ.get("METERCAM_CONFIG", "/config/config.json")
 TOKEN = os.environ.get("METERCAM_TOKEN") or None
-# /gas/bot/* sends a meter reading to the gas operator as the household.
-# That needs its own token, required even when METERCAM_TOKEN is off: a
-# stray script on the LAN must not be able to file a reading.
-GASBOT_TOKEN = os.environ.get("GASBOT_TOKEN") or None
 IMAGE_DIR = pathlib.Path(os.environ.get("METERCAM_IMAGES", "/data/images"))
 FIRMWARE_DIR = pathlib.Path(os.environ.get("METERCAM_FIRMWARE", "/data/firmware"))
 
@@ -79,8 +82,9 @@ def load_config():
 def authorised():
     if TOKEN is None:
         return True
-    supplied = request.headers.get("X-Auth-Token") or request.args.get("token")
-    return supplied == TOKEN
+    supplied = request.headers.get("X-Auth-Token") or request.args.get("token") or ""
+    # Constant time: a plain == leaks how many leading characters matched.
+    return hmac.compare_digest(supplied.encode("utf-8"), TOKEN.encode("utf-8"))
 
 
 def deny():
@@ -309,10 +313,26 @@ def health():
         "error": error,
         "meters": meters,
         "auth": "token" if TOKEN else "DISABLED",
-        "firmware": _firmware_version(),
+        "firmware": _firmware_version("gas"),
         "uptime_s": int(time.time() - _STARTED),
         "last_read_s_ago": {k: int(time.time() - v) for k, v in _LAST_READ.items()},
+        # Since the last ACCEPTED reading, per meter, from last_accepted.json:
+        # survives a restart, unlike last_read_s_ago, and a read that was
+        # refused does not reset it. Home Assistant alerts on this
+        # (packages/metercam_watch.yaml). A meter that never had one is absent.
+        "last_accepted_s_ago": _accepted_ages(meters),
     })
+
+
+def _accepted_ages(meters):
+    out = {}
+    for name in meters:
+        rec = last_accepted_record(name) or {}
+        try:
+            out[name] = max(0, int(time.time() - float(rec["at_epoch"])))
+        except (KeyError, TypeError, ValueError):
+            pass
+    return out
 
 
 def pushed_frames():
@@ -393,7 +413,7 @@ def do_read():
                 remember(name, result, "last_accepted.jpg")
         _LAST_READ[name] = time.time()
 
-    latest = _firmware_version()
+    latest = _firmware_version(name)
     if result is None:
         print("read %s fw=%s -> error %s" % (name, fw, error), flush=True)
         # Still carries the firmware offer: a board whose reads are failing is
@@ -465,55 +485,41 @@ def last_accepted_jpg():
 # Firmware, for a board that updates itself
 # ---------------------------------------------------------------------------
 #
-# Drop a build in /data/firmware as gas-cam.bin, then write its version into
-# version.txt -- in that order, so a board never sees the new version paired
-# with the old binary. Every /read answer carries that version; the board
-# updates only when the number after its last '-' is higher than its own.
+# Drop a build in /data/firmware as <meter>-cam.bin, then write its version
+# into version-<meter>.txt -- in that order, so a board never sees the new
+# version paired with the old binary. Every /read answer carries the version
+# for ITS meter; the board updates only when the number after its last '-' is
+# higher than its own.
+#
+# One channel per meter because the board compares numbers only: offered
+# gas-cam-7, a water-cam-1 board would fetch its own binary, still be 1, and
+# fetch it again every few wakes. A meter with no version file is offered
+# nothing. Gas also reads the plain version.txt it has always read, so the
+# board in the kitchen sees no change until version-gas.txt exists.
 
-def _firmware_version():
-    try:
-        with open(FIRMWARE_DIR / "version.txt", encoding="utf-8") as fh:
-            return fh.read().strip() or None
-    except OSError:
+_METER_NAME = re.compile(r"^[a-z0-9_]{1,32}$")
+
+
+def _firmware_version(meter):
+    if not _METER_NAME.match(meter or ""):
         return None
-
-
-@APP.route("/gas/bot/status")
-def gas_bot_status():
-    """Walk @mygrmu_bot to the value prompt and back; send nothing."""
-    if not gasbot_authorised():
-        return deny()
-    return jsonify(gasbot.run())
-
-
-@APP.route("/gas/bot/submit", methods=["POST"])
-def gas_bot_submit():
-    """Send ONE monthly reading to @mygrmu_bot. Body: {"value": 2262}."""
-    if not gasbot_authorised():
-        return deny()
-    body = request.get_json(silent=True) or {}
-    try:
-        value = float(str(body.get("value", "")).replace(",", "."))
-    except ValueError:
-        return jsonify({"ok": False, "error": "value must be a number"}), 400
-    if value <= 0 or value >= 100000 or round(value, 2) != value:
-        return jsonify({"ok": False, "error": "value out of range: %r" % body.get("value")}), 400
-    result = gasbot.run(value)
-    print("gas bot submit %s -> %s" % (value, "ok" if result.get("ok")
-                                        else result.get("error")), flush=True)
-    return jsonify(result)
-
-
-def gasbot_authorised():
-    supplied = request.headers.get("X-Gasbot-Token")
-    return GASBOT_TOKEN is not None and supplied == GASBOT_TOKEN
+    names = ["version-%s.txt" % meter]
+    if meter == "gas":
+        names.append("version.txt")
+    for fname in names:
+        try:
+            with open(FIRMWARE_DIR / fname, encoding="utf-8") as fh:
+                return fh.read().strip() or None
+        except OSError:
+            continue
+    return None
 
 
 @APP.route("/firmware/version.txt")
 def firmware_version():
     if not authorised():
         return deny()
-    version = _firmware_version()
+    version = _firmware_version(request.args.get("meter", "gas"))
     if version is None:
         # 404, not an empty 200. A board comparing itself against "" would
         # read that as a version it does not have.
@@ -619,6 +625,10 @@ def _archive_walk(meter=None, days=None):
         if not path.is_file():
             continue
         rel = path.relative_to(IMAGE_DIR)
+        # Dot-folders are the panel's thumbnails (.thumbs/): derived copies,
+        # not frames, so neither counted nor downloaded.
+        if any(part.startswith(".") for part in rel.parts):
+            continue
         if meter and rel.parts[0] != meter:
             continue
         day = _archive_day(path, rel)
@@ -638,10 +648,12 @@ def archive_days():
     """
     if not authorised():
         return deny()
+    return jsonify(days_summary(request.args.get("meter"),
+                                request.args.get("days", type=int)))
 
-    meter = request.args.get("meter")
-    days = request.args.get("days", type=int)
 
+def days_summary(meter=None, days=None):
+    """The body of /archive/days. Also the panel's Storage tab."""
     today = time.strftime(_DAY_FMT)
     buckets = {}
     for rel, path, day in _archive_walk(meter, days):
@@ -666,14 +678,14 @@ def archive_days():
         bucket["age_days"] = _days_between(day, today)
         out.append(bucket)
 
-    return jsonify({
+    return {
         "now": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "days": out,
         "total": {
             "frames": sum(d["frames"] for d in out),
             "bytes": sum(d["bytes"] for d in out),
         },
-    })
+    }
 
 
 @APP.route("/archive")
@@ -736,6 +748,12 @@ def archive_download():
         "Content-Disposition": "attachment; filename=%s" % json.dumps(name),
         "X-Archive-Files": str(len(files)),
     })
+
+
+# The control panel's routes (/, /api/*, /img/*). Registered here, after every
+# helper it borrows exists; handed this module rather than importing it, see
+# panel.init().
+panel.init(APP, sys.modules[__name__])
 
 
 def create_app():

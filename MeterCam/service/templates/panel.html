@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MeterCam</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><circle cx='12' cy='12' r='9' fill='%23e8833a'/><circle cx='12' cy='12' r='4' fill='%23fff'/></svg>">
+<link rel="stylesheet" href="{{ url_for('panel.static', filename='panel.css') }}">
+</head>
+<body>
+<header>
+  <h1>MeterCam</h1>
+  <select id="meter" aria-label="Meter">
+    {% for m in meters %}<option>{{ m }}</option>{% endfor %}
+  </select>
+  <nav id="tabs">
+    <button data-tab="live" class="on">Live</button>
+    <button data-tab="gallery">Gallery</button>
+    <button data-tab="trend">Trend</button>
+    <button data-tab="storage">Storage</button>
+    <button data-tab="firmware">Firmware</button>
+  </nav>
+</header>
+
+<main>
+  <section id="live" class="tab on">
+    <div class="stats" id="live-stats"></div>
+    <div class="pair">
+      <figure><img id="live-last" alt="Newest frame"><figcaption id="live-last-cap">Newest frame</figcaption></figure>
+      <figure><img id="live-acc" alt="Last accepted frame"><figcaption id="live-acc-cap">Last accepted</figcaption></figure>
+    </div>
+    <div id="live-detail"></div>
+  </section>
+
+  <section id="gallery" class="tab">
+    <div class="bar">
+      <select id="g-day" aria-label="Day"></select>
+      <div class="seg" id="g-kind">
+        <button data-kind="all" class="on">All</button>
+        <button data-kind="raw">Accepted</button>
+        <button data-kind="rejected">Refused</button>
+      </div>
+      <span id="g-count" class="muted"></span>
+    </div>
+    <div id="g-grid" class="grid"></div>
+  </section>
+
+  <section id="trend" class="tab">
+    <div class="bar">
+      <div class="seg" id="t-days">
+        <button data-days="7" class="on">7 days</button>
+        <button data-days="30">30 days</button>
+      </div>
+    </div>
+    <h2>Reading</h2>
+    <div id="t-value" class="chart"></div>
+    <h2>Lowest drum confidence per read</h2>
+    <div id="t-conf" class="chart"></div>
+    <h2>Reads per day</h2>
+    <div id="t-days-chart" class="chart"></div>
+    <div id="t-legend" class="legend"></div>
+  </section>
+
+  <section id="storage" class="tab">
+    <div class="stats" id="s-stats"></div>
+    <div class="meterbar"><div id="s-fill"></div></div>
+    <table id="s-table"></table>
+  </section>
+
+  <section id="firmware" class="tab">
+    <div class="stats" id="f-stats"></div>
+    <form id="f-form">
+      <label>Version <input name="version" placeholder="gas-cam-8" required pattern=".*-\d+"></label>
+      <label>Build <input name="bin" type="file" accept=".bin" required></label>
+      <button type="submit" id="f-go">Publish</button>
+    </form>
+    <p class="muted">The board picks it up on its next wake, and only if the number after the last “-” is higher than its own.
+      The .bin is written first, then version.txt, so a board waking in between sees nothing new.</p>
+    <p id="f-msg"></p>
+  </section>
+</main>
+
+<dialog id="detail">
+  <form method="dialog"><button class="close" aria-label="Close">×</button></form>
+  <div id="d-body"></div>
+</dialog>
+
+<script src="{{ url_for('panel.static', filename='panel.js') }}"></script>
+</body>
+</html>

@@ -16,7 +16,13 @@
 # on the month's first run, to monthly-vm/, and replaces the previous one there
 # after the upload has succeeded. A host-config tarball goes along with the LXCs.
 #
-# Any failure exits non-zero, which makes vzdump mark the job as failed.
+# A failed upload does not stop the others: every guest, the host config and
+# the state archives are tried, a remote folder that missed an upload is not
+# pruned, and the job then exits non-zero, which makes vzdump mark it failed.
+# Failures, an aborted job and a Drive past DRIVE_WARN_PCT % also go to Home
+# Assistant (notify.household) when /etc/default/vzdump-offsite sets
+# HA_WEBHOOK_URL (HomeAssistant/config/packages/backup_alerts.yaml). The
+# vzdump job's own red row in the UI was the only sign before.
 #
 # The remote is an rclone crypt remote (REMOTE, default gdrive-crypt:) over a
 # Google Drive remote, configured interactively with `rclone config`; its
@@ -37,8 +43,28 @@ MONTHLY_MAX_AGE="93d"   # 3 monthly runs
 QUEUE="/run/vzdump-offsite.queue"
 RCLONE="rclone --config $RCLONE_CONFIG --retries 3 --low-level-retries 10 --stats-one-line --stats 60s"
 
+# Host-local settings, not in git: HA_WEBHOOK_URL=http://<ha-ip>:8123/api/webhook/<id>
+HA_WEBHOOK_URL=""
+DRIVE_WARN_PCT=90
+[ -r /etc/default/vzdump-offsite ] && . /etc/default/vzdump-offsite
+
 phase="${1:-}"
 log() { echo "vzdump-offsite: $*"; }
+
+# One line to Home Assistant, best effort: a backup must never fail because
+# the alert could not be sent. Quotes and backslashes are dropped rather than
+# escaped, so the JSON stays valid whatever the message holds.
+alert() {
+    log "ALERT: $*"
+    [ -n "$HA_WEBHOOK_URL" ] || return 0
+    msg=$(printf '%s' "$*" | tr -d '"\\' | tr '\n' ' ')
+    curl -s -m 15 -X POST -H 'Content-Type: application/json' \
+        -d "{\"message\": \"$msg\"}" "$HA_WEBHOOK_URL" >/dev/null 2>&1 || true
+}
+
+# Everything that went wrong this run, for the summary at the end.
+FAILED=""
+failed() { FAILED="$FAILED; $*"; log "ERROR: $*"; }
 
 # The archive's base name without the compression suffix, e.g.
 # vzdump-lxc-101-2026_09_27-03_30_00 for vzdump-lxc-101-2026_09_27-03_30_00.tar.zst,
@@ -73,10 +99,9 @@ host_config_tarball() {
 # What cannot be rebuilt is this, a few MB, carried in the same encrypted
 # upload as the LXC dumps:
 #
-#   .env              HA token, gas-bot token, Telegram api_id/api_hash
+#   .env              the HA token and MeterCam's own token
 #   config.json       the meter's ROIs (matched to data/ref)
 #   data/ref          the alignment reference frame
-#   data/telegram     the Telegram session (a logged-in account)
 #   data/firmware     what the camera is offered over OTA
 #   models            the digit models (no licence to re-download from git)
 #
@@ -87,10 +112,34 @@ metercam_tarball() {
     out="$1/metercam-state-$(date +%Y_%m_%d-%H_%M_%S).tar.zst"
     pct status "$METERCAM_VMID" 2>/dev/null | grep -q running || return 1
     pct exec "$METERCAM_VMID" -- tar -C "$METERCAM_DIR" -cf - --ignore-failed-read \
-        .env config.json docker-compose.yml data/ref data/telegram data/firmware models \
+        .env config.json docker-compose.yml data/ref data/firmware models \
         2>/dev/null | zstd -q -19 > "$out" || return 1
     # A tar that found nothing still writes a valid, tiny archive.
-    [ "$(zstd -dc "$out" | tar -tf - | grep -c -E '^(\./)?\.env$|gasbot\.session$')" -ge 1 ] || return 1
+    [ "$(zstd -dc "$out" | tar -tf - | grep -c -E '^(\./)?\.env$')" -ge 1 ] || return 1
+    chmod 600 "$out"
+    echo "$out"
+}
+
+# MeterBots (LXC 105) is not dumped either, for the same reason: its image
+# rebuilds from git. Its state is a few KB, and it is the most sensitive thing
+# on the host -- a logged-in Telegram account -- so it only ever travels inside
+# this encrypted upload:
+#
+#   .env              the Telegram api_id/api_hash, the bots' tokens and
+#                     account numbers
+#   data/telegram     the Telegram session
+#
+# The session may legitimately be missing (logged out), so only .env is
+# required for the archive to count.
+METERBOTS_VMID="${METERBOTS_VMID:-105}"
+METERBOTS_DIR="/opt/meterbots"
+meterbots_tarball() {
+    out="$1/meterbots-state-$(date +%Y_%m_%d-%H_%M_%S).tar.zst"
+    pct status "$METERBOTS_VMID" 2>/dev/null | grep -q running || return 1
+    pct exec "$METERBOTS_VMID" -- tar -C "$METERBOTS_DIR" -cf - --ignore-failed-read \
+        .env docker-compose.yml data/telegram \
+        2>/dev/null | zstd -q -19 > "$out" || return 1
+    [ "$(zstd -dc "$out" | tar -tf - | grep -c -E '^(\./)?\.env$')" -ge 1 ] || return 1
     chmod 600 "$out"
     echo "$out"
 }
@@ -100,6 +149,11 @@ metercam-state)
     # By hand: `vzdump-offsite.sh metercam-state /tmp` writes the archive
     # and prints its path, to check what goes off-site without a backup run.
     metercam_tarball "${2:-/tmp}" || { log "ERROR: MeterCam state archive failed"; exit 1; }
+    ;;
+
+meterbots-state)
+    # By hand, the same for MeterBots: `vzdump-offsite.sh meterbots-state /tmp`.
+    meterbots_tarball "${2:-/tmp}" || { log "ERROR: MeterBots state archive failed"; exit 1; }
     ;;
 
 job-start)
@@ -122,29 +176,40 @@ job-end)
         tmp=$(mktemp -d)
         trap 'rm -rf "$tmp"' EXIT
         cfg=$(host_config_tarball "$tmp")
-        # A failed MeterCam archive must not cost the other guests their
-        # off-site copy: upload the rest, then fail the job at the end.
-        metercam_failed=0
-        mcs=$(metercam_tarball "$tmp") || { metercam_failed=1; mcs=""; \
-            log "ERROR: MeterCam state archive failed (is LXC $METERCAM_VMID running?)"; }
+        # A failed archive or upload must not cost the others their off-site
+        # copy: try everything, then fail the job at the end.
+        mcs=$(metercam_tarball "$tmp") || { mcs=""; \
+            failed "MeterCam state archive (is LXC $METERCAM_VMID running?)"; }
+        mbs=$(meterbots_tarball "$tmp") || { mbs=""; \
+            failed "MeterBots state archive (is LXC $METERBOTS_VMID running?)"; }
 
+        missed=""   # remote folders an upload to failed this run
         for dest in weekly $(first_run_of_month && echo monthly); do
             for b in $lxc_bases; do
                 log "copy $b -> $dest/"
-                $RCLONE copy "$dumpdir" "${REMOTE}$dest/" --include "$b.*"
+                $RCLONE copy "$dumpdir" "${REMOTE}$dest/" --include "$b.*" \
+                    || { missed="$missed $dest"; failed "upload $b -> $dest/"; }
             done
-            for f in "$cfg" $mcs; do
+            for f in "$cfg" $mcs $mbs; do
                 log "copy $(basename "$f") -> $dest/"
-                $RCLONE copy "$f" "${REMOTE}$dest/"
+                $RCLONE copy "$f" "${REMOTE}$dest/" \
+                    || { missed="$missed $dest"; failed "upload $(basename "$f") -> $dest/"; }
             done
         done
 
-        log "prune weekly/ older than $WEEKLY_MAX_AGE, monthly/ older than $MONTHLY_MAX_AGE"
-        # mkdir first: rclone delete fails on a folder that doesn't exist yet.
-        $RCLONE mkdir "${REMOTE}weekly/"
-        $RCLONE mkdir "${REMOTE}monthly/"
-        $RCLONE delete "${REMOTE}weekly/" --min-age "$WEEKLY_MAX_AGE"
-        $RCLONE delete "${REMOTE}monthly/" --min-age "$MONTHLY_MAX_AGE"
+        # Both folders are pruned every run, by age -- except one this run
+        # could not fill: that would trade an old copy for nothing.
+        for dest in weekly monthly; do
+            case " $missed " in
+            *" $dest "*) log "not pruning $dest/: an upload to it failed"; continue ;;
+            esac
+            [ "$dest" = weekly ] && age="$WEEKLY_MAX_AGE" || age="$MONTHLY_MAX_AGE"
+            log "prune $dest/ older than $age"
+            # mkdir first: rclone delete fails on a folder that doesn't exist yet.
+            { $RCLONE mkdir "${REMOTE}$dest/" \
+                && $RCLONE delete "${REMOTE}$dest/" --min-age "$age"; } \
+                || failed "prune $dest/"
+        done
     fi
 
     if [ -n "$vm_bases" ] && first_run_of_month; then
@@ -152,37 +217,58 @@ job-end)
         # "--exclude $b.*" is a shell glob, expanded against whatever the
         # hook's working directory happens to hold.
         keep=$(mktemp)
+        vm_ok=1
         for b in $vm_bases; do
             log "copy $b -> monthly-vm/"
-            $RCLONE copy "$dumpdir" "${REMOTE}monthly-vm/" --include "$b.*"
+            $RCLONE copy "$dumpdir" "${REMOTE}monthly-vm/" --include "$b.*" \
+                || log "rclone copy of $b reported an error; checking what landed"
             # Proof, not rclone's exit status: `copy --include` that matches
             # nothing transfers nothing and still exits 0. If this name is not
             # on the remote now, deleting "everything else" would delete every
             # off-site copy of the VM and put nothing in its place.
             if ! $RCLONE lsf "${REMOTE}monthly-vm/" --include "$b.*" | grep -q "^$b\.vma"; then
-                rm -f "$keep"
-                log "ERROR: $b is not in monthly-vm/ after the copy; keeping the old copies"
-                exit 1
+                vm_ok=0
+                failed "$b is not in monthly-vm/ after the copy; kept the old copies"
+                continue
             fi
             printf '%s.*\n' "$b" >> "$keep"
         done
-        # Only now that every new copy is confirmed: drop the previous month's.
-        log "drop older monthly-vm/ copies"
-        $RCLONE delete "${REMOTE}monthly-vm/" --exclude-from "$keep"
+        # Only once every new copy is confirmed: drop the previous month's.
+        if [ "$vm_ok" -eq 1 ]; then
+            log "drop older monthly-vm/ copies"
+            $RCLONE delete "${REMOTE}monthly-vm/" --exclude-from "$keep" \
+                || failed "drop older monthly-vm/ copies"
+        fi
         rm -f "$keep"
     fi
 
-    $RCLONE rmdirs "$REMOTE" --leave-root
+    $RCLONE rmdirs "$REMOTE" --leave-root || log "rmdirs failed (empty folders left, harmless)"
     rm -f "$QUEUE" "$FORCE_MONTHLY"
-    if [ "${metercam_failed:-0}" -ne 0 ]; then
-        log "done, but WITHOUT the MeterCam state archive"
+
+    # The Drive is shared with Gmail and Photos, and full means no off-site
+    # copies at all from the next run on. Say so while there is room left.
+    # Used = total - free: Drive counts Gmail and Photos against the same
+    # quota, and rclone files only some of that under "used".
+    drive=$(echo "$REMOTE" | sed 's/-crypt:$/:/')
+    about=$($RCLONE about "$drive" --json 2>/dev/null | tr -d ' \t\r\n') || about=""
+    total=$(echo "$about" | sed -n 's/.*"total":\([0-9]*\).*/\1/p')
+    free=$(echo "$about" | sed -n 's/.*"free":\([0-9]*\).*/\1/p')
+    pct_used=$(awk -v t="${total:-0}" -v f="${free:-x}" \
+        'BEGIN { if (t > 0 && f ~ /^[0-9]+$/) printf "%d", (t - f) * 100 / t }')
+    if [ -n "$pct_used" ] && [ "$pct_used" -ge "$DRIVE_WARN_PCT" ]; then
+        alert "Google Drive is ${pct_used}% full; off-site backups stop when it is full"
+    fi
+
+    if [ -n "$FAILED" ]; then
+        alert "Off-site backup finished with errors:${FAILED#;}"
         exit 1
     fi
-    log "done"
+    log "done${pct_used:+, Drive ${pct_used}% used}"
     ;;
 
 job-abort)
     rm -f "$QUEUE"
+    alert "A vzdump backup job was aborted; nothing went off-site this run"
     ;;
 esac
 

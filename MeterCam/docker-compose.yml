@@ -27,11 +27,3 @@ services:
       # Also in .env, never in config.json.
       METERCAM_HA_TOKEN: "${METERCAM_HA_TOKEN:-}"
       TZ: "${TZ:-Europe/Kyiv}"
-      # service/gasbot.py: the monthly gas reading via @mygrmu_bot. All in
-      # .env -- the account number is private and the repo is public. The
-      # Telegram session itself lives in data/telegram/.
-      GASBOT_TOKEN: "${GASBOT_TOKEN:-}"
-      GASBOT_API_ID: "${GASBOT_API_ID:-}"
-      GASBOT_API_HASH: "${GASBOT_API_HASH:-}"
-      GASBOT_ACCOUNT: "${GASBOT_ACCOUNT:-}"
-      GASBOT_COUNTER: "${GASBOT_COUNTER:-}"

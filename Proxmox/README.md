@@ -15,6 +15,8 @@ it all from filling up is in [`docs/maintenance.md`](docs/maintenance.md).
 | 102 · LXC | Tailscale subnet router: private remote access | [`docs/102-tailscale.md`](docs/102-tailscale.md) |
 | 103 · LXC | Cloudflare Tunnel: lets Google Home and Gemini reach Home Assistant, without an open port | [`docs/103-cloudflare.md`](docs/103-cloudflare.md) |
 | 104 · LXC | MeterCam: reads the gas meter's dial for Home Assistant | [`docs/104-metercam.md`](docs/104-metercam.md) |
+| 105 · LXC | MeterBots: files the monthly meter readings with the suppliers' Telegram bots | [`docs/105-meterbots.md`](docs/105-meterbots.md) |
+| 106 · LXC | Portal: the house dashboard and the `.lan` names | [`docs/106-portal.md`](docs/106-portal.md) |
 
 The tooling began as a way to measure the HA guest's resource history rather
 than eyeball it off a graph ([the CPU case study](docs/cpu-growth-case-study.md)).
@@ -34,7 +36,8 @@ Two ways in, for two jobs:
   config and metric and change nothing. Setup steps and the privilege-separation
   trap are in `secrets.env.example`. The measuring tools below use only this.
 - **SSH as root** with a dedicated key, for everything that writes: creating and
-  deploying MeterCam's container (see [`docs/ssh-write-path.md`](docs/ssh-write-path.md)),
+  deploying MeterCam's, MeterBots' and the Portal's containers, LXC 104–106 (see
+  [`docs/ssh-write-path.md`](docs/ssh-write-path.md)),
   and host administration — installing packages, the backup hook, the backup
   jobs. The hook is installed by hand (see [`docs/backups.md`](docs/backups.md)).
   Changes made this way are written up in the docs, since there is no mirror of
@@ -56,7 +59,8 @@ sh tools/pve_ssh.sh pveversion     # write
 | `tools/pve_ssh.sh` | run a command on the host as **root**, over SSH — the write path ([`docs/ssh-write-path.md`](docs/ssh-write-path.md)) | **yes** |
 | `tools/_pve_env.sh` | not a command: sourced by `pve_get.sh` and `pve_ssh.sh` to load `secrets.env` | — |
 | `tools/pct-fstrim.service` + `.timer` | **installed on the host**: trims every running container weekly so freed space returns to the thin pool ([`docs/maintenance.md`](docs/maintenance.md)) | no |
-| `tools/vzdump-offsite.sh` | **runs on the host**, as the vzdump hook of both backup jobs: uploads the dumps to Google Drive through rclone crypt and prunes the off-site copies | changes Drive, not the host |
+| `tools/vzdump-offsite.sh` | **runs on the host**, as the vzdump hook of both backup jobs: uploads the dumps to Google Drive through rclone crypt, prunes the off-site copies, and alerts Home Assistant when something fails | changes Drive, not the host |
+| `tools/test_vzdump_offsite.sh` | runs the hook's `job-end` and `job-abort` against a fake Drive, a fake Proxmox and a fake HA, in a throwaway Debian container (needs Docker) | no |
 
 ```sh
 python tools/cpu_trend.py        # weekly, the whole year
@@ -92,6 +96,8 @@ help".
 | [`docs/102-tailscale.md`](docs/102-tailscale.md) | LXC 102, Tailscale subnet router |
 | [`docs/103-cloudflare.md`](docs/103-cloudflare.md) | LXC 103, Cloudflare Tunnel |
 | [`docs/104-metercam.md`](docs/104-metercam.md) | LXC 104, MeterCam |
+| [`docs/105-meterbots.md`](docs/105-meterbots.md) | LXC 105, MeterBots |
+| [`docs/106-portal.md`](docs/106-portal.md) | LXC 106, Portal |
 | [`docs/ssh-write-path.md`](docs/ssh-write-path.md) | the root SSH key that changes the host, and what the read/write split does and does not buy |
 | [`docs/backups.md`](docs/backups.md) | what is backed up, where, the retention, and how to restore |
 | [`docs/maintenance.md`](docs/maintenance.md) | housekeeping: what keeps the host and its guests from slowly filling up |

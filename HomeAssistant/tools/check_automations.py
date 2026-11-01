@@ -14,6 +14,13 @@ template picks the right branch -- and every one of those was wrong once
   * the two kitchen helpers cannot both drive the relay
   * the IR phone charges below 21% on every path, and is re-checked
   * irbridge_send_candidate honours idx 0
+  * the weekly MeterBots session check says why whenever it fails
+  * the meter-reading sends refuse a second reading in a month, and the
+    two monthly asks never start at the same minute
+  * the gas camera alert fires after 6 h without an accepted reading
+  * every A/C call reports a failure; the meter's tariff switch is verified
+  * the gas and cold-water readings take the higher of camera and hand, and
+    the water camera alert stays quiet until the camera exists
 
 Same approach as check_dtek_templates.py: just enough of HA's template
 environment to render these templates, not an HA emulator.
@@ -96,11 +103,11 @@ for hour, want in ((0, "night"), (6, "night"), (7, "day"), (15, "day"),
 print("\n2. grid outage: once per real outage")
 outage = by_alias(autos, "Grid Outage")
 trig = outage["triggers"][0]
-check("state trigger on the grid sensor",
+check("state trigger on grid_down, not the 185-250 V quality check",
       (trig.get("trigger"), trig.get("entity_id")),
-      ("state", "binary_sensor.powmr_inverter_grid_condition_safe"))
+      ("state", "binary_sensor.grid_down"))
 check("from off (a reconnect is not an outage)", trig.get("from"), "off")
-check("to on (on = UNSAFE)", trig.get("to"), "on")
+check("to on (on = no mains)", trig.get("to"), "on")
 check("held 20 s (a blip is not an outage)", trig.get("for"), {"seconds": 20})
 check("waits for the runtime figure first",
       "wait_template" in outage["actions"][0], True)
@@ -113,6 +120,53 @@ for secs, want in ((5, "False"), (19, "False"), (20, "True"), (3600, "True")):
                "to_state": {"last_changed": t0 + timedelta(seconds=secs)}}
     check("restored after a %ds outage -> %s" % (secs, want),
           render(cond, trigger=trigger), want)
+check("restored follows grid_down too",
+      restored["triggers"][0]["entity_id"], ["binary_sensor.grid_down"])
+grid_line = restored["actions"][0]["variables"]["grid_line"]
+for on_batt, want in (("on", "Grid protection keeps the house on battery"),
+                      ("off", "The inverter has switched to grid power.")):
+    got = render(grid_line, states={"binary_sensor.house_on_battery": on_batt,
+                                    "sensor.powmr_inverter_grid_voltage": "231.4"})
+    check("restored, house_on_battery %s -> says %r" % (on_batt, want[:30]),
+          want in got and "231 V" in got, True)
+
+print("\n2b. grid out of range: only when protection moved the house")
+low_v = by_alias(autos, "Grid Voltage Out of Range")
+trig = low_v["triggers"][0]
+check("trigger: quality check unsafe for 20 s",
+      (trig.get("entity_id"), trig.get("from"), trig.get("to"), trig.get("for")),
+      ("binary_sensor.powmr_inverter_grid_condition_safe", "off", "on", {"seconds": 20}))
+check("conditions: mains present and protection on",
+      sorted((c["entity_id"], c["state"]) for c in low_v["conditions"]),
+      [("binary_sensor.grid_down", "off"),
+       ("switch.powmr_inverter_auto_grid_protection", "on")])
+title = low_v["actions"][0]["variables"]["title"]
+for volts, want in (("180", "⚠️ Grid Voltage Low"), ("252", "⚠️ Grid Voltage High")):
+    check("%s V -> %s" % (volts, want), render(title, volts=volts), want)
+
+normal = by_alias(autos, "Grid Voltage Normal")
+cond = normal["conditions"][0]["value_template"]
+spell = datetime(2026, 10, 31, 16, 0, tzinfo=KYIV)
+
+
+def normal_fires(low_at, restored_at):
+    attrs = {"automation.alert_grid_voltage_out_of_range": low_at,
+             "automation.power_restored": restored_at}
+    env = jinja2.Environment()
+    env.globals["state_attr"] = lambda e, a: attrs.get(e)
+    return env.from_string(cond).render(
+        trigger={"from_state": {"last_changed": spell}}).strip()
+
+
+check("alert fired this spell -> fires",
+      normal_fires(spell + timedelta(seconds=20), None), "True")
+check("alert fired in an earlier spell -> quiet",
+      normal_fires(spell - timedelta(hours=1), None), "False")
+check("alert never fired -> quiet", normal_fires(None, None), "False")
+check("outage inside the spell, Power Restored spoke since -> quiet",
+      normal_fires(spell + timedelta(seconds=20), spell + timedelta(minutes=3)), "False")
+check("Power Restored older than the alert -> fires",
+      normal_fires(spell + timedelta(seconds=20), spell - timedelta(hours=2)), "True")
 
 # --- battery low -----------------------------------------------------------
 print("\n3. battery low: crossings, not reconnects")
@@ -152,18 +206,14 @@ check("offline alert after 10 min unavailable",
       ("unavailable", {"minutes": 10}))
 
 # --- kitchen ---------------------------------------------------------------
-print("\n5. kitchen: the helpers exclude each other")
-for alias, mine, other in (("Force Light On", "kitchen_light_force_on", "kitchen_light_block"),
-                           ("Block Light On", "kitchen_light_block", "kitchen_light_force_on")):
-    a = by_alias(autos, alias)
-    turned_off = [d["target"]["entity_id"] for d in walk(a["actions"])
-                  if d.get("action") == "input_boolean.turn_off"]
-    check("%s: switching on turns %s off" % (mine, other),
-          turned_off, ["input_boolean." + other])
-    gates = [d for d in a["actions"] if d.get("condition") == "state"]
-    check("%s: drives the relay only while %s is off" % (mine, other),
-          [(g["entity_id"], g["state"]) for g in gates],
-          [("input_boolean." + other, "off")])
+print("\n5. kitchen: force-on alone, the block mode is gone")
+force = by_alias(autos, "Force Light On")
+check("force-on turns the kitchen light on, ungated",
+      [(d.get("action"), d.get("condition")) for d in force["actions"]],
+      [("light.turn_on", None)])
+check("nothing references the removed block helper",
+      any("kitchen_light_block" in p.read_text(encoding="utf-8")
+          for p in [CONFIG / "automations.yaml", *(CONFIG / "packages").glob("*.yaml")]), False)
 
 # --- IR blaster charging ---------------------------------------------------
 print("\n6. IR blaster: charges below 21% on every path")
@@ -184,6 +234,202 @@ check("idx 0 is sent as 0", render(tpl, states=held, idx=0), "0")
 check("idx 12 is sent as 12", render(tpl, states=held, idx=12), "12")
 check("no idx -> the input_number", render(tpl, states=held), "47")
 check("empty idx -> the input_number", render(tpl, states=held, idx=""), "47")
+
+# --- MeterBots session -------------------------------------------------------
+print("\n8. MeterBots session: weekly, and every failure says why")
+pkg = yaml.load((CONFIG / "packages" / "meterbots_session.yaml").read_text(encoding="utf-8"),
+                HaLoader)
+auto = pkg["automation"][0]
+check("Mondays at 12:00",
+      (auto["trigger"][0]["at"], auto["condition"][0]["weekday"]), ("12:00:00", "mon"))
+call, var_step, notify_step = auto["action"]
+check("a MeterBots that is down does not stop the run", call.get("continue_on_error"), True)
+ok_tpl, why_tpl = var_step["variables"]["ok"], var_step["variables"]["why"]
+cases = [
+    ("logged in", {"status": 200, "content": {"ok": True, "authorized": True}}, "True", ""),
+    ("logged out", {"status": 200, "content": {"ok": False,
+                                               "error": "Telegram session is not logged in"}},
+     "False", "Telegram session is not logged in"),
+    ("wrong token", {"status": 401, "content": {"error": "unauthorised"}}, "False", "unauthorised"),
+    ("not JSON", {"status": 502, "content": "Bad Gateway"}, "False", "MeterBots answered 502"),
+]
+for label, sess, want_ok, want_why in cases:
+    check("%s -> ok %s" % (label, want_ok), render(ok_tpl, sess=sess), want_ok)
+    check("%s -> why" % label, render(why_tpl, sess=sess, ok=want_ok == "True"), want_why)
+check("no answer at all -> not ok", render(ok_tpl), "False")
+check("no answer at all -> why",
+      render(why_tpl, ok=False), "MeterBots did not answer, or refused (see the HA log)")
+check("only a failure notifies", notify_step["if"][0]["value_template"], "{{ not ok }}")
+
+# --- meter-reading sends ------------------------------------------------------
+print("\n9. meter-reading sends: never twice a month, and never both at once")
+for kind, pkgfile, script, sub, want_msg in (
+        ("electricity", "electricity_submit.yaml", "electricity_submit_send",
+         {"ok": True, "already_submitted": True, "submitted": {"day": 38500, "night": 6450}},
+         "This month's reading already went in (day 38500, night 6450 kWh)."),
+        ("gas", "gas_submit.yaml", "gas_submit_send",
+         {"ok": True, "already_submitted": True, "submitted_value": 2262},
+         "This month's reading already went in (2262 m³).")):
+    pkg = yaml.load((CONFIG / "packages" / pkgfile).read_text(encoding="utf-8"), HaLoader)
+    seq = pkg["script"][script]["sequence"]
+    prep = next(i for i, st in enumerate(seq) if st.get("service") == "shell_command.%s_submit_prepare" % kind)
+    send = next(i for i, st in enumerate(seq) if str(st.get("service", "")).endswith("_bot_submit"))
+    check(kind + ": the state is read before anything is sent", prep < send, True)
+    guard = seq[prep + 2]["if"][0]["value_template"]
+    stop = seq[prep + 2]["then"]
+    g = lambda p, **kw: render(guard, p=p, **kw)  # noqa: E731
+    check(kind + ": already sent -> stop", g(sub), "True")
+    check(kind + ": already sent, force -> send", g(sub, force=True), "False")
+    check(kind + ": not sent yet -> send", g({"ok": True, "already_submitted": False}), "False")
+    check(kind + ": prepare failed -> send anyway", g({"ok": False}), "False")
+    check(kind + ": empty prepare output -> send anyway", g({}), "False")
+    msg = render(stop[0]["data"]["message"], p=sub).split(" To send")[0]
+    check(kind + ": the stop says what went in", " ".join(msg.split()), want_msg)
+    check(kind + ": and stops", stop[-1], {"stop": "already submitted this month"})
+    check(kind + ": `force` is a field", "force" in pkg["script"][script]["fields"], True)
+
+asks = {}
+for kind, pkgfile, aid in (("gas", "gas_submit.yaml", "gas_submit_monthly"),
+                           ("electricity", "electricity_submit.yaml", "electricity_submit_monthly")):
+    pkg = yaml.load((CONFIG / "packages" / pkgfile).read_text(encoding="utf-8"), HaLoader)
+    auto = next(a for a in pkg["automation"] if a["id"] == aid)
+    asks[kind] = [t["at"] for t in auto["trigger"] if t.get("platform") == "time"]
+check("gas asks at 21:00, electricity 10 minutes later", (asks["gas"], asks["electricity"]),
+      (["21:00:00"], ["21:10:00"]))
+# --- gas camera watch ---------------------------------------------------------
+print("\n10. gas camera: an alert when nothing has been accepted for hours")
+pkg = yaml.load((CONFIG / "packages" / "metercam_watch.yaml").read_text(encoding="utf-8"), HaLoader)
+sens = pkg["rest"][0]["sensor"][0]
+v = lambda j: render(sens["value_template"], value_json=j)  # noqa: E731
+check("an hour-old accept: 60 min", v({"last_accepted_s_ago": {"gas": 3600}}), "60")
+check("rounds to whole minutes", v({"last_accepted_s_ago": {"gas": 89}}), "1")
+check("no accept yet (key absent): none", v({"last_accepted_s_ago": {}}), "None")
+check("an older MeterCam without the field: none", v({"status": "ok"}), "None")
+check("polled every 10 minutes", pkg["rest"][0]["scan_interval"], 600)
+auto = pkg["automation"][0]
+trig = {t["id"]: t for t in auto["trigger"]}
+check("stale: above 6 h (360 min)", (trig["stale"]["platform"], trig["stale"]["above"]), ("numeric_state", 360))
+check("down: MeterCam unanswered for an hour", (trig["down"]["to"], trig["down"]["for"]), ("unavailable", "01:00:00"))
+notify = auto["action"][1]
+msg = notify["data"]["message"]
+check("notifies the household", notify["service"], "notify.household")
+hours = render(auto["action"][0]["variables"]["hours"], states={"sensor.gas_camera_last_accepted": "397"})
+check("hours from the sensor", hours, "6.6")
+m = render(msg, trigger={"id": "stale"}, hours=hours)
+check("stale message names the hours", "No accepted gas reading for 6.6 h." in " ".join(m.split()), True)
+m = render(msg, trigger={"id": "down"}, hours="0")
+check("down message says MeterCam is silent", m.startswith("MeterCam has not answered for an hour"), True)
+
+# --- no silent failures ---------------------------------------------------------
+print("\n11. A/C commands and the meter's tariff switch: a failure is reported")
+pkg = yaml.load((CONFIG / "packages" / "irbridge_ac.yaml").read_text(encoding="utf-8"), HaLoader)
+seqs = [(a["id"], a["action"]) for a in pkg["automation"]]
+seqs += [(k, v["sequence"]) for k, v in pkg["script"].items() if k != "irbridge_ac_command_failed"]
+calls = 0
+for name, seq in seqs:
+    for i, step in enumerate(seq):
+        if not str(step.get("service", "")).startswith("rest_command.irbridge_ac"):
+            continue
+        calls += 1
+        nxt = seq[i + 1] if i + 1 < len(seq) else {}
+        guarded = (step.get("response_variable") == "resp" and step.get("continue_on_error") is True
+                   and "if" in nxt and nxt["then"][0]["service"] == "script.irbridge_ac_command_failed")
+        check(name + ": its A/C call is checked", guarded, True)
+check("every A/C call in the package is covered (7)", calls, 7)
+step = next(a for a in pkg["automation"] if a["id"] == "irbridge_ac_temperature")["action"][1]
+cond, why = step["if"][0]["value_template"], step["then"][0]["data"]["why"]
+check("200: no report", render(cond, resp={"status": 200, "content": {}}), "False")
+check("no answer: reported", render(cond), "True")
+check("400: reported", render(cond, resp={"status": 400, "content": {"error": "unknown fan 'x'"}}), "True")
+check("why, no answer", render(why), "no answer from the IR phone")
+check("why, a refusal with its reason",
+      " ".join(render(why, resp={"status": 400, "content": {"error": "unknown fan 'x'"}}).split()),
+      "IR phone answered 400: unknown fan 'x'")
+check("why, an error page", " ".join(render(why, resp={"status": 502, "content": "Bad Gateway"}).split()),
+      "IR phone answered 502")
+rep = pkg["script"]["irbridge_ac_command_failed"]
+check("one tag, so a burst replaces one notification",
+      rep["sequence"][0]["data"]["data"]["tag"], "irbridge-ac-failed")
+msg = render(rep["sequence"][0]["data"]["message"], what="Temperature 24 °C", why="no answer from the IR phone")
+check("the report says what and why", " ".join(msg.split()).startswith(
+      "Temperature 24 °C did not reach the A/C: no answer from the IR phone."), True)
+
+em = yaml.load((CONFIG / "packages" / "electricity_meter.yaml").read_text(encoding="utf-8"), HaLoader)
+acts = next(a for a in em["automation"] if a["id"] == "electricity_meter_tariff_switch")["actions"]
+retry, final = acts[2], acts[3]
+landed = {"select.electricity_meter_tariff": "night", "select.electricity_meter_register": "night"}
+half = {"select.electricity_meter_tariff": "night", "select.electricity_meter_register": "day"}
+check("both selects on the zone: no retry", render(retry["if"][0]["value_template"], states=landed, zone="night"), "False")
+check("one select behind: retry", render(retry["if"][0]["value_template"], states=half, zone="night"), "True")
+check("the retry waits 30 s, then switches again",
+      (retry["then"][0], retry["then"][1]["action"]), ({"delay": "00:00:30"}, "select.select_option"))
+check("still behind after the retry: notify", (render(final["if"][0]["value_template"], states=half, zone="night"),
+      final["then"][0]["action"]), ("True", "notify.household"))
+
+# --- meter readings ----------------------------------------------------------------
+print("\n12. meter readings: the higher of camera and hand, none when neither")
+
+
+def template_sensor(package, unique_id):
+    pkg = yaml.load((CONFIG / "packages" / package).read_text(encoding="utf-8"), HaLoader)
+    return next(s for block in pkg["template"] for s in block.get("sensor", [])
+                if s.get("unique_id") == unique_id), pkg
+
+
+for package, uid, manual, camera, name in (
+        ("gas_meter.yaml", "gas_meter_reading", "input_number.gas_meter_manual_reading",
+         "input_number.gas_meter_camera_reading", "gas"),
+        ("water_meter.yaml", "water_meter_cold_reading", "input_number.water_meter_cold_manual_reading",
+         "input_number.water_meter_cold_camera_reading", "water")):
+    sens, pkg = template_sensor(package, uid)
+    st = lambda m, c: render(sens["state"], states={manual: m, camera: c})  # noqa: E731
+    av = lambda m, c: render(sens["availability"], states={manual: m, camera: c})  # noqa: E731
+    check(name + ": hand only", (st("233.18", "0.0"), av("233.18", "0.0")), ("233.18", "True"))
+    check(name + ": camera only", (st("0.0", "233.19"), av("0.0", "233.19")), ("233.19", "True"))
+    check(name + ": camera ahead of the hand", st("233.18", "240.5"), "240.5")
+    check(name + ": hand ahead of the camera", st("241.0", "240.5"), "241.0")
+    check(name + ": neither yet (both at min 0): none, unavailable",
+          (st("0.0", "0.0"), av("0.0", "0.0")), ("None", "False"))
+    check(name + ": helpers not loaded yet: none, unavailable",
+          (st("unknown", "unavailable"), av("unknown", "unavailable")), ("None", "False"))
+    check(name + ": three decimals kept", st("233.1874", "0.0"), "233.187")
+    check(name + ": Energy-dashboard shape",
+          (sens["state_class"], sens["unit_of_measurement"], sens["device_class"]),
+          ("total_increasing", "m³", name))
+    helpers = pkg["input_number"]
+    for helper in (manual, camera):
+        h = helpers[helper.split(".", 1)[1]]
+        check(helper + ": min 0, no initial", (h["min"], "initial" in h), (0, False))
+check("water keeps its statistics id",
+      template_sensor("water_meter.yaml", "water_meter_cold_reading")[0]["name"], "Cold water meter reading")
+
+print("\n13. water camera: an alert after 6 h without an accepted reading, and only then")
+pkg = yaml.load((CONFIG / "packages" / "metercam_watch.yaml").read_text(encoding="utf-8"), HaLoader)
+check("one /health poll serves both cameras", len(pkg["rest"]), 1)
+sensors = {s["unique_id"]: s for s in pkg["rest"][0]["sensor"]}
+check("gas sensor still first (section 10 reads [0])",
+      pkg["rest"][0]["sensor"][0]["unique_id"], "metercam_gas_last_accepted")
+ws = sensors["metercam_water_last_accepted"]
+v = lambda j: render(ws["value_template"], value_json=j)  # noqa: E731
+check("water reads its own age", v({"last_accepted_s_ago": {"gas": 60, "water": 7200}}), "120")
+check("before install (no water key): none", v({"last_accepted_s_ago": {"gas": 60}}), "None")
+check("an older MeterCam without the field: none", v({"status": "ok"}), "None")
+autos = {a["id"]: a for a in pkg["automation"]}
+check("gas alert still first (section 10 reads [0])", pkg["automation"][0]["id"], "metercam_gas_stale")
+wa = autos["metercam_water_stale"]
+check("stale only: MeterCam being down is the gas alert's to say",
+      [(t["id"], t["platform"], t["entity_id"], t["above"]) for t in wa["trigger"]],
+      [("stale", "numeric_state", "sensor.water_camera_last_accepted", 360)])
+notify = wa["action"][1]
+check("notifies the household", notify["service"], "notify.household")
+check("its own tag, so it never replaces the gas alert",
+      (notify["data"]["data"]["tag"], notify["data"]["data"]["tag"] != autos["metercam_gas_stale"]["action"][1]["data"]["data"]["tag"]),
+      ("metercam-water-stale", True))
+hours = render(wa["action"][0]["variables"]["hours"], states={"sensor.water_camera_last_accepted": "397"})
+check("hours from the water sensor", hours, "6.6")
+check("the message names water and the hours",
+      "No accepted cold-water reading for 6.6 h." in " ".join(render(notify["data"]["message"], hours=hours).split()),
+      True)
 
 print("\n%s" % ("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed"))
 sys.exit(1 if FAILED else 0)

@@ -3,27 +3,50 @@
 When DTEK publishes a schedule with an outage in it, the house makes sure the
 battery is full before that outage starts. It switches the inverter to grid and
 charges, at the lowest AC charge current that still finishes in time, and it
-uses the cheap night tariff when that is enough on its own. A **Pre-charge**
-chip on the Power station dashboard turns the whole thing on or off.
+uses the cheap night tariff when that is enough on its own. The **Pre-charge**
+icon on the Power station dashboard's AC charge chip turns the whole thing on
+or off.
 
 | File | What it holds |
 | --- | --- |
 | `config/packages/outage_precharge.yaml` | the plan sensor and the two automations |
 | [`../PowerStation/power-station.yaml`](../../PowerStation/power-station.yaml) | the override itself, as rule 1b ([architecture §11](../../PowerStation/docs/architecture.md#11-outage-pre-charge)) |
-| `config/www/powmr-inverter-console-card.js` | the chip ([power-station-dashboard.md](power-station-dashboard.md)) |
+| `config/www/powmr-inverter-console-card.js` | the icon ([power-station-dashboard.md](power-station-dashboard.md)) |
 | `tools/test_outage_precharge.py` | renders the plan against fake states |
 
 ## What counts as an outage
 
-Only a window in a schedule DTEK has published, which is
+A window in a schedule DTEK has published, which is
 `sensor.dtek_next_outage_start` ([dtek-outage-schedule.md](dtek-outage-schedule.md)).
 The poller builds it from the `fact` schedule and leaves it null whenever no
-schedule is in force, so two things DTEK also publishes are not used:
+schedule is in force. The **weekly preset table**, the `maybe` heatmap on the
+Shutdowns card, is not used: it is not a schedule, and charging for it would
+mean charging at day rates most days.
 
-- **The weekly preset table**, the `maybe` heatmap on the Shutdowns card. It is
-  not a schedule, and charging for it would mean charging at day rates most days.
-- **An emergency outage recorded against the address.** It is published after
-  the lights are already out.
+## Emergency outages
+
+An **emergency** outage recorded against the address (`sensor.dtek_shutdowns`
+state `outage_emergency`, `outage_type` 2) is handled differently. It is
+published after the lights are already out, so there is nothing to plan. But
+while it stays on record the grid comes and goes. On 31 Oct the grid came back
+at 180 V at 09:26 and the record ran to 21:00. Every minute of mains is a
+minute to fill the pack. So while the record is up:
+
+- the plan reads `charging` at the full 60 A, whatever the tariff and the hour,
+  or `holding` (on grid, Utility First) once the pack is full;
+- `until` is DTEK's `outage_end`; with no end, or once it has passed with the
+  record still up, it rolls an hour ahead on every render, so the ESP's own
+  deadline still ends the override within an hour of HA going quiet;
+- the plan's `emergency` attribute is `true`, and the start message says
+  "DTEK emergency outage on record until 21:00". If mains is gone when the
+  message goes out, it says the charge starts when mains comes back.
+
+A **planned** outage on record (`outage_planned`, type 1) does not count.
+Neither does the published schedule. Those keep the normal plan. A stale or
+failed poll re-serves the last emergency, so the charge holds through a missed
+poll. The Pre-charge switch gates this too: with it off, nothing charges
+automatically. Grid protection still ranks above the override, so a grid out of
+185–250 V with protection on stays on battery.
 
 Inside a published schedule, a `maybe` hour counts as dark, the same as it does
 for the DTEK alerts.
@@ -51,18 +74,20 @@ inverter stuck on the grid.
 ## The plan
 
 `sensor.outage_pre_charge_plan` is re-rendered on every DTEK poll, every 5
-minutes, and whenever the switch changes. Each poll replaces the plan; nothing
-from the last one is kept. If a window moves earlier, the current goes up. If it
+minutes, and whenever the switch changes. Each poll replaces the plan, and the
+only thing it keeps from the last one is whether a charge has started (see
+[Once it starts, it holds](#once-it-starts-it-holds)). If a window moves earlier, the current goes up. If it
 moves later, the current goes down, or the plan goes back to waiting for the
 night. If it disappears, the override is released straight away.
 
 | State | Meaning |
 | --- | --- |
-| `off` | the chip is off |
+| `off` | the icon is off |
 | `idle` | no scheduled outage ahead, or no battery reading |
 | `full` | the pack is within 1 % of full |
 | `waiting_night` | it is daytime, and the night tariff before the outage can fill the pack at 60 A |
 | `charging` | the override is on: `current` amps until `until` |
+| `holding` | charged after a `charging` start: still on grid (Utility First) until `until`, no current change |
 
 The arithmetic, using the same 280 Ah pack constant as `battery_runtime.yaml`:
 
@@ -85,15 +110,37 @@ below 10 A, and it is 60 A when the deadline is under 15 minutes away. The ESP
 holds the override until the outage start itself, so the 30-minute buffer only
 affects the sizing.
 
+### Once it starts, it holds
+
+The first real outage (17.10.2026, 13:30) showed the problem with a stateless
+plan. The pack reached 99 %, the plan said `full`, and the drive released the
+deadline. The ESP went back to SBU, the house drew 2.8 Ah from the pack, and
+the plan said `charging` again. Power Priority flipped 20 times in three hours,
+and every flip sent another "pre-charge started".
+
+So the plan reads its own previous state. Once it is `charging` or `holding`,
+it is committed until the window starts or the switch goes off:
+
+- within 5 % of full, it is `holding`. The deadline stays armed, so the ESP
+  keeps Utility First and the charger on. The pack floats on grid and the
+  house runs from the grid.
+- more than 5 % short, it is `charging` again, silently. It never goes back
+  to `waiting_night` by day.
+
+A pack that is already full when a window appears is `full` and is not held:
+the house stays on SBU until the pack drops below 99 %, and from then on the
+latch applies.
+
 Pre-charge outranks [adaptive night charge](adaptive-charge.md). When this plan
 leaves `idle` (a window is published), adaptive is switched off, and a
-notification says so. It stays off until you switch it back on. If you switch
+notification says so. It comes back on by itself once the outage is over. If you switch
 it off while a pre-charge is charging, adaptive waits to hand back your own
 current until the pre-charge is over.
 
 When a pre-charge starts, `notify.household` sends one message on the
 `Outage pre-charge` channel, with the time and the amps. A day-rate charge is
-never a surprise. Re-targets after that are silent.
+never a surprise. Re-targets after that, and the swaps between `charging` and
+`holding`, are silent.
 
 ## Testing
 

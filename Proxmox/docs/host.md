@@ -22,6 +22,8 @@ Assistant as a VM, and the network services as LXC containers.
 | 102 | LXC | `tailscale` | 1 | 512 MB | 2 GB | [Tailscale](102-tailscale.md) |
 | 103 | LXC | `cloudflare` | 1 | 512 MB | 2 GB | [Cloudflare Tunnel](103-cloudflare.md) |
 | 104 | LXC | `metercam` | 2 | 1 GB | 8 GB | [MeterCam](104-metercam.md) |
+| 105 | LXC | `meterbots` | 1 | 512 MB | 4 GB | [MeterBots](105-meterbots.md) |
+| 106 | LXC | `portal` | 1 | 512 MB | 2 GB | [Portal](106-portal.md) |
 
 All of them start with the host (`onboot=1`). Every guest runs Debian or, for the
 VM, Home Assistant OS; 100 and 101 were created with the
@@ -30,7 +32,7 @@ VM, Home Assistant OS; 100 and 101 were created with the
 
 ## Sizing
 
-RAM is the tight resource: the guests are given about 4.5 GB between them on a
+RAM is the tight resource: the guests are given about 5 GB between them on a
 host with 3.6 GB, which works because the containers use well under their limits
 (20–120 MB each) and Home Assistant's VM can balloon down to 1.5 GB when the
 host runs short (`balloon: 1536`; it uses about 1 GB of its 2). Not lower: at
@@ -46,7 +48,7 @@ memory on the host first.
 
 Read-only through the API token (`tools/pve_get.sh`), and SSH as root for
 administration, as described in the [README](../README.md#access). MeterCam's
-deployment goes over the same [SSH write path](ssh-write-path.md). Installed on
+and MeterBots' deployments go over the same [SSH write path](ssh-write-path.md). Installed on
 the host from this repository: the backup hook ([backups.md](backups.md)) and
 the weekly `pct fstrim` timer ([maintenance.md](maintenance.md)).
 

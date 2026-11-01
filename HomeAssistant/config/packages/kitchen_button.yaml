@@ -1,0 +1,185 @@
+# ---------------------------------------------------------------------------
+# Kitchen light button — an Aqara D1 double rocker (WXKG07LM)
+#
+#   left,  click   toggle the kitchen light (light.kitchen_relay)
+#   right, click   toggle the LED strip (light.led_ambient)
+#   left,  hold    LED strip glides dimmer, down to 5 %
+#   right, hold    LED strip glides brighter, up to full (switching it on)
+#   either, click  while the strip is gliding: stop it there, toggle nothing
+#   both,  click   either light on: both off; both off: both on
+#
+# Why a glide and not "dim while held": the button sends one hold_* when a hold
+# starts and nothing on release, so Home Assistant can never know how long a
+# rocker was held. Instead a hold starts the strip's own Zigbee level move
+# (Zigbee2MQTT `brightness_move`, about 7 s end to end), and a click stops it.
+# script.led_ambient_glide is "on" exactly while a glide runs; that is how a
+# click knows to stop instead of toggle.
+#
+# The trigger is the Zigbee2MQTT state topic, which carries the button's
+# friendly name: renaming "Kitchen light button" in Zigbee2MQTT means changing
+# the topic below too. The strip is addressed by IEEE address, so renaming it
+# anywhere changes nothing here.
+#
+# The kitchen light's force-on helper (automations.yaml) still wins: with it
+# on, a left click that turns the light off is undone, as at the wall.
+# Docs: HomeAssistant/docs/kitchen-button.md
+# ---------------------------------------------------------------------------
+
+script:
+  led_ambient_glide:
+    alias: "Kitchen: LED strip glide"
+    description: >-
+      Smooth brightness move on the LED strip, stopped by the next button click
+      or after 8 s, never left below 5 %.
+    mode: restart
+    fields:
+      direction:
+        description: "up or down"
+        required: true
+    sequence:
+      - action: mqtt.publish
+        data:
+          topic: zigbee2mqtt/0xa4c1385443844c1e/set
+          # 32 of 255 per second: about 7-8 s from 5 % to full. The up move uses
+          # the on/off variant so a hold on a dark strip switches it on.
+          payload: >-
+            {{ ({'brightness_move_onoff': 32} if direction == 'up'
+                else {'brightness_move': -32}) | to_json }}
+      - delay: "00:00:08"
+      - action: script.led_ambient_glide_stop
+
+  led_ambient_glide_stop:
+    alias: "Kitchen: LED strip glide stop"
+    mode: queued
+    sequence:
+      - action: mqtt.publish
+        data:
+          topic: zigbee2mqtt/0xa4c1385443844c1e/set
+          payload: '{"brightness_move": "stop"}'
+      # Zigbee2MQTT reads the level back after a stop; wait for it, then
+      # lift the strip to the 5 % floor if the move went under it.
+      - delay: "00:00:01"
+      - if:
+          - condition: state
+            entity_id: light.led_ambient
+            state: "on"
+          - condition: template
+            value_template: "{{ (state_attr('light.led_ambient', 'brightness') | int(0)) < 13 }}"
+        then:
+          - action: light.turn_on
+            target:
+              entity_id: light.led_ambient
+            data:
+              brightness_pct: 5
+
+automation:
+  - id: kitchen_light_button
+    alias: "\U0001F4A1Kitchen: light button"
+    description: >-
+      Aqara double rocker in the kitchen: left toggles the light, right toggles
+      the LED strip, holding a rocker glides the strip dimmer or brighter until
+      a click, clicking both switches both lights off or on together.
+    mode: queued
+    triggers:
+      - trigger: mqtt
+        topic: zigbee2mqtt/Kitchen light button
+        value_template: "{{ value_json.action | default('') }}"
+        payload: single_left
+        id: single_left
+      - trigger: mqtt
+        topic: zigbee2mqtt/Kitchen light button
+        value_template: "{{ value_json.action | default('') }}"
+        payload: single_right
+        id: single_right
+      - trigger: mqtt
+        topic: zigbee2mqtt/Kitchen light button
+        value_template: "{{ value_json.action | default('') }}"
+        payload: hold_left
+        id: hold_left
+      - trigger: mqtt
+        topic: zigbee2mqtt/Kitchen light button
+        value_template: "{{ value_json.action | default('') }}"
+        payload: hold_right
+        id: hold_right
+      - trigger: mqtt
+        topic: zigbee2mqtt/Kitchen light button
+        value_template: "{{ value_json.action | default('') }}"
+        payload: single_both
+        id: single_both
+    actions:
+      - choose:
+          # Both rockers: either light on → both off, both off → both on.
+          - conditions:
+              - condition: trigger
+                id: single_both
+            sequence:
+              - if:
+                  - condition: state
+                    entity_id: script.led_ambient_glide
+                    state: "on"
+                then:
+                  - action: script.turn_off
+                    target:
+                      entity_id: script.led_ambient_glide
+                  - action: script.turn_on
+                    target:
+                      entity_id: script.led_ambient_glide_stop
+              - action: >-
+                  {{ 'light.turn_off'
+                     if is_state('light.kitchen_relay', 'on') or is_state('light.led_ambient', 'on')
+                     else 'light.turn_on' }}
+                target:
+                  entity_id:
+                    - light.kitchen_relay
+                    - light.led_ambient
+          # Any click while the strip glides only stops the glide.
+          - conditions:
+              - condition: trigger
+                id: [single_left, single_right]
+              - condition: state
+                entity_id: script.led_ambient_glide
+                state: "on"
+            sequence:
+              - action: script.turn_off
+                target:
+                  entity_id: script.led_ambient_glide
+              - action: script.turn_on
+                target:
+                  entity_id: script.led_ambient_glide_stop
+          - conditions:
+              - condition: trigger
+                id: single_left
+            sequence:
+              - action: light.toggle
+                target:
+                  entity_id: light.kitchen_relay
+          - conditions:
+              - condition: trigger
+                id: single_right
+            sequence:
+              - action: light.toggle
+                target:
+                  entity_id: light.led_ambient
+          - conditions:
+              - condition: trigger
+                id: hold_right
+            sequence:
+              - action: script.turn_on
+                target:
+                  entity_id: script.led_ambient_glide
+                data:
+                  variables:
+                    direction: up
+          - conditions:
+              - condition: trigger
+                id: hold_left
+              - condition: state
+                entity_id: light.led_ambient
+                state: "on"
+            sequence:
+              - action: script.turn_on
+                target:
+                  entity_id: script.led_ambient_glide
+                data:
+                  variables:
+                    direction: down

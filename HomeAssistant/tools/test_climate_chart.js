@@ -24,6 +24,7 @@
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
+const { cardSource } = require("./fake_dom");
 
 const CARD = path.join(__dirname, "..", "config", "www", "climate-console-card.js");
 
@@ -44,7 +45,7 @@ function loadCard() {
   };
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
-  vm.runInContext(fs.readFileSync(CARD, "utf8"), sandbox, { filename: CARD });
+  vm.runInContext(cardSource(path.basename(CARD)), sandbox, { filename: CARD });
   if (!Klass) throw new Error("the card did not define a custom element");
   // The sandbox comes back too: the card reaches for ITS `window`, not the
   // test process's, so anything that stubs a timer has to reach in here.
@@ -1077,13 +1078,13 @@ const MIN = 60000, HOUR = 3600000, DAY = 24 * HOUR;
   const paint = (room, lo, hi, targetFrac) => {
     c._rmark = {};                       // each case stands on its own
     c._paintRoomMark("bed", room, lo, hi, targetFrac, { c: "#38b6ff" });
-    const dot = el("bed-rmark"), title = el("bed-rmark-t");
+    const dot = el("bed-rmark");
     return {
       shown: dot.attrs.opacity === "1",
       cx: dot.attrs.cx === undefined ? null : Number(dot.attrs.cx),
       cy: dot.attrs.cy === undefined ? null : Number(dot.attrs.cy),
       fill: dot.attrs.fill,
-      title: title.textContent,
+      title: dot.attrs["data-tip"] || "",
     };
   };
 
@@ -1096,19 +1097,19 @@ const MIN = 60000, HOUR = 3600000, DAY = 24 * HOUR;
   eq("dot: pinned to the low end, not floating off it",
      [below.cx, below.cy], [atLo.cx, atLo.cy]);
   check("dot: and says so when you hover",
-        /below everything/.test(below.title), below.title);
+        below.title.split("\n")[0] === "Room — 9.0 °C, below the dial", below.title);
 
   const above = paint(41, 16, 30, 0.5);
   check("dot: a room above the dial is still drawn", above.shown === true);
   eq("dot: pinned to the high end", [above.cx, above.cy], [atHi.cx, atHi.cy]);
   check("dot: and says which way it went",
-        /above everything/.test(above.title), above.title);
+        above.title.split("\n")[0] === "Room — 41.0 °C, above the dial", above.title);
 
   // In range, nothing changed.
   const mid = paint(23, 16, 30, 0.5);
   check("dot: an ordinary reading is not pinned to either end",
         mid.cx !== atLo.cx && mid.cx !== atHi.cx);
-  eq("dot: and reads plainly", mid.title, "Room 23.0 °C");
+  eq("dot: and reads plainly", mid.title.split("\n")[0], "Room — 23.0 °C");
 
   // The fill still says which side of the setpoint the room is on, and that
   // has to keep working for a pinned dot -- below the dial is below the

@@ -87,7 +87,11 @@
  */
 
 const CARD = "jkbms-battery-console-card";
-const VERSION = "1.4.1";
+import { cardTip } from "./card-tip.js?v=1.0.0";
+import { ramp, rampCss } from "./card-ramp.js?v=1.0.0";
+import { fxConfig, fxOn, fxSetup, FX_CSS } from "./card-fx.js?v=1.1.0";
+
+const VERSION = "1.8.2";
 
 /*
  * The design's palette, literal. Names are what the design calls them: two
@@ -224,17 +228,17 @@ SWITCHES.forEach((s) => { DEFAULTS[s.cfg] = s.ent; });
  * `mul` scales the recorder's value for display only -- see the header.
  */
 const SERIES = [
-  { key: "soc", cfg: "soc", name: "State of Charge", short: "SOC", unit: "%", dec: 1, band: "soc", color: OK },
+  { key: "soc", cfg: "soc", name: "State of Charge", short: "SOC", unit: "%", dec: 1, band: "soc", color: OK, help: "s_soc" },
   // Three decimals, not one: the BMS resolves remaining capacity to the
   // milliamp-hour and a tenth of an amp-hour throws away the digits that move
   // between two samples. Same reason the meter's sub line carries three.
-  { key: "cap", cfg: "capacity_remaining", name: "Remaining Capacity", short: "Capacity", unit: "Ah", dec: 3, band: "cap", color: OK },
-  { key: "volt", cfg: "pack_voltage", name: "Pack Voltage", short: "Pack voltage", unit: "V", dec: 3, band: "pack", color: OK },
-  { key: "amp", cfg: "pack_current", name: "Pack Current", short: "Current", unit: "A", dec: 2, color: WARN },
-  { key: "watt", cfg: "pack_power", name: "Pack Power", short: "Power", unit: "W", dec: 1, color: WARN },
-  { key: "delta", cfg: "cell_delta", name: "Cell Delta", short: "Cell delta", unit: "mV", dec: 1, mul: 1000, band: "delta", color: OK },
-  { key: "t1", cfg: "temp_1", name: "Bank 1 Temperature", short: "Temp 1", unit: "°C", dec: 1, band: "temp", color: BAD },
-  { key: "t2", cfg: "temp_2", name: "Bank 2 Temperature", short: "Temp 2", unit: "°C", dec: 1, band: "temp", color: BAD },
+  { key: "cap", cfg: "capacity_remaining", name: "Remaining Capacity", short: "Capacity", unit: "Ah", dec: 3, band: "cap", color: OK, help: "s_cap" },
+  { key: "volt", cfg: "pack_voltage", name: "Pack Voltage", short: "Pack voltage", unit: "V", dec: 3, band: "pack", color: OK, help: "s_volt" },
+  { key: "amp", cfg: "pack_current", name: "Pack Current", short: "Current", unit: "A", dec: 2, color: WARN, help: "s_amp" },
+  { key: "watt", cfg: "pack_power", name: "Pack Power", short: "Power", unit: "W", dec: 1, color: WARN, help: "s_watt" },
+  { key: "delta", cfg: "cell_delta", name: "Cell Delta", short: "Cell delta", unit: "mV", dec: 1, mul: 1000, band: "delta", color: OK, help: "s_delta" },
+  { key: "t1", cfg: "temp_1", name: "Bank 1 Temperature", short: "Temp 1", unit: "°C", dec: 1, band: "temp", color: BAD, help: "s_temp" },
+  { key: "t2", cfg: "temp_2", name: "Bank 2 Temperature", short: "Temp 2", unit: "°C", dec: 1, band: "temp", color: BAD, help: "s_temp" },
 ];
 
 /*
@@ -266,6 +270,87 @@ const CH_H = 230;
 const CH_PAD = 10;
 
 const RAIL = 16; // px, one gradient period -- must match @keyframes railShift
+
+/*
+ * Tooltips, lines 2-4 (docs/dashboard-tooltips.md). Line 1 -- the name and
+ * the live state -- is built where the element is patched; these are the
+ * static half and are assigned after it with `=`, never appended.
+ *
+ * The numbers are this pack's and this card's: 8S LiFePO4, 280 Ah, the band
+ * constants below, the 23:00-07:00 night window the charge gate opens on, and
+ * the sensors in packages/battery_runtime.yaml. Change them together.
+ */
+const HELP = {
+  sw_charge: "The BMS charge MOSFET: whether the pack may take any charge at all.\n"
+    + "E.g. with Night only on, it is switched on at 23:00 and off at 07:00.\n"
+    + "Icon or dot: toggles. Name: opens its dialog. A lit dot: charging now.",
+  sw_discharge: "The BMS discharge MOSFET: whether the pack may supply the inverter.\n"
+    + "E.g. off during an outage, the pack cannot carry the house.\n"
+    + "Icon or dot: toggles. Name: opens its dialog. A lit dot: discharging now.",
+  sw_balancer: "The BMS's passive cell balancer, which evens out the eight cells.\n"
+    + "E.g. the dot lights at a spread over 10 mV and turns amber past 20 mV.\n"
+    + "Icon or dot: toggles. Name: opens its dialog.",
+  cap: "State of charge from the BMS, and the amp-hours left of the 280 Ah pack.\n"
+    + "E.g. 55 % is about 154 Ah: red below 20 %, amber below 70 %, green from 70 %.",
+  amp: "Pack current from the BMS: right of centre is charging, left is discharging.\n"
+    + "E.g. about +19 A on a charge, −6.5 A with the house idling on the pack.\n"
+    + "The bar runs ±200 A; amber past 100 A, red past 160 A.",
+  volt: "Total pack voltage from the BMS, banded on what one of its 8 cells reads.\n"
+    + "E.g. 26.8 V is 3.35 V a cell; amber below 24.8 V or above 28.0 V.\n"
+    + "Red below 23.2 V or above 28.8 V, the 2.90 / 3.60 V cell limits.",
+  bus: "Power between the inverter's DC bus and the pack, signed by the BMS.\n"
+    + "E.g. 164 W out is a typical draw while the house runs on the battery.\n"
+    + "The rail moves faster with more power, up to 1600 W.",
+  pack: "The eight cells in miniature, each bar its own voltage on 2.80–3.65 V.\n"
+    + "E.g. a cell over 20 mV off the median turns amber: out of tolerance.",
+  cell: "One of the 8 LiFePO4 cells in series, as its BMS sensor reads it.\n"
+    + "E.g. 3.35 V is normal; amber below 3.10 V, above 3.50 V or 20 mV off the median.",
+  cellDev: "How far this cell sits from the mean of all eight, in millivolts.\n"
+    + "E.g. +1.0 mV is level; past 20 mV off the median the bar turns amber.",
+  cellMin: "The lowest of the eight cell voltages, as the BMS reports it.\n"
+    + "E.g. 3.349 V; under 3.10 V a cell turns amber, under 2.90 V red.",
+  cellMax: "The highest of the eight cell voltages, as the BMS reports it.\n"
+    + "E.g. 3.351 V; over 3.50 V a cell turns amber, over 3.60 V red.",
+  cellDelta: "The spread: highest cell minus lowest, as the BMS reports it.\n"
+    + "E.g. 2.0 mV is level; amber past 20 mV, red past 50 mV.\n"
+    + "Past 10 mV the Balancer chip's dot lights: it has work to do.",
+  ttf: "Hours until 280 Ah at the current charge rate (every 30 s); below, 1% at the live current.\n"
+    + "E.g. 140 Ah short at 20 A: 7h 0m, the clock time, and +1% every 8m 24s.\n"
+    + "Unknown while discharging, idle or under 0.2 A; capped at 99 h.",
+  rtl: "Hours until flat at the current draw (every 30 s); below, 1% at the live current.\n"
+    + "E.g. 140 Ah left at a 10 A draw: 14h 0m, the clock time, and −1% every 16m 48s.\n"
+    + "Unknown while charging, idle or under 0.2 A; capped at 99 h.",
+  temp: "A BMS temperature probe on the pack; the bar runs 0–60 °C.\n"
+    + "E.g. 25 °C is green; amber under 10 °C or over 40 °C, red under 0 °C or over 50 °C.\n"
+    + "Charging a LiFePO4 pack below 0 °C damages it.",
+  range: "Sets the chart's window, and brings a dragged or zoomed chart back to live.\n"
+    + "E.g. 24h shows the night charge as a climb from 23:00 to 07:00.\n"
+    + "Past 36 h: hourly means, each hour's min–max shaded around them.",
+  chart: "The series on the chart below; tap the name to open its entity.\n"
+    + "E.g. drag the chart back to 23:00, scroll or pinch to zoom, double-click for live.",
+  s_soc: "Charts the BMS state of charge, in its band colour.\n"
+    + "E.g. a climb from 23:00 to 07:00 is the night charge on the cheap tariff.",
+  s_cap: "Charts the amp-hours left in the 280 Ah pack, to the milliamp-hour.\n"
+    + "E.g. a fall of 6.5 Ah an hour is the house idling on the battery.",
+  s_volt: "Charts the total pack voltage, coloured on volts per cell like the meter.\n"
+    + "E.g. 26.8 V is 3.35 V a cell; the line dips while a load pulls on the pack.",
+  s_amp: "Charts the signed pack current: above zero charging, below discharging.\n"
+    + "E.g. about +19 A on a charge, −6.5 A with the house idling on the pack.",
+  s_watt: "Charts the signed pack power: above zero charging, below discharging.\n"
+    + "E.g. a sudden 895 W step down is a compressor starting on the battery.",
+  s_delta: "Charts the spread between the highest and lowest cell, in millivolts.\n"
+    + "E.g. under 10 mV the pack is level; past 20 mV the line turns amber.",
+  s_temp: "Charts one BMS temperature probe on the pack.\n"
+    + "E.g. the line turns amber under 10 °C or over 40 °C, red under 0 °C or over 50 °C.",
+  stat_now: "The series' latest reading, live from the sensor.\n"
+    + "E.g. Now 55.0 % while the chart shows the 24 hours that led to it.",
+  stat_min: "The lowest reading in the window on screen, off-scale ones included.\n"
+    + "E.g. SOC zoomed to 23:00–07:00: Min is where the night charge started.",
+  stat_max: "The highest reading in the window on screen, off-scale ones included.\n"
+    + "E.g. SOC zoomed to 23:00–07:00: Max is where the night charge ended.",
+  stat_mean: "The time-weighted average of the readings in the window on screen.\n"
+    + "E.g. a Power mean below zero: the pack gave more than it took.",
+};
 
 /*
  * SOC bands, taken from the Battery tab's old gauge severity on the same
@@ -317,6 +402,28 @@ const TEMP_WARN_LO = 10;
 const TEMP_WARN_HI = 40;
 const TEMP_BAD_HI = 50;
 const TEMP_AXIS_HI = 60;
+
+/*
+ * How far either side of a threshold the colour fades between two bands
+ * (card-ramp.js), per reading. At most half the narrowest gap between two of
+ * its thresholds, so every band keeps a solid middle: the cell's 3.50 and
+ * 3.60 are 0.10 V apart, so 0.05 V. CUR_FADE is a fraction of max_current_a,
+ * like the 0.5 and 0.8 it fades across.
+ */
+const SOC_FADE = 10;
+const CELL_FADE = 0.05;
+const DELTA_FADE = 0.010;
+const TEMP_FADE = 5;
+const CUR_FADE = 0.1;
+
+/* The bands as ramp edges -- [threshold, colour below, colour above]. */
+const SOC_EDGES = (bad, warn, ok) => [[SOC_RED, bad, warn], [SOC_GREEN, warn, ok]];
+const CELL_EDGES = (bad, warn, ok) => [[CELL_BAD_LO, bad, warn], [CELL_WARN_LO, warn, ok],
+  [CELL_WARN_HI, ok, warn], [CELL_BAD_HI, warn, bad]];
+const DELTA_EDGES = (bad, warn, ok) => [[DELTA_WARN, ok, warn], [DELTA_BAD, warn, bad]];
+const TEMP_EDGES = (bad, warn, ok) => [[TEMP_BAD_LO, bad, warn], [TEMP_WARN_LO, warn, ok],
+  [TEMP_WARN_HI, ok, warn], [TEMP_BAD_HI, warn, bad]];
+const CUR_EDGES = (bad, warn, ok) => [[0.5, ok, warn], [0.8, warn, bad]];
 
 /*
  * IBM Plex Sans is the design's text face and IBM Plex Mono every number in
@@ -382,6 +489,44 @@ function installFonts() {
   style.textContent = FONTS;
   document.head.appendChild(style);
 }
+
+/*
+ * Effect styles (card-fx.js). Appended to STYLE only when the card has an fx
+ * key, and each rule is gated on the host's data-fx, so a switch flips them
+ * without touching the DOM.
+ */
+const FX_STYLE = `
+/* power_glow: --fxg runs 0..1 with the watts on the bus */
+:host([data-fx~="power_glow"]) .fcard {
+  box-shadow: 0 0 calc(var(--fxg, 0) * 30px) calc(var(--fxg, 0) * 2px) rgba(88,149,105, calc(var(--fxg, 0) * .5));
+  transition: box-shadow .6s; }
+:host([data-fx~="power_glow"]) .fcard .rail { height: calc(3px + var(--fxg, 0) * 3px); }
+/* liquid_soc: a taller bar with a glassy top, a wavy edge, a shimmer while charging */
+:host([data-fx~="liquid_soc"]) .meters > .meter:first-child .track { height: 14px; border-radius: 7px; }
+:host([data-fx~="liquid_soc"]) .meters > .meter:first-child .fill {
+  background-image: linear-gradient(180deg, rgba(255,255,255,.22), rgba(255,255,255,0) 55%, rgba(0,0,0,.18)); }
+:host([data-fx~="liquid_soc"]) .meters > .meter:first-child .fill::after {
+  content: ""; position: absolute; top: 0; bottom: 0; right: -6px; width: 12px;
+  background: radial-gradient(circle at 0 50%, transparent 5px, currentcolor 5.5px) 0 0 / 12px 8px repeat-y;
+  color: inherit; opacity: .55; animation: fxWave 1.6s linear infinite; }
+.fx-shim { position: absolute; top: 0; bottom: 0; overflow: hidden; pointer-events: none; display: none; }
+:host([data-fx~="liquid_soc"]) .fx-shim.on { display: block; }
+.fx-shim.on::before { content: ""; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.35), transparent);
+  animation: fxShimmer 2.2s ease-in-out infinite; }
+/* balance_pulse */
+:host([data-fx~="balance_pulse"]) .pcell.fx-bal { border-color: ${WARN}; }
+:host([data-fx~="balance_pulse"]) .pcell.fx-bal i { animation: fxPulse 1.4s ease-in-out infinite; }
+/* chart_polish */
+.fx-dot { position: absolute; width: 8px; height: 8px; margin: -4px 0 0 -4px; border-radius: 50%;
+  background: var(--fxc, ${OK}); box-shadow: 0 0 0 0 var(--fxc, ${OK}); pointer-events: none;
+  animation: fxRing 1.8s ease-out infinite; }
+@keyframes fxRing { 0% { box-shadow: 0 0 0 0 var(--fxc, ${OK}); } 100% { box-shadow: 0 0 0 10px transparent; } }
+@media (prefers-reduced-motion: reduce) {
+  .fx-dot, .fx-shim.on::before, .pcell.fx-bal i,
+  .meters > .meter:first-child .fill::after { animation: none !important; }
+}
+`;
 
 const STYLE = `
 :host { display: block; container-type: inline-size; container-name: bcard; }
@@ -608,6 +753,10 @@ ha-card {
 .ttile span { font-family: var(--mono); font-size: calc(26px * var(--s)); min-width: 0; }
 .ttile i { font-family: var(--mono); font-style: normal; font-size: calc(19px * var(--s));
   color: ${MUTED}; white-space: nowrap; margin-left: auto; }
+/* The rate under it: how long one percent takes at the live current. */
+.ttile small { display: block; font-family: var(--mono); font-size: calc(13px * var(--s));
+  color: ${MUTED}; margin-top: 6px; }
+.ttile small:empty { display: none; }
 
 /* --- temperatures ------------------------------------------------------- */
 .trows { display: flex; flex-direction: column; gap: 16px; margin-top: 16px; }
@@ -720,6 +869,7 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
+    cardTip(this, this.shadowRoot);
     this._hass = null;
     this._config = null;
     this._built = false;
@@ -787,7 +937,9 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
         }
       }
     });
+    cfg.fx = fxConfig(CARD, cfg.fx);
     this._config = cfg;
+    this._fxWire();
     // A changed config means a changed DOM, so drop the built tree.
     this._built = false;
     this._print = null;
@@ -804,6 +956,14 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
     if (this._config) this._render();
   }
 
+  /** Effects (card-fx.js): data-fx on the host and the off-screen pause. */
+  _fxWire() {
+    if (this._fxOff) this._fxOff();
+    this._fxOff = null;
+    if (!this.isConnected || !this._config) return;
+    this._fxOff = fxSetup(this, this._config.fx);
+  }
+
   connectedCallback() {
     // Cheap and idempotent. Done here as well as at module load because a
     // module can be evaluated before <head> exists, and because this is the
@@ -811,11 +971,14 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
     installFonts();
     // The clock is the only thing that moves without a state change.
     if (!this._timer) this._timer = window.setInterval(() => this._tick(), 1000);
+    this._fxWire();
   }
 
   disconnectedCallback() {
     if (this._timer) window.clearInterval(this._timer);
     this._timer = null;
+    if (this._fxOff) this._fxOff();
+    this._fxOff = null;
   }
 
   getCardSize() {
@@ -875,9 +1038,13 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
 
   // --- derivation ----------------------------------------------------------
 
+  /*
+   * Every _xColor below fades across its thresholds rather than snapping
+   * (card-ramp.js); the matching _xLabel word still changes on the threshold.
+   */
   _socColor(p) {
     if (p === null) return MUTED;
-    return p < SOC_RED ? BAD : p < SOC_GREEN ? WARN : OK;
+    return ramp(p, SOC_EDGES(BAD, WARN, OK), SOC_FADE);
   }
 
   _socLabel(p) {
@@ -888,9 +1055,16 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
   /** Bands for ONE cell, in volts. The pack meter divides before calling this. */
   _cellColor(v) {
     if (v === null) return MUTED;
-    if (v < CELL_BAD_LO || v > CELL_BAD_HI) return BAD;
-    if (v < CELL_WARN_LO || v > CELL_WARN_HI) return WARN;
-    return OK;
+    return ramp(v, CELL_EDGES(BAD, WARN, OK), CELL_FADE);
+  }
+
+  /**
+   * Whether one cell is inside its green band -- the test, as opposed to the
+   * paint. _cellColor fades, so comparing its colour to OK would call a cell
+   * at 3.12 V out of tolerance because it is already tinting amber.
+   */
+  _cellOk(v) {
+    return v !== null && v >= CELL_WARN_LO && v <= CELL_WARN_HI;
   }
 
   _cellLabel(v) {
@@ -904,14 +1078,12 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
 
   _deltaColor(v) {
     if (v === null) return MUTED;
-    return v > DELTA_BAD ? BAD : v > DELTA_WARN ? WARN : OK;
+    return ramp(v, DELTA_EDGES(BAD, WARN, OK), DELTA_FADE);
   }
 
   _tempColor(t) {
     if (t === null) return MUTED;
-    if (t < TEMP_BAD_LO || t > TEMP_BAD_HI) return BAD;
-    if (t < TEMP_WARN_LO || t > TEMP_WARN_HI) return WARN;
-    return OK;
+    return ramp(t, TEMP_EDGES(BAD, WARN, OK), TEMP_FADE);
   }
 
   /**
@@ -921,7 +1093,7 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
   _currentColor(a) {
     if (a === null) return MUTED;
     const r = Math.abs(a) / this._config.max_current_a;
-    return r > 0.8 ? BAD : r > 0.5 ? WARN : OK;
+    return ramp(r, CUR_EDGES(BAD, WARN, OK), CUR_FADE);
   }
 
   /**
@@ -987,6 +1159,21 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
     const w = this._num(this._config.pack_power);
     if (w === null) return 0;
     return w > 2 ? 1 : w < -2 ? -1 : 0;
+  }
+
+  /**
+   * How long one percent of the pack takes at `amps`, either sign: 1% of
+   * pack_capacity_ah over the live current. "2m 48s" under an hour, where the
+   * seconds are the difference between 50 and 60 A; "1h 05m" past it. null
+   * under 0.2 A, the runtime sensors' own floor, where it is noise.
+   */
+  _perPercent(amps) {
+    if (amps === null || Math.abs(amps) < 0.2) return null;
+    const secs = Math.round(this._config.pack_capacity_ah / 100 / Math.abs(amps) * 3600);
+    const p = (n) => String(n).padStart(2, "0");
+    if (secs < 3600) return Math.floor(secs / 60) + "m " + p(secs % 60) + "s";
+    const mins = Math.round(secs / 60);
+    return Math.floor(mins / 60) + "h " + p(mins % 60) + "m";
   }
 
   _pct(v, lo, span) {
@@ -1155,17 +1342,6 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
     if (el.chLine && !this._inflight.size && this._stale()) this._refreshChart();
   }
 
-  /** A gauge track: hard stops at the percentages the bands actually fall on. */
-  _trackCss(stops) {
-    const parts = [];
-    let from = 0;
-    stops.forEach(([to, color]) => {
-      parts.push(color + " " + from.toFixed(2) + "% " + to.toFixed(2) + "%");
-      from = to;
-    });
-    return "linear-gradient(90deg," + parts.join(",") + ")";
-  }
-
   /** The three meters, built from config so their tracks and ticks agree. */
   _meterSpecs() {
     const c = this._config;
@@ -1178,7 +1354,7 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
         key: "cap",
         label: "Capacity",
         more: c.soc,
-        track: this._trackCss([[SOC_RED, TRACK_BAD], [SOC_GREEN, TRACK_WARN], [100, TRACK_OK]]),
+        track: rampCss(SOC_EDGES(TRACK_BAD, TRACK_WARN, TRACK_OK), SOC_FADE),
         ticks: [["0", 0], [String(SOC_RED), SOC_RED], [String(SOC_GREEN), SOC_GREEN], ["100 %", 100]],
         mid: false,
       },
@@ -1188,11 +1364,12 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
         more: c.pack_current,
         /*
          * Mirrored about the centre: the same three bands either side of zero,
-         * so a 160 A discharge is as red as a 160 A charge. The stops are at
-         * 0.5 and 0.8 of the ceiling, which is where _currentColor changes.
+         * so a 160 A discharge is as red as a 160 A charge. The edges are at
+         * 0.5 and 0.8 of the ceiling, which is where _currentColor fades, and
+         * half the track is the whole ceiling -- hence the fade times 50.
          */
-        track: this._trackCss([[10, TRACK_BAD], [25, TRACK_WARN], [75, TRACK_OK],
-          [90, TRACK_WARN], [100, TRACK_BAD]]),
+        track: rampCss([[10, TRACK_BAD, TRACK_WARN], [25, TRACK_WARN, TRACK_OK],
+          [75, TRACK_OK, TRACK_WARN], [90, TRACK_WARN, TRACK_BAD]], CUR_FADE * 50),
         ticks: [["−" + amp, 0], ["−" + (amp / 2), 25], ["0", 50],
           ["+" + (amp / 2), 75], ["+" + amp + " A", 100]],
         mid: true,
@@ -1201,10 +1378,7 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
         key: "volt",
         label: "Pack voltage",
         more: c.pack_voltage,
-        track: this._trackCss([
-          [cellPct(CELL_BAD_LO), TRACK_BAD], [cellPct(CELL_WARN_LO), TRACK_WARN],
-          [cellPct(CELL_WARN_HI), TRACK_OK], [cellPct(CELL_BAD_HI), TRACK_WARN],
-          [100, TRACK_BAD]]),
+        track: rampCss(CELL_EDGES(TRACK_BAD, TRACK_WARN, TRACK_OK), CELL_FADE, cellPct),
         ticks: [
           [(CELL_BAD_LO * cells).toFixed(1), cellPct(CELL_BAD_LO)],
           [(CELL_WARN_LO * cells).toFixed(1), cellPct(CELL_WARN_LO)],
@@ -1239,11 +1413,11 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
         <div class="chips">${SWITCHES.map((sw, i) => `
           <div class="chip" data-ref="chip${i}">
             <span class="ic" data-act="toggle" data-ent="${c[sw.cfg]}" role="button" tabindex="0"
-                  title="Toggle ${this._esc(sw.label)}"><ha-icon icon="${sw.icon}"></ha-icon></span>
+                  aria-label="Toggle ${this._esc(sw.label)}"><ha-icon icon="${sw.icon}"></ha-icon></span>
             <span class="lbl" data-more="${c[sw.cfg]}" role="button" tabindex="0"
                   >${this._esc(sw.label)}</span>
             <span class="dw" data-act="toggle" data-ent="${c[sw.cfg]}" role="button" tabindex="0"
-                  title="Toggle ${this._esc(sw.label)}"><span class="dot" data-ref="dot${i}"></span></span>
+                  aria-label="Toggle ${this._esc(sw.label)}"><span class="dot" data-ref="dot${i}"></span></span>
           </div>`).join("")}
         </div>`;
       const clock = !has("header") ? "" : `
@@ -1265,7 +1439,7 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
       <div class="panel pack">
         <div class="plabel">Pack state</div>
         <div class="meters">${this._meterSpecs().map((m, i) => `
-          <div class="meter" data-more="${m.more}" role="button" tabindex="0">
+          <div class="meter" data-ref="meter${i}" data-more="${m.more}" role="button" tabindex="0">
             <div class="m-head">
               <span>${this._esc(m.label)}</span>
               <span data-ref="mState${i}"></span>
@@ -1275,7 +1449,8 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
             </div>
             <div class="m-sub" data-ref="mSub${i}"></div>
             <div class="track${m.mid ? " mid" : ""}" style="background:${m.track}">
-              <div class="fill" data-ref="mFill${i}"></div>
+              <div class="fill" data-ref="mFill${i}"></div>${c.fx && i === 0
+                ? '<div class="fx-shim" data-ref="fxShim"></div>' : ""}
             </div>
             <div class="ticks">${m.ticks.map(([t, p]) =>
               `<span class="${p <= 0 ? "l0" : p >= 100 ? "r0" : ""}"
@@ -1290,7 +1465,7 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
       <div class="panel flow">
         <div class="plabel">Live power flow</div>
         <div class="flowgrid">
-          <div class="fcard" data-more="${c.pack_power}" role="button" tabindex="0">
+          <div class="fcard" data-ref="busCard" data-more="${c.pack_power}" role="button" tabindex="0">
             <div class="rail" style="--c:${OK}" data-ref="railBus"></div>
             <div class="f-head">
               <span>Inverter · DC bus →</span>
@@ -1327,9 +1502,9 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
             <div class="c-title">Deviation from mean <span data-ref="cvMean"></span></div>
           </div>
           <div class="c-stats">
-            <span data-more="${c.cell_min}" role="button" tabindex="0">MIN <b data-ref="cvMin"></b></span>
-            <span data-more="${c.cell_max}" role="button" tabindex="0">MAX <b data-ref="cvMax"></b></span>
-            <span data-more="${c.cell_delta}" role="button" tabindex="0">Δ <b data-ref="cvDelta"></b></span>
+            <span data-ref="cvMinTip" data-more="${c.cell_min}" role="button" tabindex="0">MIN <b data-ref="cvMin"></b></span>
+            <span data-ref="cvMaxTip" data-more="${c.cell_max}" role="button" tabindex="0">MAX <b data-ref="cvMax"></b></span>
+            <span data-ref="cvDeltaTip" data-more="${c.cell_delta}" role="button" tabindex="0">Δ <b data-ref="cvDelta"></b></span>
           </div>
         </div>
         <div class="c-plot">
@@ -1339,7 +1514,7 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
           <div class="c-field">
             <div class="c-zero"></div>
             <div class="c-bars">${cells.map((id, i) => `
-              <div class="c-bar" data-more="${id}" role="button" tabindex="0">
+              <div class="c-bar" data-ref="cvBar${i}" data-more="${id}" role="button" tabindex="0">
                 <div class="c-up"><i data-ref="cvUp${i}"></i></div>
                 <div class="c-down"><i data-ref="cvDown${i}"></i></div>
               </div>`).join("")}
@@ -1347,7 +1522,7 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
           </div>
         </div>
         <div class="c-names">${cells.map((id, i) => `
-          <div class="c-name" data-more="${id}" role="button" tabindex="0">
+          <div class="c-name" data-ref="cvName${i}" data-more="${id}" role="button" tabindex="0">
             <b data-ref="cvVolt${i}"></b><span>C${i + 1}</span>
           </div>`).join("")}
         </div>
@@ -1357,13 +1532,15 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
       <div class="panel timing">
         <div class="plabel">Timing</div>
         <div class="tgrid">
-          <div class="ttile" data-more="${c.time_to_full}" role="button" tabindex="0">
+          <div class="ttile" data-ref="ttfTile" data-more="${c.time_to_full}" role="button" tabindex="0">
             <b>Time to full</b>
             <div class="tline"><span data-ref="ttf"></span><i data-ref="ttfAt"></i></div>
+            <small data-ref="ttfRate"></small>
           </div>
-          <div class="ttile" data-more="${c.runtime_left}" role="button" tabindex="0">
+          <div class="ttile" data-ref="rtlTile" data-more="${c.runtime_left}" role="button" tabindex="0">
             <b>Runtime left</b>
             <div class="tline"><span data-ref="rtl"></span><i data-ref="rtlAt"></i></div>
+            <small data-ref="rtlRate"></small>
           </div>
         </div>
       </div>`;
@@ -1372,7 +1549,7 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
       <div class="panel temps">
         <div class="plabel">Temperatures</div>
         <div class="trows">${[[c.temp_1_label, c.temp_1], [c.temp_2_label, c.temp_2]].map(([label, ent], i) => `
-          <div class="trow" data-more="${ent}" role="button" tabindex="0">
+          <div class="trow" data-ref="trow${i}" data-more="${ent}" role="button" tabindex="0">
             <div class="th">
               <span class="tl">${this._esc(label)}</span>
               <span class="tv" data-ref="tVal${i}"></span>
@@ -1444,7 +1621,9 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
             <svg class="ch" data-ref="chSvg" viewBox="0 0 ${CH_W} ${CH_H}" preserveAspectRatio="none">
               <defs><clipPath id="bcplotclip">
                 <rect x="0" y="0" width="${CH_W}" height="${CH_H}"></rect>
-              </clipPath></defs>
+              </clipPath>${c.fx ? `<linearGradient id="bcfxgrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" data-ref="fxStop0"></stop><stop offset="1" data-ref="fxStop1"></stop>
+              </linearGradient>` : ""}</defs>
               ${gy}
               <g clip-path="url(#bcplotclip)">
                 <path data-ref="chArea" stroke="none" fill-opacity="0.10"></path>
@@ -1453,7 +1632,7 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
               </g>
             </svg>
             <div class="hv hvline" data-ref="hvLine"></div>
-            <div class="hv hvdot" data-ref="hvDot"></div>
+            <div class="hv hvdot" data-ref="hvDot"></div>${c.fx ? '<div class="fx-dot" data-ref="fxDot"></div>' : ""}
             <div class="tip" data-ref="tip"></div>
             <div class="note" data-ref="chNote"></div>
             <div class="xax" data-ref="xax"></div>
@@ -1467,13 +1646,26 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
       has("history") ? " Drag the chart to move through time, pinch or scroll to zoom;"
         + " double-click or pick a range to go back to live." : ""}</div>`);
 
-    this.shadowRoot.innerHTML = "<style>" + STYLE + "</style>"
+    this.shadowRoot.innerHTML = "<style>" + STYLE + (c.fx ? FX_CSS + FX_STYLE : "") + "</style>"
       + '<ha-card><div class="root">' + parts.join("") + "</div></ha-card>";
 
     this._el = {};
     this.shadowRoot.querySelectorAll("[data-ref]").forEach((n) => {
       this._el[n.getAttribute("data-ref")] = n;
     });
+
+    // The tooltips with no live state: a range is its name, a tab its series.
+    if (this._el.ranges) {
+      this._el.ranges.querySelectorAll(".seg").forEach((b) => {
+        b.dataset.tip = this._tip(b.getAttribute("data-val"), "range");
+      });
+    }
+    if (this._el.tabs) {
+      this._el.tabs.querySelectorAll(".tab").forEach((b) => {
+        const spec = this._spec(b.getAttribute("data-val"));
+        b.dataset.tip = this._tip(spec.name, spec.help);
+      });
+    }
 
     const root = this.shadowRoot.querySelector(".root");
     root.addEventListener("click", (e) => this._onClick(e));
@@ -1512,6 +1704,16 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
     // write into, not a second later.
     this._built = true;
     this._tick();
+  }
+
+  /** A whole tooltip: line 1 as given, then the static lines from HELP. */
+  _tip(head, key) {
+    return head + "\n" + HELP[key];
+  }
+
+  /** A value for line 1 of a tooltip, or the reason there is none. */
+  _reading(v, dec, unit) {
+    return v === null ? "no reading" : v.toFixed(dec) + " " + unit;
   }
 
   _esc(s) {
@@ -1597,8 +1799,8 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
       const act = this._activity(sw.live, on);
       dot.classList.toggle("live", !!act);
       if (act) dot.style.setProperty("--dc", act.color);
-      chip.title = this._name(c[sw.cfg], sw.label) + " — " + st
-        + " · " + (act ? act.word : this._idleWord(sw.live, on));
+      chip.dataset.tip = this._tip(this._name(c[sw.cfg], sw.label) + " — " + st
+        + " · " + (act ? act.word : this._idleWord(sw.live, on)), sw.cfg);
     });
 
     // --- meters ------------------------------------------------------------
@@ -1616,6 +1818,16 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
       el.mFill0.style.left = "0%";
       el.mFill0.style.width = (soc === null ? 0 : Math.max(0, Math.min(100, soc))).toFixed(2) + "%";
       el.mFill0.style.background = socCol;
+      if (el.fxShim) {
+        el.fxShim.classList.toggle("on", fxOn(c.fx, "liquid_soc") && dir > 0);
+        el.fxShim.style.left = "0%";
+        el.fxShim.style.width = el.mFill0.style.width;
+        el.mFill0.style.color = socCol;
+      }
+      if (el.meter0) {
+        el.meter0.dataset.tip = this._tip("Capacity — " + (soc === null ? "no reading"
+          : this._fmt(soc, 0) + " % · " + this._socLabel(soc)), "cap");
+      }
     }
 
     if (el.mVal1) {
@@ -1648,6 +1860,11 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
       el.mFill1.style.left = (half < 0 ? 50 + half : 50).toFixed(2) + "%";
       el.mFill1.style.width = Math.abs(half).toFixed(2) + "%";
       el.mFill1.style.background = aCol;
+      if (el.meter1) {
+        el.meter1.dataset.tip = this._tip("Current flow — " + (amps === null ? "no reading"
+          : (amps > 0 ? "+" : "") + amps.toFixed(2) + " A · "
+            + (dir > 0 ? "charging" : dir < 0 ? "discharging" : "idle")), "amp");
+      }
     }
 
     if (el.mVal2) {
@@ -1663,6 +1880,10 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
       el.mFill2.style.left = "0%";
       el.mFill2.style.width = this._cellPct(perCell).toFixed(2) + "%";
       el.mFill2.style.background = vCol;
+      if (el.meter2) {
+        el.meter2.dataset.tip = this._tip("Pack voltage — " + (volts === null ? "no reading"
+          : volts.toFixed(3) + " V · " + this._cellLabel(perCell)), "volt");
+      }
     }
 
     // --- flow --------------------------------------------------------------
@@ -1712,7 +1933,26 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
         + (iAmps ? " · inverter " + this._fmt(iAmps, 1) + " A" : " · DC load idle");
       el.busSub.textContent = String(this._state(c.power_priority)).toLowerCase()
         + " · " + (this._state(c[SWITCHES[0].cfg]) === "on" ? "AC charge" : "AC charge off");
+      if (el.busCard) {
+        el.busCard.dataset.tip = this._tip("DC bus — " + (watts === null ? "no reading"
+          : (dir > 0 ? "charging" : dir < 0 ? "discharging" : "idle") + " · "
+            + Math.abs(watts).toFixed(1) + " W"), "bus");
+      }
     }
+
+    // Glow follows power: 0 idle, 1 at max_power_w, on both flow tiles.
+    const glow = fxOn(c.fx, "power_glow") && watts !== null
+      ? Math.min(1, Math.abs(watts) / c.max_power_w) : null;
+    [el.busCard, el.packCard].forEach((n) => {
+      if (!n) return;
+      if (glow === null) n.style.removeProperty("--fxg");
+      else n.style.setProperty("--fxg", glow.toFixed(3));
+    });
+    // Balancing pulse: the balancer bleeds the top cells, so those pulse,
+    // and only while the card's own "balancer has work" test says so.
+    const balancing = fxOn(c.fx, "balance_pulse")
+      && !!this._activity("balance", this._state(c.sw_balancer) === "on");
+    const top = known.length ? Math.max.apply(null, known) : null;
 
     if (el.packV) {
       const vCol = this._cellColor(perCell);
@@ -1728,18 +1968,24 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
         const col = this._cellColor(v);
         const drift = drifting(v);
         bar.style.height = this._cellPct(v).toFixed(2) + "%";
-        bar.style.background = drift && col === OK ? WARN : col;
+        bar.style.background = drift && this._cellOk(v) ? WARN : col;
         // A cell whose sensor is unavailable has not failed a tolerance test,
         // it has failed to answer. Counting it as out of tolerance would say
         // something about the pack that nothing measured.
-        if (v !== null && (col !== OK || drift)) out++;
+        if (v !== null && (!this._cellOk(v) || drift)) out++;
         const wrap = el["pcellWrap" + i];
-        if (wrap) wrap.title = "C" + (i + 1) + " — " + this._fmt(v, 3) + " V";
+        if (wrap) wrap.dataset.tip = this._tip("C" + (i + 1) + " — " + this._reading(v, 3, "V"), "cell");
+        if (wrap && c.fx) {
+          wrap.classList.toggle("fx-bal", balancing && v !== null && Math.round((top - v) * 1000) <= 2);
+        }
       });
-      el.packSub.textContent = cellCount + " cells in series · "
-        + (!known.length ? "no cell data"
-          : out ? out + (out === 1 ? " cell" : " cells") + " out of tolerance"
-                : "all within tolerance");
+      const tolerance = !known.length ? "no cell data"
+        : out ? out + (out === 1 ? " cell" : " cells") + " out of tolerance"
+              : "all within tolerance";
+      el.packSub.textContent = cellCount + " cells in series · " + tolerance;
+      if (el.packCard) {
+        el.packCard.dataset.tip = this._tip("Pack — " + this._reading(volts, 3, "V") + " · " + tolerance, "pack");
+      }
     }
 
     // --- cell deviation ----------------------------------------------------
@@ -1750,6 +1996,12 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
       el.cvMax.textContent = this._fmt(this._num(c.cell_max), 3) + " V";
       el.cvDelta.textContent = dv === null ? "—" : (dv * 1000).toFixed(1) + " mV";
       el.cvDelta.style.color = this._deltaColor(dv);
+      if (el.cvMinTip) {
+        el.cvMinTip.dataset.tip = this._tip("Lowest cell — " + this._reading(this._num(c.cell_min), 3, "V"), "cellMin");
+        el.cvMaxTip.dataset.tip = this._tip("Highest cell — " + this._reading(this._num(c.cell_max), 3, "V"), "cellMax");
+        el.cvDeltaTip.dataset.tip = this._tip("Cell spread — "
+          + this._reading(dv === null ? null : dv * 1000, 1, "mV"), "cellDelta");
+      }
 
       /*
        * The axis follows the pack rather than being fixed, because a balanced
@@ -1793,8 +2045,17 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
         down.style.background = col;
         if (volt) {
           volt.textContent = this._fmt(v, 3);
-          volt.style.color = col === OK ? TXT : col;
+          volt.style.color = dev !== null && !drifting(v) && this._cellOk(v) ? TXT : col;
         }
+        const bar = el["cvBar" + i];
+        if (bar) {
+          // Rounded before the sign is read, or float noise prints "−0.0".
+          const mv = dev === null ? null : Math.round(dev * 10) / 10;
+          bar.dataset.tip = this._tip("C" + (i + 1) + " — " + (mv === null ? "no reading"
+            : (mv < 0 ? "−" : "+") + Math.abs(mv).toFixed(1) + " mV from the mean"), "cellDev");
+        }
+        const name = el["cvName" + i];
+        if (name) name.dataset.tip = this._tip("C" + (i + 1) + " — " + this._reading(v, 3, "V"), "cell");
       });
     }
 
@@ -1825,6 +2086,18 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
       const when = (on, ent) => (on ? this._clockAfter(this._num(ent)) : "");
       if (el.ttfAt) el.ttfAt.textContent = when(charging, c.time_to_full);
       if (el.rtlAt) el.rtlAt.textContent = when(draining, c.runtime_left);
+      // The rate follows the live current, not the 30 s sensors, so it also
+      // shows at the top of a charge where time to full reads unknown.
+      const rate = this._perPercent(amps);
+      const up = rate && dir > 0 && amps > 0 ? "+1% every " + rate : "";
+      const down = rate && dir < 0 && amps < 0 ? "−1% every " + rate : "";
+      if (el.ttfRate) el.ttfRate.textContent = up;
+      if (el.rtlRate) el.rtlRate.textContent = down;
+      const at = (t) => (t && t.textContent ? " · " + t.textContent : "");
+      if (el.ttfTile) el.ttfTile.dataset.tip = this._tip("Time to full — " + f.text + at(el.ttfAt)
+        + (up ? " · " + up : ""), "ttf");
+      if (el.rtlTile) el.rtlTile.dataset.tip = this._tip("Runtime left — " + r.text + at(el.rtlAt)
+        + (down ? " · " + down : ""), "rtl");
     }
 
     // --- temperatures ------------------------------------------------------
@@ -1837,6 +2110,11 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
       val.style.color = col;
       el["tFill" + i].style.width = this._pct(t, 0, TEMP_AXIS_HI).toFixed(2) + "%";
       el["tFill" + i].style.background = col;
+      const row = el["trow" + i];
+      if (row) {
+        row.dataset.tip = this._tip((i ? c.temp_2_label : c.temp_1_label) + " — "
+          + this._reading(t, 1, "°C"), "temp");
+      }
     });
 
     // A range or tab change is local, so redraw from cache; the state change
@@ -2208,7 +2486,7 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
             end_time: new Date(end).toISOString(),
             statistic_ids: [entity],
             period: "hour",
-            types: ["mean"],
+            types: ["mean", "min", "max"],
           });
           raw = this._parseStats(stats, entity, spec);
           fromStats = raw.length > 0;
@@ -2265,6 +2543,12 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
    * Hourly means from recorder/statistics_during_period, in the [ms, value]
    * shape _parse() produces. Plotted at the start of each hour, as the History
    * panel does; `start` is epoch ms on current releases, ISO on older ones.
+   *
+   * Each row also carries the hour's own min and max as [ms, mean, min, max].
+   * Only the mean is drawn, but Min/Max in the stats row read these: the
+   * highest hourly MEAN of a week of house load is a few hundred watts, while
+   * the kettle that ran inside that hour drew 1.8 kW. Reporting the former as
+   * "Max" made every 7d/14d window look calmer than any 24h one inside it.
    */
   _parseStats(reply, entity, spec) {
     const rows = reply && reply[entity];
@@ -2275,7 +2559,15 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
       const v = parseFloat(r.mean);
       if (!Number.isFinite(v)) continue;
       const t = typeof r.start === "number" ? r.start : Date.parse(r.start);
-      if (Number.isFinite(t)) out.push([t, this._scale(spec, v)]);
+      if (!Number.isFinite(t)) continue;
+      const row = [t, this._scale(spec, v)];
+      const lo = parseFloat(r.min), hi = parseFloat(r.max);
+      if (Number.isFinite(lo) && Number.isFinite(hi)) {
+        // A negative multiplier swaps which end is which.
+        const a = this._scale(spec, lo), b = this._scale(spec, hi);
+        row.push(Math.min(a, b), Math.max(a, b));
+      }
+      out.push(row);
     }
     out.sort((a, b) => a[0] - b[0]);
     return out;
@@ -2337,6 +2629,29 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
     // Every row sharing one timestamp leaves nothing to weight; the last value
     // is the only defensible answer.
     return span > 0 ? acc / span : pts[pts.length - 1][1];
+  }
+
+  /**
+   * The window's true Min and Max, from the rows that cover it. A raw row
+   * holds its value until the next one, so the row just before the window
+   * counts and the one just after does not. An hourly statistics row counts
+   * when its hour overlaps the window, with the hour's own min and max.
+   */
+  _extremes(pts, p, t0, t1) {
+    let min = Infinity, max = -Infinity;
+    pts.forEach((q, i) => {
+      if (q.length >= 4) {
+        if (q[0] + 3600000 <= t0 || q[0] >= t1) return;
+        if (q[2] < min) min = q[2];
+        if (q[3] > max) max = q[3];
+        return;
+      }
+      const next = pts[i + 1];
+      if (q[0] > t1 || (next && next[0] <= t0)) return;
+      if (q[1] < min) min = q[1];
+      if (q[1] > max) max = q[1];
+    });
+    return min <= max ? { min, max } : { min: p.min, max: p.max };
   }
 
   /**
@@ -2409,8 +2724,13 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
    * reading against the time axis under it.
    */
   _path(pts, w, h, pad, t0, t1) {
+    // An hourly statistics row is [t, mean, min, max]; its band is part of
+    // what is drawn, so it is part of what the axis has to hold.
+    const ranged = pts.some((q) => q.length >= 4);
+    const bot = (q) => (q.length >= 4 ? q[2] : q[1]);
+    const top = (q) => (q.length >= 4 ? q[3] : q[1]);
     let min = Infinity, max = -Infinity;
-    for (const q of pts) { if (q[1] < min) min = q[1]; if (q[1] > max) max = q[1]; }
+    for (const q of pts) { if (bot(q) < min) min = bot(q); if (top(q) > max) max = top(q); }
     let lo = min, hi = max;
 
     /*
@@ -2425,7 +2745,12 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
      * Max, the window label counts what went off-scale, and hovering the spike
      * gives its exact recorded value.
      */
-    const sorted = pts.map((q) => q[1]).sort((a, b) => a - b);
+    const vals = [];
+    for (const q of pts) {
+      vals.push(q[1]);
+      if (q.length >= 4) vals.push(q[2], q[3]);
+    }
+    const sorted = vals.sort((a, b) => a - b);
     const at = (f) => sorted[Math.min(sorted.length - 1,
       Math.max(0, Math.round(f * (sorted.length - 1))))];
     const band = at(0.99) - at(0.01);
@@ -2439,19 +2764,27 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
     if (hi - lo < 1e-9) { hi += 0.5; lo -= 0.5; }
     const span = hi - lo;
     const tspan = (t1 - t0) || 1;
-    const xy = pts.map(([t, v]) => [
-      Math.max(0, Math.min(w, (t - t0) / tspan * w)),
-      h - pad - (v - lo) / span * (h - pad * 2),
-    ]);
+    const X = (t) => Math.max(0, Math.min(w, (t - t0) / tspan * w));
+    const Y = (v) => h - pad - (v - lo) / span * (h - pad * 2);
+    const xy = pts.map(([t, v]) => [X(t), Y(v)]);
     const line = xy.map((q, i) => (i ? "L" : "M") + q[0].toFixed(1) + " " + q[1].toFixed(1)).join(" ");
     // Close the area under the data it actually has, not the whole frame.
-    const area = xy.length
-      ? line + " L" + xy[xy.length - 1][0].toFixed(1) + " " + h
-             + " L" + xy[0][0].toFixed(1) + " " + h + " Z"
-      : "";
+    // Hourly statistics shade each hour's min-max band instead: the line is
+    // only the hours' means, and without the band the stats row's Min/Max
+    // (the hours' real extremes) would sit far outside anything drawn.
+    let area = "";
+    if (ranged) {
+      const f = (q) => X(q[0]).toFixed(1) + " ";
+      area = pts.map((q, i) => (i ? "L" : "M") + f(q) + Y(top(q)).toFixed(1)).join(" ")
+        + " " + pts.slice().reverse().map((q) => "L" + f(q) + Y(bot(q)).toFixed(1)).join(" ")
+        + " Z";
+    } else if (xy.length) {
+      area = line + " L" + xy[xy.length - 1][0].toFixed(1) + " " + h
+           + " L" + xy[0][0].toFixed(1) + " " + h + " Z";
+    }
     let off = 0;
-    for (const q of pts) if (q[1] < lo || q[1] > hi) off++;
-    return { line, area, lo, hi, min, max, off, xy };
+    for (const q of pts) if (bot(q) < lo || top(q) > hi) off++;
+    return { line, area, ranged, lo, hi, min, max, off, xy };
   }
 
   /**
@@ -2542,6 +2875,7 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
     this._syncSegs();
 
     el.chName.textContent = spec.name;
+    el.chName.dataset.tip = this._tip(spec.name, "chart");
     // Clicking the chart's title opens the entity the chart is drawing.
     el.chName.setAttribute("data-more", this._config[spec.cfg]);
 
@@ -2550,6 +2884,34 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
       if (this._token !== key) return;
       this._drawChart(spec, rec);
     });
+  }
+
+  /**
+   * Chart polish: the fill fades from the line's colour to nothing, and a dot
+   * pulses on the latest reading. The dot is HTML, not SVG, because the plot
+   * stretches (preserveAspectRatio none) and an SVG circle would be an oval.
+   */
+  _fxChart(col, xy) {
+    const el = this._el;
+    const on = fxOn(this._config.fx, "chart_polish");
+    if (el.fxStop0) {
+      el.fxStop0.setAttribute("stop-color", col);
+      el.fxStop0.setAttribute("stop-opacity", "0.38");
+      el.fxStop1.setAttribute("stop-color", col);
+      el.fxStop1.setAttribute("stop-opacity", "0");
+    }
+    if (on) {
+      el.chArea.setAttribute("fill", "url(#bcfxgrad)");
+      el.chArea.setAttribute("fill-opacity", "1");
+    }
+    if (!el.fxDot) return;
+    const last = on && xy && xy.length ? xy[xy.length - 1] : null;
+    el.fxDot.hidden = !last;
+    if (last) {
+      el.fxDot.style.left = (last[0] / CH_W * 100).toFixed(3) + "%";
+      el.fxDot.style.top = (last[1] / CH_H * 100).toFixed(3) + "%";
+      el.fxDot.style.setProperty("--fxc", col);
+    }
   }
 
   _drawChart(spec, rec) {
@@ -2584,6 +2946,7 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
     if (!pts.length) {
       el.chLine.setAttribute("d", "");
       el.chArea.setAttribute("d", "");
+      this._fxChart(col, []);
       el.yax.innerHTML = "";
       el.xax.innerHTML = "";
       el.stats.innerHTML = "";
@@ -2598,6 +2961,8 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
     const p = this._path(pts, CH_W, CH_H, CH_PAD, d.t0, d.t1);
     el.chLine.setAttribute("d", p.line);
     el.chArea.setAttribute("d", p.area);
+    el.chArea.setAttribute("fill-opacity", p.ranged ? "0.22" : "0.10");
+    this._fxChart(col, p.xy);
     this._hv = { spec: spec, span: d.t1 - d.t0, pts: pts, xy: p.xy, col: col };
 
     const span = p.hi - p.lo;
@@ -2617,12 +2982,16 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
     const raw = this._num(this._config[spec.cfg]);
     const now = raw === null ? null : this._scale(spec, raw);
     const mean = this._mean(pts);
+    const ext = this._extremes(pts, p, d.t0, d.t1);
     el.stats.innerHTML = [
       ["Now", now === null ? pts[pts.length - 1][1] : now],
-      ["Min", p.min], ["Max", p.max], ["Mean", mean],
-    ].map(([label, v]) =>
-      "<div class='stat'><b>" + label + "</b><span>"
-      + v.toFixed(spec.dec) + " " + this._esc(spec.unit) + "</span></div>").join("");
+      ["Min", ext.min], ["Max", ext.max], ["Mean", mean],
+    ].map(([label, v]) => {
+      const val = v.toFixed(spec.dec) + " " + spec.unit;
+      const tip = this._tip(label + " — " + val, "stat_" + label.toLowerCase());
+      return "<div class='stat' data-tip=\"" + this._esc(tip) + "\"><b>" + label + "</b><span>"
+        + this._esc(val) + "</span></div>";
+    }).join("");
 
     /*
      * _hideHover above cleared a readout the cursor is still sitting on, so
@@ -2682,7 +3051,11 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
     el.hvDot.classList.add("on");
 
     el.tip.innerHTML = "<b>" + this._esc(hv.pts[best][1].toFixed(hv.spec.dec) + " " + hv.spec.unit)
-      + "</b><i>" + this._esc(this._stamp(hv.pts[best][0], hv.span)) + "</i>";
+      + "</b><i>" + this._esc(this._stamp(hv.pts[best][0], hv.span)) + "</i>"
+      + (hv.pts[best].length >= 4
+        ? "<i>hour " + this._esc(hv.pts[best][2].toFixed(hv.spec.dec) + "–"
+          + hv.pts[best][3].toFixed(hv.spec.dec) + " " + hv.spec.unit) + "</i>"
+        : "");
     el.tip.style.color = hv.col;
     // Keep the bubble inside the plot at both edges.
     el.tip.style.left = Math.max(52, Math.min(rect.width - 52, px)) + "px";

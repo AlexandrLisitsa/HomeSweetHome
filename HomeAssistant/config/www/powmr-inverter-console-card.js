@@ -33,7 +33,9 @@
  *
  *   - binary_sensor.powmr_inverter_grid_condition_safe is `device_class:
  *     safety`, so ON means UNSAFE. Reading it the obvious way inverts the
- *     grid tile.
+ *     grid tile. And it is the 185-250 V quality check, not "mains present":
+ *     a live 180 V grid trips it. No mains is binary_sensor.grid_down
+ *     (HomeAssistant/config/packages/grid_state.yaml).
  *   - sensor.powmr_inverter_grid_real_power_calculated is derived, not
  *     measured. It returns 0 below 150 V of grid and adds a hardcoded +30 W of
  *     inverter overhead, and it is import-only -- there is no export on this
@@ -73,7 +75,11 @@
  */
 
 const CARD = "powmr-inverter-console-card";
-const VERSION = "2.1.3";
+import { cardTip } from "./card-tip.js?v=1.0.0";
+import { fxConfig, fxOn, fxSetup, FX_CSS } from "./card-fx.js?v=1.1.0";
+import { ramp, rampCss } from "./card-ramp.js?v=1.0.0";
+
+const VERSION = "2.14.2";
 
 /*
  * Brand colours stay literal: they identify a leg of the diagram (amber =
@@ -112,6 +118,10 @@ const DEFAULTS = {
   grid_voltage: "sensor.powmr_inverter_grid_voltage",
   grid_frequency: "sensor.powmr_inverter_grid_frequency",
   grid_power: "sensor.powmr_inverter_grid_real_power_calculated",
+  // No mains: under 150 V (packages/grid_state.yaml).
+  grid_down: "binary_sensor.grid_down",
+  // The firmware's 185-250 V quality check, ON = unsafe. It moves the house
+  // to battery only while Protect is on.
   grid_safe: "binary_sensor.powmr_inverter_grid_condition_safe",
   // Unfiltered 185-250 V check. ON while grid_safe is still unsafe means the
   // firmware's delayed_off is running; the header counts it down.
@@ -128,14 +138,25 @@ const DEFAULTS = {
   charge_current: "sensor.powmr_inverter_battery_charge_current",
   discharge_current: "sensor.powmr_inverter_battery_discharge_current",
   // Energy
-  tariff_day: "sensor.powmr_inverter_grid_real_tariff_day",
-  tariff_night: "sensor.powmr_inverter_grid_real_tariff_night",
-  total_energy: "sensor.powmr_inverter_total_energy_consumption",
+  // The flat's electricity meter (ElectricityMeter/, packages/
+  // electricity_meter.yaml): what the grid really delivers, the boiler's
+  // circuit included, which never passes through the inverter. Its power is
+  // the Meter tile under Grid; its tariff counters, priced at the Energy
+  // dashboard's rates (see _loadPrices), are the energy rows.
+  meter_power: "sensor.electricity_meter_power",
+  meter_day: "sensor.electricity_meter_tariff_day",
+  meter_night: "sensor.electricity_meter_tariff_night",
+  meter_total: "sensor.electricity_meter_energy",
+  meter_tariff: "select.electricity_meter_tariff",
+  // The pack's lifetime kWh in and out (Riemann sums of the inverter's
+  // charging / discharging power). Read through their hourly statistics for
+  // the Saved by battery row; see _loadSavings.
+  battery_out: "sensor.powmr_inverter_battery_energy_out",
+  battery_in: "sensor.powmr_inverter_battery_energy_in",
   // Controls
   max_charge_current: "select.powmr_inverter_max_ac_charge_current",
   power_priority: "select.powmr_inverter_power_priority",
   ac_input_mode: "select.powmr_inverter_inverter_ac_input_mode",
-  tariff: "select.grid_real_tariff",
   // What the outage pre-charge intends (HomeAssistant/config/packages/
   // outage_precharge.yaml). Read only for the Pre-charge chip's sub-label.
   precharge_plan: "sensor.outage_pre_charge_plan",
@@ -148,6 +169,9 @@ const DEFAULTS = {
   max_grid_w: 2400,
   max_load_w: 2400,
   max_batt_w: 1600,
+  // The flat's breaker: the Meter tile's scale (the same 60/85 % bands as
+  // the load gauge) and its run's full speed.
+  max_meter_w: 6000,
   // grid_safe's delayed_off in PowerStation/power-station.yaml. Keep in step.
   grid_return_s: 300,
   device_label: "PowMr · Hybrid Inverter",
@@ -156,38 +180,163 @@ const DEFAULTS = {
 };
 
 /*
- * The four switches the tab's badge row already carries, in its order. Each
- * keeps its own MDI icon so a chip and its badge read as one control.
+ * The header's switches. Each keeps its own MDI icon so a chip and its badge
+ * read as one control. Night only and Pre-charge used to be chips of their
+ * own; they only ever shape AC charging, so they are icons on that chip now
+ * (AC_DOTS below), and the header is three chips instead of five.
  *
  * The design had a fifth chip ("Quiet / night fan limit"). This system has no
  * such switch and it is deliberately not faked. The badge row's other three
  * entries are elsewhere in this card: uptime and tariff in the header, and
- * grid_condition_safe in the Grid tile's status word.
+ * grid_down in the Grid tile's status word.
  */
 const CHIPS = [
   { label: "Auto", cfg: "chip_auto", ent: "switch.powmr_inverter_auto_tariff_mode", icon: "mdi:clock-check-outline", color: BATT_C },
   { label: "Protect", cfg: "chip_protect", ent: "switch.powmr_inverter_auto_grid_protection", icon: "mdi:shield-home", color: BATT_C },
-  { label: "AC charge", cfg: "chip_ac_charge", ent: "switch.powmr_inverter_ac_charging_enabled", icon: "mdi:battery-charging-50", color: GRID_C, live: true, adaptive: true },
-  { label: "Night only", cfg: "chip_night_only", ent: "switch.powmr_inverter_night_charging_only", icon: "mdi:weather-night", color: LOAD_C },
-  { label: "Pre-charge", cfg: "chip_precharge", ent: "switch.powmr_inverter_outage_pre_charge", icon: "mdi:battery-clock", color: GRID_C, plan: true },
+  { label: "AC charge", cfg: "chip_ac_charge", ent: "switch.powmr_inverter_ac_charging_enabled", icon: "mdi:battery-charging-50", color: GRID_C, live: true, dots: true },
 ];
 CHIPS.forEach((c) => { DEFAULTS[c.cfg] = c.ent; });
 /*
- * `plan` marks the outage pre-charge chip. Its switch only ARMS the feature --
- * nothing happens until DTEK publishes a window -- so ON alone says as little
- * as AC charge's does. It carries a sub-label from the plan sensor instead:
- * "30 A → 09:30" while charging, "at night" while the night tariff will do.
+ * The AC charge chip carries the charger's feature toggles as small icons
+ * after its label, in this order: when it charges (Night only), how hard
+ * (adaptive), and the outage override (Pre-charge). The charger itself is the
+ * chip's own icon on the left, which pulses while the pack charges -- no dot
+ * of its own, so the main switch stands apart from the features. Each icon
+ * is its own switch: dim when off, lit in its colour when on, a tap toggles
+ * it, the tooltip names it and its state.
+ *
+ * THE RULE: an icon pulses while it is acting, not merely on. The charger
+ * (the chip's left icon) while the pack takes grid current; Night only while
+ * the pack charges under its window; adaptive and Pre-charge while their plan
+ * reads `charging`. On and idle is lit and still. Adaptive is an input_boolean with its
+ * own rules and keeps its config key (adaptive_charge); the other two keep
+ * the keys they had as chips, so an existing override still works.
+ */
+/*
+ * Lines 2-4 of every tooltip on the card, in the house format
+ * (HomeAssistant/docs/dashboard-tooltips.md): what the element means, then
+ * "E.g." with this house's numbers, then at most a limit or a tap hint. Line
+ * 1, "<name> — <state>", is built when the card patches; tip() joins the two.
+ * Keep it in step with PowerStation/docs/architecture.md (§3, §4, §10, §11),
+ * the two charge packages and electricity_meter.yaml.
+ */
+const HELP = {
+  // Header
+  uptime: "How long the PowerStation controller has run in total, across reboots and updates."
+    + "\nE.g. up 41d 6h; a hard power cut loses at most the last 5 min of it.",
+  pill: "Whether the inverter trusts the grid, with its AC input mode and the clock."
+    + "\nE.g. Grid down under 150 V; Grid unsafe at 170 V under Protect, then Grid returning 5:00.",
+  ret: "Time left until the firmware trusts the grid again: 5 min of stable voltage."
+    + "\nE.g. voltage back at 14:02: it counts down from 5:00 and the grid is trusted at 14:07.",
+  // Chips and the AC charge chip's icons
+  chip_auto: "Runs the house on the pack by day and on the grid at night: SBU Battery 07:00–23:00."
+    + "\nE.g. at 22:59 the house runs on the pack; at 23:00 it switches to Utility First."
+    + "\nCannot be on together with Night only.",
+  chip_protect: "Moves the house to the battery when the grid leaves 185–250 V; beats every rule."
+    + "\nE.g. a brownout to 170 V: SBU Battery within 5 s, back after 5 min of stable grid.",
+  chip_ac_charge: "The BMS charge switch: lets the pack charge from the grid at all; pulses while it does."
+    + "\nE.g. off at 23:30 under Auto: the house still runs on the grid, the pack stays as it is."
+    + "\nNight only and a running Pre-charge take it over and switch it back on.",
+  chip_night_only: "Opens the charger only in the night tariff, 23:00–07:00; the pack is a cheap UPS."
+    + "\nE.g. on: charging stops at 07:00 and starts again at 23:00."
+    + "\nCannot be on together with Auto.",
+  adaptive_charge: "Charges at night at the lowest current that still fills the pack by 06:30."
+    + "\nE.g. half full at 23:00 needs ~21 A, so 30 A, not 60 A; re-sized every 10 min."
+    + "\nNeeds Auto with the charger on, or Night only; an outage pauses it until it is over.",
+  chip_precharge: "Arms a full pack before each scheduled DTEK outage; idle until DTEK publishes one."
+    + "\nE.g. outage at 10:00: fills overnight at night rates, or by day at the amps it needs.",
+  adaptive_plan: "What adaptive night charge is doing: the current it set and when the charge ends."
+    + "\nE.g. 20 A → 07:00 at night, tonight by day, full within 1 % of a full pack.",
+  precharge_plan: "What pre-charge is doing for the next DTEK outage: the amps and the outage start."
+    + "\nE.g. 30 A → 10:00 charging; on grid → 10:00 full and held; at night → 10:00.",
+  // Flow tiles and their status words
+  tile_grid: "Mains voltage at the inverter input, its frequency and the inverter's estimated draw."
+    + "\nE.g. 231.4 V · 50.00 Hz · 640 W in; Protect trips outside 185–250 V for 5 s.",
+  tile_inv: "The inverter's output voltage to the house, with its AC input mode and power priority."
+    + "\nE.g. 230.0 V out · APL · SBU Battery: by day under Auto the house runs on the pack.",
+  tile_load: "What the house draws from the inverter's output, against its 2400 W rating."
+    + "\nE.g. 1500 W is 62.5 % of 2400 W: ELEVATED, amber from 1440 W.",
+  tile_meter: "What the flat's electricity meter measures: all grid power, the boiler's circuit too."
+    + "\nE.g. 2450 W is 40.8 % of the 6000 W breaker; the inverter's figure misses the boiler.",
+  tile_batt: "The 8S 280 Ah pack's state of charge, as the BMS reports it."
+    + "\nE.g. 87 %: green from 70 %, amber below, red under 20 %.",
+  volt_state: "The voltage band: NOMINAL 220–240 V, LOW or HIGH out to 200 or 250 V, then UNDER/OVER."
+    + "\nE.g. 243.0 V reads HIGH in amber; on Grid, NO GRID once the mains is gone (under 150 V).",
+  load_state: "How hard the circuit is worked: NORMAL to 60 %, ELEVATED to 85 %, HEAVY, OVERLOAD."
+    + "\nE.g. House load 2100 W of 2400 W is 87.5 %: HEAVY; Meter reads HEAVY above 5100 W.",
+  batt_state: "Whether the pack charges, discharges or idles (within ±2 W), then its charge band."
+    + "\nE.g. DIS · MODERATE: discharging at 45 %; CRITICAL under 20 %, FULL from 95 %.",
+  batt_sub: "Pack voltage at the inverter, the BMS's signed power, and the current while one flows."
+    + "\nE.g. 26.8 V · 1450 W in · 54.0 A on a night charge at the 60 A maximum."
+    + "\nTap: opens the current while one flows, the voltage otherwise.",
+  // Flow runs
+  run_grid: "The inverter's draw from the grid; the dashes run faster with the watts, to 2400 W."
+    + "\nE.g. 0 W on SBU Battery by day; load + 30 W + charging on Utility First at night.",
+  run_load: "Power from the inverter to the house; the dashes run faster with the watts, to 2400 W."
+    + "\nE.g. 640 W: a steady stream; under 5 W the run dims and stops.",
+  run_batt: "The BMS's signed pack power: the dashes flow into the pack charging, out discharging."
+    + "\nE.g. 1450 W in on a night charge, 380 W out by day under Auto; full speed at 1600 W.",
+  run_meter: "The meter's whole-flat power from the grid; the dashes reach full speed at 6000 W."
+    + "\nE.g. 2450 W while the boiler heats, though the inverter itself draws far less.",
+  // Controls
+  sel_max_charge: "The most current the charger may push into the pack from the grid: 2, 10 … 60 A."
+    + "\nE.g. adaptive sets 30 A at 23:00 and puts your own value back at 07:00."
+    + "\nAdaptive and Pre-charge overwrite a hand choice while they run.",
+  sel_priority: "Which source runs the house: Utility First (grid) or SBU Battery (pack, then grid)."
+    + "\nE.g. Auto picks SBU Battery at 07:00 and Utility First at 23:00."
+    + "\nAuto, Protect and Pre-charge overwrite a hand choice at their next decision.",
+  sel_ac_mode: "How wide a mains voltage the inverter accepts: APL ~90–280 V, UPS ~170–280 V."
+    + "\nE.g. a brownout to 160 V: UPS moves to the battery by itself, APL rides it out.",
+  // Energy rows
+  erow_day: "Grid energy the meter counted on the day tariff, 07:00–23:00, this month."
+    + "\nE.g. 123.46 kWh at 4.32 ₴/kWh is 533.35 ₴; marked active from 07:00 to 23:00.",
+  erow_night: "Grid energy the meter counted on the night tariff, 23:00–07:00, this month."
+    + "\nE.g. 78.90 kWh at 2.16 ₴/kWh is 170.42 ₴; marked active from 23:00 to 07:00.",
+  erow_saved: "kWh the pack gave out 07:00–23:00 this month, at day price less the night refill."
+    + "\nE.g. 91.83 kWh × (4.32 − 2.16 ÷ 0.95) = 187.90 ₴; under it, the total since records began.",
+  erow_total: "The meter's own register: the whole flat's lifetime grid energy, both tariffs."
+    + "\nE.g. 15234.6 kWh, the same figure as the total on the meter's display.",
+  // History
+  range: "Shows this span on the chart, ending now, and keeps it live as readings arrive."
+    + "\nE.g. 24h on SOC shows the night charge as the 23:00–07:00 climb."
+    + "\nPast 36 h (7d, 14d): hourly means, each hour's min–max shaded around them.",
+  tab: "Picks the series the chart draws; one with bands takes its tile's colour."
+    + "\nE.g. Grid voltage at 243 V draws the line amber, like the Grid tile's HIGH.",
+  ch_name: "The series on the chart: drag to pan, pinch or scroll to zoom, double-click for live."
+    + "\nE.g. zoom 24h down to the minute a brownout began; a range button goes back to live."
+    + "\nTap: opens the series' own entity.",
+  ch_win: "The span the chart covers, and how many readings ran off the scale."
+    + "\nE.g. last 24 hours · 3 readings off-scale: spikes clipped so the rest stays readable.",
+  stat: "Now is the live value; Min, Max and the time-weighted Mean cover the window drawn."
+    + "\nE.g. Grid Voltage, 24h: Min 214.2 V, Max 246.0 V, Mean 229.8 V.",
+};
+
+/** A whole tooltip: line 1 (clipped to the 90-character line) and the HELP lines. */
+function tip(head, key) {
+  const h = String(head);
+  return (h.length > 90 ? h.slice(0, 89) + "…" : h) + (HELP[key] ? "\n" + HELP[key] : "");
+}
+const AC_DOTS = [
+  { ref: "Nt", label: "Night only", cfg: "chip_night_only", ent: "switch.powmr_inverter_night_charging_only", icon: "mdi:weather-night", color: LOAD_C },
+  { ref: "Ad", label: "Adaptive night charge", cfg: "adaptive_charge", icon: "mdi:tune-variant", color: GRID_C },
+  { ref: "Pc", label: "Pre-charge", cfg: "chip_precharge", ent: "switch.powmr_inverter_outage_pre_charge", icon: "mdi:battery-clock", color: GRID_C },
+];
+AC_DOTS.forEach((d) => { if (d.ent) DEFAULTS[d.cfg] = d.ent; });
+/*
+ * The Pre-charge dot's switch only ARMS the feature -- nothing happens until
+ * DTEK publishes a window -- so ON alone says little. The chip carries a
+ * sub-label from its plan sensor instead: "30 A → 09:30" while charging, "at
+ * night" while the night tariff will do.
  *
  * `live` marks the chip whose switch only PERMITS something. AC charge sits
  * on all night whether or not a watt is moving, so ON alone says nothing; the
  * chip pulses while the grid is up and the BMS says the pack is taking
  * current. There is no PV here, so a charging pack on grid is the AC charger.
  *
- * `adaptive` gives a chip a second dot, after its own: adaptive night charge,
- * which sizes the charge current to finish by 07:00. It is its own switch
- * (an input_boolean), lit orange on its own, with a sub-label from its plan
- * ("20 A → 07:00"). It only works under Auto or Night only, with the charger
- * on, so otherwise the dot is dimmed and a tap on it does nothing.
+ * `dots` gives a chip the AC_DOTS icons. The adaptive one sizes the charge current
+ * to finish by 07:00, with a sub-label from its plan ("20 A → 07:00"). It
+ * only works under Auto or Night only, with the charger on, so otherwise its
+ * icon is dimmed and a tap on it does nothing.
  */
 
 /*
@@ -213,11 +362,18 @@ const SERIES = [
   { key: "bat_v", cfg: "battery_voltage", name: "Battery Voltage", short: "Battery voltage", unit: "V", dec: 1, color: BATT_C },
 ];
 
-/* Cumulative meters: a rising total charts as a ramp, so these are rows. */
+/*
+ * Cumulative meters: a rising total charts as a ramp, so these are rows. All
+ * from the electricity meter -- what YASNO bills -- not the inverter's
+ * estimate, which misses the boiler's circuit. The tariff rows are this
+ * month's, with their cost at the Energy dashboard's price when it has one.
+ * Saved by battery is the one row not off the meter: see _loadSavings.
+ */
 const ENERGY = [
-  { key: "tar_d", cfg: "tariff_day", short: "Tariff day", unit: "kWh", dec: 2, tariff: "day" },
-  { key: "tar_n", cfg: "tariff_night", short: "Tariff night", unit: "kWh", dec: 2, tariff: "night" },
-  { key: "total", cfg: "total_energy", short: "Total energy", unit: "kWh", dec: 3 },
+  { key: "mtr_d", cfg: "meter_day", priced: true, short: "Day this month", unit: "kWh", dec: 2, tariff: "day", help: "erow_day" },
+  { key: "mtr_n", cfg: "meter_night", priced: true, short: "Night this month", unit: "kWh", dec: 2, tariff: "night", help: "erow_night" },
+  { key: "saved", cfg: "battery_out", saved: true, short: "Saved by battery", unit: "kWh", dec: 2, help: "erow_saved" },
+  { key: "mtr_t", cfg: "meter_total", short: "Meter total", unit: "kWh", dec: 1, help: "erow_total" },
 ];
 
 /*
@@ -267,6 +423,20 @@ const DASH = 14; // px, one gradient period -- must match @keyframes flowX/flowY
  */
 const SOC_RED = 20;
 const SOC_GREEN = 70;
+/*
+ * How far either side of a threshold the colour fades between two bands
+ * (card-ramp.js), per reading. At most half the narrowest gap between two of
+ * its thresholds, so every band keeps a solid middle: grid voltage has 240 and
+ * 250 only 10 V apart, so 5 V.
+ */
+const SOC_FADE = 10;
+const V_FADE = 5;
+const LOAD_FADE = 10;
+
+/* The bands as ramp edges -- [threshold, colour below, colour above]. */
+const V_EDGES = (bad, warn, ok) => [[200, bad, warn], [220, warn, ok], [240, ok, warn], [250, warn, bad]];
+const LOAD_EDGES = (bad, warn, ok) => [[60, ok, warn], [85, warn, bad]];
+const SOC_EDGES = (bad, warn, ok) => [[SOC_RED, bad, warn], [SOC_GREEN, warn, ok]];
 
 /*
  * Space Grotesk ships no Cyrillic subset from Google, so Cyrillic in the sans
@@ -322,6 +492,31 @@ function installFonts() {
   style.textContent = FONTS;
   document.head.appendChild(style);
 }
+
+/*
+ * Effect styles (card-fx.js). Appended to STYLE only when the card has an fx
+ * key, and each rule is gated on the host's data-fx, so a switch flips them
+ * without touching the DOM.
+ */
+const FX_STYLE = `
+/* power_glow: --fxg runs 0..1 with the watts through the tile */
+:host([data-fx~="power_glow"]) .tile { transition: box-shadow .6s, border-color .15s; }
+:host([data-fx~="power_glow"]) .tile.t-grid, :host([data-fx~="power_glow"]) .tile.t-dir { --fxgc: 174,132,70; }
+:host([data-fx~="power_glow"]) .tile.t-batt { --fxgc: 88,149,105; }
+:host([data-fx~="power_glow"]) .tile.t-load { --fxgc: 110,168,254; }
+:host([data-fx~="power_glow"]) .tile.t-inv { --fxgc: 154,160,171; }
+:host([data-fx~="power_glow"]) .tile {
+  box-shadow: 0 0 calc(var(--fxg, 0) * 34px) calc(var(--fxg, 0) * 2px) rgba(var(--fxgc, 154,160,171), calc(var(--fxg, 0) * .45)); }
+:host([data-fx~="power_glow"]) .run.x i { height: calc(2px + var(--fxg, 0) * 3px);
+  filter: drop-shadow(0 0 calc(var(--fxg, 0) * 6px) var(--c)); }
+:host([data-fx~="power_glow"]) .run.y i { width: calc(2px + var(--fxg, 0) * 3px);
+  filter: drop-shadow(0 0 calc(var(--fxg, 0) * 6px) var(--c)); }
+/* chart_polish */
+.fx-dot { position: absolute; width: 8px; height: 8px; margin: -4px 0 0 -4px; border-radius: 50%;
+  background: var(--fxc, ${OK}); pointer-events: none; animation: fxRing 1.8s ease-out infinite; }
+@keyframes fxRing { 0% { box-shadow: 0 0 0 0 var(--fxc, ${OK}); } 100% { box-shadow: 0 0 0 10px transparent; } }
+@media (prefers-reduced-motion: reduce) { .fx-dot { animation: none !important; } }
+`;
 
 const STYLE = `
 :host { display: block; container-type: inline-size; container-name: pmcard; }
@@ -398,13 +593,16 @@ ha-card {
 .chip.on .dot { background: var(--cc); box-shadow: 0 0 8px var(--cs); }
 .chip.on.live { animation: pmchip 2s ease-in-out infinite; }
 .chip.on.live .dot { animation: pmpulse 2s ease-in-out infinite; }
-/* The adaptive dot keeps its own state, whatever the chip's switch is doing. */
-.chip .dw.ad { margin-left: -6px; }
-.chip .dw.ad .dot { background: transparent; box-shadow: none; animation: none;
-  border: 1px solid #3A3F49; width: 7px; height: 7px; box-sizing: border-box; }
-.chip .dw.ad.on .dot { background: ${GRID_C}; border-color: ${GRID_C}; box-shadow: 0 0 8px ${GRID_C}99; }
-.chip .dw.ad.dis { cursor: not-allowed; opacity: .35; }
-.chip .dw.ad.dis:hover { background: transparent; }
+/* AC charge's feature toggles are icons (AC_DOTS). Each keeps its own state,
+   whatever the chip's switch is doing: --dc is its colour, --ds its glow. */
+.chip .dw.i { width: 22px; margin-left: -4px; }
+.chip .dw.i ha-icon { --mdc-icon-size: calc(15px * var(--s)); color: #4A505B; transition: color .2s; }
+.chip .dw.i.on ha-icon { color: var(--dc); filter: drop-shadow(0 0 4px var(--ds)); }
+.chip .dw.i.on.act ha-icon { animation: pmpulse 2s ease-in-out infinite; }
+/* A chip without a dot of its own (AC charge) pulses its main icon instead. */
+.chip.on.live.nodot .ic ha-icon { animation: pmpulse 2s ease-in-out infinite; }
+.chip .dw.i.dis { cursor: not-allowed; opacity: .35; }
+.chip .dw.i.dis:hover { background: transparent; }
 @keyframes pmchip { 0%, 100% { box-shadow: 0 0 0 0 transparent } 50% { box-shadow: 0 0 14px -2px var(--cs) } }
 
 /* --- panels ------------------------------------------------------------- */
@@ -419,25 +617,32 @@ ha-card {
 /* --- tiles -------------------------------------------------------------- */
 .flowrow, .battrun, .battwrap { display: grid; grid-template-columns: 1fr 64px 1fr 64px 1fr; gap: 10px; }
 .flowrow { align-items: center; }
-.battrun > *, .battwrap > * { grid-column: 3; }
+.battrun > *, .battwrap > * { grid-column: 3; grid-row: 1; }
+/* The Meter tile hangs under Grid the way Battery hangs under Inverter. */
+.battrun > .direct, .battwrap > .direct { grid-column: 1; }
+.direct[hidden] { display: none !important; }
 .tile { border-radius: 14px; padding: 16px; min-width: 0; cursor: pointer; transition: border-color .15s; }
 .tile:hover { border-color: #3A3F4A; }
 .tile.t-grid { border: 1px solid #241D14; background: #0F0D0A; }
 .tile.t-inv { border: 1px solid #23262E; background: #0E1014; box-shadow: 0 0 0 1px #101318, 0 18px 50px -30px #000; }
 .tile.t-load { border: 1px solid #131C2A; background: #0A0D12; }
 .tile.t-batt { border: 1px solid #12271E; background: #080F0C; }
+/* The meter is the grid's own figure: Grid's amber family, like the other tiles. */
+.tile.t-dir { border: 1px solid #241D14; background: #0F0D0A; }
 .t-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .t-name { font-family: var(--mono); font-size: calc(10px * var(--s)); letter-spacing: .18em; text-transform: uppercase; }
 .t-grid .t-name { color: #8A7550; }
 .t-inv .t-name { color: #6E737E; }
 .t-load .t-name { color: #5B7091; }
 .t-batt .t-name { color: #4E8C71; }
+.t-dir .t-name { color: #8A7550; }
 .t-state { font-family: var(--mono); font-size: calc(10px * var(--s)); letter-spacing: .14em; white-space: nowrap; }
 .t-val { font-size: calc(26px * var(--s)); font-weight: 600; margin-top: 8px; line-height: 1; }
 .t-val i { font-size: calc(13px * var(--s)); margin-left: 4px; font-style: normal; }
 .t-grid .t-val i { color: #8A7550; }
 .t-inv .t-val i { color: #6E737E; }
 .t-load .t-val i { color: #5B7091; }
+.t-dir .t-val i { color: #8A7550; }
 .t-batt .t-val { font-size: calc(34px * var(--s)); }
 .t-batt .t-val i { font-size: calc(14px * var(--s)); color: #4E8C71; margin-left: 3px; }
 .t-sub { font-family: var(--mono); font-size: calc(12px * var(--s)); color: #6E737E; margin-top: 6px; }
@@ -446,10 +651,11 @@ ha-card {
 .t-batt .t-row .t-sub { margin-top: 0; padding-bottom: 4px; cursor: pointer; }
 .t-batt .t-row .t-sub:hover { color: #B9BEC7; }
 .gauge { position: relative; height: 6px; border-radius: 6px; margin-top: 14px; opacity: .55; }
-.gauge.volt { background: linear-gradient(90deg, #BB635B 0 14.3%, #AE8446 14.3% 42.9%, #589569 42.9% 71.4%, #AE8446 71.4% 85.7%, #BB635B 85.7% 100%); }
-.gauge.load { background: linear-gradient(90deg, #589569 0 60%, #AE8446 60% 85%, #BB635B 85% 100%); }
+/* The tracks fade across each threshold exactly where the paint does (card-ramp.js). */
+.gauge.volt { background: ${rampCss(V_EDGES(BAD, WARN, OK), V_FADE, (v) => (v - V_LO) / V_SPAN * 100)}; }
+.gauge.load { background: ${rampCss(LOAD_EDGES(BAD, WARN, OK), LOAD_FADE)}; }
 .gauge.soc { opacity: 1; overflow: hidden;
-  background: linear-gradient(90deg, #2E1618 0 20%, #2B2313 20% 70%, #12241C 70% 100%); }
+  background: ${rampCss(SOC_EDGES("#2E1618", "#2B2313", "#12241C"), SOC_FADE)}; }
 .socfill { height: 100%; border-radius: 6px; width: 0; transition: width .4s;
   /*
    * The fill fades in from 40% alpha of its own colour, so the bar reads as a
@@ -527,6 +733,12 @@ select:disabled { cursor: not-allowed; color: #5C616B; }
 .erow.on .en { color: #E8EAED; }
 .erow .tag { font-family: var(--mono); font-size: calc(9px * var(--s)); letter-spacing: .16em; text-transform: uppercase; color: ${LOAD_C}; }
 .erow .ev { font-family: var(--mono); font-size: calc(14px * var(--s)); color: ${LOAD_C}; white-space: nowrap; }
+.erow .ev small { font-size: calc(12px * var(--s)); color: #8A7550; margin-left: 6px; }
+/* Saved by battery: the tariff rows' shape in the pack's green, a second line under the name. */
+.erow .el.col { flex-direction: column; align-items: flex-start; gap: 1px; }
+.erow .esub { font-family: var(--mono); font-size: calc(11px * var(--s)); color: #6E737E; }
+.erow.saved .ev { color: ${BATT_C}; }
+.erow.saved .ev small { color: #7FC493; }
 
 /* --- history ------------------------------------------------------------ */
 .hhead { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px; }
@@ -600,7 +812,13 @@ svg.ch { width: 100%; height: ${CH_H}px; display: block; }
  */
 @container pmcard (max-width: 900px) {
   .flowrow, .battrun, .battwrap { grid-template-columns: 1fr; }
-  .battrun > *, .battwrap > * { grid-column: 1; }
+  .battrun > *, .battwrap > * { grid-column: 1; grid-row: auto; }
+  /* Stacked, Grid is three tiles up: a run from it would point at Load. The
+     Meter tile goes last, under Battery. */
+  .battrun > .direct { display: none; }
+  .battwrap { gap: 10px; }
+  .battwrap > .t-batt { order: 1; }
+  .battwrap > .direct { order: 2; }
   .flowrow > .run.x i { width: 2px; height: 28px; animation-name: flowY;
     background-image: repeating-linear-gradient(180deg, var(--c) 0 6px, transparent 6px ${DASH}px); }
   .title { font-size: calc(24px * var(--s)); }
@@ -614,7 +832,8 @@ svg.ch { width: 100%; height: ${CH_H}px; display: block; }
  * direction and the dimming, and every value is on screen as a number anyway.
  */
 @media (prefers-reduced-motion: reduce) {
-  .run i, .livedot, .chip.on.live, .chip.on.live .dot { animation-play-state: paused; }
+  .run i, .livedot, .chip.on.live, .chip.on.live .dot,
+  .chip.on.live.nodot .ic ha-icon, .chip .dw.i.on.act ha-icon { animation-play-state: paused; }
   .socfill, .mark { transition: none; }
 }
 `;
@@ -623,6 +842,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
+    cardTip(this, this.shadowRoot);
     this._hass = null;
     this._config = null;
     this._built = false;
@@ -637,6 +857,16 @@ class PowmrInverterConsoleCard extends HTMLElement {
     this._hist = new Map();
     this._inflight = new Map();
     this._token = null;
+    // The Energy dashboard's grid prices, by the meter they are set on; see
+    // _loadPrices.
+    this._prices = null;
+    this._pricesAt = 0;
+    this._pricesBusy = false;
+    // The pack's day-hour kWh out, this month and since records began; see
+    // _loadSavings. `failed` once the recorder said no.
+    this._savings = null;
+    this._savingsAt = 0;
+    this._savingsBusy = false;
     // Where the cursor is, so a redraw can put the readout back under it
     // rather than being held off until the pointer leaves.
     this._hovering = false;
@@ -666,7 +896,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
       throw new Error(CARD + ": unknown block(s) " + unknown.join(", ")
         + " -- expected " + BLOCKS.join(", "));
     }
-    ["max_grid_w", "max_load_w", "max_batt_w"].forEach((k) => {
+    ["max_grid_w", "max_load_w", "max_batt_w", "max_meter_w"].forEach((k) => {
       const n = Number(cfg[k]);
       if (!Number.isFinite(n) || n <= 0) {
         throw new Error(CARD + ": " + k + " must be a positive number, got " + cfg[k]);
@@ -682,7 +912,9 @@ class PowmrInverterConsoleCard extends HTMLElement {
         }
       }
     });
+    cfg.fx = fxConfig(CARD, cfg.fx);
     this._config = cfg;
+    this._fxWire();
     // A changed config means a changed DOM, so drop the built tree.
     this._built = false;
     this._print = null;
@@ -696,7 +928,133 @@ class PowmrInverterConsoleCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    this._loadPrices();
+    this._loadSavings();
     if (this._config) this._render();
+  }
+
+  /*
+   * The tariff rows' money is the month's kWh times the Energy dashboard's
+   * price, worked out here rather than read off its sensor.*_cost.
+   *
+   * Those cost sensors are not restored: every HA start brings them back at 0
+   * with a fresh last_reset. The Energy dashboard does not mind, it sums
+   * statistics across resets, but the state itself is "since the last
+   * restart", so the card showed 0.00 ₴ against a half-month of kWh after
+   * every `ha core restart`. The kWh are monthly utility meters, which do come back.
+   *
+   * The price comes from the Energy prefs so that it is set in one place: a
+   * fixed number, or a price entity read live. Asked again hourly, so a rate
+   * changed in the Energy settings lands without a reload. One price for the
+   * whole month: a rate changed mid-month reprices all of it, which the
+   * Energy dashboard does not do.
+   */
+  _loadPrices() {
+    if (!this._hass || typeof this._hass.callWS !== "function" || this._pricesBusy) return;
+    if (this._prices && Date.now() - this._pricesAt < 3600000) return;
+    this._pricesBusy = true;
+    this._pricesAt = Date.now();
+    Promise.resolve()
+      .then(() => this._hass.callWS({ type: "energy/get_prefs" }))
+      .then((prefs) => {
+        const map = {};
+        ((prefs && prefs.energy_sources) || []).forEach((src) => {
+          if (!src || src.type !== "grid") return;
+          // Older Energy prefs nest the meters under flow_from.
+          const flows = Array.isArray(src.flow_from) ? src.flow_from : [src];
+          flows.forEach((f) => {
+            if (!f || typeof f.stat_energy_from !== "string") return;
+            if (typeof f.entity_energy_price === "string" && f.entity_energy_price) {
+              map[f.stat_energy_from] = { entity: f.entity_energy_price };
+            } else if (Number.isFinite(f.number_energy_price)) {
+              map[f.stat_energy_from] = { number: f.number_energy_price };
+            }
+          });
+        });
+        this._prices = map;
+      })
+      .catch(() => {
+        // No Energy dashboard, or no admin: the rows go without money. Kept
+        // as an empty map so this is not asked again until the hour is up.
+        this._prices = this._prices || {};
+      })
+      .then(() => {
+        this._pricesBusy = false;
+        if (this._config && this._hass) this._render();
+      });
+  }
+
+  /*
+   * What the pack saved: the charger only fills it 23:00-07:00
+   * (`night_charging_only`), so every kWh it gives back 07:00-23:00 is one not
+   * bought at the day price, less what refilling it cost at night, grossed up
+   * for the round trip:
+   *
+   *     saved = kWh out by day × (day price − night price ÷ efficiency)
+   *
+   * Outage hours count too: that power would have been bought at the day
+   * price had the grid been there. Efficiency is the pack's own lifetime
+   * out ÷ in, read when the statistics are. No helper entity: the hourly
+   * `change` of the lifetime counter, split by the hour it started in, is
+   * the whole of it. Asked hourly like the prices, and again when the month
+   * turns.
+   */
+  _loadSavings() {
+    const c = this._config;
+    if (!c || !this._hass || typeof this._hass.callWS !== "function" || this._savingsBusy) return;
+    const now = new Date();
+    const month0 = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    if (this._savings && this._savings.month0 === month0
+        && Date.now() - this._savingsAt < 3600000) return;
+    this._savingsBusy = true;
+    this._savingsAt = Date.now();
+    const id = c.battery_out;
+    Promise.resolve()
+      .then(() => this._hass.callWS({
+        type: "recorder/statistics_during_period",
+        start_time: "2020-01-01T00:00:00Z",
+        statistic_ids: [id],
+        period: "hour",
+        types: ["change"],
+      }))
+      .then((reply) => {
+        const rows = (reply && reply[id]) || [];
+        let month = 0;
+        let life = 0;
+        let since = null;
+        rows.forEach((r) => {
+          const t = new Date(r.start);
+          const ch = Number(r.change);
+          if (isNaN(t.getTime()) || !Number.isFinite(ch)) return;
+          if (since === null) since = t;
+          const h = t.getHours();
+          if (h < 7 || h >= 23) return;
+          life += ch;
+          if (t.getTime() >= month0) month += ch;
+        });
+        const out = this._num(c.battery_out);
+        const inn = this._num(c.battery_in);
+        const eta = out !== null && inn ? Math.min(1, out / inn) : null;
+        this._savings = rows.length
+          ? { month, life, since, eta: eta > 0 ? eta : 1, month0 }
+          : { failed: "no statistics", month0 };
+      })
+      .catch(() => {
+        // Kept as a failure, not dropped, so the row says so and this is
+        // not asked again until the hour is up.
+        this._savings = { failed: "unavailable", month0 };
+      })
+      .then(() => {
+        this._savingsBusy = false;
+        if (this._config && this._hass) this._render();
+      });
+  }
+
+  /** The price per kWh set on this meter, or null. */
+  _price(id) {
+    const p = this._prices && this._prices[id];
+    if (!p) return null;
+    return p.entity ? this._num(p.entity) : p.number;
   }
 
   connectedCallback() {
@@ -705,11 +1063,64 @@ class PowmrInverterConsoleCard extends HTMLElement {
     installFonts();
     // The clock is the only thing that moves without a state change.
     if (!this._timer) this._timer = window.setInterval(() => this._tick(), 1000);
+    this._fxWire();
   }
 
   disconnectedCallback() {
     if (this._timer) window.clearInterval(this._timer);
     this._timer = null;
+    if (this._fxOff) this._fxOff();
+    this._fxOff = null;
+  }
+
+  /** Effects (card-fx.js): data-fx on the host and the off-screen pause. */
+  _fxWire() {
+    if (this._fxOff) this._fxOff();
+    this._fxOff = null;
+    if (!this.isConnected || !this._config) return;
+    this._fxOff = fxSetup(this, this._config.fx);
+  }
+
+  /**
+   * Glow follows power: --fxg 0..1 on a tile and its run, by the watts
+   * against the same ceiling the run's speed uses. Cleared when off.
+   */
+  _fxGlow(nodes, watts, max) {
+    const on = fxOn(this._config.fx, "power_glow");
+    const g = watts === null ? 0 : Math.max(0, Math.min(1, Math.abs(watts) / max));
+    nodes.forEach((n) => {
+      if (!n) return;
+      if (on) n.style.setProperty("--fxg", g.toFixed(3));
+      else n.style.removeProperty("--fxg");
+    });
+  }
+
+  /**
+   * Chart polish: the fill fades from the line's colour to nothing, and a dot
+   * pulses on the latest reading. The dot is HTML, not SVG, because the plot
+   * stretches (preserveAspectRatio none) and an SVG circle would be an oval.
+   */
+  _fxChart(col, xy) {
+    const el = this._el;
+    const on = fxOn(this._config.fx, "chart_polish");
+    if (el.fxStop0) {
+      el.fxStop0.setAttribute("stop-color", col);
+      el.fxStop0.setAttribute("stop-opacity", "0.38");
+      el.fxStop1.setAttribute("stop-color", col);
+      el.fxStop1.setAttribute("stop-opacity", "0");
+    }
+    if (on) {
+      el.chArea.setAttribute("fill", "url(#pmfxgrad)");
+      el.chArea.setAttribute("fill-opacity", "1");
+    }
+    if (!el.fxDot) return;
+    const last = on && xy && xy.length ? xy[xy.length - 1] : null;
+    el.fxDot.hidden = !last;
+    if (last) {
+      el.fxDot.style.left = (last[0] / CH_W * 100).toFixed(3) + "%";
+      el.fxDot.style.top = (last[1] / CH_H * 100).toFixed(3) + "%";
+      el.fxDot.style.setProperty("--fxc", col);
+    }
   }
 
   getCardSize() {
@@ -767,13 +1178,13 @@ class PowmrInverterConsoleCard extends HTMLElement {
 
   /*
    * Grid voltage bands, from the design. The gauge's coloured zones use the
-   * same stops, so a mark sitting in the amber band always reads HIGH or LOW.
+   * same edges, so a mark sitting in the amber band always reads HIGH or LOW.
+   * The colour fades V_FADE either side of each edge (card-ramp.js); the word
+   * from _vLabel still changes on the edge itself.
    */
   _vColor(v) {
     if (v === null) return "#5C616B";
-    if (v > 250 || v < 200) return BAD;
-    if (v >= 240 || v <= 220) return WARN;
-    return OK;
+    return ramp(v, V_EDGES(BAD, WARN, OK), V_FADE);
   }
 
   _vLabel(v) {
@@ -787,7 +1198,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
 
   _loadColor(p) {
     if (p === null) return "#5C616B";
-    return p > 85 ? BAD : p > 60 ? WARN : OK;
+    return ramp(p, LOAD_EDGES(BAD, WARN, OK), LOAD_FADE);
   }
 
   _loadLabel(p) {
@@ -795,9 +1206,10 @@ class PowmrInverterConsoleCard extends HTMLElement {
     return p > 100 ? "OVERLOAD" : p > 85 ? "HEAVY" : p > 60 ? "ELEVATED" : "NORMAL";
   }
 
+  /** SOC_RED/SOC_GREEN, faded SOC_FADE either side -- the word still snaps. */
   _socColor(p) {
     if (p === null) return "#5C616B";
-    return p < SOC_RED ? BAD : p < SOC_GREEN ? WARN : OK;
+    return ramp(p, SOC_EDGES(BAD, WARN, OK), SOC_FADE);
   }
 
   _socLabel(p) {
@@ -806,13 +1218,19 @@ class PowmrInverterConsoleCard extends HTMLElement {
   }
 
   /**
-   * True when there is no usable mains. Two independent tells, because either
-   * can lag: the safety binary_sensor (ON = unsafe) and the voltage itself,
-   * below the 150 V the firmware treats as "no grid".
+   * True when there is no mains. Two tells, because grid_down holds 5 s: the
+   * sensor and the voltage itself, below the 150 V the firmware treats as
+   * "no grid". Not grid_safe: a live but low grid trips that one.
    */
   _gridDown() {
     const v = this._num(this._config.grid_voltage);
-    return this._state(this._config.grid_safe) === "on" || (v !== null && v < 150);
+    return this._state(this._config.grid_down) === "on" || (v !== null && v < 150);
+  }
+
+  /** Mains there but out of 185–250 V, and Protect has moved the house to battery. */
+  _gridUnsafe() {
+    const c = this._config;
+    return !this._gridDown() && this._state(c.grid_safe) === "on" && this._state(c.chip_protect) === "on";
   }
 
   /*
@@ -945,19 +1363,38 @@ class PowmrInverterConsoleCard extends HTMLElement {
     const safe = this._stateObj(c.grid_safe);
     const rng = this._stateObj(c.grid_in_range);
     if (!safe || !rng || safe.state !== "on" || rng.state !== "on") return null;
+    // Without Protect the firmware never left the grid: nothing to return to.
+    if (this._state(c.chip_protect) !== "on") return null;
     const t = Date.parse(rng.last_changed || "");
     if (!Number.isFinite(t)) return null;
     return Math.max(0, Math.min(c.grid_return_s, c.grid_return_s - (Date.now() - t) / 1000));
   }
 
   /**
-   * The Pre-charge chip's sub-label and tooltip, from the plan sensor. Empty
-   * (and hidden) while the switch is off or there is nothing to charge for,
-   * which is most of the time: the chip is then just a switch.
+   * One of AC charge's switch dots: lit while its switch is on, and a tooltip
+   * from the entity's friendly_name, the same words a chip's title uses, then
+   * `more` (a plan's reason) and HELP[key]. Returns the state.
    */
-  _patchPlan(node, sub, st) {
+  _patchSwitchDot(dot, ent, label, key, more) {
+    const st = this._state(ent);
+    if (!dot) return st;
+    dot.classList.toggle("on", st === "on");
+    const o = this._stateObj(ent);
+    dot.dataset.tip = tip(((o && o.attributes && o.attributes.friendly_name) || label) + " — " + st
+      + (more || ""), key);
+    return st;
+  }
+
+  /**
+   * The Pre-charge dot, and the sub-label and tooltip from its plan sensor.
+   * The sub-label is empty (and hidden) while the switch is off or there is
+   * nothing to charge for, which is most of the time.
+   */
+  _patchPlan(node, sub) {
     const plan = this._stateObj(this._config.precharge_plan);
     const a = (plan && plan.attributes) || {};
+    const st = this._patchSwitchDot(node, this._config.chip_precharge, "Pre-charge", "chip_precharge",
+      plan && a.reason ? " · " + plan.state + ": " + a.reason : "");
     const t = Date.parse(a.until || "");
     const at = Number.isFinite(t)
       ? new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })
@@ -965,11 +1402,16 @@ class PowmrInverterConsoleCard extends HTMLElement {
     let text = "";
     if (st === "on" && plan) {
       if (plan.state === "charging") text = this._chargeText(a.current, at);
+      else if (plan.state === "holding") text = at ? "on grid → " + at : "on grid";
       else if (plan.state === "waiting_night") text = at ? "at night → " + at : "at night";
       else if (plan.state === "full") text = "full";
     }
-    if (sub) sub.textContent = text;
-    if (plan && a.reason) node.title += " · " + plan.state + ": " + a.reason;
+    if (sub) {
+      sub.textContent = text;
+      sub.dataset.tip = tip("Pre-charge plan — " + (text || (plan ? plan.state : "unknown")), "precharge_plan");
+    }
+    if (node) node.classList.toggle("act", st === "on" && !!plan
+      && (plan.state === "charging" || plan.state === "holding"));
   }
 
   /**
@@ -998,7 +1440,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
   _patchAdaptive(dot, sub) {
     const c = this._config;
     const st = this._state(c.adaptive_charge);
-    const outage = ["waiting_night", "charging", "full"].includes(this._state(c.precharge_plan));
+    const outage = ["waiting_night", "charging", "holding", "full"].includes(this._state(c.precharge_plan));
     const charges = this._state(c.chip_night_only) === "on"
       || (this._state(c.chip_auto) === "on" && this._state(c.chip_ac_charge) === "on");
     const usable = charges && !outage;
@@ -1016,13 +1458,18 @@ class PowmrInverterConsoleCard extends HTMLElement {
     }
     if (dot) {
       dot.classList.toggle("on", st === "on");
+      dot.classList.toggle("act", st === "on" && !!plan && plan.state === "charging");
       dot.classList.toggle("dis", !usable && st !== "on");
-      dot.title = !usable && st !== "on"
+      dot.dataset.tip = tip(!usable && st !== "on"
         ? (outage ? "Adaptive night charge — off while an outage is scheduled (pre-charge)"
           : "Adaptive night charge — needs Auto or Night only, and the AC charger on")
-        : "Adaptive night charge — " + st + (plan && a.reason ? " · " + plan.state + ": " + a.reason : "");
+        : "Adaptive night charge — " + st + (plan && a.reason ? " · " + plan.state + ": " + a.reason : ""),
+      "adaptive_charge");
     }
-    if (sub) sub.textContent = text;
+    if (sub) {
+      sub.textContent = text;
+      sub.dataset.tip = tip("Adaptive charge plan — " + (text || (plan ? plan.state : "unknown")), "adaptive_plan");
+    }
   }
 
   /** The header pill: grid word, dot colour and the return countdown. */
@@ -1031,15 +1478,23 @@ class PowmrInverterConsoleCard extends HTMLElement {
     const el = this._el;
     const left = this._returnLeft();
     const down = this._gridDown();
-    const word = left !== null ? "Grid returning" : down ? "Grid down" : "Grid connected";
+    const unsafe = this._gridUnsafe();
+    const word = left !== null ? "Grid returning" : down ? "Grid down" : unsafe ? "Grid unsafe" : "Grid connected";
     if (el.mode) el.mode.textContent = word + " · " + this._state(c.ac_input_mode);
-    if (el.livedot) el.livedot.style.background = left !== null ? WARN : down ? BAD : OK;
+    if (el.livedot) el.livedot.style.background = left !== null || unsafe ? WARN : down ? BAD : OK;
+    let count = "";
     if (el.ret) {
       el.ret.hidden = el.retsep.hidden = left === null;
       if (left !== null) {
         const s = Math.ceil(left);
-        el.ret.textContent = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+        count = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+        el.ret.textContent = count;
       }
+      el.ret.dataset.tip = tip("Grid return — " + (count ? count + " left" : "not counting"), "ret");
+    }
+    if (el.pill) {
+      el.pill.dataset.tip = tip("Grid — " + (left !== null ? "returning" + (count ? ", " + count + " left" : "")
+        : down ? "down" : unsafe ? "unsafe, on battery" : "connected") + " · " + this._state(c.ac_input_mode), "pill");
     }
   }
 
@@ -1089,13 +1544,11 @@ class PowmrInverterConsoleCard extends HTMLElement {
           </div>
           <div class="title">${this._esc(c.title)}</div>
         </div>
-        <div class="pill" data-more="${c.grid_safe}" role="button" tabindex="0"
-             title="Grid condition">
+        <div class="pill" data-ref="pill" data-more="${c.grid_down}" role="button" tabindex="0">
           <div class="livedot" data-ref="livedot"></div>
           <span class="mono" data-ref="mode"></span>
           <span class="vsep" data-ref="retsep" hidden></span>
-          <span class="mono ret" data-ref="ret" hidden
-                title="Grid is back in range. The inverter trusts it after 5 minutes of stable voltage."></span>
+          <span class="mono ret" data-ref="ret" hidden></span>
           <span class="vsep"></span>
           <span class="mono" data-ref="clock"></span>
         </div>
@@ -1104,18 +1557,19 @@ class PowmrInverterConsoleCard extends HTMLElement {
       parts.push(`
       <div class="bar">
         <div class="chips">${CHIPS.map((ch, i) => `
-          <div class="chip" data-ref="chip${i}"
+          <div class="chip${ch.dots ? " nodot" : ""}" data-ref="chip${i}"
                style="--cc:${ch.color};--cb:${ch.color}4D;--cf:${ch.color}14;--cs:${ch.color}99">
             <span class="ic" data-act="toggle" data-ent="${c[ch.cfg]}" role="button" tabindex="0"
-                  title="Toggle ${this._esc(ch.label)}"><ha-icon icon="${ch.icon}"></ha-icon></span>
-            <span class="lbl" data-more="${c[ch.cfg]}" role="button" tabindex="0">${this._esc(ch.label)}</span>${
-              ch.plan ? `<span class="sub" data-ref="chipSub${i}" data-more="${c.precharge_plan}" role="button" tabindex="0"></span>` : ""}
+                  aria-label="Toggle ${this._esc(ch.label)}"><ha-icon icon="${ch.icon}"></ha-icon></span>
+            <span class="lbl" data-more="${c[ch.cfg]}" role="button" tabindex="0">${this._esc(ch.label)}</span>
+${ch.dots ? "" : `
             <span class="dw" data-act="toggle" data-ent="${c[ch.cfg]}" role="button" tabindex="0"
-                  title="Toggle ${this._esc(ch.label)}"><span class="dot"></span></span>${
-              ch.adaptive ? `
-            <span class="dw ad" data-ref="chipAd${i}" data-act="toggle" data-ent="${c.adaptive_charge}" role="button" tabindex="0"
-                  title="Toggle adaptive night charge"><span class="dot"></span></span>
-            <span class="sub" data-ref="chipAdSub${i}" data-more="${c.adaptive_plan}" role="button" tabindex="0"></span>` : ""}
+                  aria-label="Toggle ${this._esc(ch.label)}"><span class="dot"></span></span>`}${
+              ch.dots ? AC_DOTS.map((d) => `
+            <span class="dw i" data-ref="chip${d.ref}${i}" data-act="toggle" data-ent="${c[d.cfg]}" role="button" tabindex="0"
+                  style="--dc:${d.color};--ds:${d.color}99" aria-label="Toggle ${this._esc(d.label)}"><ha-icon icon="${d.icon}"></ha-icon></span>`).join("") + `
+            <span class="sub" data-ref="chipAdSub${i}" data-more="${c.adaptive_plan}" role="button" tabindex="0"></span>
+            <span class="sub" data-ref="chipPcSub${i}" data-more="${c.precharge_plan}" role="button" tabindex="0"></span>` : ""}
           </div>`).join("")}
         </div>
       </div>`);
@@ -1126,7 +1580,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
         <div class="plabel">Live power flow</div>
 
         <div class="flowrow">
-          <div class="tile t-grid" data-more="${c.grid_voltage}" role="button" tabindex="0">
+          <div class="tile t-grid" data-ref="gridTile" data-more="${c.grid_voltage}" role="button" tabindex="0">
             <div class="t-head">
               <span class="t-name">Grid</span>
               <span class="t-state" data-ref="gridState"></span>
@@ -1140,10 +1594,10 @@ class PowmrInverterConsoleCard extends HTMLElement {
             </div>
           </div>
 
-          <div class="run x" style="--c:${GRID_C}" data-more="${c.grid_power}" role="button" tabindex="0"
-               title="Grid power"><i data-ref="runGrid"></i></div>
+          <div class="run x" data-ref="gridRun" style="--c:${GRID_C}" data-more="${c.grid_power}" role="button" tabindex="0"
+               ><i data-ref="runGrid"></i></div>
 
-          <div class="tile t-inv" data-more="${c.ac_output_voltage}" role="button" tabindex="0">
+          <div class="tile t-inv" data-ref="invTile" data-more="${c.ac_output_voltage}" role="button" tabindex="0">
             <div class="t-head">
               <span class="t-name">Inverter</span>
               <span class="t-state" data-ref="invState"></span>
@@ -1157,10 +1611,10 @@ class PowmrInverterConsoleCard extends HTMLElement {
             </div>
           </div>
 
-          <div class="run x" style="--c:${LOAD_C}" data-more="${c.load_power}" role="button" tabindex="0"
-               title="Load power"><i data-ref="runLoad"></i></div>
+          <div class="run x" data-ref="loadRun" style="--c:${LOAD_C}" data-more="${c.load_power}" role="button" tabindex="0"
+               ><i data-ref="runLoad"></i></div>
 
-          <div class="tile t-load" data-more="${c.load_power}" role="button" tabindex="0">
+          <div class="tile t-load" data-ref="loadTile" data-more="${c.load_power}" role="button" tabindex="0">
             <div class="t-head">
               <span class="t-name">House load</span>
               <span class="t-state" data-ref="loadState"></span>
@@ -1175,12 +1629,26 @@ class PowmrInverterConsoleCard extends HTMLElement {
         </div>
 
         <div class="battrun">
-          <div class="run y" style="--c:${BATT_C}" data-more="${c.battery_power}" role="button" tabindex="0"
-               title="Battery power"><i data-ref="runBatt"></i></div>
+          <div class="run y direct" data-ref="dirRun" style="--c:${GRID_C}" data-more="${c.meter_power}" role="button" tabindex="0"
+               ><i data-ref="runDir"></i></div>
+          <div class="run y" data-ref="battRun" style="--c:${BATT_C}" data-more="${c.battery_power}" role="button" tabindex="0"
+               ><i data-ref="runBatt"></i></div>
         </div>
 
         <div class="battwrap">
-          <div class="tile t-batt" data-more="${c.battery_soc}" role="button" tabindex="0">
+          <div class="tile t-dir direct" data-ref="dirTile" data-more="${c.meter_power}" role="button" tabindex="0">
+            <div class="t-head">
+              <span class="t-name">Meter</span>
+              <span class="t-state" data-ref="dirState"></span>
+            </div>
+            <div class="t-val" data-ref="dirVal"></div>
+            <div class="t-sub" data-ref="dirSub"></div>
+            <div class="gauge load"><div class="mark" data-ref="dirMark"></div></div>
+            <div class="ticks">
+              <span class="l0">0</span><span style="left:60%">${Math.round(c.max_meter_w * 0.6)}</span><span class="r0">${c.max_meter_w}</span>
+            </div>
+          </div>
+          <div class="tile t-batt" data-ref="battTile" data-more="${c.battery_soc}" role="button" tabindex="0">
             <div class="t-head">
               <span class="t-name">Battery</span>
               <span class="t-state" data-ref="battState"></span>
@@ -1205,7 +1673,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
         ${[["Max AC charge current", c.max_charge_current, "maxChg"],
            ["Power priority", c.power_priority, "prio"],
            ["AC input mode", c.ac_input_mode, "acMode"]].map(([label, ent, ref]) => `
-        <div class="field">
+        <div class="field" data-ref="${ref}Field">
           <span class="flabel" data-more="${ent}" role="button" tabindex="0">${label}</span>
           <div class="selwrap">
             <select data-ent="${ent}" data-ref="${ref}" aria-label="${label}"></select>
@@ -1213,10 +1681,11 @@ class PowmrInverterConsoleCard extends HTMLElement {
           </div>
         </div>`).join("")}
         <div class="erows">${ENERGY.map((e, i) => `
-          <div class="erow" data-ref="erow${i}" data-more="${c[e.cfg]}" role="button" tabindex="0">
-            <span class="el">
+          <div class="erow${e.saved ? " saved" : ""}" data-ref="erow${i}" data-more="${c[e.cfg]}" role="button" tabindex="0">
+            <span class="el${e.saved ? " col" : ""}">
               <span class="en">${e.short}</span>
-              <span class="tag" data-ref="etag${i}"></span>
+              ${e.saved ? `<span class="esub" data-ref="esub${i}"></span>`
+                : `<span class="tag" data-ref="etag${i}"></span>`}
             </span>
             <span class="ev" data-ref="eval${i}"></span>
           </div>`).join("")}
@@ -1239,16 +1708,17 @@ class PowmrInverterConsoleCard extends HTMLElement {
             <div class="plabel">History</div>
             <div class="hname">
               <span class="n" data-ref="chName" role="button" tabindex="0"></span>
-              <span class="w" data-ref="chWin"></span>
+              <span class="w" data-ref="chWin" data-tip="${this._esc(tip("Window", "ch_win"))}"></span>
             </div>
           </div>
           <div class="segs" data-ref="ranges">${Object.keys(RANGES).map((r) => `
-            <button class="seg" data-act="range" data-val="${r}" aria-pressed="false">${r}</button>`).join("")}
+            <button class="seg" data-act="range" data-val="${r}" aria-pressed="false"
+                    data-tip="${this._esc(tip(RANGES[r].label.charAt(0).toUpperCase() + RANGES[r].label.slice(1), "range"))}">${r}</button>`).join("")}
           </div>
         </div>
         <div class="tabs" data-ref="tabs">${SERIES.map((s) => `
             <button class="tab" data-act="tab" data-val="${s.key}" aria-pressed="false"
-                    style="--tc:${s.color}">${s.short}</button>`).join("")}
+                    style="--tc:${s.color}" data-tip="${this._esc(tip(s.name, "tab"))}">${s.short}</button>`).join("")}
         </div>
         <div class="chart">
           <div class="yax" data-ref="yax"></div>
@@ -1256,7 +1726,9 @@ class PowmrInverterConsoleCard extends HTMLElement {
             <svg class="ch" data-ref="chSvg" viewBox="0 0 ${CH_W} ${CH_H}" preserveAspectRatio="none">
               <defs><clipPath id="plotclip">
                 <rect x="0" y="0" width="${CH_W}" height="${CH_H}"></rect>
-              </clipPath></defs>
+              </clipPath>${c.fx ? `<linearGradient id="pmfxgrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" data-ref="fxStop0"></stop><stop offset="1" data-ref="fxStop1"></stop>
+              </linearGradient>` : ""}</defs>
               ${gy}
               <g clip-path="url(#plotclip)">
                 <path data-ref="chArea" stroke="none" fill-opacity="0.08"></path>
@@ -1265,7 +1737,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
               </g>
             </svg>
             <div class="hv hvline" data-ref="hvLine"></div>
-            <div class="hv hvdot" data-ref="hvDot"></div>
+            <div class="hv hvdot" data-ref="hvDot"></div>${c.fx ? '<div class="fx-dot" data-ref="fxDot"></div>' : ""}
             <div class="tip" data-ref="tip"></div>
             <div class="note" data-ref="chNote"></div>
             <div class="xax" data-ref="xax"></div>
@@ -1279,7 +1751,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
       has("history") ? " Drag the chart to move through time, pinch or scroll to zoom;"
         + " double-click or pick a range to go back to live." : ""}</div>`);
 
-    this.shadowRoot.innerHTML = "<style>" + STYLE + "</style>"
+    this.shadowRoot.innerHTML = "<style>" + STYLE + (c.fx ? FX_CSS + FX_STYLE : "") + "</style>"
       + '<ha-card><div class="root">' + parts.join("") + "</div></ha-card>";
 
     this._el = {};
@@ -1370,20 +1842,62 @@ class PowmrInverterConsoleCard extends HTMLElement {
   _fingerprint() {
     const c = this._config;
     const ids = [
-      c.grid_voltage, c.grid_frequency, c.grid_power, c.grid_safe, c.grid_in_range,
+      c.grid_voltage, c.grid_frequency, c.grid_power, c.grid_down, c.grid_safe, c.grid_in_range,
       c.ac_output_voltage, c.load_power, c.load_percentage, c.uptime,
       c.battery_power, c.battery_soc, c.battery_voltage,
       c.charge_current, c.discharge_current,
-      c.tariff_day, c.tariff_night, c.total_energy,
-      c.max_charge_current, c.power_priority, c.ac_input_mode, c.tariff,
-    ].concat(CHIPS.map((ch) => c[ch.cfg]));
+      c.meter_power, c.meter_day, c.meter_night, c.meter_total,
+      c.max_charge_current, c.power_priority, c.ac_input_mode, c.meter_tariff,
+    ].concat(CHIPS.map((ch) => c[ch.cfg]), [c.chip_night_only, c.chip_precharge]);
+    const prices = ENERGY.filter((e) => e.priced).map((e) => this._price(c[e.cfg]));
     const plan = (this._stateObj(c.precharge_plan) || {}).attributes || {};
     const ad = (this._stateObj(c.adaptive_plan) || {}).attributes || {};
     return ids.map((id) => this._state(id)).join("|")
       + "|" + this._state(c.precharge_plan) + "|" + plan.current + "|" + plan.until + "|" + plan.reason
       + "|" + this._state(c.adaptive_charge) + "|" + this._state(c.adaptive_plan)
       + "|" + ad.current + "|" + ad.until + "|" + ad.reason
+      + "|" + prices.join(",")
+      + "|" + (this._savings ? this._savingsAt : "")
       + "|" + this._range + "|" + this._sel;
+  }
+
+  /*
+   * The Saved by battery row: kWh and ₴ like the tariff rows, in the pack's
+   * green, and the total since records began on a line under the name. With
+   * no Energy prices it is kWh alone; with no statistics it says so rather
+   * than showing a 0 that reads as a measured month.
+   */
+  _patchSaved(e, i) {
+    const el = this._el;
+    const s = this._savings;
+    const row = el["erow" + i];
+    const val = el["eval" + i];
+    const sub = el["esub" + i];
+    if (!s || s.failed) {
+      const word = s ? s.failed : "loading";
+      val.textContent = s ? "—" : "…";
+      sub.textContent = word;
+      row.dataset.tip = tip(e.short + " — " + word, e.help);
+      return;
+    }
+    const pDay = this._price(this._config.meter_day);
+    const pNight = this._price(this._config.meter_night);
+    const per = pDay !== null && pNight !== null ? pDay - pNight / s.eta : null;
+    const month = per !== null ? s.month * per : null;
+    const life = per !== null ? s.life * per : null;
+    const since = s.since
+      ? String(s.since.getDate()).padStart(2, "0") + "." + String(s.since.getMonth() + 1).padStart(2, "0")
+      : "the start";
+    val.innerHTML = this._esc(this._fmt(s.month, e.dec) + " " + e.unit)
+      + (month !== null ? "<small>" + this._esc(month.toFixed(2)) + " ₴</small>" : "");
+    sub.textContent = "since " + since + " · "
+      + (life !== null ? Math.round(life) + " ₴" : this._fmt(s.life, 1) + " kWh");
+    // Line 1 is clipped at 90 characters, so the kWh stay on the row.
+    row.dataset.tip = tip(e.short + " — "
+      + (month !== null
+        ? month.toFixed(2) + " ₴ · " + life.toFixed(2) + " ₴ since " + since
+          + " · efficiency " + Math.round(s.eta * 100) + " %"
+        : this._fmt(s.month, e.dec) + " kWh, no Energy prices set"), e.help);
   }
 
   _patch() {
@@ -1397,6 +1911,13 @@ class PowmrInverterConsoleCard extends HTMLElement {
     this._setFlow(el.runGrid, gridW, c.max_grid_w, false);
     this._setFlow(el.runLoad, loadW, c.max_load_w, false);
     this._setFlow(el.runBatt, battW, c.max_batt_w, true);
+    this._setFlow(el.runDir, this._num(c.meter_power), c.max_meter_w, false);
+    if (c.fx) {
+      this._fxGlow([el.gridTile, el.gridRun], gridW, c.max_grid_w);
+      this._fxGlow([el.invTile, el.loadTile, el.loadRun], loadW, c.max_load_w);
+      this._fxGlow([el.battTile, el.battRun], battW, c.max_batt_w);
+      this._fxGlow([el.dirTile, el.dirRun], this._num(c.meter_power), c.max_meter_w);
+    }
 
     const print = this._fingerprint();
     if (print === this._print) return;
@@ -1406,8 +1927,21 @@ class PowmrInverterConsoleCard extends HTMLElement {
     const down = this._gridDown();
 
     // --- header ------------------------------------------------------------
-    if (el.uptime) el.uptime.textContent = this._uptime();
+    if (el.uptime) {
+      el.uptime.textContent = this._uptime();
+      el.uptime.dataset.tip = tip("Uptime — " + this._uptime(), "uptime");
+    }
     this._patchGrid();
+
+    // --- flow runs: the speed is set above on every call, the words here ---
+    const w = (v) => this._fmt(v, 0) + " W";
+    if (el.gridRun) el.gridRun.dataset.tip = tip("Grid power — " + w(gridW), "run_grid");
+    if (el.loadRun) el.loadRun.dataset.tip = tip("Load power — " + w(loadW), "run_load");
+    if (el.battRun) {
+      el.battRun.dataset.tip = tip("Battery power — " + (battW === null ? "— W"
+        : battW > 2 ? w(battW) + " in" : battW < -2 ? w(-battW) + " out" : "idle"), "run_batt");
+    }
+    if (el.dirRun) el.dirRun.dataset.tip = tip("Metered power — " + w(this._num(c.meter_power)), "run_meter");
 
     const acCharging = !down && battW !== null && battW > 2;
     CHIPS.forEach((ch, i) => {
@@ -1416,11 +1950,15 @@ class PowmrInverterConsoleCard extends HTMLElement {
       const st = this._state(c[ch.cfg]);
       node.classList.toggle("on", st === "on");
       node.classList.toggle("live", !!ch.live && acCharging);
-      node.title = (this._stateObj(c[ch.cfg]) || {}).attributes
+      node.dataset.tip = tip((this._stateObj(c[ch.cfg]) || {}).attributes
         ? ((this._stateObj(c[ch.cfg]).attributes.friendly_name || ch.label) + " — " + st)
-        : ch.label;
-      if (ch.plan) this._patchPlan(node, el["chipSub" + i], st);
-      if (ch.adaptive) this._patchAdaptive(el["chipAd" + i], el["chipAdSub" + i]);
+        : ch.label, ch.cfg);
+      if (ch.dots) {
+        const nt = this._patchSwitchDot(el["chipNt" + i], c.chip_night_only, "Night only", "chip_night_only");
+        if (el["chipNt" + i]) el["chipNt" + i].classList.toggle("act", nt === "on" && acCharging);
+        this._patchAdaptive(el["chipAd" + i], el["chipAdSub" + i]);
+        this._patchPlan(el["chipPc" + i], el["chipPcSub" + i]);
+      }
     });
 
     // --- grid tile ---------------------------------------------------------
@@ -1434,6 +1972,25 @@ class PowmrInverterConsoleCard extends HTMLElement {
       el.gridSub.textContent = this._fmt(this._num(c.grid_frequency), 2) + " Hz · "
         + this._fmt(gridW, 0) + " W in";
       el.gridMark.style.left = this._pct(gv, V_LO, V_SPAN).toFixed(2) + "%";
+      if (el.gridTile) el.gridTile.dataset.tip = tip("Grid — " + this._fmt(gv, 1) + " V · " + el.gridState.textContent, "tile_grid");
+      el.gridState.dataset.tip = tip("Grid status — " + el.gridState.textContent, "volt_state");
+    }
+    if (el.dirTile) {
+      const has = !!this._stateObj(c.meter_power);
+      el.dirTile.hidden = !has;
+      if (el.dirRun) el.dirRun.hidden = !has;
+      const mw = this._num(c.meter_power);
+      const pct = mw === null ? null : mw / c.max_meter_w * 100;
+      const col = mw === null ? "#5C616B" : this._loadColor(pct);
+      el.dirVal.innerHTML = this._fmt(mw, 0) + "<i>W</i>";
+      el.dirVal.style.color = col;
+      el.dirState.textContent = this._loadLabel(pct);
+      el.dirState.style.color = col;
+      el.dirSub.textContent = pct === null ? "— % of the " + c.max_meter_w + " W breaker"
+        : pct.toFixed(1) + " % of the " + c.max_meter_w + " W breaker";
+      el.dirMark.style.left = (pct === null ? 0 : Math.max(0, Math.min(100, pct))).toFixed(2) + "%";
+      el.dirTile.dataset.tip = tip("Meter — " + this._fmt(mw, 0) + " W · " + el.dirState.textContent, "tile_meter");
+      el.dirState.dataset.tip = tip("Meter status — " + el.dirState.textContent, "load_state");
     }
 
     // --- inverter tile -----------------------------------------------------
@@ -1445,6 +2002,8 @@ class PowmrInverterConsoleCard extends HTMLElement {
       el.invState.style.color = this._vColor(av);
       el.invSub.textContent = this._state(c.ac_input_mode) + " · " + this._state(c.power_priority);
       el.invMark.style.left = this._pct(av, V_LO, V_SPAN).toFixed(2) + "%";
+      if (el.invTile) el.invTile.dataset.tip = tip("Inverter — " + this._fmt(av, 1) + " V out · " + el.invState.textContent, "tile_inv");
+      el.invState.dataset.tip = tip("Output status — " + el.invState.textContent, "volt_state");
     }
 
     // --- house load tile ---------------------------------------------------
@@ -1456,6 +2015,8 @@ class PowmrInverterConsoleCard extends HTMLElement {
       el.loadState.style.color = this._loadColor(lp);
       el.loadSub.textContent = this._fmt(lp, 1) + " % of " + c.max_load_w + " W";
       el.loadMark.style.left = (lp === null ? 0 : Math.max(0, Math.min(100, lp))).toFixed(2) + "%";
+      if (el.loadTile) el.loadTile.dataset.tip = tip("House load — " + this._fmt(loadW, 0) + " W · " + el.loadState.textContent, "tile_load");
+      el.loadState.dataset.tip = tip("Load status — " + el.loadState.textContent, "load_state");
     }
 
     // --- battery tile ------------------------------------------------------
@@ -1484,15 +2045,24 @@ class PowmrInverterConsoleCard extends HTMLElement {
       // Link to what the line actually shows: a current only when one is on it.
       el.battSub.setAttribute("data-more",
         amps ? (dischg ? c.discharge_current : c.charge_current) : c.battery_voltage);
+      if (el.battTile) el.battTile.dataset.tip = tip("Battery — " + this._fmt(soc, 0) + " % · " + el.battState.textContent, "tile_batt");
+      el.battState.dataset.tip = tip("Battery status — " + el.battState.textContent, "batt_state");
+      el.battSub.dataset.tip = tip("Battery detail — " + el.battSub.textContent, "batt_sub");
     }
 
     // --- selects -----------------------------------------------------------
-    [[c.max_charge_current, "maxChg", " A"], [c.power_priority, "prio", ""],
-     [c.ac_input_mode, "acMode", ""]].forEach(([ent, ref, suffix]) => {
+    [[c.max_charge_current, "maxChg", " A", "Max AC charge current", "sel_max_charge"],
+     [c.power_priority, "prio", "", "Power priority", "sel_priority"],
+     [c.ac_input_mode, "acMode", "", "AC input mode", "sel_ac_mode"]].forEach(([ent, ref, suffix, label, key]) => {
       const sel = el[ref];
       if (!sel) return;
+      // On the field, so its label and the select share one tooltip.
+      const st = this._state(ent);
+      if (el[ref + "Field"]) {
+        el[ref + "Field"].dataset.tip = tip(label + " — " + (this._opts(ent).indexOf(st) >= 0 ? st + suffix : st), key);
+      }
       const opts = this._opts(ent);
-      const sig = opts.join(" ");
+      const sig = opts.join("\u0000");
       // Only rebuild the option list when it actually changes -- rebuilding it
       // while the dropdown is open would close it.
       if (sel.dataset.sig !== sig) {
@@ -1511,14 +2081,24 @@ class PowmrInverterConsoleCard extends HTMLElement {
     });
 
     // --- energy rows -------------------------------------------------------
-    const tariff = this._state(c.tariff);
+    const tariff = this._state(c.meter_tariff);
     ENERGY.forEach((e, i) => {
       const row = el["erow" + i];
       if (!row) return;
+      if (e.saved) {
+        this._patchSaved(e, i);
+        return;
+      }
       const active = e.tariff && e.tariff === tariff;
       row.classList.toggle("on", !!active);
       el["etag" + i].textContent = active ? "active" : "";
-      el["eval" + i].textContent = this._fmt(this._num(c[e.cfg]), e.dec) + " " + e.unit;
+      const kwh = this._num(c[e.cfg]);
+      const price = e.priced ? this._price(c[e.cfg]) : null;
+      const cost = kwh !== null && price !== null ? kwh * price : null;
+      el["eval" + i].innerHTML = this._esc(this._fmt(this._num(c[e.cfg]), e.dec) + " " + e.unit)
+        + (cost !== null ? "<small>" + this._esc(cost.toFixed(2)) + " ₴</small>" : "");
+      row.dataset.tip = tip(e.short + " — " + this._fmt(this._num(c[e.cfg]), e.dec) + " " + e.unit
+        + (cost !== null ? " · " + cost.toFixed(2) + " ₴" : "") + (active ? " · active" : ""), e.help);
     });
 
     // A range or tab change is local, so redraw from cache; the state change
@@ -1878,7 +2458,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
             end_time: new Date(end).toISOString(),
             statistic_ids: [entity],
             period: "hour",
-            types: ["mean"],
+            types: ["mean", "min", "max"],
           });
           raw = this._parseStats(stats, entity);
           fromStats = raw.length > 0;
@@ -1935,6 +2515,12 @@ class PowmrInverterConsoleCard extends HTMLElement {
    * Hourly means from recorder/statistics_during_period, in the [ms, value]
    * shape _parse() produces. Plotted at the start of each hour, as the History
    * panel does; `start` is epoch ms on current releases, ISO on older ones.
+   *
+   * Each row also carries the hour's own min and max as [ms, mean, min, max].
+   * Only the mean is drawn, but Min/Max in the stats row read these: the
+   * highest hourly MEAN of a week of house load is a few hundred watts, while
+   * the kettle that ran inside that hour drew 1.8 kW. Reporting the former as
+   * "Max" made every 7d/14d window look calmer than any 24h one inside it.
    */
   _parseStats(reply, entity) {
     const rows = reply && reply[entity];
@@ -1945,7 +2531,11 @@ class PowmrInverterConsoleCard extends HTMLElement {
       const v = parseFloat(r.mean);
       if (!Number.isFinite(v)) continue;
       const t = typeof r.start === "number" ? r.start : Date.parse(r.start);
-      if (Number.isFinite(t)) out.push([t, v]);
+      if (!Number.isFinite(t)) continue;
+      const row = [t, v];
+      const lo = parseFloat(r.min), hi = parseFloat(r.max);
+      if (Number.isFinite(lo) && Number.isFinite(hi)) row.push(lo, hi);
+      out.push(row);
     }
     out.sort((a, b) => a[0] - b[0]);
     return out;
@@ -2007,6 +2597,29 @@ class PowmrInverterConsoleCard extends HTMLElement {
     // Every row sharing one timestamp leaves nothing to weight; the last value
     // is the only defensible answer.
     return span > 0 ? acc / span : pts[pts.length - 1][1];
+  }
+
+  /**
+   * The window's true Min and Max, from the rows that cover it. A raw row
+   * holds its value until the next one, so the row just before the window
+   * counts and the one just after does not. An hourly statistics row counts
+   * when its hour overlaps the window, with the hour's own min and max.
+   */
+  _extremes(pts, p, t0, t1) {
+    let min = Infinity, max = -Infinity;
+    pts.forEach((q, i) => {
+      if (q.length >= 4) {
+        if (q[0] + 3600000 <= t0 || q[0] >= t1) return;
+        if (q[2] < min) min = q[2];
+        if (q[3] > max) max = q[3];
+        return;
+      }
+      const next = pts[i + 1];
+      if (q[0] > t1 || (next && next[0] <= t0)) return;
+      if (q[1] < min) min = q[1];
+      if (q[1] > max) max = q[1];
+    });
+    return min <= max ? { min, max } : { min: p.min, max: p.max };
   }
 
   /**
@@ -2079,8 +2692,13 @@ class PowmrInverterConsoleCard extends HTMLElement {
    * reading against the time axis under it.
    */
   _path(pts, w, h, pad, t0, t1) {
+    // An hourly statistics row is [t, mean, min, max]; its band is part of
+    // what is drawn, so it is part of what the axis has to hold.
+    const ranged = pts.some((q) => q.length >= 4);
+    const bot = (q) => (q.length >= 4 ? q[2] : q[1]);
+    const top = (q) => (q.length >= 4 ? q[3] : q[1]);
     let min = Infinity, max = -Infinity;
-    for (const q of pts) { if (q[1] < min) min = q[1]; if (q[1] > max) max = q[1]; }
+    for (const q of pts) { if (bot(q) < min) min = bot(q); if (top(q) > max) max = top(q); }
     let lo = min, hi = max;
 
     /*
@@ -2095,7 +2713,12 @@ class PowmrInverterConsoleCard extends HTMLElement {
      * Max, the window label counts what went off-scale, and hovering the spike
      * gives its exact recorded value.
      */
-    const sorted = pts.map((q) => q[1]).sort((a, b) => a - b);
+    const vals = [];
+    for (const q of pts) {
+      vals.push(q[1]);
+      if (q.length >= 4) vals.push(q[2], q[3]);
+    }
+    const sorted = vals.sort((a, b) => a - b);
     const at = (f) => sorted[Math.min(sorted.length - 1,
       Math.max(0, Math.round(f * (sorted.length - 1))))];
     const band = at(0.99) - at(0.01);
@@ -2109,19 +2732,27 @@ class PowmrInverterConsoleCard extends HTMLElement {
     if (hi - lo < 1e-9) { hi += 0.5; lo -= 0.5; }
     const span = hi - lo;
     const tspan = (t1 - t0) || 1;
-    const xy = pts.map(([t, v]) => [
-      Math.max(0, Math.min(w, (t - t0) / tspan * w)),
-      h - pad - (v - lo) / span * (h - pad * 2),
-    ]);
+    const X = (t) => Math.max(0, Math.min(w, (t - t0) / tspan * w));
+    const Y = (v) => h - pad - (v - lo) / span * (h - pad * 2);
+    const xy = pts.map(([t, v]) => [X(t), Y(v)]);
     const line = xy.map((q, i) => (i ? "L" : "M") + q[0].toFixed(1) + " " + q[1].toFixed(1)).join(" ");
     // Close the area under the data it actually has, not the whole frame.
-    const area = xy.length
-      ? line + " L" + xy[xy.length - 1][0].toFixed(1) + " " + h
-             + " L" + xy[0][0].toFixed(1) + " " + h + " Z"
-      : "";
+    // Hourly statistics shade each hour's min-max band instead: the line is
+    // only the hours' means, and without the band the stats row's Min/Max
+    // (the hours' real extremes) would sit far outside anything drawn.
+    let area = "";
+    if (ranged) {
+      const f = (q) => X(q[0]).toFixed(1) + " ";
+      area = pts.map((q, i) => (i ? "L" : "M") + f(q) + Y(top(q)).toFixed(1)).join(" ")
+        + " " + pts.slice().reverse().map((q) => "L" + f(q) + Y(bot(q)).toFixed(1)).join(" ")
+        + " Z";
+    } else if (xy.length) {
+      area = line + " L" + xy[xy.length - 1][0].toFixed(1) + " " + h
+           + " L" + xy[0][0].toFixed(1) + " " + h + " Z";
+    }
     let off = 0;
-    for (const q of pts) if (q[1] < lo || q[1] > hi) off++;
-    return { line, area, lo, hi, min, max, off, xy };
+    for (const q of pts) if (bot(q) < lo || top(q) > hi) off++;
+    return { line, area, ranged, lo, hi, min, max, off, xy };
   }
 
   /**
@@ -2212,6 +2843,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
     this._syncSegs();
 
     el.chName.textContent = spec.name;
+    el.chName.dataset.tip = tip(spec.name, "ch_name");
     // Clicking the chart's title opens the entity the chart is drawing.
     el.chName.setAttribute("data-more", this._config[spec.cfg]);
 
@@ -2250,10 +2882,12 @@ class PowmrInverterConsoleCard extends HTMLElement {
     this._dom = d;
     const pts = this._slice(rec.pts, d.t0, d.t1);
     el.chWin.textContent = this._winLabel(d);
+    el.chWin.dataset.tip = tip("Window — " + el.chWin.textContent, "ch_win");
 
     if (!pts.length) {
       el.chLine.setAttribute("d", "");
       el.chArea.setAttribute("d", "");
+      this._fxChart(col, []);
       el.yax.innerHTML = "";
       el.xax.innerHTML = "";
       el.stats.innerHTML = "";
@@ -2268,6 +2902,8 @@ class PowmrInverterConsoleCard extends HTMLElement {
     const p = this._path(pts, CH_W, CH_H, CH_PAD, d.t0, d.t1);
     el.chLine.setAttribute("d", p.line);
     el.chArea.setAttribute("d", p.area);
+    el.chArea.setAttribute("fill-opacity", p.ranged ? "0.22" : "0.08");
+    this._fxChart(col, p.xy);
     this._hv = { spec: spec, span: d.t1 - d.t0, pts: pts, xy: p.xy, col: col };
 
     const span = p.hi - p.lo;
@@ -2283,14 +2919,17 @@ class PowmrInverterConsoleCard extends HTMLElement {
       el.chWin.textContent += " · " + p.off
         + (p.off === 1 ? " reading" : " readings") + " off-scale";
     }
+    el.chWin.dataset.tip = tip("Window — " + el.chWin.textContent, "ch_win");
 
     const now = this._num(this._config[spec.cfg]);
     const mean = this._mean(pts);
+    const ext = this._extremes(pts, p, d.t0, d.t1);
     el.stats.innerHTML = [
       ["Now", now === null ? pts[pts.length - 1][1] : now],
-      ["Min", p.min], ["Max", p.max], ["Mean", mean],
+      ["Min", ext.min], ["Max", ext.max], ["Mean", mean],
     ].map(([label, v]) =>
-      "<div class='stat'><b>" + label + "</b><span>"
+      "<div class='stat' data-tip=\"" + this._esc(tip(label + " — " + v.toFixed(spec.dec) + " " + spec.unit, "stat"))
+      + "\"><b>" + label + "</b><span>"
       + v.toFixed(spec.dec) + " " + spec.unit + "</span></div>").join("");
 
     /*
@@ -2351,7 +2990,11 @@ class PowmrInverterConsoleCard extends HTMLElement {
     el.hvDot.classList.add("on");
 
     el.tip.innerHTML = "<b>" + this._esc(hv.pts[best][1].toFixed(hv.spec.dec) + " " + hv.spec.unit)
-      + "</b><i>" + this._esc(this._stamp(hv.pts[best][0], hv.span)) + "</i>";
+      + "</b><i>" + this._esc(this._stamp(hv.pts[best][0], hv.span)) + "</i>"
+      + (hv.pts[best].length >= 4
+        ? "<i>hour " + this._esc(hv.pts[best][2].toFixed(hv.spec.dec) + "–"
+          + hv.pts[best][3].toFixed(hv.spec.dec) + " " + hv.spec.unit) + "</i>"
+        : "");
     el.tip.style.color = hv.col;
     // Keep the bubble inside the plot at both edges.
     el.tip.style.left = Math.max(52, Math.min(rect.width - 52, px)) + "px";

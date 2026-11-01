@@ -88,9 +88,11 @@ def plan_template():
 TEMPLATE = plan_template()
 
 
-def plan(now, start, cap, enabled=True):
+def plan(now, start, cap, enabled=True, prev="idle"):
+    """`prev` is the plan's own state before this render (the latch input)."""
     states = {SWITCH: "on" if enabled else "off", CAP: cap,
-              START: start.isoformat() if start else "unknown"}
+              START: start.isoformat() if start else "unknown",
+              "sensor.outage_pre_charge_plan": prev}
     out = make_env(states, now).from_string(TEMPLATE).render().strip()
     # HA parses a rendered variable back into a native dict the same way.
     return ast.literal_eval(out)
@@ -124,6 +126,37 @@ check("no battery reading -> idle",
       plan(at(2, "12:00"), at(2, "14:00"), "unavailable")["state"], "idle")
 check("battery at 279 of 280 Ah -> full",
       plan(at(2, "12:00"), at(2, "14:00"), 279)["state"], "full")
+
+print("latched once charging (17.10: 20 flips charging <-> full)")
+check("charging, 279 Ah -> holding, no current",
+      state_current(plan(at(2, "12:00"), at(2, "14:00"), 279, prev="charging")),
+      ("holding", None))
+check("... until is still the outage start",
+      plan(at(2, "12:00"), at(2, "14:00"), 279, prev="charging")["until"],
+      at(2, "14:00").isoformat())
+check("holding, 270 Ah (3.6% short) -> still holding",
+      plan(at(2, "12:00"), at(2, "14:00"), 270, prev="holding")["state"], "holding")
+check("holding, 260 Ah (7% short) -> charging again",
+      plan(at(2, "12:00"), at(2, "14:00"), 260, prev="holding")["state"], "charging")
+check("charging by day, night would now do -> stays charging",
+      plan(at(2, "14:00"), at(3, "10:00"), 252, prev="charging")["state"], "charging")
+check("... the same render uncommitted -> waiting_night",
+      plan(at(2, "14:00"), at(3, "10:00"), 252)["state"], "waiting_night")
+check("not committed, 279 Ah -> full (a full pack is not held)",
+      plan(at(2, "12:00"), at(2, "14:00"), 279, prev="idle")["state"], "full")
+check("full, 274 Ah -> charging (then latched)",
+      plan(at(2, "12:00"), at(2, "14:00"), 274, prev="full")["state"], "charging")
+check("holding, window started -> idle (latch released)",
+      plan(at(2, "14:01"), at(2, "14:00"), 279, prev="holding")["state"], "idle")
+check("holding, switched off -> off",
+      plan(at(2, "12:00"), at(2, "14:00"), 279, enabled=False, prev="holding")["state"], "off")
+seq, prev = [], "idle"
+for hhmm, cap in (("10:00", 200), ("10:30", 240), ("11:00", 278), ("11:05", 279),
+                  ("11:10", 277), ("11:15", 275), ("11:30", 279), ("12:00", 276)):
+    prev = plan(at(2, hhmm), at(2, "13:30"), cap, prev=prev)["state"]
+    seq.append(prev)
+check("replay of 17.10: one charging -> holding edge, no full",
+      seq, ["charging"] * 2 + ["holding"] * 6)
 
 print("currents")
 check("40% with 2 h to go, day -> charging, 60 A",
@@ -263,6 +296,55 @@ check("the sim's HA env agrees with this file's on the base case",
       sim_plan(at(2, "12:00"), at(2, "14:00").isoformat(), 112),
       plan(at(2, "12:00"), at(2, "14:00"), 112))
 
+print("DTEK emergency: grid and full current while it is on record")
+DTEK = "sensor.dtek_shutdowns"
+EM_END = at(2, "21:00").isoformat()
+
+
+def em_plan(now=None, dtek="outage_emergency", cap=112, start_state="unknown", switch="on",
+            **attrs):
+    h = House(now or at(2, "12:00"))
+    h.set(SWITCH, switch)
+    h.set(START, start_state)
+    h.set(CAP, cap)
+    h.set(DTEK, dtek, **dict(dict(outage_active=True, outage_type=2, outage_end=EM_END), **attrs))
+    return render(TEMPLATE, h)
+
+
+p = em_plan()
+check("31 Oct: emergency on record, pack at 40% -> charging at 60 A",
+      (p["state"], p["current"], p["emergency"]), ("charging", 60, True))
+check("... until DTEK's end", p["until"], EM_END)
+check("... at night too, same full current",
+      state_current(em_plan(now=at(2, "02:00"))), ("charging", 60))
+p = em_plan(cap=279)
+check("full (279 Ah) -> holding on grid, still the emergency's",
+      (p["state"], p["current"], p["emergency"]), ("holding", None, True))
+check("capacity unknown -> still charging (nothing to plan, just fill)",
+      state_current(em_plan(cap="unavailable")), ("charging", 60))
+check("end in the past, record still up -> rolls an hour ahead",
+      em_plan(outage_end=at(2, "11:00").isoformat())["until"], at(2, "13:00").isoformat())
+check("no end -> rolls an hour ahead",
+      em_plan(outage_end=None)["until"], at(2, "13:00").isoformat())
+check("stale poll re-serving the emergency -> still charging",
+      state_current(em_plan(dtek="stale")), ("charging", 60))
+check("stale poll, type as a string '2' -> still charging",
+      state_current(em_plan(dtek="stale", outage_type="2")), ("charging", 60))
+check("PLANNED outage on record (type 1) -> not an emergency, idle",
+      em_plan(dtek="outage_planned", outage_type=1)["state"], "idle")
+check("stale poll re-serving a planned outage -> idle",
+      em_plan(dtek="stale", outage_type=1)["state"], "idle")
+check("stale poll, outage over -> idle",
+      em_plan(dtek="stale", outage_active=False)["state"], "idle")
+check("no outage on record -> idle", em_plan(dtek="ok", outage_active=False,
+                                             outage_type=None)["state"], "idle")
+check("Pre-charge switched off -> off, the emergency does not override it",
+      em_plan(switch="off")["state"], "off")
+p = em_plan(dtek="ok", outage_active=False, outage_type=None,
+            start_state=at(2, "14:00").isoformat())
+check("schedules keep their own plan, not flagged emergency",
+      (p["state"], p["emergency"]), ("charging", False))
+
 print("drive")
 KNOWN = []
 
@@ -367,7 +449,12 @@ check("charging, current as a string '60' -> treated as 60",
 check("charging, no current -> no select write", writes(drive(amps=None)[0], OPT), [])
 check("select 'unavailable' -> still tried (HA logs the failed call)",
       writes(drive(select="unavailable")[0], OPT), [{"option": 60}])
-for st in ("full", "waiting_night", "idle", "off"):
+runs, h = drive(state="holding", amps=None, select="10")
+check("holding -> deadline armed, select left alone",
+      calls(runs), [(SET, {"datetime": "2026-11-02T12:00:00+00:00"})])
+check("charging -> holding with the deadline set -> nothing",
+      calls(drive(state="holding", amps=None, have="2026-11-02T12:00:00+00:00")[0]), [])
+for st in ("full", "waiting_night", "idle", "off", "holding"):
     check("%s -> never touches the select" % st,
           writes(drive(state=st, amps=None, until=None)[0], OPT), [])
 for bad in ("unavailable", "unknown"):
@@ -435,6 +522,24 @@ check("SOC unavailable -> the line says 'battery 0%' (float(0) default)",
       "(battery 0%," in start_msgs(h, h.change(PLAN, "charging", **CHARGING))[0], True)
 h = started_house()
 check("idle -> full -> nothing", start_msgs(h, h.change(PLAN, "full")), [])
+h = started_house(state="holding")
+check("holding -> charging (dipped below 95%) -> nothing",
+      start_msgs(h, h.change(PLAN, "charging", **CHARGING)), [])
+h = started_house(state="charging")
+check("charging -> holding -> nothing", start_msgs(h, h.change(PLAN, "holding")), [])
+
+h = started_house()
+check("emergency: says so, with DTEK's end and the amps",
+      start_msgs(h, h.change(PLAN, "charging", **dict(CHARGING, emergency=True,
+                                                     until=at(2, "21:00").isoformat()))),
+      ["DTEK emergency outage on record until 21:00: on grid, charging at 60 A (battery 40%)."])
+h = started_house()
+h.set("binary_sensor.grid_down", "on")
+check("emergency posted with the lights out: does not claim the grid",
+      start_msgs(h, h.change(PLAN, "charging", **dict(CHARGING, emergency=True,
+                                                     until=at(2, "21:00").isoformat()))),
+      ["DTEK emergency outage on record until 21:00: no mains now, the inverter charges "
+       "at 60 A the moment it is back (battery 40%)."])
 
 print("DST nights (were known bugs, fixed 2026-10-02)")
 # The plan adds and subtracts datetimes that share now()'s ZoneInfo, which

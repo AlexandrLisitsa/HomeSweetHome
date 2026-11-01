@@ -15,7 +15,7 @@
  * somewhere else: in which class lands on which chip, which sub-label a plan
  * state prints, which service a tap calls, and what a card full of
  * `unavailable` draws. That lives in _build/_patch and the click handlers, so
- * this file carries a small DOM -- an HTML parser good enough for the cards'
+ * this file drives a small DOM (fake_dom.js) -- an HTML parser good enough for the cards'
  * own templates, classList, style, dataset, querySelector, and event bubbling
  * through a shadow root -- and drives the real setConfig / `set hass` /
  * click / change paths. The card files are loaded as-is, no build step, and
@@ -32,489 +32,9 @@
 
 const fs = require("fs");
 const path = require("path");
-const vm = require("vm");
-
-const WWW = path.join(__dirname, "..", "config", "www");
-
-/* ========================================================================== */
-/* A small DOM                                                                */
-/* ========================================================================== */
-
-const VOID = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link",
-  "meta", "param", "source", "track", "wbr"]);
-const RAW = new Set(["style", "script", "textarea"]);
-
-function decode(s) {
-  return s.replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (m, e) => {
-    const k = e.toLowerCase();
-    if (k[0] === "#") {
-      return String.fromCodePoint(k[1] === "x" ? parseInt(k.slice(2), 16) : parseInt(k.slice(1), 10));
-    }
-    return { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: "\u00a0" }[k];
-  });
-}
-
-function escText(s) {
-  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-class Node0 {
-  constructor(type) {
-    this.nodeType = type;
-    this.parentNode = null;
-    this.childNodes = [];
-    this._listeners = {};
-  }
-  appendChild(n) {
-    if (n.parentNode) n.parentNode.removeChild(n);
-    n.parentNode = this;
-    this.childNodes.push(n);
-    return n;
-  }
-  removeChild(n) {
-    const i = this.childNodes.indexOf(n);
-    if (i >= 0) this.childNodes.splice(i, 1);
-    n.parentNode = null;
-    return n;
-  }
-  get children() { return this.childNodes.filter((n) => n.nodeType === 1); }
-  get firstElementChild() { return this.children[0] || null; }
-  get textContent() { return this.childNodes.map((c) => c.textContent).join(""); }
-  set textContent(v) {
-    this.childNodes.forEach((c) => { c.parentNode = null; });
-    this.childNodes = [];
-    const s = v === null || v === undefined ? "" : String(v);
-    if (s) this.appendChild(new TextNode(s));
-  }
-  get innerHTML() { return this.childNodes.map(serialize).join(""); }
-  set innerHTML(html) {
-    this.childNodes.forEach((c) => { c.parentNode = null; });
-    this.childNodes = [];
-    if (this._selIdx !== undefined) delete this._selIdx;
-    parseHTML(String(html), this);
-  }
-  addEventListener(type, fn) { (this._listeners[type] = this._listeners[type] || []).push(fn); }
-  removeEventListener(type, fn) {
-    const l = this._listeners[type] || [];
-    const i = l.indexOf(fn);
-    if (i >= 0) l.splice(i, 1);
-  }
-  /** Every element under this node, in document order. */
-  _all() {
-    const out = [];
-    const walk = (n) => n.childNodes.forEach((c) => {
-      if (c.nodeType === 1) { out.push(c); walk(c); }
-    });
-    walk(this);
-    return out;
-  }
-  querySelectorAll(sel) {
-    const groups = parseSelector(sel);
-    return this._all().filter((el) => groups.some((g) => matchComplex(el, g)));
-  }
-  querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
-}
-
-class TextNode extends Node0 {
-  constructor(data) { super(3); this.data = data; }
-  get textContent() { return this.data; }
-  set textContent(v) { this.data = String(v); }
-}
-
-function makeClassList(el) {
-  const get = () => (el.getAttribute("class") || "").split(/\s+/).filter(Boolean);
-  const put = (arr) => el.setAttribute("class", arr.join(" "));
-  return {
-    contains: (c) => get().indexOf(c) >= 0,
-    add: (...cs) => { const a = get(); cs.forEach((c) => { if (a.indexOf(c) < 0) a.push(c); }); put(a); },
-    remove: (...cs) => put(get().filter((c) => cs.indexOf(c) < 0)),
-    toggle: (c, force) => {
-      const has = get().indexOf(c) >= 0;
-      const want = force === undefined ? !has : !!force;
-      if (want && !has) put(get().concat([c]));
-      if (!want && has) put(get().filter((x) => x !== c));
-      return want;
-    },
-    get length() { return get().length; },
-    toString: () => get().join(" "),
-  };
-}
-
-function makeStyle() {
-  const props = {};
-  const style = {
-    setProperty: (k, v) => { props[k] = String(v); },
-    getPropertyValue: (k) => {
-      if (k in props) return props[k];
-      const camel = k.replace(/-([a-z])/g, (_m, ch) => ch.toUpperCase());
-      return style[camel] !== undefined && typeof style[camel] !== "function" ? String(style[camel]) : "";
-    },
-    removeProperty: (k) => { delete props[k]; },
-    _props: props,
-  };
-  return style;
-}
-
-function datasetProxy(el) {
-  const attr = (k) => "data-" + String(k).replace(/[A-Z]/g, (ch) => "-" + ch.toLowerCase());
-  return new Proxy({}, {
-    get: (_t, k) => (typeof k === "string" && el.hasAttribute(attr(k)) ? el.getAttribute(attr(k)) : undefined),
-    set: (_t, k, v) => { el.setAttribute(attr(k), v); return true; },
-    has: (_t, k) => el.hasAttribute(attr(k)),
-    deleteProperty: (_t, k) => { el.removeAttribute(attr(k)); return true; },
-  });
-}
-
-class Element extends Node0 {
-  constructor(tag) {
-    super(1);
-    this.localName = String(tag || "div").toLowerCase();
-    this.tagName = this.localName.toUpperCase();
-    this._attrs = new Map();
-    this.classList = makeClassList(this);
-    this.style = makeStyle();
-    this.dataset = datasetProxy(this);
-  }
-  getAttribute(n) { return this._attrs.has(n) ? this._attrs.get(n) : null; }
-  hasAttribute(n) { return this._attrs.has(n); }
-  removeAttribute(n) { this._attrs.delete(n); }
-  setAttribute(n, v) {
-    this._attrs.set(n, String(v));
-    if (n === "style") {
-      String(v).split(";").forEach((decl) => {
-        const i = decl.indexOf(":");
-        if (i > 0) this.style.setProperty(decl.slice(0, i).trim(), decl.slice(i + 1).trim());
-      });
-    }
-  }
-  get id() { return this.getAttribute("id") || ""; }
-  get className() { return this.getAttribute("class") || ""; }
-  get title() { return this.getAttribute("title") || ""; }
-  set title(v) { this.setAttribute("title", v); }
-  get hidden() { return this.hasAttribute("hidden"); }
-  set hidden(v) { if (v) this.setAttribute("hidden", ""); else this.removeAttribute("hidden"); }
-  get disabled() { return this.hasAttribute("disabled"); }
-  set disabled(v) { if (v) this.setAttribute("disabled", ""); else this.removeAttribute("disabled"); }
-  get checked() { return this._checked !== undefined ? this._checked : this.hasAttribute("checked"); }
-  set checked(v) { this._checked = !!v; }
-  get options() { return this.querySelectorAll("option"); }
-  get value() {
-    if (this.localName === "select") {
-      const opts = this.options;
-      if (this._selIdx !== undefined) return this._selIdx >= 0 && opts[this._selIdx] ? opts[this._selIdx].value : "";
-      const sel = opts.find((o) => o.hasAttribute("selected")) || opts[0];
-      return sel ? sel.value : "";
-    }
-    if (this.localName === "option") {
-      return this.hasAttribute("value") ? this.getAttribute("value") : this.textContent.replace(/\s+/g, " ").trim();
-    }
-    if (this._value !== undefined) return this._value;
-    if (this.localName === "textarea") return this.textContent;
-    return this.getAttribute("value") || "";
-  }
-  set value(v) {
-    if (this.localName === "select") {
-      this._selIdx = this.options.findIndex((o) => o.value === String(v));
-      return;
-    }
-    this._value = String(v);
-  }
-  click() { this._clicked = (this._clicked || 0) + 1; }
-}
-
-class ShadowRoot0 extends Node0 {
-  constructor(host) { super(11); this.host = host; this.activeElement = null; }
-}
-
-class HostElement extends Element {
-  constructor() { super("host-element"); this.shadowRoot = null; this.dispatched = []; }
-  attachShadow() { this.shadowRoot = new ShadowRoot0(this); return this.shadowRoot; }
-  dispatchEvent(ev) {
-    this.dispatched.push(ev);
-    (this._listeners[ev.type] || []).forEach((fn) => fn(ev));
-    return true;
-  }
-}
-
-function serialize(n) {
-  if (n.nodeType === 3) return escText(n.data);
-  const attrs = Array.from(n._attrs.entries())
-    .map(([k, v]) => " " + k + '="' + String(v).replace(/&/g, "&amp;").replace(/"/g, "&quot;") + '"').join("");
-  if (VOID.has(n.localName)) return "<" + n.localName + attrs + ">";
-  return "<" + n.localName + attrs + ">" + n.childNodes.map(serialize).join("") + "</" + n.localName + ">";
-}
-
-/** Enough HTML for the cards' own templates: tags, quoted attributes, raw text, implied </option>. */
-function parseHTML(html, parent) {
-  const stack = [parent];
-  const top = () => stack[stack.length - 1];
-  const len = html.length;
-  let i = 0;
-  while (i < len) {
-    if (html[i] === "<" && html.startsWith("<!--", i)) {
-      const e = html.indexOf("-->", i);
-      i = e < 0 ? len : e + 3;
-      continue;
-    }
-    if (html[i] === "<" && html[i + 1] === "/") {
-      const e = html.indexOf(">", i);
-      const name = html.slice(i + 2, e).trim().toLowerCase();
-      for (let k = stack.length - 1; k > 0; k--) {
-        if (stack[k].localName === name) { stack.length = k; break; }
-      }
-      i = e + 1;
-      continue;
-    }
-    if (html[i] === "<" && /[a-zA-Z]/.test(html[i + 1] || "")) {
-      let j = i + 1;
-      while (j < len && !/[\s/>]/.test(html[j])) j++;
-      const name = html.slice(i + 1, j).toLowerCase();
-      const el = new Element(name);
-      let selfClose = false;
-      for (;;) {
-        while (j < len && /\s/.test(html[j])) j++;
-        if (j >= len) break;
-        if (html[j] === ">") { j++; break; }
-        if (html[j] === "/" && html[j + 1] === ">") { selfClose = true; j += 2; break; }
-        if (html[j] === "/") { j++; continue; }
-        let k = j;
-        while (k < len && !/[\s=/>]/.test(html[k])) k++;
-        const an = html.slice(j, k);
-        j = k;
-        while (j < len && /\s/.test(html[j])) j++;
-        let av = "";
-        if (html[j] === "=") {
-          j++;
-          while (j < len && /\s/.test(html[j])) j++;
-          const q = html[j];
-          if (q === '"' || q === "'") {
-            const e = html.indexOf(q, j + 1);
-            av = html.slice(j + 1, e);
-            j = e + 1;
-          } else {
-            let e = j;
-            while (e < len && !/[\s>]/.test(html[e])) e++;
-            av = html.slice(j, e);
-            j = e;
-          }
-        }
-        if (an) el.setAttribute(an, decode(av));
-      }
-      if (name === "option" && top().localName === "option") stack.pop();
-      top().appendChild(el);
-      if (RAW.has(name) && !selfClose) {
-        const close = html.toLowerCase().indexOf("</" + name, j);
-        const end = close < 0 ? len : close;
-        const raw = html.slice(j, end);
-        if (raw) el.appendChild(new TextNode(name === "textarea" ? decode(raw) : raw));
-        i = close < 0 ? len : html.indexOf(">", close) + 1;
-        continue;
-      }
-      if (!VOID.has(name) && !selfClose) stack.push(el);
-      i = j;
-      continue;
-    }
-    let e = html.indexOf("<", i + 1);
-    if (e < 0) e = len;
-    top().appendChild(new TextNode(decode(html.slice(i, e))));
-    i = e;
-  }
-}
-
-/* --- selectors: tag, .class, #id, [attr], [attr="v"], descendant, comma ---- */
-
-function parseCompound(s) {
-  const out = { tag: null, classes: [], id: null, attrs: [] };
-  const re = /^([a-zA-Z][\w-]*|\*)|\.([\w-]+)|#([\w-]+)|\[([\w-]+)(?:=(?:"([^"]*)"|'([^']*)'|([^\]]*)))?\]/g;
-  let m;
-  let pos = 0;
-  while ((m = re.exec(s)) && m.index === pos) {
-    pos = re.lastIndex;
-    if (m[1]) out.tag = m[1] === "*" ? null : m[1].toLowerCase();
-    else if (m[2]) out.classes.push(m[2]);
-    else if (m[3]) out.id = m[3];
-    else if (m[4]) out.attrs.push([m[4], m[5] !== undefined ? m[5] : m[6] !== undefined ? m[6] : m[7]]);
-    if (pos >= s.length) break;
-  }
-  if (pos !== s.length) throw new Error("test DOM: unsupported selector part " + JSON.stringify(s));
-  return out;
-}
-
-function parseSelector(sel) {
-  return sel.split(",").map((g) => {
-    const parts = [];
-    let cur = "";
-    let q = null;
-    let br = 0;
-    for (const ch of g.trim()) {
-      if (q) { cur += ch; if (ch === q) q = null; continue; }
-      if (ch === '"' || ch === "'") { q = ch; cur += ch; continue; }
-      if (ch === "[") br++;
-      if (ch === "]") br--;
-      if (/\s/.test(ch) && !br) { if (cur) parts.push(cur); cur = ""; continue; }
-      cur += ch;
-    }
-    if (cur) parts.push(cur);
-    return parts.map(parseCompound);
-  });
-}
-
-function matchCompound(el, c) {
-  if (!el || el.nodeType !== 1) return false;
-  if (c.tag && el.localName !== c.tag) return false;
-  if (c.id && el.id !== c.id) return false;
-  if (c.classes.some((k) => !el.classList.contains(k))) return false;
-  return c.attrs.every(([n, v]) => el.hasAttribute(n) && (v === undefined || el.getAttribute(n) === v));
-}
-
-function matchComplex(el, parts) {
-  if (!matchCompound(el, parts[parts.length - 1])) return false;
-  let node = el.parentNode;
-  for (let i = parts.length - 2; i >= 0; i--) {
-    while (node && !matchCompound(node, parts[i])) node = node.parentNode;
-    if (!node) return false;
-    node = node.parentNode;
-  }
-  return true;
-}
-
-/* --- events --------------------------------------------------------------- */
-
-class CustomEvent0 {
-  constructor(type, init) {
-    init = init || {};
-    this.type = type;
-    this.detail = init.detail;
-    this.bubbles = !!init.bubbles;
-    this.composed = !!init.composed;
-  }
-}
-class Event0 extends CustomEvent0 {}
-
-/**
- * Fire an event at `node` and bubble it out through the shadow root to the
- * host, as a composed UI event does. Returns the event, with `stopped` and
- * `defaultPrevented` readable.
- */
-function fire(node, type, extra) {
-  const pathArr = [];
-  let n = node;
-  while (n) {
-    pathArr.push(n);
-    n = n.nodeType === 11 ? n.host : n.parentNode;
-  }
-  const ev = Object.assign({
-    type: type,
-    target: node,
-    stopped: false,
-    defaultPrevented: false,
-    composedPath: () => pathArr.slice(),
-    stopPropagation() { this.stopped = true; },
-    preventDefault() { this.defaultPrevented = true; },
-  }, extra || {});
-  for (const p of pathArr) {
-    ev.currentTarget = p;
-    (p._listeners[type] || []).slice().forEach((fn) => fn(ev));
-    if (ev.stopped) break;
-  }
-  return ev;
-}
-
-/* ========================================================================== */
-/* Loading a card                                                             */
-/* ========================================================================== */
-
-function loadCard(file) {
-  let Klass = null;
-  const timers = [];
-  const clipboard = [];
-  const created = [];
-  const sandbox = {
-    HTMLElement: HostElement,
-    CustomEvent: CustomEvent0,
-    Event: Event0,
-    customElements: { get: () => undefined, define: (_n, k) => { Klass = k; } },
-    window: {
-      customCards: [],
-      setInterval: () => 0,
-      clearInterval: () => {},
-      setTimeout: (fn) => { timers.push(fn); return timers.length; },
-      clearTimeout: () => {},
-    },
-    document: {
-      head: null,
-      getElementById: () => null,
-      createElement: (t) => { const e = new Element(t); created.push(e); return e; },
-    },
-    navigator: { clipboard: { writeText: (t) => { clipboard.push(t); return Promise.resolve(); } } },
-    Blob: class { constructor(parts, opts) { this.parts = parts; this.type = opts && opts.type; } },
-    URL: { createObjectURL: () => "blob:test", revokeObjectURL: () => {} },
-    console: { info: () => {} },
-    Math: Math, Date: Date, Number: Number, JSON: JSON,
-  };
-  sandbox.globalThis = sandbox;
-  vm.createContext(sandbox);
-  vm.runInContext(fs.readFileSync(path.join(WWW, file), "utf8"), sandbox, { filename: file });
-  if (!Klass) throw new Error(file + " did not define a custom element");
-  return {
-    Card: Klass,
-    sandbox: sandbox,
-    timers: timers,
-    clipboard: clipboard,
-    created: created,
-    flushTimers: () => { while (timers.length) timers.shift()(); },
-  };
-}
-
-/** A fake hass: states map, a service-call recorder, and a websocket stub. */
-function mkHass(states, opts) {
-  opts = opts || {};
-  const calls = [];
-  const raw = [];
-  const ws = [];
-  return {
-    states: states,
-    calls: calls,
-    raw: raw,
-    ws: ws,
-    services: opts.services || {},
-    localize: opts.localize,
-    callService: function (domain, service, data) {
-      calls.push([domain, service, data]);
-      raw.push(Array.from(arguments));
-      return opts.svc ? opts.svc(domain, service, data, arguments) : Promise.resolve();
-    },
-    callWS: async (msg) => {
-      ws.push(msg);
-      return opts.callWS ? opts.callWS(msg) : {};
-    },
-  };
-}
-
-/** A state object; `id` fills entity_id, which the load-shedding picker needs. */
-function S(state, attributes, extra) {
-  return Object.assign({ state: String(state), attributes: attributes || {},
-    last_changed: new Date().toISOString(), last_updated: new Date().toISOString() }, extra || {});
-}
-
-function withIds(states) {
-  Object.keys(states).forEach((k) => { if (states[k]) states[k].entity_id = k; });
-  return states;
-}
-
-const flush = () => new Promise((r) => setImmediate(r));
-
-/** HH:MM as the cards print it, in whatever locale this machine runs. */
-function hm(iso) {
-  return new Date(Date.parse(iso)).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-}
-
-/** An ISO stamp for a local wall-clock time today. */
-function localIso(h, m) {
-  const d = new Date();
-  d.setHours(h, m, 0, 0);
-  return d.toISOString();
-}
+const {
+  WWW, Element, fire, loadCard, mkHass, S, withIds, flush, hm, localIso,
+} = require("./fake_dom");
 
 /* ========================================================================== */
 /* Runner                                                                     */
@@ -577,6 +97,7 @@ async function inverterSuite() {
     gv: "sensor.powmr_inverter_grid_voltage",
     gf: "sensor.powmr_inverter_grid_frequency",
     gp: "sensor.powmr_inverter_grid_real_power_calculated",
+    down: "binary_sensor.grid_down",
     safe: "binary_sensor.powmr_inverter_grid_condition_safe",
     rng: "binary_sensor.powmr_inverter_grid_voltage_in_range",
     acv: "sensor.powmr_inverter_ac_output_voltage",
@@ -588,13 +109,15 @@ async function inverterSuite() {
     bv: "sensor.powmr_inverter_battery_voltage_inverter",
     cc: "sensor.powmr_inverter_battery_charge_current",
     dc: "sensor.powmr_inverter_battery_discharge_current",
-    td: "sensor.powmr_inverter_grid_real_tariff_day",
-    tn: "sensor.powmr_inverter_grid_real_tariff_night",
-    tot: "sensor.powmr_inverter_total_energy_consumption",
+    td: "sensor.electricity_meter_tariff_day",
+    tn: "sensor.electricity_meter_tariff_night",
+    np: "input_number.grid_night_price",
+    tot: "sensor.electricity_meter_energy",
+    mw: "sensor.electricity_meter_power",
     maxc: "select.powmr_inverter_max_ac_charge_current",
     prio: "select.powmr_inverter_power_priority",
     mode: "select.powmr_inverter_inverter_ac_input_mode",
-    tariff: "select.grid_real_tariff",
+    tariff: "select.electricity_meter_tariff",
     pplan: "sensor.outage_pre_charge_plan",
     ad: "input_boolean.adaptive_night_charge",
     aplan: "sensor.adaptive_charge_plan",
@@ -609,7 +132,7 @@ async function inverterSuite() {
   function base() {
     return {
       [E.gv]: S("230.0"), [E.gf]: S("50.00"), [E.gp]: S("300"),
-      [E.safe]: S("off"), [E.rng]: S("on"),
+      [E.down]: S("off"), [E.safe]: S("off"), [E.rng]: S("on"),
       [E.acv]: S("230.0"), [E.lw]: S("500"), [E.lp]: S("21"), [E.up]: S("3.5"),
       [E.bw]: S("0"), [E.soc]: S("80"), [E.bv]: S("26.8"), [E.cc]: S("0"), [E.dc]: S("0"),
       [E.td]: S("123.456"), [E.tn]: S("78.9"), [E.tot]: S("202.3457"),
@@ -634,6 +157,9 @@ async function inverterSuite() {
     c.hass = h;
     return { c: c, h: h, el: c._el, set: (st) => { h.states = st; c.hass = Object.assign({}, h, { states: st }); } };
   }
+
+  /** A tooltip's first line: name, state and the plan's reason; the help follows. */
+  const head = (t) => String(t).split("\n")[0];
 
   /** Re-render with a modified copy of the states. */
   function rerender(r, mutate) {
@@ -683,21 +209,25 @@ async function inverterSuite() {
     const vl = [[null, "NO DATA"], [199.9, "UNDERVOLTAGE"], [200, "LOW"], [220, "LOW"], [220.1, "NOMINAL"],
       [239.9, "NOMINAL"], [240, "HIGH"], [250, "HIGH"], [250.1, "OVERVOLTAGE"], [0, "UNDERVOLTAGE"]];
     vl.forEach(([v, w]) => eq("_vLabel(" + v + ")", c._vLabel(v), w));
-    const vc = [[null, "#5C616B"], [199.9, BAD_C], [200, WARN_C], [220, WARN_C], [230, OK_C], [240, WARN_C],
-      [250, WARN_C], [250.1, BAD_C]];
+    // Colours fade across each edge (card-ramp.js): solid inside a band, half
+    // of each on the edge. The words above still snap on the edge.
+    const RA = "#B57451", AG = "#838D58"; // red/amber and amber/green, half-half
+    const vc = [[null, "#5C616B"], [190, BAD_C], [195, BAD_C], [200, RA], [205, WARN_C], [210, WARN_C],
+      [220, AG], [230, OK_C], [235, OK_C], [240, AG], [245, WARN_C], [250, RA], [255, BAD_C], [300, BAD_C]];
     vc.forEach(([v, w]) => eq("_vColor(" + v + ")", c._vColor(v), w));
     const ll = [[null, "NO DATA"], [0, "NORMAL"], [60, "NORMAL"], [60.1, "ELEVATED"], [85, "ELEVATED"],
       [85.1, "HEAVY"], [100, "HEAVY"], [100.1, "OVERLOAD"]];
     ll.forEach(([v, w]) => eq("_loadLabel(" + v + ")", c._loadLabel(v), w));
-    eq("_loadColor(60)", c._loadColor(60), OK_C);
-    eq("_loadColor(61)", c._loadColor(61), WARN_C);
-    eq("_loadColor(86)", c._loadColor(86), BAD_C);
+    const lc = [[null, "#5C616B"], [0, OK_C], [50, OK_C], [60, AG], [70, WARN_C], [75, WARN_C], [85, RA],
+      [95, BAD_C], [140, BAD_C]];
+    lc.forEach(([v, w]) => eq("_loadColor(" + v + ")", c._loadColor(v), w));
     const sl = [[null, "NO DATA"], [0, "CRITICAL"], [19.9, "CRITICAL"], [20, "MODERATE"], [69.9, "MODERATE"],
       [70, "HEALTHY"], [94.9, "HEALTHY"], [95, "FULL"], [100, "FULL"], [-3, "CRITICAL"]];
     sl.forEach(([v, w]) => eq("_socLabel(" + v + ")", c._socLabel(v), w));
-    eq("_socColor(19)", c._socColor(19), BAD_C);
-    eq("_socColor(20)", c._socColor(20), WARN_C);
-    eq("_socColor(70)", c._socColor(70), OK_C);
+    const sc = [[null, "#5C616B"], [-5, BAD_C], [10, BAD_C], [20, RA], [30, WARN_C], [45, WARN_C],
+      [60, WARN_C], [70, AG], [80, OK_C], [120, OK_C]];
+    sc.forEach(([v, w]) => eq("_socColor(" + v + ")", c._socColor(v), w));
+    eq("_socColor moves every percent", c._socColor(71) !== c._socColor(72), true);
     eq("_pct null is 0", c._pct(null, 190, 70), 0);
     eq("_pct clamps low", c._pct(100, 190, 70), 0);
     eq("_pct clamps high", c._pct(400, 190, 70), 100);
@@ -764,11 +294,22 @@ async function inverterSuite() {
     const r = mk(base());
     const el = r.el;
     check("built", r.c._built === true);
-    ["uptime", "livedot", "mode", "ret", "retsep", "clock", "chip0", "chip4", "chipSub4", "chipAd2", "chipAdSub2",
+    ["uptime", "livedot", "mode", "ret", "retsep", "clock", "chip0", "chip2", "chipNt2", "chipAd2", "chipPc2",
+      "chipAdSub2", "chipPcSub2",
       "gridVal", "invVal", "loadVal", "socVal", "maxChg", "prio", "acMode", "erow0", "chLine", "stats"]
       .forEach((k) => check("has data-ref " + k, !!el[k]));
-    check("only Pre-charge carries a plan sub-label", !el.chipSub0 && !el.chipSub2 && !!el.chipSub4);
-    check("only AC charge carries the adaptive dot", !el.chipAd0 && !el.chipAd4 && !!el.chipAd2);
+    check("three chips: Night only and Pre-charge are not chips any more", !el.chip3 && !el.chip4);
+    check("only AC charge carries the extra icons",
+      ["Nt", "Ad", "Pc"].every((k) => !el["chip" + k + "0"] && !el["chip" + k + "1"] && !!el["chip" + k + "2"]));
+    const icons = el.chip2.querySelectorAll(".dw.i ha-icon").map((n) => n.getAttribute("icon"));
+    eq("AC charge's feature toggles are icons, in order", icons,
+      ["mdi:weather-night", "mdi:tune-variant", "mdi:battery-clock"]);
+    check("AC charge has no dot or icon of its own after the label: the left icon is the switch",
+      el.chip2.querySelector(".dw .dot") === null && el.chip2.classList.contains("nodot"));
+    check("Auto and Protect keep their plain dot", !!el.chip0.querySelector(".dw .dot") && !el.chip0.querySelector(".dw.i"));
+    eq("Night only lights blue", el.chipNt2.style._props["--dc"], "#6EA8FE");
+    eq("adaptive and Pre-charge light amber",
+      [el.chipAd2.style._props["--dc"], el.chipPc2.style._props["--dc"]], ["#AE8446", "#AE8446"]);
     eq("uptime", el.uptime.textContent, "up 3d 12h");
     eq("mode word", el.mode.textContent, "Grid connected · UPS");
     eq("live dot green", el.livedot.style.background, OK_C);
@@ -797,7 +338,10 @@ async function inverterSuite() {
     // The CSS gates the pulse on BOTH classes; the patch only sets `live`.
     const css = r.c.shadowRoot.querySelector("style").textContent;
     check("pulse needs .on AND .live", css.indexOf(".chip.on.live {") >= 0);
-    check("dimmed adaptive dot is styled", css.indexOf(".chip .dw.ad.dis {") >= 0);
+    check("dimmed adaptive icon is styled", css.indexOf(".chip .dw.i.dis {") >= 0);
+    check("a lit icon takes its own colour", css.indexOf(".chip .dw.i.on ha-icon { color: var(--dc);") >= 0);
+    check("the chip's main icon pulses when it has no dot", css.indexOf(".chip.on.live.nodot .ic ha-icon { animation: pmpulse") >= 0);
+    check("...and stops under reduced motion", css.indexOf(".chip.on.live.nodot .ic ha-icon, .chip .dw.i.on.act ha-icon { animation-play-state: paused; }") >= 0);
   }
 
   group = "inverter/escaping: ";
@@ -820,18 +364,37 @@ async function inverterSuite() {
     eq("Auto on", el.chip0.classList.contains("on"), true);
     eq("Protect on", el.chip1.classList.contains("on"), true);
     eq("AC charge on", el.chip2.classList.contains("on"), true);
-    eq("Night only unavailable is off", el.chip3.classList.contains("on"), false);
-    eq("Pre-charge missing is off", el.chip4.classList.contains("on"), false);
-    eq("title from friendly_name", el.chip0.title, "Auto tariff mode — on");
-    eq("title for unavailable", el.chip3.title, "Night charging only — unavailable");
-    eq("title for a missing entity is the label", el.chip4.title, "Pre-charge");
+    eq("Night only unavailable is off", el.chipNt2.classList.contains("on"), false);
+    eq("Pre-charge missing is off", el.chipPc2.classList.contains("on"), false);
+    eq("title from friendly_name", head(el.chip0.dataset.tip), "Auto tariff mode — on");
+    eq("icon title for unavailable", head(el.chipNt2.dataset.tip), "Night charging only — unavailable");
+    eq("icon title for a missing entity is the label", head(el.chipPc2.dataset.tip), "Pre-charge — unknown");
+    rerender(r, (s) => { s[E.night] = S("on", { friendly_name: "Night charging only" }); });
+    check("Night only on lights its icon, not the chip's own", el.chipNt2.classList.contains("on"));
+    rerender(r, (s) => { s[E.acc] = S("off", { friendly_name: "AC charging" }); });
+    check("charger off, Night only on: chip off, Night icon still lit",
+      !el.chip2.classList.contains("on") && el.chipNt2.classList.contains("on"));
+    rerender(r, (s) => { s[E.acc] = S("on", { friendly_name: "AC charging" }); s[E.night] = S("unavailable", { friendly_name: "Night charging only" }); });
     // The print reads states, not attributes: a friendly_name change alone
     // waits for the next state change, which is fine for a name.
     rerender(r, (s) => { s[E.prot] = S("on", {}); });
-    eq("attribute-only change does not re-patch", el.chip1.title, "Auto grid protection — on");
+    eq("attribute-only change does not re-patch", head(el.chip1.dataset.tip), "Auto grid protection — on");
     rerender(r, (s) => { s[E.prot] = S("off", {}); });
-    eq("title without friendly_name falls back to label", el.chip1.title, "Protect — off");
-    check("no chip is live while the pack idles", [0, 1, 2, 3, 4].every((i) => !el["chip" + i].classList.contains("live")));
+    eq("title without friendly_name falls back to label", head(el.chip1.dataset.tip), "Protect — off");
+    check("no chip is live while the pack idles", [0, 1, 2].every((i) => !el["chip" + i].classList.contains("live")));
+    // Every toggle's tooltip says what it does, with an example, after the state line.
+    const tips = { chip0: "SBU Battery", chip1: "185–250 V", chip2: "BMS charge switch",
+      chipNt2: "night tariff", chipAd2: "lowest current", chipPc2: "DTEK outage" };
+    Object.keys(tips).forEach((k) => {
+      const t = el[k].dataset.tip.split("\n");
+      check(k + ": a description after the state line", t.length >= 3 && t[1].indexOf(tips[k]) >= 0, el[k].dataset.tip);
+      check(k + ": with an example", t.some((l) => l.indexOf("E.g.") === 0), el[k].dataset.tip);
+    });
+    check("the chip's own icon and dot inherit its description (no title of their own)",
+      el.chip2.querySelector(".ic").getAttribute("data-tip") === null
+      && el.chip0.querySelector(".dw").getAttribute("data-tip") === null);
+    rerender(r, (s) => { s[E.ad] = S("on"); });
+    eq("a re-patch does not stack descriptions", el.chipAd2.dataset.tip.split("E.g.").length, 2);
   }
 
   group = "inverter/live: ";
@@ -841,7 +404,8 @@ async function inverterSuite() {
       ["exactly 2 W is not charging", { [E.bw]: "2" }, false],
       ["discharging", { [E.bw]: "-500" }, false],
       ["battery power unavailable", { [E.bw]: "unavailable" }, false],
-      ["grid unsafe (safe=on)", { [E.bw]: "800", [E.safe]: "on" }, false],
+      ["grid down (grid_down=on)", { [E.bw]: "800", [E.down]: "on" }, false],
+      ["grid out of range but live (safe=on)", { [E.bw]: "800", [E.safe]: "on" }, true],
       ["grid at 149.9 V", { [E.bw]: "800", [E.gv]: "149.9" }, false],
       ["grid at exactly 150 V is up", { [E.bw]: "800", [E.gv]: "150" }, true],
       ["voltage unknown, safe off: up", { [E.bw]: "800", [E.gv]: "unknown" }, true],
@@ -853,7 +417,7 @@ async function inverterSuite() {
       const r = mk(st);
       eq(name + ": AC charge live", r.el.chip2.classList.contains("live"), want);
       check(name + ": no other chip ever live",
-        [0, 1, 3, 4].every((i) => !r.el["chip" + i].classList.contains("live")));
+        [0, 1].every((i) => !r.el["chip" + i].classList.contains("live")));
     });
     // `live` follows the charging, the switch only decides whether CSS shows it.
     const st = base();
@@ -870,13 +434,15 @@ async function inverterSuite() {
     c.setConfig({});
     const g = (o) => { c._hass = mkHass(Object.assign(base(), o)); return c._gridDown(); };
     eq("healthy", g({}), false);
-    eq("safety sensor on means down", g({ [E.safe]: S("on") }), true);
+    eq("grid_down on means down", g({ [E.down]: S("on") }), true);
+    eq("the 185-250 V check alone is not down", g({ [E.safe]: S("on") }), false);
     eq("149 V is down", g({ [E.gv]: S("149") }), true);
     eq("0 V is down", g({ [E.gv]: S("0") }), true);
     eq("150 V is up", g({ [E.gv]: S("150") }), false);
-    eq("nothing known is not down", g({ [E.gv]: S("unknown"), [E.safe]: S("unknown") }), false);
+    eq("nothing known is not down", g({ [E.gv]: S("unknown"), [E.down]: S("unknown") }), false);
 
     const st = base();
+    st[E.down] = S("on");
     st[E.safe] = S("on");
     st[E.rng] = S("off");
     st[E.gv] = S("0");
@@ -887,6 +453,24 @@ async function inverterSuite() {
     eq("down: tile red", r.el.gridVal.style.color, BAD_C);
     check("down: no countdown", r.el.ret.hidden);
     eq("down: mark clamps at the left", r.el.gridMark.style.left, "0.00%");
+
+    // 31 Oct: the grid came back at 180-199 V. Live, just low.
+    const low = (prot) => {
+      const s2 = base();
+      s2[E.gv] = S("186.3");
+      s2[E.safe] = S("on");
+      s2[E.rng] = S("off");
+      s2[E.prot] = S(prot, {});
+      return mk(s2);
+    };
+    let r2 = low("off");
+    eq("low, Protect off: tile word", r2.el.gridState.textContent, "UNDERVOLTAGE");
+    eq("low, Protect off: header word", r2.el.mode.textContent, "Grid connected · UPS");
+    eq("low, Protect off: dot green", r2.el.livedot.style.background, OK_C);
+    r2 = low("on");
+    eq("low, Protect on: tile word", r2.el.gridState.textContent, "UNDERVOLTAGE");
+    eq("low, Protect on: header word", r2.el.mode.textContent, "Grid unsafe · UPS");
+    eq("low, Protect on: dot amber", r2.el.livedot.style.background, WARN_C);
   }
 
   group = "inverter/return: ";
@@ -912,6 +496,10 @@ async function inverterSuite() {
     eq("garbage last_changed", rl("on", "on", "not a date"), null);
     eq("missing safe sensor", rl(null, "on", ago(60)), null);
     eq("missing range sensor", rl("on", null, ago(60)), null);
+    c.setConfig({});
+    c._hass = mkHass(Object.assign(base(), { [E.safe]: S("on"), [E.prot]: S("off", {}),
+      [E.rng]: S("on", {}, { last_changed: ago(60) }) }));
+    eq("Protect off: the firmware never left the grid, nothing counting", c._returnLeft(), null);
     const l2 = rl("on", "on", ago(60), { grid_return_s: 600 });
     check("grid_return_s is honoured", l2 > 539 && l2 <= 540, String(l2));
     const skew = rl("on", "on", new Date(Date.now() + 60000).toISOString());
@@ -940,6 +528,20 @@ async function inverterSuite() {
   }
 
   /* --- Pre-charge sub-label ------------------------------------------------- */
+  group = "inverter/fx: ";
+  {
+    let r = mk(base());
+    check("off: no effect styles", !r.c.shadowRoot.innerHTML.includes("fxRing"));
+    eq("off: no glow", r.el.gridTile.style.getPropertyValue("--fxg"), "");
+    // As lovelace.dashboard_inverter.json lists them.
+    r = mk(base(), { fx: ["power_glow", "chart_polish"] });
+    check("on: effect styles", r.c.shadowRoot.innerHTML.includes("fxRing"));
+    eq("the grid value is plain text", r.el.gridVal.innerHTML, "230.0<i>V</i>");
+    check("glow: set on the grid tile and its run",
+      r.el.gridTile.style.getPropertyValue("--fxg") !== "" && r.el.gridRun.style.getPropertyValue("--fxg") !== "");
+    check("chart: gradient and dot nodes exist", !!r.el.fxStop0 && !!r.el.fxDot);
+  }
+
   group = "inverter/precharge: ";
   {
     const until = localIso(9, 30);
@@ -951,28 +553,34 @@ async function inverterSuite() {
       return mk(st).el;
     };
     let el = plan("charging", { current: 30, until: until, reason: "outage at 10:00" });
-    eq("charging", el.chipSub4.textContent, "30 A → " + hm(until));
+    eq("charging", el.chipPcSub2.textContent, "30 A → " + hm(until));
     check("time is HH:MM", /^\d\d:\d\d$/.test(hm(until)), hm(until));
-    eq("tooltip carries state and reason", el.chip4.title, "Outage pre-charge — on · charging: outage at 10:00");
+    eq("tooltip carries state and reason", head(el.chipPc2.dataset.tip), "Outage pre-charge — on · charging: outage at 10:00");
+    check("switch on lights the Pre-charge icon", el.chipPc2.classList.contains("on"));
     el = plan("waiting_night", { until: until, reason: "night will do" });
-    eq("waiting_night", el.chipSub4.textContent, "at night → " + hm(until));
+    eq("waiting_night", el.chipPcSub2.textContent, "at night → " + hm(until));
     el = plan("waiting_night", { until: "garbage" });
-    eq("waiting_night with a bad until: no dangling arrow", el.chipSub4.textContent, "at night");
+    eq("waiting_night with a bad until: no dangling arrow", el.chipPcSub2.textContent, "at night");
     el = plan("full", { reason: "already full" });
-    eq("full", el.chipSub4.textContent, "full");
+    eq("full", el.chipPcSub2.textContent, "full");
+    el = plan("holding", { until: until, reason: "full, holding on grid until the outage" });
+    eq("holding", el.chipPcSub2.textContent, "on grid → " + hm(until));
+    el = plan("holding", { until: "garbage" });
+    eq("holding with a bad until: no dangling arrow", el.chipPcSub2.textContent, "on grid");
     el = plan("idle", { reason: "" });
-    eq("idle prints nothing", el.chipSub4.textContent, "");
-    eq("empty reason adds nothing to the tooltip", el.chip4.title, "Outage pre-charge — on");
+    eq("idle prints nothing", el.chipPcSub2.textContent, "");
+    eq("empty reason adds nothing to the tooltip", head(el.chipPc2.dataset.tip), "Outage pre-charge — on");
     el = plan("charging", { current: 30, until: until, reason: "x" }, "off");
-    eq("switch off: nothing, whatever the plan", el.chipSub4.textContent, "");
-    eq("switch off: reason still explains", el.chip4.title, "Outage pre-charge — off · charging: x");
+    eq("switch off: nothing, whatever the plan", el.chipPcSub2.textContent, "");
+    eq("switch off: reason still explains", head(el.chipPc2.dataset.tip), "Outage pre-charge — off · charging: x");
+    check("switch off: icon dark", !el.chipPc2.classList.contains("on"));
     el = plan("charging", { current: 30, until: until }, "unavailable");
-    eq("switch unavailable: nothing", el.chipSub4.textContent, "");
+    eq("switch unavailable: nothing", el.chipPcSub2.textContent, "");
     el = plan(null);
-    eq("plan sensor missing: nothing", el.chipSub4.textContent, "");
-    eq("plan sensor missing: plain tooltip", el.chip4.title, "Outage pre-charge — on");
+    eq("plan sensor missing: nothing", el.chipPcSub2.textContent, "");
+    eq("plan sensor missing: plain tooltip", head(el.chipPc2.dataset.tip), "Outage pre-charge — on");
     el = plan("unavailable", {});
-    eq("plan unavailable: nothing", el.chipSub4.textContent, "");
+    eq("plan unavailable: nothing", el.chipPcSub2.textContent, "");
 
     // The tooltip is rebuilt, not appended to, on every patch.
     const st = base();
@@ -980,17 +588,17 @@ async function inverterSuite() {
     st[E.pplan] = S("charging", { current: 30, until: until, reason: "r" });
     const r = mk(st);
     rerender(r, (s) => { s[E.pplan] = S("charging", { current: 40, until: until, reason: "r" }); });
-    eq("re-patched sub-label", r.el.chipSub4.textContent, "40 A → " + hm(until));
-    eq("tooltip carries the reason once", r.el.chip4.title, "P — on · charging: r");
+    eq("re-patched sub-label", r.el.chipPcSub2.textContent, "40 A → " + hm(until));
+    eq("tooltip carries the reason once", head(r.el.chipPc2.dataset.tip), "P — on · charging: r");
 
     el = plan("charging", { until: until });
-    eq("charging plan with no `current` does not print \"undefined A\"", el.chipSub4.textContent, "charging → " + hm(until));
+    eq("charging plan with no `current` does not print \"undefined A\"", el.chipPcSub2.textContent, "charging → " + hm(until));
     el = plan("charging", { current: 30 });
-    eq("charging plan with no `until` leaves no dangling arrow", el.chipSub4.textContent, "30 A");
+    eq("charging plan with no `until` leaves no dangling arrow", el.chipPcSub2.textContent, "30 A");
     el = plan("charging", {});
-    eq("charging plan with neither", el.chipSub4.textContent, "charging");
+    eq("charging plan with neither", el.chipPcSub2.textContent, "charging");
     el = plan("charging", { current: "unknown", until: "garbage" });
-    eq("charging plan with garbage in both", el.chipSub4.textContent, "charging");
+    eq("charging plan with garbage in both", el.chipPcSub2.textContent, "charging");
   }
 
   /* --- the adaptive dot ----------------------------------------------------- */
@@ -1013,10 +621,10 @@ async function inverterSuite() {
     check("on: lit, not dimmed", on(el) && !dis(el));
     el = run({ [E.ad]: "off", [E.auto]: "off", [E.night]: "off" });
     check("off, neither Auto nor Night only: dimmed", dis(el) && !on(el));
-    eq("...with the why", el.chipAd2.title, NEEDS);
+    eq("...with the why", head(el.chipAd2.dataset.tip), NEEDS);
     el = run({ [E.ad]: "off", [E.auto]: "on", [E.acc]: "on", [E.night]: "off" });
     check("off, Auto with charger on: usable", !dis(el));
-    eq("...tooltip says off", el.chipAd2.title, "Adaptive night charge — off · off: switched off");
+    eq("...tooltip says off", head(el.chipAd2.dataset.tip), "Adaptive night charge — off · off: switched off");
     el = run({ [E.ad]: "off", [E.auto]: "on", [E.acc]: "off", [E.night]: "off" });
     check("off, Auto but charger off, no Night only: dimmed", dis(el));
     el = run({ [E.ad]: "off", [E.auto]: "off", [E.acc]: "off", [E.night]: "on" });
@@ -1025,10 +633,10 @@ async function inverterSuite() {
     check("off, Auto + Night only, charger off: usable", !dis(el));
     el = run({ [E.ad]: "off", [E.auto]: "unavailable", [E.acc]: "unavailable", [E.night]: "unavailable" });
     check("off, every switch unavailable: dimmed", dis(el));
-    ["waiting_night", "charging", "full"].forEach((p) => {
+    ["waiting_night", "charging", "holding", "full"].forEach((p) => {
       el = run({ [E.ad]: "off", [E.night]: "on", [E.pplan]: p });
       check("off, pre-charge " + p + ": dimmed", dis(el));
-      eq("off, pre-charge " + p + ": outage tooltip", el.chipAd2.title, OUTAGE);
+      eq("off, pre-charge " + p + ": outage tooltip", head(el.chipAd2.dataset.tip), OUTAGE);
       el = run({ [E.ad]: "on", [E.night]: "on", [E.pplan]: p });
       check("ON, pre-charge " + p + ": not dimmed, so it can be turned off", !dis(el) && on(el));
     });
@@ -1042,7 +650,7 @@ async function inverterSuite() {
     check("unavailable and unusable: dimmed, not lit", dis(el) && !on(el));
     el = run({ [E.ad]: null });
     check("boolean missing, usable: neither lit nor dimmed", !dis(el) && !on(el));
-    eq("...tooltip says unknown", el.chipAd2.title, "Adaptive night charge — unknown · off: switched off");
+    eq("...tooltip says unknown", head(el.chipAd2.dataset.tip), "Adaptive night charge — unknown · off: switched off");
     // An ON dot under unusable switches is still not dimmed.
     el = run({ [E.ad]: "on", [E.auto]: "off", [E.night]: "off" });
     check("on while unusable: still clickable", !dis(el) && on(el));
@@ -1064,9 +672,50 @@ async function inverterSuite() {
     eq("boolean off hides a charging plan", sub("off", "charging", { current: 20, until: seven }), "");
     eq("boolean unavailable hides it too", sub("unavailable", "day", {}), "");
     el = run({ [E.ad]: "on", [E.aplan]: S("charging", { current: 20, until: seven, reason: "needs 18.2 A" }) });
-    eq("tooltip with plan reason", el.chipAd2.title, "Adaptive night charge — on · charging: needs 18.2 A");
+    eq("tooltip with plan reason", head(el.chipAd2.dataset.tip), "Adaptive night charge — on · charging: needs 18.2 A");
     el = run({ [E.ad]: "on", [E.aplan]: S("charging", { current: 20, until: seven }) });
-    eq("tooltip without a reason", el.chipAd2.title, "Adaptive night charge — on");
+    eq("tooltip without a reason", head(el.chipAd2.dataset.tip), "Adaptive night charge — on");
+  }
+
+  /* --- acting icons pulse --------------------------------------------------- */
+  group = "inverter/acting: ";
+  {
+    const until = localIso(7, 0);
+    const act = (k, el) => el["chip" + k + "2"].classList.contains("act");
+    const run = (o) => { const st = base(); Object.keys(o).forEach((k) => { st[k] = o[k]; }); return mk(st).el; };
+    // Night only: on AND the pack charging now.
+    check("Night only on, pack idle: lit, still",
+      !act("Nt", run({ [E.night]: S("on") })));
+    let el = run({ [E.night]: S("on"), [E.bw]: S("900") });
+    check("Night only on, pack charging: pulses", act("Nt", el) && el.chipNt2.classList.contains("on"));
+    check("Night only off, pack charging: still", !act("Nt", run({ [E.night]: S("off"), [E.bw]: S("900") })));
+    check("Night only on, charging but grid down: still",
+      !act("Nt", run({ [E.night]: S("on"), [E.bw]: S("900"), [E.down]: S("on") })));
+    // Adaptive: on AND its plan charging.
+    check("adaptive on, plan charging: pulses",
+      act("Ad", run({ [E.ad]: S("on"), [E.aplan]: S("charging", { current: 20, until: until }) })));
+    ["day", "full", "off", "inactive", "unknown"].forEach((p) => {
+      check("adaptive on, plan " + p + ": still", !act("Ad", run({ [E.ad]: S("on"), [E.aplan]: S(p, {}) })));
+    });
+    check("adaptive off, plan charging: still",
+      !act("Ad", run({ [E.ad]: S("off"), [E.aplan]: S("charging", { current: 20 }) })));
+    // Pre-charge: on AND its plan charging.
+    check("pre-charge on, plan charging: pulses",
+      act("Pc", run({ [E.pre]: S("on"), [E.pplan]: S("charging", { current: 30, until: until }) })));
+    check("pre-charge on, plan holding: pulses (it is holding the grid)",
+      act("Pc", run({ [E.pre]: S("on"), [E.pplan]: S("holding", { until: until }) })));
+    ["idle", "waiting_night", "full"].forEach((p) => {
+      check("pre-charge on, plan " + p + ": still", !act("Pc", run({ [E.pre]: S("on"), [E.pplan]: S(p, {}) })));
+    });
+    check("pre-charge off, plan charging: still",
+      !act("Pc", run({ [E.pre]: S("off"), [E.pplan]: S("charging", { current: 30 }) })));
+    // And it stops when the action does.
+    const r = mk(Object.assign(base(), { [E.ad]: S("on"), [E.aplan]: S("charging", { current: 20 }) }));
+    rerender(r, (s) => { s[E.aplan] = S("full", { current: 2 }); });
+    check("adaptive stops pulsing when the plan goes full", !r.el.chipAd2.classList.contains("act"));
+    const css = r.c.shadowRoot.querySelector("style").textContent;
+    check("only a lit AND acting icon animates", css.indexOf(".chip .dw.i.on.act ha-icon { animation: pmpulse") >= 0);
+    check("reduced motion pauses it", css.indexOf(".chip .dw.i.on.act ha-icon { animation-play-state: paused; }") >= 0);
   }
 
   /* --- clicks ---------------------------------------------------------------- */
@@ -1081,10 +730,14 @@ async function inverterSuite() {
     let ev = fire(r.el.chip0.querySelector(".ic"), "click");
     eq("icon toggles its switch", last(), ["switch", "toggle", { entity_id: E.auto }]);
     check("toggle stops propagation and the default", ev.stopped && ev.defaultPrevented);
-    fire(r.el.chip3.querySelector(".dw"), "click");
-    eq("dot toggles its switch", last(), ["switch", "toggle", { entity_id: E.night }]);
-    fire(r.el.chip2.querySelector(".dw .dot"), "click");
-    eq("a click on the inner dot reaches the toggle", last(), ["switch", "toggle", { entity_id: E.acc }]);
+    fire(r.el.chip1.querySelector(".dw .dot"), "click");
+    eq("a plain chip's dot toggles its switch", last(), ["switch", "toggle", { entity_id: E.prot }]);
+    fire(r.el.chip2.querySelector(".ic ha-icon"), "click");
+    eq("the AC charge chip's left icon toggles the charger", last(), ["switch", "toggle", { entity_id: E.acc }]);
+    fire(r.el.chipNt2, "click");
+    eq("the Night icon toggles Night only", last(), ["switch", "toggle", { entity_id: E.night }]);
+    fire(r.el.chipPc2.querySelector("ha-icon"), "click");
+    eq("a click on the Pre-charge glyph toggles pre-charge", last(), ["switch", "toggle", { entity_id: E.pre }]);
 
     const before = ncalls();
     fire(r.el.chip1.querySelector(".lbl"), "click");
@@ -1097,14 +750,14 @@ async function inverterSuite() {
     // Adaptive dot: usable (Auto + charger on) -> input_boolean.toggle.
     fire(r.el.chipAd2, "click");
     eq("adaptive dot toggles the input_boolean", last(), ["input_boolean", "toggle", { entity_id: E.ad }]);
-    fire(r.el.chipAd2.querySelector(".dot"), "click");
-    eq("adaptive inner dot too", last(), ["input_boolean", "toggle", { entity_id: E.ad }]);
+    fire(r.el.chipAd2.querySelector("ha-icon"), "click");
+    eq("adaptive glyph too", last(), ["input_boolean", "toggle", { entity_id: E.ad }]);
 
     // Dimmed: nothing at all -- no service, no dialog, and the click stops here.
     rerender(r, (s) => { s[E.auto] = S("off"); s[E.night] = S("off"); });
     check("now dimmed", r.el.chipAd2.classList.contains("dis"));
     const n0 = ncalls(), d0 = r.c.dispatched.length;
-    ev = fire(r.el.chipAd2.querySelector(".dot"), "click");
+    ev = fire(r.el.chipAd2.querySelector("ha-icon"), "click");
     eq("dimmed dot: no service", ncalls(), n0);
     eq("dimmed dot: no dialog", r.c.dispatched.length, d0);
     check("dimmed dot: click still swallowed", ev.stopped);
@@ -1113,12 +766,12 @@ async function inverterSuite() {
 
     fire(r.el.chipAdSub2, "click");
     eq("adaptive sub-label opens the plan", r.c.dispatched.pop().detail.entityId, E.aplan);
-    fire(r.el.chipSub4, "click");
+    fire(r.el.chipPcSub2, "click");
     eq("pre-charge sub-label opens its plan", r.c.dispatched.pop().detail.entityId, E.pplan);
     fire(q(".tile.t-grid .t-val"), "click");
     eq("a tile's child opens the tile's entity", r.c.dispatched.pop().detail.entityId, E.gv);
     fire(q(".pill"), "click");
-    eq("header pill opens grid_safe", r.c.dispatched.pop().detail.entityId, E.safe);
+    eq("header pill opens grid_down", r.c.dispatched.pop().detail.entityId, E.down);
     fire(r.el.battSub, "click");
     eq("battery sub opens what it shows", r.c.dispatched.pop().detail.entityId, E.bv);
     const d1 = r.c.dispatched.length, n1 = ncalls();
@@ -1172,7 +825,7 @@ async function inverterSuite() {
     const r = mk(st, { chip_auto: "switch.my_auto", chip_ac_charge: "input_boolean.my_ac",
       adaptive_charge: "input_boolean.other_adaptive" });
     eq("overridden chip reads its own entity", r.el.chip0.classList.contains("on"), true);
-    eq("overridden chip title", r.el.chip0.title, "My auto — on");
+    eq("overridden chip title", head(r.el.chip0.dataset.tip), "My auto — on");
     eq("icon data-ent", r.el.chip0.querySelector(".ic").getAttribute("data-ent"), "switch.my_auto");
     eq("label data-more", r.el.chip0.querySelector(".lbl").getAttribute("data-more"), "switch.my_auto");
     fire(r.el.chip0.querySelector(".ic"), "click");
@@ -1180,6 +833,10 @@ async function inverterSuite() {
     fire(r.el.chip2.querySelector(".ic"), "click");
     eq("domain comes from the entity id", r.h.calls.pop(), ["input_boolean", "toggle", { entity_id: "input_boolean.my_ac" }]);
     eq("adaptive dot follows its override", r.el.chipAd2.getAttribute("data-ent"), "input_boolean.other_adaptive");
+    const r2 = mk(base(), { chip_night_only: "switch.my_night", chip_precharge: "switch.my_pre" });
+    eq("chip_night_only still overrides the Night icon", r2.el.chipNt2.getAttribute("data-ent"), "switch.my_night");
+    eq("chip_precharge still overrides the Pre-charge icon", r2.el.chipPc2.getAttribute("data-ent"), "switch.my_pre");
+    throws("chip_night_only is still validated", () => r2.c.setConfig({ chip_night_only: "x" }), /chip_night_only must be an entity id/);
     // The adaptive usability rule reads the overridden chips too.
     check("usable through the overridden Auto + charger", !r.el.chipAd2.classList.contains("dis"));
   }
@@ -1237,15 +894,178 @@ async function inverterSuite() {
   {
     const r = mk(base());
     check("day row active", r.el.erow0.classList.contains("on") && !r.el.erow1.classList.contains("on"));
-    eq("day tag", [r.el.etag0.textContent, r.el.etag1.textContent, r.el.etag2.textContent], ["active", "", ""]);
-    eq("values and decimals", [r.el.eval0.textContent, r.el.eval1.textContent, r.el.eval2.textContent],
-      ["123.46 kWh", "78.90 kWh", "202.346 kWh"]);
+    eq("day tag", [r.el.etag0.textContent, r.el.etag1.textContent, r.el.etag3.textContent], ["active", "", ""]);
+    eq("values and decimals", [r.el.eval0.textContent, r.el.eval1.textContent, r.el.eval3.textContent],
+      ["123.46 kWh", "78.90 kWh", "202.3 kWh"]);
+    check("labelled as this month's, from the meter",
+      r.c.shadowRoot.querySelectorAll(".erow .en").map((n) => n.textContent).join("|") === "Day this month|Night this month|Saved by battery|Meter total");
+    eq("rows open the meter's entities", [0, 1, 3].map((i) => r.el["erow" + i].getAttribute("data-more")), [E.td, E.tn, E.tot]);
+    eq("no Energy prices: no cost", r.el.eval0.innerHTML.indexOf("<small>"), -1);
     rerender(r, (s) => { s[E.tariff] = S("night"); });
     check("night row active", !r.el.erow0.classList.contains("on") && r.el.erow1.classList.contains("on"));
     rerender(r, (s) => { s[E.tariff] = S("unavailable"); s[E.td] = S("unknown"); });
-    check("unknown tariff: no row active", [0, 1, 2].every((i) => !r.el["erow" + i].classList.contains("on")));
+    check("unknown tariff: no row active", [0, 1, 3].every((i) => !r.el["erow" + i].classList.contains("on")));
     eq("unknown meter", r.el.eval0.textContent, "— kWh");
-    check("the total is never 'active'", !r.el.erow2.classList.contains("on"));
+    check("the total never shows a cost", r.el.eval3.innerHTML.indexOf("<small>") < 0);
+    check("the total is never 'active'", !r.el.erow3.classList.contains("on"));
+  }
+
+  /* --- energy rows: cost at the Energy dashboard's price ---------------------- */
+  group = "inverter/energy cost: ";
+  {
+    // Today's prefs shape: one flat grid source per meter, one price each,
+    // the night one a price entity.
+    const prefs = { energy_sources: [
+      { type: "battery", stat_energy_from: "sensor.x" },
+      { type: "grid", stat_energy_from: E.td, number_energy_price: 4.32, entity_energy_price: null },
+      { type: "grid", stat_energy_from: E.tn, number_energy_price: null, entity_energy_price: E.np },
+      { type: "gas", stat_energy_from: "sensor.gas", number_energy_price: 9.99 },
+    ] };
+    const st = base();
+    st[E.np] = S("2.16");
+    const r = mk(st, {}, { callWS: (m) => (m.type === "energy/get_prefs" ? prefs : {}) });
+    await flush();
+    check("asked the Energy prefs once", r.h.ws.filter((m) => m.type === "energy/get_prefs").length === 1);
+    eq("kWh times price", [r.el.eval0.textContent, r.el.eval1.textContent], ["123.46 kWh533.33 ₴", "78.90 kWh170.42 ₴"]);
+    eq("cost is its own element", r.el.eval0.innerHTML, "123.46 kWh<small>533.33 ₴</small>");
+    check("cost in the tooltip", head(r.el.erow0.dataset.tip).indexOf("533.33 ₴") > 0, r.el.erow0.dataset.tip);
+    check("the total never shows a cost", r.el.eval3.innerHTML.indexOf("<small>") < 0);
+    // The bug: HA's own *_cost sensors restart at 0. They are not read at all.
+    rerender(r, (s) => { s["sensor.electricity_meter_tariff_day_cost"] = S("0.0"); });
+    eq("a restarted *_cost sensor changes nothing", r.el.eval0.textContent, "123.46 kWh533.33 ₴");
+    rerender(r, (s) => { s[E.np] = S("3"); });
+    eq("a price entity is read live", r.el.eval1.textContent, "78.90 kWh236.70 ₴");
+    rerender(r, (s) => { s[E.np] = S("unavailable"); });
+    eq("an unavailable price is left out", r.el.eval1.textContent, "78.90 kWh");
+    rerender(r, (s) => { s[E.td] = S("unknown"); });
+    eq("unknown kWh: no cost", r.el.eval0.textContent, "— kWh");
+    check("not asked again within the hour", r.h.ws.filter((m) => m.type === "energy/get_prefs").length === 1);
+
+    // Older prefs nest the meters under flow_from.
+    const old = { energy_sources: [{ type: "grid", flow_from: [
+      { stat_energy_from: E.td, number_energy_price: 2 }, { stat_energy_from: E.tn, number_energy_price: 1 }] }] };
+    const r2 = mk(base(), {}, { callWS: (m) => (m.type === "energy/get_prefs" ? old : {}) });
+    await flush();
+    eq("flow_from prefs", [r2.el.eval0.textContent, r2.el.eval1.textContent], ["123.46 kWh246.91 ₴", "78.90 kWh78.90 ₴"]);
+
+    const r3 = mk(base(), {}, { callWS: (m) => { if (m.type === "energy/get_prefs") throw new Error("unauthorized"); return {}; } });
+    await flush();
+    eq("prefs refused: kWh only", r3.el.eval0.textContent, "123.46 kWh");
+  }
+
+  /* --- energy rows: what the battery saved ----------------------------------------- */
+  group = "inverter/battery saved: ";
+  {
+    const OUT = "sensor.powmr_inverter_battery_energy_out";
+    const IN = "sensor.powmr_inverter_battery_energy_in";
+    const prefs = { energy_sources: [
+      { type: "grid", stat_energy_from: E.td, number_energy_price: 4.32 },
+      { type: "grid", stat_energy_from: E.tn, number_energy_price: 2.16 },
+    ] };
+    const nowD = new Date();
+    const y = nowD.getFullYear();
+    const m = nowD.getMonth();
+    const row = (d, h, change) => ({ start: d === "prev" ? new Date(y, m - 1, 15, h).getTime()
+      : new Date(y, m, d, h).getTime(), change });
+    // This month: 2 + 3 kWh by day, 5 + 1 at night. Last month: 4 by day.
+    const stats = { [OUT]: [row("prev", 10, 4), row(1, 3, 1), row(1, 8, 2), row(1, 12, 3), row(1, 23, 5)] };
+    const pad = (n) => String(n).padStart(2, "0");
+    const since = "15." + pad(new Date(y, m - 1, 15).getMonth() + 1);
+    const st = () => Object.assign(base(), { [OUT]: S("95"), [IN]: S("100") });
+    const ws = (opts) => (msg) => {
+      if (msg.type === "energy/get_prefs") return opts.prefs === false ? {} : prefs;
+      if (msg.type === "recorder/statistics_during_period" && msg.types[0] === "change") {
+        if (opts.fail) throw new Error("recorder busy");
+        return stats;
+      }
+      return {};
+    };
+    let r = mk(st(), {}, { callWS: ws({}) });
+    await flush();
+    const asked = r.h.ws.filter((x) => x.type === "recorder/statistics_during_period" && x.types[0] === "change");
+    eq("one hourly change request for the out counter", asked.map((x) => [x.statistic_ids, x.period]), [[[OUT], "hour"]]);
+    eq("the row sits between Night and the total", r.el.erow2.classList.contains("saved"), true);
+    eq("opens the out counter", r.el.erow2.getAttribute("data-more"), OUT);
+    // 5 kWh × (4.32 − 2.16 ÷ 0.95) = 10.23; 9 kWh = 18.42.
+    eq("day-hour kWh this month, ₴ beside it", r.el.eval2.innerHTML, "5.00 kWh<small>10.23 ₴</small>");
+    eq("since records began underneath", r.el.esub2.textContent, "since " + since + " · 18 ₴");
+    check("both sums and the efficiency in the tooltip",
+      head(r.el.erow2.dataset.tip) === "Saved by battery — 10.23 ₴ · 18.42 ₴ since " + since + " · efficiency 95 %",
+      r.el.erow2.dataset.tip);
+    check("line 1 fits the 90-character tooltip line", head(r.el.erow2.dataset.tip).length <= 90);
+    rerender(r, (s) => { s[OUT] = S("96"); });
+    check("not asked again within the hour",
+      r.h.ws.filter((x) => x.type === "recorder/statistics_during_period" && x.types[0] === "change").length === 1);
+
+    r = mk(st(), {}, { callWS: ws({ prefs: false }) });
+    await flush();
+    eq("no Energy prices: kWh only", r.el.eval2.innerHTML, "5.00 kWh");
+    eq("... and the lifetime in kWh", r.el.esub2.textContent, "since " + since + " · 9.0 kWh");
+
+    r = mk(Object.assign(base(), { [OUT]: S("95") }), {}, { callWS: ws({}) });
+    await flush();
+    eq("no in counter: efficiency 1", r.el.eval2.innerHTML, "5.00 kWh<small>10.80 ₴</small>");
+
+    r = mk(st(), {}, { callWS: ws({ fail: true }) });
+    await flush();
+    eq("statistics refused: says so, no 0 ₴", [r.el.eval2.textContent, r.el.esub2.textContent], ["—", "unavailable"]);
+    r = mk(st());
+    await flush();
+    eq("no statistics at all", [r.el.eval2.textContent, r.el.esub2.textContent], ["—", "no statistics"]);
+  }
+
+  /* --- the Meter tile ------------------------------------------------------------ */
+  group = "inverter/meter: ";
+  {
+    // base(): grid input (calculated) 300 W, no meter entity at all.
+    let r = mk(base());
+    check("no meter entity: the Meter tile and run are hidden", r.el.dirTile.hidden && r.el.dirRun.hidden);
+    eq("the Grid tile shows the inverter's grid input", r.el.gridSub.textContent, "50.00 Hz · 300 W in");
+
+    r = mk(Object.assign(base(), { [E.mw]: S("2450") }));
+    check("meter present: shown", !r.el.dirTile.hidden && !r.el.dirRun.hidden);
+    eq("the Grid tile does not repeat the meter", r.el.gridSub.textContent, "50.00 Hz · 300 W in");
+    eq("named Meter", r.el.dirTile.querySelector(".t-name").textContent, "Meter");
+    eq("big number: the meter's real power", r.el.dirVal.textContent, "2450W");
+    eq("sub: share of the breaker", r.el.dirSub.textContent, "40.8 % of the 6000 W breaker");
+    eq("normal under 60 %", [r.el.dirState.textContent, r.el.dirVal.style.color], ["NORMAL", OK_C]);
+    eq("the scale's marker", r.el.dirMark.style.left, "40.83%");
+    eq("ticks: 0 · 3600 · 6000 (the breaker)",
+      r.el.dirTile.querySelectorAll(".ticks span").map((n) => n.textContent), ["0", "3600", "6000"]);
+    eq("the run flows", r.el.runDir.style._props["--play"], "running");
+    eq("opens the meter", r.el.dirTile.getAttribute("data-more"), E.mw);
+    check("no bypass arithmetic anywhere", r.el.dirTile.textContent.indexOf("inverter") < 0);
+    const css0 = r.c.shadowRoot.querySelector("style").textContent;
+    check("styled like the Grid tile: solid border, same amber family",
+      css0.indexOf(".tile.t-dir { border: 1px solid #241D14; background: #0F0D0A; }") >= 0
+      && css0.indexOf(".tile.t-grid { border: 1px solid #241D14; background: #0F0D0A; }") >= 0);
+
+    rerender(r, (s) => { s[E.mw] = S("4200"); });
+    eq("over 60 %: elevated, amber", [r.el.dirState.textContent, r.el.dirVal.style.color], ["ELEVATED", WARN_C]);
+    // 95 %: past the 85 % edge's fade, so solid red (90 % would still tint amber).
+    rerender(r, (s) => { s[E.mw] = S("5700"); });
+    eq("over 85 %: heavy, red", [r.el.dirState.textContent, r.el.dirVal.style.color], ["HEAVY", BAD_C]);
+    rerender(r, (s) => { s[E.mw] = S("6600"); });
+    eq("past the breaker: overload, marker pinned", [r.el.dirState.textContent, r.el.dirMark.style.left], ["OVERLOAD", "100.00%"]);
+    rerender(r, (s) => { s[E.mw] = S("0"); });
+    eq("grid down, 0 W: the run stands still", r.el.runDir.style._props["--play"], "paused");
+    rerender(r, (s) => { s[E.mw] = S("unavailable"); });
+    check("meter unavailable: still shown, no data", !r.el.dirTile.hidden && r.el.dirState.textContent === "NO DATA");
+    eq("...dash and marker at 0", [r.el.dirVal.textContent, r.el.dirMark.style.left], ["—W", "0.00%"]);
+
+    const r3 = mk(Object.assign(base(), { [E.mw]: S("1000") }), { max_meter_w: 4000 });
+    eq("max_meter_w moves the scale", r3.el.dirTile.querySelectorAll(".ticks span").map((n) => n.textContent), ["0", "2400", "4000"]);
+    eq("...and the share", r3.el.dirSub.textContent, "25.0 % of the 4000 W breaker");
+    throws("max_meter_w validated", () => r3.c.setConfig({ max_meter_w: 0 }), /max_meter_w must be a positive/);
+
+    // Layout: under Grid on a wide card; stacked last, with no run, on a phone.
+    const css = r.c.shadowRoot.querySelector("style").textContent;
+    check("wide: Meter in column 1, under Grid", css.indexOf(".battrun > .direct, .battwrap > .direct { grid-column: 1; }") >= 0);
+    const narrow = css.slice(css.indexOf("@container pmcard (max-width: 900px)"));
+    check("narrow: its run is dropped", narrow.indexOf(".battrun > .direct { display: none; }") >= 0);
+    check("narrow: Meter comes after Battery",
+      narrow.indexOf(".battwrap > .t-batt { order: 1; }") >= 0 && narrow.indexOf(".battwrap > .direct { order: 2; }") >= 0);
+    check("narrow: no fixed grid row", narrow.indexOf("grid-row: auto;") >= 0);
   }
 
   /* --- battery tile ----------------------------------------------------------- */
@@ -1261,7 +1081,8 @@ async function inverterSuite() {
     eq("discharging sub", r.el.battSub.textContent, "26.8 V · -300 W out · 11.2 A");
     eq("discharging links the discharge current", r.el.battSub.getAttribute("data-more"), E.dc);
     eq("battery run reversed", r.el.runBatt.style._props["--dir"], "reverse");
-    eq("critical soc red", r.el.socVal.style.color, BAD_C);
+    // 15 % is inside the 20 % edge's fade: a quarter of the way to amber.
+    eq("critical soc mostly red", r.el.socVal.style.color, "#B86B56");
     rerender(r, (s) => { s[E.bw] = S("-2"); });
     eq("-2 W is idle", r.el.battState.textContent, "IDLE · CRITICAL");
     rerender(r, (s) => { s[E.bw] = S("800"); s[E.cc] = S("0"); });
@@ -1333,7 +1154,7 @@ async function inverterSuite() {
     rerender(r, (s) => { s[E.aplan] = S("charging", { current: 25, until: seven, reason: "a" }); });
     eq("an attribute-only change reaches the sub-label", r.el.chipAdSub2.textContent, "25 A → 07:00");
     rerender(r, (s) => { s[E.aplan] = S("charging", { current: 25, until: seven, reason: "behind" }); });
-    eq("a reason-only change reaches the tooltip", r.el.chipAd2.title, "Adaptive night charge — on · charging: behind");
+    eq("a reason-only change reaches the tooltip", head(r.el.chipAd2.dataset.tip), "Adaptive night charge — on · charging: behind");
 
     // The pre-charge reason is in the print too.
     rerender(r, (s) => {
@@ -1342,7 +1163,7 @@ async function inverterSuite() {
     });
     rerender(r, (s) => { s[E.pplan] = S("charging", { current: 30, until: seven, reason: "outage moved to 11:00" }); });
     check("a pre-charge reason-only change refreshes the Pre-charge tooltip",
-      r.el.chip4.title.indexOf("outage moved to 11:00") >= 0, "title still " + JSON.stringify(r.el.chip4.title));
+      r.el.chipPc2.dataset.tip.indexOf("outage moved to 11:00") >= 0, "title still " + JSON.stringify(r.el.chipPc2.dataset.tip));
   }
 
   /* --- nothing reporting ------------------------------------------------------ */
@@ -1372,10 +1193,11 @@ async function inverterSuite() {
     eq(v + "battery", [el.socVal.textContent, el.battState.textContent, el.battSub.textContent],
       ["—%", "IDLE · NO DATA", "— V · — W idle"]);
     check(v + "selects disabled", el.maxChg.disabled && el.prio.disabled && el.acMode.disabled);
-    eq(v + "energy", el.eval2.textContent, "— kWh");
-    check(v + "no chip on", [0, 1, 2, 3, 4].every((i) => !el["chip" + i].classList.contains("on")));
+    eq(v + "energy", el.eval3.textContent, "— kWh");
+    check(v + "no chip on", [0, 1, 2].every((i) => !el["chip" + i].classList.contains("on")));
+    check(v + "no icon lit", ["Nt", "Ad", "Pc"].every((k) => !el["chip" + k + "2"].classList.contains("on")));
     check(v + "adaptive dimmed", el.chipAd2.classList.contains("dis"));
-    eq(v + "subs empty", [el.chipSub4.textContent, el.chipAdSub2.textContent], ["", ""]);
+    eq(v + "subs empty", [el.chipPcSub2.textContent, el.chipAdSub2.textContent], ["", ""]);
     check(v + "no countdown", el.ret.hidden);
     eq(v + "flows idle", [el.runGrid, el.runLoad, el.runBatt].map((n) => n.style._props["--play"]), ["paused", "paused", "paused"]);
   }
@@ -1430,6 +1252,9 @@ async function inverterSuite() {
     eq("points: Now is the live state", stats[0], "Now230.0 V");
     eq("points: Min", stats[1], "Min228.0 V");
     eq("points: Max", stats[2], "Max231.0 V");
+    eq("points: a stat's tooltip names it and its value",
+      head(r.el.stats.querySelectorAll(".stat")[1].getAttribute("data-tip")), "Min — 228.0 V");
+    eq("points: the window's tooltip follows its label", head(r.el.chWin.dataset.tip), "Window — last 30 minutes");
     eq("points: line in the band colour", r.el.chLine.getAttribute("stroke"), OK_C);
 
     r = mk(base(), {}, { callWS: () => { throw new Error("boom"); } });
@@ -1539,20 +1364,27 @@ async function batterySuite() {
     eq("_socColor null", c._socColor(null), MUTED);
     [[null, "NO DATA"], [2.8999, "UNDERVOLTAGE"], [2.9, "LOW"], [3.0999, "LOW"], [3.1, "NOMINAL"], [3.5, "NOMINAL"],
       [3.5001, "HIGH"], [3.6, "HIGH"], [3.6001, "OVERVOLTAGE"]].forEach(([v, w]) => eq("_cellLabel(" + v + ")", c._cellLabel(v), w));
-    [[null, MUTED], [2.89, BAD], [2.9, WARN], [3.1, OK], [3.5, OK], [3.55, WARN], [3.61, BAD]]
+    // Colours fade across each edge (card-ramp.js): solid inside a band, half
+    // of each on the edge. The words above still snap on the edge.
+    const RA = "#B57451", AG = "#838D58"; // red/amber and amber/green, half-half
+    [[null, MUTED], [2.8, BAD], [2.84, BAD], [2.9, RA], [2.96, WARN], [3.04, WARN], [3.1, AG], [3.16, OK],
+      [3.44, OK], [3.5, AG], [3.6, RA], [3.66, BAD]]
       .forEach(([v, w]) => eq("_cellColor(" + v + ")", c._cellColor(v), w));
-    [[null, MUTED], [0, OK], [0.02, OK], [0.0201, WARN], [0.05, WARN], [0.0501, BAD]]
+    [[null, MUTED], [0, OK], [0.005, OK], [0.02, AG], [0.035, WARN], [0.05, RA], [0.065, BAD]]
       .forEach(([v, w]) => eq("_deltaColor(" + v + ")", c._deltaColor(v), w));
-    [[null, MUTED], [-0.1, BAD], [0, WARN], [9.9, WARN], [10, OK], [40, OK], [40.1, WARN], [50, WARN], [50.1, BAD]]
+    [[null, MUTED], [-10, BAD], [0, RA], [5, WARN], [10, AG], [25, OK], [40, AG], [45, WARN], [50, RA], [60, BAD]]
       .forEach(([v, w]) => eq("_tempColor(" + v + ")", c._tempColor(v), w));
-    [[null, MUTED], [0, OK], [100, OK], [100.2, WARN], [-160, WARN], [-160.2, BAD], [500, BAD]]
+    [[null, MUTED], [0, OK], [50, OK], [100, AG], [130, WARN], [-130, WARN], [-160, RA], [200, BAD], [500, BAD]]
       .forEach(([v, w]) => eq("_currentColor(" + v + ") of 200 A", c._currentColor(v), w));
+    eq("colour moves every millivolt", c._cellColor(3.12) !== c._cellColor(3.13), true);
+    eq("_cellOk", [2.95, 3.1, 3.3, 3.5, 3.51, null].map((v) => c._cellOk(v)), [false, true, true, true, false, false]);
     eq("_cellPct floor", c._cellPct(2.5), 0);
     eq("_cellPct ceiling", c._cellPct(4), 100);
     eq("_cellPct null", c._cellPct(null), 0);
     eq("_scale delta to mV", c._scale({ mul: 1000 }, 0.0123), 12.3);
     eq("_scale passthrough", c._scale({}, 5), 5);
-    eq("_trackCss", c._trackCss([[20, "r"], [100, "g"]]), "linear-gradient(90deg,r 0.00% 20.00%,g 20.00% 100.00%)");
+    eq("capacity track fades where the paint does", c._meterSpecs()[0].track,
+      "linear-gradient(90deg,#5c2f2a 0%,#5c2f2a 10.00%,#6b5520 30.00%,#6b5520 60.00%,#245c40 80.00%,#245c40 100%)");
   }
 
   group = "battery/activity: ";
@@ -1661,9 +1493,71 @@ async function batterySuite() {
     eq("temp colour", el.tVal0.style.color, OK);
     check("chips on", [0, 1, 2].every((i) => el["chip" + i].classList.contains("on")));
     check("no activity while idle and level", [0, 1, 2].every((i) => !el["dot" + i].classList.contains("live")));
-    eq("charge chip title", el.chip0.title, "AC charging — on · enabled, not charging");
-    eq("balancer chip title", el.chip2.title, "Balancer — on · enabled, cells level (2.0 mV)");
+    eq("charge chip title", el.chip0.dataset.tip.split("\n")[0], "AC charging — on · enabled, not charging");
+    eq("balancer chip title", el.chip2.dataset.tip.split("\n")[0], "Balancer — on · enabled, cells level (2.0 mV)");
+    check("chip title carries a description and an example",
+      el.chip2.dataset.tip.split("\n").length >= 3 && el.chip2.dataset.tip.split("\n")[2].indexOf("E.g. ") === 0, el.chip2.dataset.tip);
+    check("chip icon and dot inherit the chip's title, and keep their aria-labels",
+      ["ic", "dw"].every((k) => {
+        const n = el.chip0.querySelector("." + k);
+        return n.getAttribute("data-tip") === null && n.getAttribute("aria-label") === "Toggle Charging";
+      }));
+    eq("meter tooltip line 1", el.meter0.dataset.tip.split("\n")[0], "Capacity — 55 % · MODERATE");
+    eq("deviation bar tooltip line 1", el.cvBar0.dataset.tip.split("\n")[0], "C1 — +0.0 mV from the mean");
     eq("rails idle", [el.railBus.style._props["--play"], el.railPack.style._props["--play"]], ["paused", "paused"]);
+  }
+
+  group = "battery/fx: ";
+  {
+    // No fx key -- every real dashboard: no effect node, no effect style.
+    let r = mk(Object.assign(base(), { [E.a]: S("60"), [E.w]: S("1600") }));
+    const html = () => r.c.shadowRoot.innerHTML;
+    check("off: no effect styles", !html().includes("fx-shim") && !html().includes("fxShimmer"));
+    eq("off: no effect nodes", [!!r.el.fxShim, !!r.el.fxDot, !!r.el.fxStop0], [false, false, false]);
+    throws("unknown effect", () => new Card().setConfig({ fx: ["sparkle"] }), /unknown fx sparkle/);
+
+    throws("the dropped odometer", () => new Card().setConfig({ fx: ["odometer"] }), /unknown fx odometer/);
+
+    // As lovelace.dashboard_inverter.json lists them.
+    const ALL = ["power_glow", "liquid_soc", "balance_pulse", "chart_polish"];
+    r = mk(Object.assign(base(), { [E.a]: S("60"), [E.w]: S("1600") }), { fx: ALL });
+    check("on: effect styles", html().includes("fx-shim") && html().includes("fxShimmer"));
+    eq("numbers stay plain text", [r.el.mVal0.innerHTML, r.el.busIn.innerHTML], ["55", "1600.0"]);
+    eq("glow: full at max_power_w", r.el.busCard.style.getPropertyValue("--fxg"), "1.000");
+    check("liquid: shimmer while charging", r.el.fxShim.classList.contains("on"));
+    rerender(r, (st) => { st[E.a] = S("-20"); st[E.w] = S("-400"); });
+    check("liquid: no shimmer while draining", !r.el.fxShim.classList.contains("on"));
+    eq("glow: a quarter at 400 W", r.el.packCard.style.getPropertyValue("--fxg"), "0.250");
+
+    // Balancer on, 25 mV spread: the top cells pulse.
+    const cells = [3.402, 3.39, 3.385, 3.38, 3.377, 3.38, 3.4, 3.39];
+    r = mk(Object.assign(base(cells), { [E.d]: S("0.025"), [E.cmax]: S("3.402") }), { fx: ALL });
+    eq("balancing: the top cells pulse (within 2 mV)",
+      cells.map((_v, i) => r.el["pcellWrap" + i].classList.contains("fx-bal")),
+      [true, false, false, false, false, false, true, false]);
+    r = mk(Object.assign(base(cells), { [E.d]: S("0.025"), [E.swb]: S("off") }), { fx: ALL });
+    check("balancer off: nothing pulses",
+      cells.every((_v, i) => !r.el["pcellWrap" + i].classList.contains("fx-bal")));
+    r = mk(Object.assign(base(cells), { [E.d]: S("0.025") }), { fx: ["liquid_soc"] });
+    check("balance_pulse not listed: nothing pulses",
+      cells.every((_v, i) => !r.el["pcellWrap" + i].classList.contains("fx-bal")));
+    eq("power_glow not listed: no --fxg", r.el.busCard.style.getPropertyValue("--fxg"), "");
+
+  }
+
+  group = "battery/rate: ";
+  {
+    const c = new Card();
+    c.setConfig({});
+    eq("60 A -> 2m 48s", c._perPercent(60), "2m 48s");
+    eq("-6.5 A -> 25m 51s", c._perPercent(-6.5), "25m 51s");
+    eq("2 A -> 1h 24m", c._perPercent(2), "1h 24m");
+    eq("0.2 A -> 14h 00m", c._perPercent(0.2), "14h 00m");
+    eq("0.19 A -> nothing (noise)", c._perPercent(0.19), null);
+    eq("0 A -> nothing", c._perPercent(0), null);
+    eq("no reading -> nothing", c._perPercent(null), null);
+    const idle = mk(Object.assign(base(), { [E.a]: S("0.1"), [E.w]: S("2") }));
+    eq("idle: both lines empty", [idle.el.ttfRate.textContent, idle.el.rtlRate.textContent], ["", ""]);
   }
 
   group = "battery/flow: ";
@@ -1682,8 +1576,10 @@ async function batterySuite() {
     check("runtime clock shown", /^\d{4}-\d\d-\d\d \d\d:\d\d$/.test(el.rtlAt.textContent), el.rtlAt.textContent);
     eq("time to full grey while draining", el.ttf.style.color, MUTED);
     eq("no 'full at' clock while draining", el.ttfAt.textContent, "");
+    eq("rate: -50 A loses 1% every 3m 22s", el.rtlRate.textContent, "−1% every 3m 22s");
+    eq("rate: no charge line while draining", el.ttfRate.textContent, "");
     eq("discharge chip lit", el.dot1.classList.contains("live"), true);
-    eq("discharge chip title", el.chip1.title, "Discharging — on · discharging now");
+    eq("discharge chip title", el.chip1.dataset.tip.split("\n")[0], "Discharging — on · discharging now");
 
     rerender(r, (s) => { s[E.a] = S("60"); s[E.w] = S("1600"); s[E.cc] = S("57"); });
     eq("charging meter", [el.mState1.textContent, el.mState1.style.color], ["CHG", OK]);
@@ -1693,6 +1589,10 @@ async function batterySuite() {
     eq("time to full green", el.ttf.style.color, OK);
     check("full-at clock shown", el.ttfAt.textContent !== "");
     eq("runtime clock hidden while charging", el.rtlAt.textContent, "");
+    eq("rate: 60 A gains 1% every 2m 48s", el.ttfRate.textContent, "+1% every 2m 48s");
+    eq("rate: no drain line while charging", el.rtlRate.textContent, "");
+    check("rate: in the time-to-full tooltip", el.ttfTile.dataset.tip.includes("+1% every 2m 48s"),
+      el.ttfTile.dataset.tip.split("\n")[0]);
     eq("charge chip lit", el.dot0.classList.contains("live"), true);
     eq("charge dot colour", el.dot0.style._props["--dc"], OK);
 
@@ -1710,7 +1610,7 @@ async function batterySuite() {
 
     rerender(r, (s) => { s[E.swc] = S("off", { friendly_name: "AC charging" }); s[E.prio] = S("unavailable"); });
     eq("bus sub with charger off", el.busSub.textContent, "unavailable · AC charge off");
-    eq("chip off title", el.chip0.title, "AC charging — off · switched off");
+    eq("chip off title", el.chip0.dataset.tip.split("\n")[0], "AC charging — off · switched off");
   }
 
   group = "battery/soc: ";
@@ -1729,7 +1629,7 @@ async function batterySuite() {
     const c = r.c;
     c._hass = mkHass({ [E.cap]: S("28"), [E.v]: S("29.0") });
     eq("cap band from capacity/nameplate (10 %)", c._seriesColor({ band: "cap" }), BAD);
-    eq("pack band per cell (3.625 V)", c._seriesColor({ band: "pack" }), BAD);
+    eq("pack band per cell (3.625 V), three quarters to red", c._seriesColor({ band: "pack" }), "#B86B56");
     c._hass = mkHass({});
     eq("bands with nothing known", [c._seriesColor({ band: "cap" }), c._seriesColor({ band: "pack" }),
       c._seriesColor({ band: "delta" }), c._seriesColor({ band: "temp", cfg: "temp_1" })], [MUTED, MUTED, MUTED, MUTED]);
@@ -1752,7 +1652,7 @@ async function batterySuite() {
     eq("green label prints in text colour", el.cvVolt0.style.color, TXT);
     eq("delta red", [el.cvDelta.textContent, el.cvDelta.style.color], ["200.0 mV", BAD]);
     eq("balancer amber", [el.dot2.classList.contains("live"), el.dot2.style._props["--dc"]], [true, WARN]);
-    eq("cell tooltip", el.pcellWrap3.title, "C4 — 3.500 V");
+    eq("cell tooltip", el.pcellWrap3.dataset.tip.split("\n")[0], "C4 — 3.500 V");
 
     // Out of band entirely.
     r = mk(base([3.30, 3.30, 3.30, 3.70, 3.30, 3.30, 2.85, 3.30]));
@@ -1765,7 +1665,7 @@ async function batterySuite() {
     r = mk(base([3.30, 3.30, null, 3.30, 3.30, 3.30, 3.30, 3.30]));
     el = r.el;
     eq("an unavailable cell is not counted", el.packSub.textContent, "8 cells in series · all within tolerance");
-    eq("its tooltip", el.pcellWrap2.title, "C3 — — V");
+    eq("its tooltip", el.pcellWrap2.dataset.tip.split("\n")[0], "C3 — no reading");
     eq("its bars are empty and muted", [el.cvUp2.style.height, el.cvDown2.style.height, el.cvUp2.style.background],
       ["0.00%", "0.00%", MUTED]);
     eq("its label", el.cvVolt2.textContent, "—");
@@ -1785,7 +1685,7 @@ async function batterySuite() {
     r = mk(base([3.30, 3.30, 3.30, 3.30, 3.30, 3.30, 3.30, 3.319]));
     eq("19 mV is within", r.el.packSub.textContent, "8 cells in series · all within tolerance");
     r = mk(Object.assign(base([3.30, 3.30, 3.30, 3.30, 3.30, 3.30, 3.30, 3.32]), { [E.d]: S("0.02") }));
-    eq("the delta reading itself calls 20 mV OK", r.el.cvDelta.style.color, OK);
+    eq("the delta reading paints 20 mV half green, half amber", r.el.cvDelta.style.color, "#838D58");
     eq("a cell exactly 20 mV from the median is within tolerance, as _deltaColor treats 20 mV",
       r.el.packSub.textContent, "8 cells in series · all within tolerance");
 
@@ -1818,7 +1718,7 @@ async function batterySuite() {
     const r = mk(base());
     const t = (v) => { rerender(r, (s) => { s[E.t1] = S(v); }); return [r.el.tVal0.textContent, r.el.tFill0.style.width, r.el.tVal0.style.color]; };
     eq("freezing", t("-5"), ["-5.0 °C", "0.00%", BAD]);
-    eq("0 °C", t("0"), ["0.0 °C", "0.00%", WARN]);
+    eq("0 °C, half red, half amber", t("0"), ["0.0 °C", "0.00%", "#B57451"]);
     eq("hot", t("70"), ["70.0 °C", "100.00%", BAD]);
     eq("unknown", t("unavailable"), ["— °C", "0.00%", MUTED]);
   }
@@ -1870,7 +1770,7 @@ async function batterySuite() {
     eq(v + "timing", [el.ttf.textContent, el.rtl.textContent], variant === "empty states" ? ["unknown", "unknown"] : ["unavailable", "unavailable"]);
     eq(v + "temps", el.tVal1.textContent, "— °C");
     check(v + "chips off", [0, 1, 2].every((i) => !el["chip" + i].classList.contains("on")));
-    eq(v + "balancer title", el.chip2.title, "Balancer — " + (variant === "empty states" ? "unknown" : "unavailable") + " · switched off");
+    eq(v + "balancer title", el.chip2.dataset.tip.split("\n")[0], "Balancer — " + (variant === "empty states" ? "unknown" : "unavailable") + " · switched off");
   }
 
   group = "battery/blocks: ";
@@ -1926,7 +1826,7 @@ async function loadSheddingSuite() {
     master: "input_boolean.load_shedding_enabled",
     soc: "sensor.jkbms_gateway_bms_state_of_charge",
     rt: "sensor.battery_runtime_remaining",
-    grid: "binary_sensor.powmr_inverter_grid_condition_safe",
+    grid: "binary_sensor.house_on_battery",
   };
   const AC = "climate.hall_ac";
   const BOILER = "switch.boiler";
@@ -2047,18 +1947,24 @@ async function loadSheddingSuite() {
     const c = new Card();
     c.setConfig({});
     c._hass = mkHass({}, { services: SERVICES });
-    eq("climate order: off, on, adjust, then a-z; reload/toggle hidden", c._services("climate").map((s) => s.action),
-      ["climate.turn_off", "climate.turn_on", "climate.adjust_temperature", "climate.set_fan_mode",
+    eq("climate order: off, on, adjust, fan only, then a-z; reload/toggle hidden", c._services("climate").map((s) => s.action),
+      ["climate.turn_off", "climate.turn_on", "climate.adjust_temperature", "climate.fan_only", "climate.set_fan_mode",
         "climate.set_hvac_mode", "climate.set_temperature"]);
-    eq("names from the service id", c._services("climate").map((s) => s.name).slice(0, 4),
-      ["Turn off", "Turn on", "Change temperature by", "Set fan mode"]);
+    eq("names from the service id", c._services("climate").map((s) => s.name).slice(0, 5),
+      ["Turn off", "Turn on", "Change temperature by", "Fan only", "Set fan mode"]);
+    eq("light: Dim to first, then off, on", c._services("light").map((s) => s.action),
+      ["light.dim_to", "light.turn_off", "light.turn_on"]);
+    eq("Dim to's one field is a 1-100 % number",
+      c._fields(c._services("light")[0].def).map((f) => [f.key, f.f.selector.number.max]),
+      [["brightness_pct", 100]]);
     eq("switch", c._services("switch").map((s) => s.action), ["switch.turn_off", "switch.turn_on"]);
     eq("unknown domain", c._services("vacuum"), []);
     c._hass = mkHass({}, { services: { climate: { set_temperature: {} } } });
-    eq("climate with one service: adjust goes after it", c._services("climate").map((s) => s.action),
-      ["climate.set_temperature", "climate.adjust_temperature"]);
+    eq("climate with one service: the panel's two go after it", c._services("climate").map((s) => s.action),
+      ["climate.set_temperature", "climate.adjust_temperature", "climate.fan_only"]);
     c._hass = mkHass({}, { services: {} });
-    eq("climate with no services: adjust alone", c._services("climate").map((s) => s.action), ["climate.adjust_temperature"]);
+    eq("climate with no services: the panel's two alone", c._services("climate").map((s) => s.action),
+      ["climate.adjust_temperature", "climate.fan_only"]);
     c._hass = { states: {} };
     eq("no services map at all", c._services("switch"), []);
     c._hass = mkHass({}, { services: SERVICES, localize: (k) => (k === "component.switch.services.turn_off.name" ? "Localized turn off" : "") });
@@ -2246,6 +2152,86 @@ async function loadSheddingSuite() {
     eq("master toggle", r.h.calls.pop(), ["input_boolean", "toggle", { entity_id: E.master }]);
   }
 
+  group = "shed/fx: ";
+  {
+    const devs = [dev("ac", AC, [{ soc: 80, action: "x" }, { soc: 50, action: "x" }])];
+    let r = mk(states({ grid: "on", soc: "84", devices: devs }), { blocks: ["hero"] });
+    check("off: no effect styles", !r.root.innerHTML.includes("fxHatch"));
+    eq("off: no proximity on the near mark", r.q(".mark.near").style.getPropertyValue("--fxp"), "");
+    r = mk(states({ grid: "on", soc: "84", devices: devs }), { blocks: ["hero"], fx: ["live_thresholds", "danger_zone"] });
+    check("on: effect styles", r.root.innerHTML.includes("fxHatch"));
+    eq("live thresholds: 4 % above an 80 % step reads 0.6 close",
+      r.q(".mark.near").style.getPropertyValue("--fxp"), "0.600");
+    eq("the danger band is still the lowest step", r.q(".danger").style.getPropertyValue("width"), "50%");
+  }
+
+  group = "shed/hero-bar: ";
+  {
+    // Three devices: two step at 80 %, one at 50 %.
+    const devs = [dev("ac", AC, [{ soc: 80, action: "x" }, { soc: 60, action: "x" }]),
+      dev("lamp", LAMP, [{ soc: 80, action: "x" }, { soc: 50, action: "x" }])];
+    const bar = (soc, extra) => mk(states(Object.assign({ grid: "on", soc: String(soc), devices: devs }, extra || {})),
+      { blocks: ["hero"] });
+    const marks = (r) => r.qa(".mark").map((m) => [m.style.getPropertyValue("left"),
+      ["done", "near", "ahead"].find((k) => m.classList.contains(k)), m.textContent.trim()]);
+    let r = bar(95);
+    eq("one marker per %, names joined", marks(r),
+      [["80%", "ahead", "AC, LAMP · 80%"], ["60%", "ahead", "AC · 60%"], ["50%", "ahead", "LAMP · 50%"]]);
+    check("above every step: green fill", r.q(".fill").classList.contains("z-ok"));
+    eq("the danger zone runs to the lowest step", r.q(".danger").style.getPropertyValue("width"), "50%");
+    eq("the knob sits at the battery", [r.q(".knob").style.getPropertyValue("left"), r.q(".knob b").textContent], ["95%", "95%"]);
+    r = bar(86);
+    eq("within 10 % of a step: it lights", marks(r)[0][1], "near");
+    check("armed: the card pulses", r.q(".hero").classList.contains("live"));
+    r = bar(75, { loads: { ac: { step_soc: 80 }, lamp: { step_soc: 80 } } });
+    eq("both taken at 80: red", marks(r)[0][1], "done");
+    eq("60 is next, 15 % away: not lit yet", marks(r)[1][1], "ahead");
+    check("between steps: amber fill", r.q(".fill").classList.contains("z-warn"));
+    r = bar(78, { loads: { ac: { step_soc: 80 } } });
+    eq("only one of two taken: the shared marker is not red", marks(r)[0][1], "ahead");
+    r = bar(45, { loads: { ac: { step_soc: 60 }, lamp: { step_soc: 50 } } });
+    check("below the lowest step: red fill", r.q(".fill").classList.contains("z-bad"));
+    eq("the battery tile follows the zone", r.qa(".tile .v")[0].classList.contains("z-bad"), true);
+    r = mk(states({ grid: "off", soc: "86", devices: devs }), { blocks: ["hero"] });
+    check("standing by: lit, but no pulse", marks(r)[0][1] === "near" && !r.q(".hero").classList.contains("live"));
+    eq("standing by: green", r.q(".hero").classList.contains("k-ok"), true);
+    r = mk(states({ master: "off", devices: devs }), { blocks: ["hero"] });
+    eq("off: grey", r.q(".hero").classList.contains("k-off"), true);
+    r = mk(states({ soc: "50", devices: [] }), { blocks: ["hero"] });
+    eq("no rules: no danger zone, no markers", [r.q(".danger"), r.qa(".mark").length], [null, 0]);
+    r = mk(states({ soc: "unknown", devices: devs }), { blocks: ["hero"] });
+    eq("unknown battery: no knob", r.q(".knob"), null);
+    r = mk(states({ soc: "50", devices: [dev("x", AC, [{ soc: 92, action: "x" }]), dev("y", LAMP, [{ soc: 8, action: "x" }])] }),
+      { blocks: ["hero"] });
+    eq("labels near the ends hang inward", r.qa(".mark").map((m) => ["right", "left"].find((k) => m.classList.contains(k)) || null),
+      ["right", "left"]);
+  }
+
+  group = "shed/readable: ";
+  {
+    const src = fs.readFileSync(path.join(__dirname, "..", "config", "www", "load-shedding-card.js"), "utf8");
+    const style = src.slice(src.indexOf("const STYLE = `"));
+    const host = /:host \{([^}]*)\}/.exec(style)[1];
+    const hex = (name) => {
+      const m = new RegExp("--ls-" + name + ":\\s*#([0-9a-f]{6});").exec(host);
+      return [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16));
+    };
+    const lum = (c) => c.map((v) => v / 255).map((v) => (v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)))
+      .reduce((t, v, i) => t + v * [0.2126, 0.7152, 0.0722][i], 0);
+    const ratio = (a, b) => { const [x, y] = [lum(hex(a)), lum(hex(b))].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+    for (const fg of ["text", "text2", "muted", "ok-hi", "warn-hi", "bad-hi", "link"]) {
+      for (const bg of ["panel", "inner"]) {
+        const v = ratio(fg, bg);
+        check("--ls-" + fg + " on --ls-" + bg + " is at least 4.5:1", v >= 4.5, v.toFixed(2) + ":1");
+      }
+    }
+    // The primary button's dark text on the sage fill.
+    const btn = (lum(hex("ok")) + 0.05) / (lum([8, 17, 12]) + 0.05);
+    check("Save's dark text on sage is at least 4.5:1", btn >= 4.5, btn.toFixed(2) + ":1");
+    eq("no theme text colour in the styles", /--(primary|secondary|disabled)-text-color/.test(style), false);
+    check("the panels are the card's own", /ha-card \{[^}]*background: var\(--ls-panel\)/.test(style));
+  }
+
   group = "shed/upcoming-html: ";
   {
     const steps = [{ soc: 50, action: "climate.set_temperature", data: { temperature: 28 } }, { soc: 30, action: "climate.turn_off" }];
@@ -2319,6 +2305,30 @@ async function loadSheddingSuite() {
 
     r = mk(states({ devices: [] }), { blocks: ["rules"] });
     eq("no devices", r.q(".empty").textContent, "No devices yet. Add one below.");
+  }
+
+  group = "shed/only-while-on: ";
+  {
+    const devs = [
+      dev("ac", AC, [{ soc: 80, action: "climate.fan_only", data: {} },
+        { soc: 60, action: "climate.set_hvac_mode", data: { hvac_mode: "off" } }],
+        { guard: { running: "binary_sensor.ac_running" } }),
+      dev("lamp", LAMP, [{ soc: 70, action: "light.dim_to", data: { brightness_pct: 30 } },
+        { soc: 40, action: "light.turn_on", data: { brightness_pct: 10 } }, { soc: 20, action: "light.turn_off" }]),
+    ];
+    const r = mk(states({ devices: devs }), { blocks: ["rules"] });
+    const line = (i) => r.qa(".dev")[i].querySelector(".only-on").textContent.replace(/\s+/g, " ").trim();
+    eq("each device says it applies only while on, measured where it can be", line(0),
+      "Applies only while it is on (measured by binary_sensor.ac_running). Never switches it on, "
+      + "and the grid's return never switches on what you switched off.");
+    check("...without a meter, no measured-by", !/measured/.test(line(1)));
+    const notes = (i) => r.qa(".dev")[i].querySelectorAll(".step").map((s) => !!s.querySelector(".note-on"));
+    eq("A/C: fan only noted, the off step not", notes(0), [true, false]);
+    eq("lamp: dim to and turn on noted, turn off not", notes(1), [true, true, false]);
+    eq("the panel's actions are selected by name", r.qa(".dev")[0].querySelector("select.sel").value, "climate.fan_only");
+    const c = r.c;
+    eq("step labels", [c._stepLabel(devs[0], devs[0].steps[0]), c._stepLabel(devs[1], devs[1].steps[0])],
+      ["Fan only", "Dim to (brightness pct 30)"]);
   }
 
   group = "shed/editing: ";
@@ -2726,7 +2736,30 @@ async function loadSheddingSuite() {
 /* Report                                                                     */
 /* ========================================================================== */
 
+/*
+ * Every card file is plain text. A literal NUL byte (one sat in the inverter
+ * card's select signature until 2026-10-04) makes grep and ripgrep treat the
+ * whole file as binary and silently skip it in every search.
+ */
+function filesSuite() {
+  group = "files: ";
+  fs.readdirSync(WWW).filter((f) => f.endsWith(".js")).forEach((f) => {
+    const b = fs.readFileSync(path.join(WWW, f));
+    check(f + " has no NUL byte (write it as \\u0000)", b.indexOf(0) < 0, "at byte " + b.indexOf(0));
+  });
+  // The shared colour ramp is fetched at the ?v= in each import, so an edit to
+  // it that is not mirrored there leaves the browser on the old module.
+  const rampV = (fs.readFileSync(path.join(WWW, "card-ramp.js"), "utf8")
+    .match(/^export const VERSION = "([^"]+)";/m) || [])[1];
+  ["powmr-inverter-console-card.js", "jkbms-battery-console-card.js"].forEach((f) => {
+    const m = fs.readFileSync(path.join(WWW, f), "utf8")
+      .match(/^import \{ ramp, rampCss \} from "\.\/card-ramp\.js\?v=([^"]+)";$/m);
+    eq(f + " imports card-ramp.js at its VERSION", m && m[1], rampV);
+  });
+}
+
 (async () => {
+  filesSuite();
   await inverterSuite();
   await batterySuite();
   await loadSheddingSuite();

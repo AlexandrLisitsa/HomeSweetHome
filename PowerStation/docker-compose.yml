@@ -1,6 +1,8 @@
 services:
   esphome:
-    image: ghcr.io/esphome/esphome:stable
+    # Pinned, not :stable -- the build is what gets flashed, and :stable moves
+    # under it. 2026.5.1 built the 2026-10-04 firmware. Bump on purpose.
+    image: ghcr.io/esphome/esphome:2026.5.1
     container_name: powerstation-esphome
     entrypoint: ["esphome"]
     working_dir: /config

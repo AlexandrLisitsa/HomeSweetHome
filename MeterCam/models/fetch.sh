@@ -34,35 +34,50 @@ cd "$(dirname "$0")"
 
 BASE="https://raw.githubusercontent.com/jomjol/AI-on-the-edge-device/main/sd-card/config"
 
+# Each model with the SHA-256 of the copy that reads the meter in production
+# (taken from LXC 104 on 2026-10-04). Upstream is a branch, not a release, so
+# the checksum is what pins it: if jomjol ever replaces a file, the fetch
+# fails here instead of quietly changing how the dial is read. To move to a
+# new model on purpose, update its line.
 MODELS="
-dig-class100-0180-s2-q.tflite
-dig-class100-0182-s2_q.tflite
-dig-class11_1910_s2_q.tflite
-dig-cont_0900_s3_q.tflite
+a8d78fa79da699c88da6e43663548bce433d4b1e78c0f35678d9c17a4ee5d43b dig-class100-0180-s2-q.tflite
+78f8ee04f8e195ef9e8e1314c77690d530ef151e24c1cf7ab3c66055d0c2b950 dig-class100-0182-s2_q.tflite
+e1e3d55153c05df8297d1ff24d3cd1a4d3bc4dbefd0ddd0c9a31b6252721205f dig-class11_1910_s2_q.tflite
+8f719c03e69d077809ac8bb20d2f79e73172eac652b18dc8d021952b68262a58 dig-cont_0900_s3_q.tflite
 "
 
-for m in $MODELS; do
+sha() { sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
+
+failed=0
+echo "$MODELS" | while read -r want m; do
+    [ -n "$m" ] || continue
     if [ -f "$m" ]; then
-        echo "have    $m"
+        if [ "$(sha "$m")" = "$want" ]; then
+            echo "have    $m"
+        else
+            echo "WRONG   $m is here but is not the pinned model (sha256 differs)" >&2
+            exit 1
+        fi
         continue
     fi
     echo "fetch   $m"
     if ! curl -fsSL -o "$m.part" "$BASE/$m"; then
         echo "FAILED  $m -- check the filename against $BASE" >&2
         rm -f "$m.part"
-        continue
+        exit 1
+    fi
+    if [ "$(sha "$m.part")" != "$want" ]; then
+        echo "FAILED  $m -- downloaded, but not the pinned model (sha256 $(sha "$m.part"))" >&2
+        rm -f "$m.part"
+        exit 1
     fi
     mv "$m.part" "$m"
-done
+done || failed=1
 
+if [ "$failed" -ne 0 ]; then
+    echo >&2
+    echo "not every model is in place -- see above" >&2
+    exit 1
+fi
 echo
-echo "--- sizes and checksums, so a truncated download is visible ---"
-for m in $MODELS; do
-    [ -f "$m" ] || continue
-    size=$(wc -c < "$m" | tr -d ' ')
-    # A few hundred KB is right. A file of 9 bytes is GitHub's 404 page.
-    if [ "$size" -lt 10000 ]; then
-        echo "SUSPECT $m is only ${size} bytes -- almost certainly not a model" >&2
-    fi
-    printf '%8s  %s\n' "$size" "$(sha256sum "$m" 2>/dev/null | cut -c1-16) $m"
-done
+echo "all models present and matching their pinned sha256"

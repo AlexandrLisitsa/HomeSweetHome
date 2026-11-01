@@ -116,8 +116,11 @@ def created(files):
 # in configuration.yaml, which filter over many entities rather than refer to
 # one. It has to exclude word characters as well as the star, or the match
 # just backtracks a character and reports `sensor.google` instead.
+# The leading lookbehind skips file names in comments: `docs/kitchen-button.md`
+# would otherwise read as the entity `button.md`. An entity id never follows
+# a hyphen or a slash.
 REF = re.compile(
-    r"\b(sensor|binary_sensor|climate|switch|script|input_number|input_text|"
+    r"(?<![-/])\b(sensor|binary_sensor|climate|switch|script|input_number|input_text|"
     r"input_boolean|input_select|button|number|select)\.[a-z0-9_]+(?![a-z0-9_*])"
 )
 
@@ -131,8 +134,9 @@ SERVICE_VERBS = {
     "set_value", "turn_on", "turn_off", "toggle", "reload", "select_option",
     "increment", "decrement", "publish", "create", "dismiss", "set_datetime",
     "set_hvac_mode", "set_temperature",
-    # Not a service: load_shedding.yaml's relative-setpoint pseudo-action.
-    "adjust_temperature",
+    # Not services: load_shedding.yaml's pseudo-actions (relative setpoint,
+    # fan-only mode). Its light.dim_to needs no entry: light. is not scanned.
+    "adjust_temperature", "fan_only",
 }
 
 EXTERNAL = {
@@ -140,11 +144,12 @@ EXTERNAL = {
     "sensor.0xa4c13858c97f07f8_humidity",
     "sensor.0x70b3d52b600fddcb_power",         # A/C energy meter, zigbee2mqtt
     "sensor.0x70b3d52b600fddcb_energy",
+    "sensor.electricity_meter_energy",         # ElectricityMeter board, MQTT discovery
+    "sensor.electricity_meter_power",
 
     # Created in the UI, so they exist in .storage/core.entity_registry and
     # nowhere in this repo. Listed one by one on purpose: they are few, and a
     # typo in one is exactly the kind of thing this script is for.
-    "input_boolean.kitchen_light_block",
     "input_boolean.hallway_light_sensor",
     "input_boolean.bathroom_light_sensor",
     "input_boolean.kitchen_light_force_on",

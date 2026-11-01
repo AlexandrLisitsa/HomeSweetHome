@@ -44,7 +44,7 @@ It is designed to keep running with no internet and no Home Assistant. WiFi loss
 
 The BMS MAC comes from `secrets.yaml`. Replacing the battery means changing `bms_mac_address`.
 
-The battery is **8S** (8 cells in series, ~25.6 V nominal). The YAML reads `cell_voltage_1` through `cell_voltage_8`. Despite an inline comment saying "16 cells", only 8 are exposed.
+The battery is **8S** (8 cells in series, ~25.6 V nominal). The YAML reads `cell_voltage_1` through `cell_voltage_8`.
 
 ---
 
@@ -117,6 +117,8 @@ filters:
 - **5 s on**: the UART polls every 3 s, so 5 s is roughly two clean polls. Filters out single corrupt packets that survive the EMI sanity check.
 - **300 s off**: brownouts can pulse — voltage drops, recovers for 10 s, drops again. Switching back to Utility prematurely would slam the inverter through repeated mode changes. Five minutes of stable grid is required before trusting it.
 
+A grid voltage of `NAN` means the inverter link is dead (§14): both sensors then return no value, which holds their last state. `NAN` compares false against both bounds and would otherwise read as a healthy grid.
+
 The 300 s wait is invisible from outside the filter, so a second, unfiltered sensor — `Grid Voltage In Range` — publishes the raw bounds check. While it is ON and `Grid Condition Safe` is still ON (unsafe), the delay is running, and its `last_changed` is when it started; the dashboard counts down from that. The power logic never reads it.
 
 ### Why `trigger_on_initial_state: true` is mandatory here
@@ -137,7 +139,8 @@ The PowMr inverter speaks a Voltronic-derived ASCII protocol called **PI30**. Ea
 
 | Command | Meaning | Sent by |
 | --- | --- | --- |
-| `QPIGS` | Query general status — returns grid V, freq, output V, output power, batt V, load %, charge A, discharge A, etc. | UART idle loop (every 3 s) |
+| `QPIGS` | Query general status — returns grid V, freq, output V, output power, batt V, load %, charge A, discharge A, etc. | UART idle loop (9 of every 10 polls) |
+| `QMOD` | Query the mode: `L` line, `B` battery, `S` standby, `F` fault … | UART idle loop (every 10th poll, ~30 s) — §16 |
 | `POP00` | Set output priority: **Utility First** | `select_power_priority` on_value, plus emergency rule 1 |
 | `POP01` | Set output priority: **Solar First** | `select_power_priority` on_value (manual only) |
 | `POP02` | Set output priority: **SBU Battery** | `select_power_priority` on_value, plus emergency rule 1 |
@@ -175,6 +178,8 @@ Without this, a CRC byte could prematurely terminate or open a frame.
 | 9 | Battery charge current (A) | `sns_batt_charge_a` |
 | 15 | Battery discharge current (A) | `sns_batt_discharge_a` |
 
+A `QMOD` reply is just `(L` plus the CRC. The send loop sets `qmod_pending` when the poll it sent was a `QMOD`, and the reply loop reads the next frame as the mode letter (§16) instead of as `QPIGS` data.
+
 ### EMI sanity check
 
 UART at 2400 baud near a high-current inverter picks up noise. Replies that pass framing but contain impossible values are dropped:
@@ -196,7 +201,7 @@ UART is half-duplex and the inverter responds slowly. Commands are queued and se
 
 - **Queue**: `std::vector<std::string>` (used as a FIFO).
 - **Retries**: `command_retries` counts the tries left for the command at the **front** of the queue. A command gets up to 20 tries if the inverter stays silent, and at most 2 more once it NAKs (see the reply loop). Commands and polls take turns, so 20 tries span about two minutes.
-- **Idle behavior**: when the queue is empty, the 3 s loop sends `QPIGS` to refresh sensor data.
+- **Idle behavior**: when the queue is empty, the 3 s loop polls: `QPIGS` to refresh sensor data, with every 10th poll a `QMOD` instead (§16). That is the same UART traffic as before, and a `QPIGS` frame still arrives at least every 6 s, well inside the 20 s link watchdog.
 
 ### Queuing a command
 
@@ -220,7 +225,8 @@ if not poll_now:
   else:
     log error; pop queue.front(); retries = 20 if queue not empty
 else:
-  send QPIGS
+  send QMOD if poll_slot++ % 10 == 4, QPIGS otherwise
+qmod_pending = (a QMOD was sent)
 ```
 
 While commands are waiting, every other tick is a `QPIGS` poll, so `sns_grid_v` (the input to `grid_safe`) keeps updating while a command is being retried.
@@ -231,8 +237,9 @@ Reads incoming bytes into a buffer until `\r`. Then:
 
 1. If the buffer contains `(ACK` — command accepted. Pop the queue. Reset retries for the next command (or to 0 if queue is now empty).
 2. If the buffer contains `(NAK` — command rejected. **Don't pop**, but cut the tries left to at most 2. A NAK is an answer, not a lost frame: the inverter read the command and refused it. The two extra tries cover a frame garbled on the way. After that the send loop gives up and pops it. A NAK never raises the counter.
-3. Otherwise, assume it's QPIGS data. Parse and publish (subject to the §5 sanity check).
-4. Buffer length capped at 200 bytes — overflow drops the frame as corrupt.
+3. If `qmod_pending`, read the mode letter and run `inverter_self_heal` (§16).
+4. Otherwise, assume it's QPIGS data. Parse and publish (subject to the §5 sanity check).
+5. Buffer length capped at 200 bytes — overflow drops the frame as corrupt.
 
 ### Why 20 retries
 
@@ -417,6 +424,8 @@ The 30 W is the empirically-measured idle draw of the inverter's control board.
 
 A second sensor (`Grid Real Energy Consumption`) integrates this with the ESPHome `integration` platform → kWh, marked as `total_increasing` so HA's Energy Dashboard sees it correctly.
 
+When the inverter link is dead (§14) the lambda returns `NAN`. Neither energy total integrates its power sensor directly: each reads an internal `*_energy_feed` sensor that passes the value through, or 0 W while it is `NAN`. The `integration` platform skips a `NAN` and then, with the left rule, books the whole gap at the last value it saw once readings return. 0 W for the gap books nothing.
+
 ---
 
 ## 13. Home Assistant interface
@@ -461,13 +470,15 @@ All `select`, `switch` and `datetime` entities use `optimistic: true` and `resto
 | Home Assistant offline | Same as above — HA is a consumer, not a controller. |
 | Internet (NTP) drops mid-day | Tariff rule 2 fires: fall back to **Utility First**. The charge gate fails open and allows charging (§10). Grid protection (rule 1) still works because it doesn't need time. |
 | Internet (NTP) drops at boot | Boot proceeds after the 2-minute wait (§7). `evaluate_power_mode` falls back to **Utility First**; `evaluate_charge_window` fails open and allows charging. |
-| Inverter UART silent | All inverter sensors stay in "unknown" state. Decision logic refuses to run because `sns_grid_v.has_state()` is false (the very first guard in the script). |
+| Inverter UART silent from boot | All inverter sensors stay in "unknown" state. Decision logic refuses to run because `sns_grid_v.has_state()` is false (the very first guard in the script). |
+| Inverter UART goes silent later | After 20 s without a clean `QPIGS` reply, the link watchdog (a `5s` interval) publishes `NAN` on all eight inverter sensors, so HA shows `unknown` instead of numbers frozen at the last reading. `grid_safe` and `Grid Voltage In Range` hold their last state rather than judge a `NAN` (§4); `Grid Real Power` goes `NAN` too (§12). `evaluate_power_mode` keeps running (it reads `grid_safe` and the clock), so a tariff boundary inside the gap is still queued. The energy totals add 0 W for the gap. The next clean reply restores everything. |
 | Inverter NAKs a command | Tries left are cut to 2. If it still fails, it is dropped with an error log. The next command in the queue gets its own 20-try budget; queuing a new command never refills the tries of the one in front (§6). |
 | Inverter silent after a command | Retried up to 20 times, with a `QPIGS` poll between tries, then dropped with an error log. |
 | BMS BLE link drops | BMS sensors go stale, and `sns_grid_real_power` returns `NAN` while BMS power is unavailable. `evaluate_power_mode` is unaffected — it reads no BMS data. The night-charging gate **is** affected: the charge MOSFET cannot be written, so the 5-minute re-assertion keeps retrying until BLE returns (§10). Inverter control over UART continues throughout. |
 | Grid voltage spike (EMI noise on UART) | Sanity check drops the frame, warning logged. Next poll cycle (3 s) replaces it. |
 | HA dies during a pre-charge | The override ends by itself at `Pre-charge Until`, at the next 5-minute tick, and the saved charge current is put back (§11). |
 | Grid genuinely bad | `grid_safe` flips after 5 s of bad voltage → if protection is on, inverter switches to SBU Battery. Stays there until grid is stable for 5 minutes. |
+| Priority is Utility First but the inverter stays on battery | After 3 minutes `inverter_self_heal` toggles the AC input range, which makes the inverter re-qualify the grid and transfer. At most one nudge per 15 min, three per target change (§16). |
 
 ---
 
@@ -477,7 +488,46 @@ All `select`, `switch` and `datetime` entities use `optimistic: true` and `resto
 - **The tariff window lives in `substitutions:`** (§8). Change `night_tariff_start` / `night_tariff_end` in one place — the `on_time` triggers and both scripts follow. Don't re-hardcode 23 or 7.
 - **Know which switch trigger you are using.** `on_turn_on:` / `on_turn_off:` are `SwitchTurnOnTrigger` / `SwitchTurnOffTrigger`: they hook `add_on_state_callback`, so they fire from `publish_state` *after* `state` is assigned, and repeated writes are deduplicated. The template switch's `turn_on_action:` / `turn_off_action:` are different — those fire from `write_state`, *before* the state is updated. This config uses only the former, which is why handlers can read their own switch's state directly.
 - **Don't add real credentials.** WiFi password, OTA password, and the API encryption key live in `secrets.yaml` (gitignored). Use `!secret <name>`.
-- **The `select_power_priority` on_value handler is the single source of truth for sending POP commands.** Rule 1 in the logic brain queues `POP02` directly, but it also flips the select — which queues it *again*. This is intentional redundancy, not a bug. If you remove one, keep the other.
+- **The `select_power_priority` on_value handler is the single source of truth for sending POP commands.** Rule 1 in the logic brain queues `POP02` directly, but it also flips the select — which queues it *again*. This is intentional redundancy, not a bug. If you remove one, keep the other. `inverter_self_heal` (§16) queues a `PGR` pair directly, *without* touching the AC input select: the pair ends on the selected mode, so the select stays right.
 - **The UART CRC table is byte-for-byte the PI30 spec.** Don't optimize it.
 - **The 8S configuration is wired in via `cell_voltage_1` through `cell_voltage_8`.** If you swap to a 16S battery, add entries 9–16.
 - **Validate before flashing:** `docker compose run --rm esphome config power-station.yaml`. The build is fast but the device is across the room — catch typos in YAML first.
+
+---
+
+## 16. Self-heal — "Utility First" but still on battery
+
+### The symptom
+
+At 23:00 the tariff flips Power Priority to Utility First and the card says so, yet some nights the house keeps running from the pack. Toggling the AC input mode APL → UPS by hand moves it to the grid within 10–30 s. Recorder history from October 2026:
+
+| Night | Grid in at 23:00 | What moved it |
+| --- | --- | --- |
+| 21st | ~930 W, charging at once | nothing needed |
+| 22nd | 0 W, discharging | the APL → UPS toggle at 23:04 |
+| 23rd | 0 W, discharging past 23:17 | the toggle again |
+
+The grid was in range all three nights, and the pack voltage at 23:00 was the same on good and bad nights (25.8–26.0 V), so neither grid protection nor the SBU back-to-utility voltage explains it.
+
+### The cause, confirmed on 2026-10-24
+
+A diagnostic build read the inverter back over `QMOD` and `QPIRI`. It found Utility First **stored** (`QPIRI` field 16 = `0`) while `QMOD` said `B`, battery. The `POP00` had landed; the inverter had simply not acted on it. The firmware toggled the input range at 00:14:57 and `QMOD` said `L` 30 s later.
+
+So the PowMr applies a new output priority at its next grid qualification, not at once. A `PGR` changes the AC input window, which makes it drop and re-qualify the grid (the 10–30 s sync), and on reconnect it honours the stored priority. Anything else that makes it re-qualify, such as a grid wobble, explains the nights it "fixed itself" later. Owners of other Voltronic-family inverters report the same behaviour.
+
+The diagnostic read-back (`QPIRI`, HA text sensors) was then removed again: only what the fix needs stays.
+
+### What the firmware does
+
+- **One `QMOD` every 10th poll** (~30 s), in place of a `QPIGS`, so the UART traffic is unchanged. The reply's letter goes into `inverter_mode`, and is logged when it changes (`Inverter mode: B`). Nothing new is published to HA.
+- **`inverter_self_heal` runs on each `QMOD` reply.** It nudges only when all of these hold:
+  - the inverter says `B`,
+  - Power Priority is Utility First (on battery is what SBU and Solar First are for),
+  - `grid_safe` has a verdict and it is safe (a bad grid belongs to rule 1),
+  - 3 minutes have passed since Power Priority last changed (the inverter gets to act on its own first),
+  - the command queue is empty.
+- **The nudge** queues `PGR00` then `PGR01` (or the reverse), ending on the selected input mode — the manual fix — and logs `🔧 NUDGE n`.
+
+It does not care *why* the priority is Utility First, so it covers every path there: the 23:00 tariff, an outage pre-charge starting by day, grid recovery after a fault, the no-NTP fallback, a manual pick, and the boot-time replay of the restored select. The select's `on_value` stamps `priority_target_ms` and resets the attempts budget, whoever made the change.
+
+Limits: at most one nudge per 15 min and three per target change. After the third, the next battery reading logs `❌ NUDGE GAVE UP` once and the firmware stays quiet until the priority changes again, so a broken inverter does not get its input window flipped all night.

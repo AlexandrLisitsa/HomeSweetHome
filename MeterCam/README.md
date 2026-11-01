@@ -1,16 +1,20 @@
 # MeterCam
 
 Reads the gas meter's dial with a camera and feeds the reading into Home
-Assistant's Energy dashboard, but only a reading it can stand behind. Once a
-month it also files that reading with the gas operator, through the operator's
-Telegram bot, when someone presses *Submit* on the phone
-([`docs/gas-bot.md`](docs/gas-bot.md)).
+Assistant's Energy dashboard, but only a reading it can stand behind. It reads
+meters and does nothing else: the water meter is the next camera. Filing the
+monthly reading with the gas operator is [MeterBots](../MeterBots/README.md),
+in its own LXC.
 
 The meter is an **Itron Gallus 2000 G4** (2011; Qmax 6 m³/h, Qmin 0.04, Pmax
 0.5 bar). Its index is eight drums behind a glass window: five black (whole m³),
 then three **red** decimals. The camera frames seven of them, so the reading
 goes to 0.01 m³, which is also the most this project will publish. See
 [What is published](docs/pitfalls.md#what-is-published).
+
+What it has been reading is on **`http://cam.lan`**, the [control panel](docs/panel.md):
+the latest frame, every read with its digits and why it was refused, trends,
+and a replay of any frame against the current config.
 
 ---
 
@@ -38,8 +42,9 @@ ESP32-CAM (deep sleep)                  MeterCam, LXC 104 :8770              Hom
    MeterCam write it to Home Assistant. A refused reading writes nothing, and
    its frames are kept with the reason beside them. Every frame is archived;
    the newest one is at `/last.jpg`, and `/archive` downloads the lot.
-4. **Every answer carries the newest firmware version.** If it is higher than
-   the board's own, the board updates itself before going back to sleep.
+4. **Every answer carries the newest firmware version for that board's meter.**
+   If it is higher than the board's own, the board updates itself before going
+   back to sleep. The gas and water boards each have their own channel.
 
 In Home Assistant, `sensor.gas_meter_reading` (the Energy dashboard's gas
 source) shows the **higher** of the camera's helper and the hand-typed one. So
@@ -71,13 +76,15 @@ drum. Optical reading depends on nothing hidden inside the meter.
 | --- | --- |
 | `service/digits.py` | The carry rule, the agreement check and the gate. Stdlib only, so the tests that guard the irreversible failures run anywhere |
 | `service/reader.py` | Decode, orient, align, crop, infer, assemble |
-| `service/app.py` | `POST /read`, `/last.jpg`, `/last_accepted.jpg`, `/archive`, `/firmware/*`, `/gas/bot/*`, `/health`; the Home Assistant prevalue fetch and write |
-| `service/gasbot.py` | The monthly reading to Gazmerezhi's Telegram bot (Telethon): the checked walk through the bot's menus, and the one-time login |
+| `service/app.py` | `POST /read`, `/last.jpg`, `/last_accepted.jpg`, `/archive`, `/firmware/*`, `/health`; the Home Assistant prevalue fetch and write |
+| `service/panel.py`, `service/templates/`, `service/static/` | The control panel at `cam.lan`: views of the archive, replay, firmware publishing |
 | `service/config.example.json` | Template for the box's `config.json`, with the reasoning for each setting |
 | `tests/test_reader.py` | Plain asserts, no pytest |
-| `tests/test_gasbot.py` | `gasbot.py` against a fake bot that says what the real one says, including every way it must refuse |
+| `tests/test_routes.py` | The service's routes, read from `app.py` and `panel.py` without importing them: what exists, that no bot route has crept back, that the camera's routes still check the token, and one firmware channel per meter |
+| `tests/test_panel.py` | The panel against a throwaway archive. Needs Flask and OpenCV, so it runs in the container |
+| `tests/test_firmware_config.py` | The gas-cam and water-cam builds, read from `platformio.ini` and `config.h.example`: neither may take the other's build |
 | `models/fetch.sh` | Downloads the weights. Not committed: no stated licence upstream |
-| `firmware/gas-cam/` | The camera: AI-Thinker ESP32-CAM, PlatformIO |
+| `firmware/gas-cam/` | The cameras: AI-Thinker ESP32-CAM, PlatformIO. Env `gas-cam` (the default) and `water-cam`, from one source |
 | `deploy/` | Creates LXC 104 on the Proxmox host and deploys the service into it |
 
 ---
@@ -86,9 +93,10 @@ drum. Optical reading depends on nothing hidden inside the meter.
 
 ```sh
 python tests/test_reader.py                                   # the arithmetic: no dependencies
-python tests/test_gasbot.py                                   # the bot walk, against a fake bot
+python tests/test_routes.py                                   # the routes: no dependencies
+python tests/test_firmware_config.py                          # the two firmware builds: no dependencies
 sh Proxmox/tools/pve_ssh.sh "pct exec 104 -- docker exec metercam python tests/test_reader.py"
-sh Proxmox/tools/pve_ssh.sh "pct exec 104 -- docker exec metercam python tests/test_gasbot.py"
+sh Proxmox/tools/pve_ssh.sh "pct exec 104 -- docker exec metercam python tests/test_panel.py"
 ```
 
 The first runs on a bare workstation. `digits.py` imports nothing third-party
@@ -104,9 +112,9 @@ frames, which must never be accepted. Both must pass before a deploy.
 | --- | --- |
 | [`docs/architecture.md`](docs/architecture.md) | The wake cycle, who decides what, and how Home Assistant is wired |
 | [`docs/api.md`](docs/api.md) | The service's HTTP endpoints |
+| [`docs/panel.md`](docs/panel.md) | The control panel at `cam.lan`: what it shows, replay, publishing firmware, what it costs |
 | [`docs/firmware.md`](docs/firmware.md) | The board: wiring, building, the first USB flash, publishing an update, rolling back |
-| [`docs/deployment.md`](docs/deployment.md) | LXC 104: creating it, first setup, deploying code, frame retention, the gas bot's keys |
+| [`docs/deployment.md`](docs/deployment.md) | LXC 104: creating it, first setup, its tokens, deploying code, frame retention |
 | [`docs/operations.md`](docs/operations.md) | Day to day: checking reads, the camera moved, a reading went wrong |
-| [`docs/gas-bot.md`](docs/gas-bot.md) | The monthly reading to Gazmerezhi's Telegram bot: why a bot, the conversation, its checks, the Telegram login |
 | [`docs/guardrails.md`](docs/guardrails.md) | Each guard against a bad reading, and what it is worth |
 | [`docs/pitfalls.md`](docs/pitfalls.md) | The things that are easy to get wrong when reading a dial |

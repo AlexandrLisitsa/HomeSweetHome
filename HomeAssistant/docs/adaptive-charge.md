@@ -2,13 +2,13 @@
 
 `config/packages/adaptive_charge.yaml`. While the night tariff runs
 (23:00–07:00), this picks the **lowest** Max AC Charge Current that still fills
-the pack before 07:00, and re-sizes it every hour. A lower current keeps the
+the pack before 07:00, and re-sizes it every 10 minutes. A lower current keeps the
 pack cooler and puts less strain on it than charging at a fixed high current and
 then sitting full from 01:00.
 
 | Entity | What it is |
 | --- | --- |
-| `input_boolean.adaptive_night_charge` | the on/off: the second dot on the dashboard's **AC charge** chip |
+| `input_boolean.adaptive_night_charge` | the on/off: the adaptive icon (`mdi:tune-variant`) on the dashboard's **AC charge** chip |
 | `sensor.adaptive_charge_plan` | what it intends to do, and why |
 | `input_number.adaptive_charge_saved_current` | your own current, kept so it can be put back at 07:00 (0 means nothing is saved) |
 
@@ -21,7 +21,7 @@ The firmware already charges at night. **Auto** puts the inverter on Utility
 First, and **Night only** opens the BMS charger. Adaptive only chooses the amps,
 so it works only while one of those two is on:
 
-- With both off, the dot on the card is dimmed and a tap on it does nothing.
+- With both off, the icon on the card is dimmed and a tap on it does nothing.
   Switching it on from the more-info dialog is turned straight back off by the
   `adaptive_charge_guard` automation.
 - **It goes off with the charger.** Switching **AC charge** off by hand switches
@@ -36,13 +36,26 @@ so it works only while one of those two is on:
 
 **An outage schedule switches adaptive off** ([outage-precharge.md](outage-precharge.md)).
 When the power company (DTEK) publishes an outage window and the pre-charge plan leaves `idle`
-(`waiting_night`, `charging` or `full`), the `adaptive_charge_outage_off`
+(`waiting_night`, `charging`, `holding` or `full`), the `adaptive_charge_outage_off`
 automation switches adaptive off and sends a phone notification on the
 `Adaptive charge` channel. From then on, pre-charge owns the charge current on
 its own.
 
-- **It stays off** until you switch it back on after the outage. While a window
-  is pending, the dot is dimmed and the guard refuses to switch it on.
+- **It comes back on by itself** once the outage is over.
+  - `input_boolean.adaptive_charge_outage_paused` remembers that the outage is
+    what switched it off.
+  - `adaptive_charge_outage_resume` switches it back on when all of these hold:
+    the pre-charge plan is `idle` or `off`, DTEK's schedule has the current half
+    hour lit, DTEK records no outage, and the inverter measures mains.
+  - A second window later the same day keeps the plan out of `idle`, so
+    adaptive stays paused through both.
+  - The resume sends one notification on the `Adaptive charge` channel. If the
+    guard refuses (neither Auto nor Night only would charge), the notification
+    says it stays off.
+  - Switching adaptive on by hand clears the flag, so a later manual off is
+    never undone.
+  - While a window is pending, the icon is dimmed and the guard refuses to
+    switch it on.
 - **Switching off hands your current back,** and that is the one moment the two
   could still collide. If a pre-charge is already charging, the drive
   automation holds the hand-back until it ends. A pre-charge counts as running
@@ -53,17 +66,19 @@ its own.
 
 ## The plan
 
-`sensor.adaptive_charge_plan` is re-rendered at the top of every hour (23:00 is
-one of those), whenever the dot, Auto or Night only changes, and when HA starts.
+`sensor.adaptive_charge_plan` is re-rendered every 10 minutes (:00, :10, :20 …;
+23:00 is one of those), whenever the icon, Auto or Night only changes, and when HA
+starts. It used to be hourly, which left a step change waiting up to an hour to
+reach the select; now it lands within 10 minutes.
 
 | State | Meaning | Chip sub-label |
 | --- | --- | --- |
-| `off` | the dot is off | — |
+| `off` | the icon is off | — |
 | `inactive` | on, but Auto and Night only are both off | — |
 | `day` | on, outside 23:00–07:00 | **tonight** |
 | `unknown` | no battery reading; the current is left alone | — |
 | `full` | the pack is within 1 % of full; `current` is the 2 A trickle | **full** |
-| `charging` | `current` amps, re-sized every hour, until `until` (07:00) | **20 A → 07:00** |
+| `charging` | `current` amps, re-sized every 10 minutes, until `until` (07:00) | **20 A → 07:00** |
 
 The arithmetic uses the same constants as the pre-charge plan:
 
@@ -78,7 +93,7 @@ current  = need ÷ hours to the deadline, rounded up to 2, 10, 20 … 60 A
 - The inverter only has 10 A steps (plus 2 A), so the first hours often round
   up. As the pack fills, the next renders bring the current down.
 - If charging falls behind (a heavy load ate the charger's budget, or the taper
-  came early), the next hour's render raises it again.
+  came early), the next render, at most 10 minutes later, raises it again.
 
 ## Driving the select
 
@@ -91,8 +106,8 @@ rebooted onto its default is corrected within 5 minutes.
 - **Plan becomes `day`, `off` or `inactive`:** the saved current goes back on
   the select, and the saved value is cleared.
 
-If you change the select by hand during the night, the next hourly render
-overrides it. Your hand-set value still won't be the one restored at 07:00: that
+If you change the select by hand during the night, the next render (within
+10 minutes) overrides it. Your hand-set value still won't be the one restored at 07:00: that
 is the value saved at the first write.
 
 Nothing here is a fail-safe, and nothing needs to be. If HA dies at night, the
@@ -107,5 +122,5 @@ python tools/test_adaptive_charge.py
 
 It renders the real template from the package for each case: the gating (off,
 inactive, day, unknown), the sizing at different hours and charge levels, the 2 A
-trickle when full, and the hourly re-size (falling behind, the last 15 minutes,
-inside the buffer).
+trickle when full, and the 10-minute re-size (the trigger itself, a step drop
+10 minutes on, falling behind, the last 15 minutes, inside the buffer).

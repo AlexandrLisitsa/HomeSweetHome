@@ -21,7 +21,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 from scipy import ndimage
 
-from rooms import LIGHTS, ROOMS
+from rooms import ITEMS, LIGHTS, ROOMS
 from sh3d_camera import load, projector
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -172,8 +172,20 @@ os.makedirs(BUILD, exist_ok=True)
 json.dump({"crop": crop, "render_size": [W, H]}, open(BUILD / "layout.json", "w"))
 b = np.asarray(base, dtype=np.float32)
 base.crop(crop).save(os.path.join(OUT, "base.png"), optimize=True)
+# The same view at noon, lamps off: the card fades it over the night base by the sun.
+# Same camera, so the same crop; the lamps' overlays add onto either.
+if os.path.exists(os.path.join(SRC, "base_day.png")):
+    day = denoise(Image.open(os.path.join(SRC, "base_day.png")).convert("RGB"))
+    assert day.size == base.size, f"base_day.png is {day.size}, base.png {base.size}"
+    day.crop(crop).save(os.path.join(OUT, "base_day.png"), optimize=True)
 for rid, mk in masks.items():
     mk.crop(crop).save(os.path.join(BUILD, f"mask_{rid}.png"))
+# A room with a thermometer gets its mask served too, as the alpha of a white image:
+# the card colours its floor through it when the room is too cold or too warm.
+for rid in sorted({i["room"] for i in ITEMS if i["kind"] == "badge"}):
+    tint = Image.new("RGBA", masks[rid].size, (255, 255, 255, 0))
+    tint.putalpha(masks[rid])
+    tint.crop(crop).save(os.path.join(OUT, f"tint_{rid}.png"), optimize=True)
 composite = b.copy()
 for name, spec in LIGHTS.items():
     m = np.asarray(spec["mask"], dtype=np.float32)[..., None] / 255

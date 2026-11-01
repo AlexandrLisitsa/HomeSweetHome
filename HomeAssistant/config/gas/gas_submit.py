@@ -9,7 +9,7 @@ of swallowing it as a failed command. `ok: false` plus `error` is a failure.
 
 The Telegram half is NOT here. Walking @mygrmu_bot takes up to a minute, and
 shell_command has a fixed 60 s limit, so packages/gas_submit.yaml calls
-MeterCam's /gas/bot/status and /gas/bot/submit as rest_commands with a
+MeterBots' /gas/bot/status and /gas/bot/submit as rest_commands with a
 5-minute timeout, and only asks this script for what is quick and local:
 
     prepare   the frame MeterCam last accepted (GET /last_accepted.jpg, whose
@@ -19,7 +19,10 @@ MeterCam's /gas/bot/status and /gas/bot/submit as rest_commands with a
     record    after the bot accepted: write the month to .state.json, which
               stops the reminders
 
-From secrets.yaml next door: metercam_url (default http://192.168.0.8:8770).
+From secrets.yaml next door: metercam_url, MeterCam's base URL, e.g.
+http://<metercam-ip>:8770. Required: there is no default address.
+metercam_token, MeterCam's METERCAM_TOKEN, sent as X-Auth-Token. Needed
+once MeterCam's auth is on; without it the photo request gets a 401.
 """
 import argparse
 import json
@@ -78,9 +81,11 @@ def read_secrets(*keys):
 
 
 def config():
-    sec = read_secrets("metercam_url")
-    return {"metercam": (os.environ.get("METERCAM_URL") or sec.get("metercam_url")
-                         or "http://192.168.0.8:8770").rstrip("/")}
+    sec = read_secrets("metercam_url", "metercam_token")
+    url = os.environ.get("METERCAM_URL") or sec.get("metercam_url")
+    if not url:
+        raise Fail("metercam_url is not set in secrets.yaml")
+    return {"metercam": url.rstrip("/"), "metercam_token": sec.get("metercam_token") or None}
 
 
 def period(today):
@@ -102,11 +107,13 @@ def save_state(state):
     os.replace(tmp, STATE_PATH)
 
 
-def fetch_photo(base):
+def fetch_photo(base, token=None):
     """The last accepted frame and its reading, saved under www/gas_meter."""
-    url = base + "/last_accepted.jpg?meter=gas"
+    req = urllib.request.Request(base + "/last_accepted.jpg?meter=gas")
+    if token:
+        req.add_header("X-Auth-Token", token)
     try:
-        with urllib.request.urlopen(url, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             blob = resp.read()
             value = float(resp.headers["X-Value"])
             at_epoch = float(resp.headers.get("X-At-Epoch") or time.time())
@@ -135,7 +142,7 @@ def cmd_prepare(cfg):
     out = {"ok": True, "period": period(today), "window_open": today.day in WINDOW_DAYS,
            "window": "%d..%d" % (WINDOW_DAYS.start, WINDOW_DAYS.stop - 1)}
     try:
-        out.update(fetch_photo(cfg["metercam"]))
+        out.update(fetch_photo(cfg["metercam"], cfg.get("metercam_token")))
         out["value_floor"] = int(math.floor(out["value_raw"]))
         out["camera_stale"] = out["age_s"] > STALE_S
     except Fail as exc:
@@ -169,10 +176,11 @@ def main():
     ap.add_argument("command", choices=("prepare", "record"))
     ap.add_argument("value", nargs="?")
     args = ap.parse_args()
-    cfg = config()
     try:
         if args.command == "prepare":
-            out = cmd_prepare(cfg)
+            # Inside the try: a missing metercam_url must come back as JSON
+            # the script can show, not as a traceback.
+            out = cmd_prepare(config())
         else:
             if args.value is None:
                 raise Fail("record needs a value")

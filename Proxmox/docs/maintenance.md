@@ -36,10 +36,14 @@ scp tools/pct-fstrim.service tools/pct-fstrim.timer root@<proxmox-ip>:/etc/syste
 ssh root@<proxmox-ip> 'systemctl daemon-reload && systemctl enable --now pct-fstrim.timer'
 ```
 
-**Open item.** The guest disks add up to 86 GB on a 57 GB thin pool, and the
-pool does not grow on its own. At 30% used that is no risk yet; the fix is
-`thin_pool_autoextend_threshold = 80` and `thin_pool_autoextend_percent = 20` in
-`/etc/lvm/lvm.conf` (the volume group has ~14 GB unassigned).
+**The pool grows on its own.** The guest disks add up to 88 GB on a 57 GB thin
+pool, so a full pool was possible in principle. Since 2026-10-04
+`/etc/lvm/lvm.conf` has `thin_pool_autoextend_threshold = 80` and
+`thin_pool_autoextend_percent = 20` (backup: `/root/lvm.conf.bak-20261004`):
+past 80 % used, dmeventd extends `pve/data` by 20 % from the volume group's
+~14.6 GB of unassigned space. That covers one extension (about 11.4 GB); after
+that the volume group is nearly empty. Check with `lvmconfig
+activation/thin_pool_autoextend_threshold` and `lvs pve/data`.
 
 ## The cleanup of 2026-09-30
 

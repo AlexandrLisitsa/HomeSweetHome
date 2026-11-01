@@ -21,6 +21,13 @@
  * on one view share ONE draft (SHARED below), so the Backup block's Import
  * lands in the Rules block's editor.
  *
+ * Nothing is ever switched on: a step runs only while its device is on (by
+ * its guard's running sensor where it has one, since an IR A/C only believes
+ * its mode), and the grid's return puts back only what is on or what a step
+ * switched off. The editor says so under every device. Three actions are the
+ * panel's own (PSEUDO): Change temperature by, Fan only, and Dim to, which
+ * only ever lowers a lamp.
+ *
  * Editing is on a local draft: nothing reaches Home Assistant until Save,
  * which calls script.load_shedding_save_config. That script validates and
  * raises on a bad config; the error is shown under the Save bar.
@@ -31,11 +38,44 @@
  */
 
 const CARD = "load-shedding-card";
-const VERSION = "3.1.2";
+import { cardTip } from "./card-tip.js?v=1.0.0";
+import { fxConfig, fxOn, fxSetup, FX_CSS } from "./card-fx.js?v=1.1.0";
 
-const RED = "var(--error-color, #db4437)";
-const GREEN = "var(--success-color, #43a047)";
-const AMBER = "var(--warning-color, #ffa600)";
+const VERSION = "4.2.2";
+
+// Text colours, so the bright variants: they must read at 4.5:1 on the panels.
+const RED = "var(--ls-bad-hi)";
+const GREEN = "var(--ls-ok-hi)";
+const AMBER = "var(--ls-warn-hi)";
+
+/*
+ * IBM Plex, served from /local/fonts/ like the Power station cards. Chrome
+ * ignores an @font-face declared inside a shadow tree (see the long note in
+ * jkbms-battery-console-card.js), so the faces go on document.head, once.
+ */
+const FONT_STYLE_ID = "load-shedding-card-fonts";
+const LATIN = "U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, "
+  + "U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD";
+const CYRILLIC = "U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116";
+const FONTS = [
+  ["IBM Plex Mono", 400, "ibm-plex-mono-400-latin.woff2", LATIN],
+  ["IBM Plex Mono", 500, "ibm-plex-mono-500-latin.woff2", LATIN],
+  ["IBM Plex Mono", 600, "ibm-plex-mono-600-latin.woff2", LATIN],
+  ["IBM Plex Mono", 400, "ibm-plex-mono-400-cyrillic.woff2", CYRILLIC],
+  ["IBM Plex Sans", "400 600", "ibm-plex-sans-latin.woff2", LATIN],
+  ["IBM Plex Sans", "400 600", "ibm-plex-sans-cyrillic.woff2", CYRILLIC],
+].map(([family, weight, file, range]) => "@font-face{font-family:'" + family + "';font-style:normal;"
+  + "font-weight:" + weight + ";font-display:swap;src:url('/local/fonts/" + file + "') format('woff2');"
+  + "unicode-range:" + range + "}").join("\n");
+
+function installFonts() {
+  if (typeof document === "undefined" || !document.head) return;
+  if (document.getElementById(FONT_STYLE_ID)) return;
+  const style = document.createElement("style");
+  style.id = FONT_STYLE_ID;
+  style.textContent = FONTS;
+  document.head.appendChild(style);
+}
 
 const BLOCKS = ["hero", "upcoming", "rules", "backup"];
 
@@ -45,8 +85,8 @@ const DEFAULTS = {
   master: "input_boolean.load_shedding_enabled",
   soc: "sensor.jkbms_gateway_bms_state_of_charge",
   runtime: "sensor.battery_runtime_remaining",
-  // on = UNSAFE (device_class: safety)
-  grid_unsafe: "binary_sensor.powmr_inverter_grid_condition_safe",
+  // on = the grid has put the house on the pack (packages/grid_state.yaml)
+  on_battery: "binary_sensor.house_on_battery",
   save_script: "load_shedding_save_config",
   hold_script: "load_shedding_hold",
   release_script: "load_shedding_release",
@@ -75,10 +115,135 @@ const ICONS = {
 
 // The one action that is not a real service: relative to the setpoint the
 // device had before its first step, resolved by the package.
-const ADJUST = {
-  name: "Change temperature by",
-  fields: { by: { required: true,
-    selector: { number: { min: -10, max: 10, step: 0.5, unit_of_measurement: "°" } } } },
+// The panel's own actions, each a real service underneath, resolved by
+// load_shed_apply in the package. All three only ever reduce: the setpoint is
+// relative to the one before the first step; Dim to never brightens; Fan only,
+// like every step, runs only while the unit is on. `at` is where each goes in
+// its domain's list.
+const PSEUDO = {
+  "climate.adjust_temperature": { name: "Change temperature by", at: 2,
+    fields: { by: { required: true,
+      selector: { number: { min: -10, max: 10, step: 0.5, unit_of_measurement: "°" } } } } },
+  "climate.fan_only": { name: "Fan only", at: 3, fields: {} },
+  "light.dim_to": { name: "Dim to", at: 0,
+    fields: { brightness_pct: { required: true,
+      selector: { number: { min: 1, max: 100, step: 1, unit_of_measurement: "%" } } } } },
+};
+
+/** Could this step switch the device on, were it off? The engine never lets it. */
+function couldSwitchOn(step) {
+  const a = String((step && step.action) || "");
+  const mode = step && step.data && step.data.hvac_mode;
+  return a.endsWith(".turn_on") || a === "climate.fan_only" || a === "light.dim_to"
+    || (a === "climate.set_hvac_mode" && !!mode && mode !== "off");
+}
+
+/*
+ * Lines 2-4 of every tooltip (docs/dashboard-tooltips.md); line 1, the name
+ * and its live state, is built as the card renders. The examples are the
+ * seeded rules in packages/load_shedding.yaml; keep them in step with it and
+ * with docs/load-shedding.md.
+ */
+const HELP = {
+  state: "Whether the rules can act now: Armed only when they are on and the grid is down.\n"
+    + "E.g. Standing by with the grid up: nothing changes even at 20 % battery.",
+  master: "Arms the rules; even armed, they act only while the inverter reports the grid unsafe.\n"
+    + "E.g. on, in an outage: the hall A/C goes off when the battery reaches 80 %.",
+  tile_soc: "The pack's charge from the BMS; each step applies when it falls to the step's %.\n"
+    + "E.g. at 50 % in an outage, LED ambient is switched off.",
+  tile_grid: "Whether the inverter reports the grid as unsafe; only then do the steps apply.\n"
+    + "E.g. down in a brownout too, because the inverter is on battery then.",
+  tile_runtime: "How long the battery lasts at the current draw.\n"
+    + "E.g. about 7 h with an A/C running, a day and a half at idle.",
+  tile_shed: "Devices stepped down or held this outage, out of all in the rules.\n"
+    + "E.g. 2 / 3 at 75 %: the hall A/C is off and LED ambient is at 30 %.\n"
+    + "Back to 0 when the grid returns.",
+  mark: "One step of an enabled device on the battery bar; red once the device has taken it.\n"
+    + "E.g. the amber line at 50 % is LED ambient's switch-off, still ahead.",
+  up_device: "An enabled device with steps; the one closest to its next step is listed first.\n"
+    + "E.g. at 85 %: the hall A/C (80 %) is listed above the bedroom A/C (60 %).",
+  up_row: "The device's next step, the battery % it applies at, and how far away that is.\n"
+    + "E.g. At 60 %, In 2 %: the battery is at 62 %.\n"
+    + "Highlighted within the warning margin, 1 % by default.",
+  up_next: "There is no step left below the battery for this device.\n"
+    + "E.g. nothing left at 45 %: LED ambient's last step, at 50 %, is behind it.",
+  up_status: "What the device is doing now, as far as load shedding goes.\n"
+    + "E.g. about to step down: within 1 % of its next step; the phones are warned once.",
+  keep_on: "Holds the device: its steps wait until the battery falls the override step further.\n"
+    + "E.g. kept on at 81 %: the hall A/C's 80 % step waits until 71 %.\n"
+    + "Works only during an outage, while the device is on.",
+  put_back: "Restores the device the way it was before its first step, then holds it.\n"
+    + "E.g. put back at 78 %: the hall A/C steps down again at 68 %.\n"
+    + "Works only during an outage.",
+  release: "Ends the hold; the deepest step reached applies at the next check, within a minute.\n"
+    + "E.g. released at 70 %: the hall A/C, still on, is switched off again by its 80 % step.",
+  dev_name: "The device's name in the table, on the bar and in the phone warnings.\n"
+    + "E.g. \"Hall A/C\" reads better than climate.daewoo_a_c in a notification.",
+  dev_entity: "The entity this device's steps act on, and its state now.\n"
+    + "E.g. climate.daewoo_a_c: every step must be a climate action.",
+  dev_status: "What the device is doing now, or the step it is at during an outage.\n"
+    + "E.g. at its 80 % step since 14:05 (battery 79 %) · back when the grid returns.",
+  dev_enable: "Includes this device in the rules; off keeps its steps but never applies them.\n"
+    + "E.g. off for the bedroom A/C: it stays as it is through the whole outage.\n"
+    + "Takes effect on Save.",
+  dev_remove: "Drops this device and its steps from the rules.\n"
+    + "E.g. remove LED ambient: it is no longer dimmed or switched off in an outage.\n"
+    + "Takes effect on Save; Discard brings it back.",
+  add_step: "Adds a step 10 % below the device's lowest one, at least 5 %; a first step is 80 %.\n"
+    + "E.g. LED ambient has 80 % and 50 %: the new step is at 40 %.",
+  guard: "Shows the guard: a plug to cut when an off step does not take.\n"
+    + "E.g. the hall A/C is infrared, so its \"off\" may never arrive.",
+  guard_plug: "The smart plug the device hangs on; cut when its off step does not take.\n"
+    + "E.g. the hall A/C's plug; if it was cut, it is switched on first when the grid returns.",
+  guard_running: "A sensor that says the device is really running.\n"
+    + "E.g. binary_sensor.a_c_running still on 2 min after the off step: the plug is cut.",
+  guard_online: "A sensor that says the remote that sends the \"off\" is reachable.\n"
+    + "E.g. the IR bridge offline at an off step: the plug is cut 30 s after it.",
+  step_soc: "The battery % at which this step applies, 1–100; the deepest step reached wins.\n"
+    + "E.g. 80: when an outage takes the pack down to 80 %, the hall A/C goes off.\n"
+    + "One device cannot have two steps at the same %.",
+  step_action: "What the step does: any action of the device's own domain.\n"
+    + "E.g. Set HVAC mode to off, or Change temperature by 3° from where it was.",
+  step_field: "One setting of the step's action, from Home Assistant's own description of it.\n"
+    + "E.g. brightness 30 % on LED ambient's 80 % step; * marks a required one.",
+  step_json: "The data of an action Home Assistant does not list, as one JSON object.\n"
+    + "E.g. {\"hvac_mode\": \"off\"} for climate.set_hvac_mode.",
+  step_adv: "Shows or hides the action's advanced fields.\n"
+    + "E.g. a light's transition; a field that has a value stays shown either way.",
+  step_remove: "Drops this step from the device.\n"
+    + "E.g. remove LED ambient's 80 % step: it stays at full brightness until 50 %.\n"
+    + "Takes effect on Save.",
+  picker: "Opens a list of the house's devices that can be switched, to add one.\n"
+    + "E.g. pick a lamp: it joins the rules with no steps yet.",
+  pick_query: "Narrows the list by name or entity id; at most 40 are shown.\n"
+    + "E.g. \"light.\" lists only the lamps.",
+  pick_item: "A device not in the rules yet.\n"
+    + "E.g. tap it: it joins the rules under its own name, with no steps until you add one.",
+  ostep: "How far the battery must fall before a device you changed back is stepped down again.\n"
+    + "E.g. 10: the hall A/C switched back on at 75 % goes off again at 65 %.",
+  margin: "How close to a step the phones get one warning, with a Keep it on button.\n"
+    + "E.g. 1: a step at 50 % warns at 51 %; 0 turns the warnings off.",
+  export: "Shows or hides the saved rules as JSON, to read or copy by hand.\n"
+    + "E.g. override_step 10, warn_margin 1, then each device with its steps.",
+  export_json: "The saved rules, read-only; select and copy any part of them.\n"
+    + "E.g. \"override_step\": 10, \"warn_margin\": 1, then the devices and their steps.",
+  copy: "Copies the saved rules as JSON to the clipboard.\n"
+    + "E.g. paste them into a note before you rework the steps.\n"
+    + "Copies what is saved, not unsaved edits.",
+  download: "Saves the saved rules as the file load-shedding.json.\n"
+    + "E.g. keep that file to Import after a fresh Home Assistant install.\n"
+    + "Unsaved edits are not in it.",
+  import: "Reads the JSON pasted below into the editor as unsaved changes.\n"
+    + "E.g. paste an exported file, check the steps, then Save.\n"
+    + "A text without a devices list is refused with an error.",
+  import_text: "Where to paste exported rules before Load into editor.\n"
+    + "E.g. {\"override_step\": 10, \"warn_margin\": 1, \"devices\": [...]}",
+  save: "Sends the draft to Home Assistant, which checks it before storing it.\n"
+    + "E.g. two steps at 50 % on one device are refused, and the draft stays.",
+  discard: "Throws the draft away and shows the saved rules again.\n"
+    + "E.g. after a bad Import, Discard brings back the rules as they were.",
+  dismiss: "Hides the error; there are no unsaved changes to lose.\n"
+    + "E.g. after a refused Import, the message goes and the saved rules stay.",
 };
 
 const clone = (o) => JSON.parse(JSON.stringify(o === undefined ? null : o));
@@ -104,7 +269,12 @@ class LoadSheddingCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
+    cardTip(this, this.shadowRoot);
+    installFonts();
     this._print = null;
+    // Off screen or in a hidden tab: the glow and the step pulses hold still.
+    this._offscreen = false;
+    this._onVisibility = () => this._pause();
     this._pending = false;
     this._ui = { picker: false, query: "", adv: {}, guard: {}, exportOpen: false, importText: "" };
     this._onShared = () => this._render(true);
@@ -122,7 +292,9 @@ class LoadSheddingCard extends HTMLElement {
         || cfg.blocks.some((b) => BLOCKS.indexOf(b) < 0)) {
       throw new Error(CARD + ": blocks must be a non-empty list of " + BLOCKS.join(", "));
     }
+    cfg.fx = fxConfig(CARD, cfg.fx);
     this._config = cfg;
+    this._fxWire();
     this._print = null;
     if (this._hass) this._render(true);
   }
@@ -132,12 +304,43 @@ class LoadSheddingCard extends HTMLElement {
     if (this._config) this._render(false);
   }
 
+  /** Effects (card-fx.js): only with an `fx` key, so the real tab is untouched. */
+  _fxWire() {
+    if (this._fxOff) this._fxOff();
+    this._fxOff = null;
+    if (!this.isConnected || !this._config) return;
+    this._fxOff = fxSetup(this, this._config.fx);
+  }
+
   connectedCallback() {
     SHARED.subs.add(this._onShared);
+    if (!this._seen && window.IntersectionObserver) {
+      this._seen = new window.IntersectionObserver((entries) => {
+        this._offscreen = !entries[entries.length - 1].isIntersecting;
+        this._pause();
+      });
+    }
+    if (this._seen) this._seen.observe(this);
+    if (typeof document.addEventListener === "function") {
+      document.addEventListener("visibilitychange", this._onVisibility);
+    }
+    this._fxWire();
   }
 
   disconnectedCallback() {
     SHARED.subs.delete(this._onShared);
+    if (this._seen) this._seen.disconnect();
+    if (typeof document.removeEventListener === "function") {
+      document.removeEventListener("visibilitychange", this._onVisibility);
+    }
+    if (this._fxOff) this._fxOff();
+    this._fxOff = null;
+  }
+
+  /** Every animation holds while no one can see the card. */
+  _pause() {
+    if (this._offscreen || !!document.hidden) this.setAttribute("paused", "");
+    else this.removeAttribute("paused");
   }
 
   getCardSize() {
@@ -201,10 +404,9 @@ class LoadSheddingCard extends HTMLElement {
     const rank = (s) => (s === "turn_off" ? 0 : s === "turn_on" ? 1 : 2);
     names.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
     const list = names.map((s) => ({ action: domain + "." + s, name: this._svcName(domain, s), def: all[s] }));
-    if (domain === "climate") {
-      list.splice(Math.min(list.length, 2), 0,
-        { action: "climate.adjust_temperature", name: ADJUST.name, def: ADJUST });
-    }
+    Object.entries(PSEUDO).filter(([action]) => action.split(".")[0] === domain)
+      .sort((a, b) => a[1].at - b[1].at)
+      .forEach(([action, def]) => list.splice(Math.min(list.length, def.at), 0, { action, name: def.name, def }));
     return list;
   }
 
@@ -254,7 +456,7 @@ class LoadSheddingCard extends HTMLElement {
   _fingerprint() {
     const c = this._config;
     const rules = this._rules();
-    const ids = [c.config, c.state, c.master, c.soc, c.runtime, c.grid_unsafe];
+    const ids = [c.config, c.state, c.master, c.soc, c.runtime, c.on_battery];
     const parts = ids.map((id) => {
       const st = this._obj(id);
       return st ? st.state + JSON.stringify(st.attributes) : "-";
@@ -493,9 +695,16 @@ class LoadSheddingCard extends HTMLElement {
       : "";
   }
 
-  _toggle(on, attrs, label) {
-    return `<button class="sw ${on ? "on" : ""}" ${attrs} role="switch" aria-checked="${on}"
-      title="${this._esc(label)}"><i></i></button>`;
+  /** A data-tip attribute (the tooltip, see cardTip): line 1 is `name — state` (or just `name`), then HELP[key]. */
+  _tip(name, state, key) {
+    let head = state === undefined || state === null || state === "" ? name : name + " — " + state;
+    // A long status ("at its 80 % step since … · plug cut · back when …") must not wrap.
+    if (head.length > 90) head = head.slice(0, 89) + "…";
+    return ` data-tip="${this._esc(head + "\n" + HELP[key])}"`;
+  }
+
+  _toggle(on, attrs, tip) {
+    return `<button class="sw ${on ? "on" : ""}" ${attrs} role="switch" aria-checked="${on}"${tip}><i></i></button>`;
   }
 
   _render(force) {
@@ -514,7 +723,8 @@ class LoadSheddingCard extends HTMLElement {
     const render = { hero: () => this._heroHTML(), upcoming: () => this._upcomingHTML(),
       rules: () => this._rulesHTML(), backup: () => this._backupHTML() };
     const parts = this._config.blocks.map((b) => render[b]());
-    this.shadowRoot.innerHTML = `<style>${STYLE}</style><div class="wrap">${parts.join("")}</div>`;
+    const fx = this._config.fx ? FX_CSS + FX_STYLE : "";
+    this.shadowRoot.innerHTML = `<style>${STYLE}${fx}</style><div class="wrap">${parts.join("")}</div>`;
   }
 
   /** Every enabled device's steps, for the bar. */
@@ -535,68 +745,98 @@ class LoadSheddingCard extends HTMLElement {
   _heroHTML() {
     const c = this._config;
     const master = this._state(c.master) === "on";
-    const gridDown = this._state(c.grid_unsafe) === "on";
+    const gridDown = this._state(c.on_battery) === "on";
     const soc = this._num(c.soc);
     const runtime = this._num(c.runtime);
     const shed = this._shed();
     const rules = this._stored();
     const count = Object.keys(shed).length;
 
-    let accent;
+    let kind;
     let word;
     let lede;
     if (!master) {
-      accent = "var(--disabled-text-color)";
+      kind = "off";
       word = "Off";
       lede = "Nothing is changed automatically. Turn it on to arm the rules.";
     } else if (gridDown) {
-      accent = RED;
+      kind = "bad";
       word = "Armed";
       lede = "The grid is down and the house is on battery. Devices step down as the battery passes their %.";
     } else {
-      accent = GREEN;
+      kind = "ok";
       word = "Standing by";
       lede = "The grid is up, so nothing changes whatever the battery says. The rules apply only during an outage.";
     }
 
-    const marks = this._marks(rules, shed).map((m, i) => `
-      <div class="mark ${m.done ? "done" : ""} ${i % 2 ? "alt" : ""}" style="left:${m.soc}%">
-        <span>${this._esc(m.name)} · ${Math.round(m.soc)}%</span></div>`).join("");
+    // The battery against the steps. A step lights amber once the battery is
+    // within NEAR % above it, and pulses while that matters (armed); it turns
+    // red once taken. Below the lowest step is the danger zone.
+    const NEAR = 10;
+    const marks = this._marks(rules, shed);
+    const lowest = marks.length ? Math.min(...marks.map((m) => m.soc)) : null;
+    const highest = marks.length ? Math.max(...marks.map((m) => m.soc)) : null;
+    const level = soc === null ? null : Math.max(0, Math.min(100, soc));
+    const zone = level === null || highest === null ? "ok"
+      : level <= lowest ? "bad" : level <= highest ? "warn" : "ok";
+    // One marker per percentage: two devices stepping at 80 % share a label.
+    const groups = [];
+    marks.forEach((m) => {
+      const g = groups.find((x) => x.soc === m.soc);
+      if (g) { g.names.push(m.name); g.done = g.done && m.done; } else groups.push({ soc: m.soc, names: [m.name], done: m.done });
+    });
+    const markHTML = groups.map((m, i) => {
+      const near = !m.done && level !== null && level > m.soc && level - m.soc <= NEAR;
+      const st = m.done ? "done" : near ? "near" : "ahead";
+      const names = m.names.join(", ");
+      // A label near either end hangs inward, so it never leaves the card.
+      const edge = m.soc >= 85 ? " right" : m.soc <= 15 ? " left" : "";
+      // Live thresholds: how close, 0 at NEAR % away to 1 on the step.
+      const prox = near && fxOn(this._config.fx, "live_thresholds")
+        ? ";--fxp:" + (1 - (level - m.soc) / NEAR).toFixed(3) : "";
+      return `<div class="mark ${st} ${i % 2 ? "alt" : ""}${edge}" style="left:${m.soc}%${prox}"${
+        this._tip(names + " at " + Math.round(m.soc) + " %", m.done ? "taken" : near ? "close" : "ahead", "mark")}>
+        <span><i class="nm">${this._esc(names)} · </i>${Math.round(m.soc)}%</span></div>`;
+    }).join("");
 
     return `
-      <ha-card class="hero" style="--accent:${accent}">
+      <ha-card class="hero k-${kind}${gridDown && master ? " live" : ""}">
         <div class="pad hero-pad">
           <div class="hero-left">
             <div class="eyebrow">
-              <span class="dot"></span>
-              <span class="lbl">Load shedding</span>
+              <span class="pill"><span class="dot"></span><span class="lbl">Load shedding</span></span>
             </div>
-            <h1>${word}</h1>
+            <h1${this._tip("Load shedding", word, "state")}>${word}</h1>
             <p class="lede">${lede}</p>
             <div class="arm">
-              ${this._toggle(master, 'data-act="master"', "Load shedding")}
+              ${this._toggle(master, 'data-act="master"', this._tip("Load shedding", master ? "on" : "off", "master"))}
               <span>${master ? "Rules armed" : "Rules off"}</span>
             </div>
           </div>
           <div class="tiles">
-            <div class="tile"><span class="k">Battery</span>
-              <span class="v">${soc === null ? "—" : Math.round(soc) + "%"}</span></div>
-            <div class="tile"><span class="k">Grid</span>
-              <span class="v" style="color:${gridDown ? RED : GREEN}">${gridDown ? "down" : "up"}</span></div>
-            <div class="tile"><span class="k">Runtime left</span>
+            <div class="tile"${this._tip("Battery", soc === null ? "unknown" : Math.round(soc) + " %", "tile_soc")}>
+              <span class="k">Battery</span>
+              <span class="v z-${zone}">${soc === null ? "—" : Math.round(soc) + "%"}</span></div>
+            <div class="tile"${this._tip("Grid", gridDown ? "down" : "up", "tile_grid")}><span class="k">Grid</span>
+              <span class="v ${gridDown ? "z-bad" : "z-ok"}">${gridDown ? "down" : "up"}</span></div>
+            <div class="tile"${this._tip("Runtime left", runtime === null ? "unknown" : runtime.toFixed(1) + " h",
+              "tile_runtime")}><span class="k">Runtime left</span>
               <span class="v ${runtime === null ? "dim" : ""}">${runtime === null ? "—" : runtime.toFixed(1) + " h"}</span>
               <span class="s">at the current draw</span></div>
-            <div class="tile"><span class="k">Stepped down</span>
-              <span class="v" style="color:${count ? AMBER : "inherit"}">${count} / ${rules.devices.length}</span>
+            <div class="tile"${this._tip("Stepped down", count + " / " + rules.devices.length, "tile_shed")}>
+              <span class="k">Stepped down</span>
+              <span class="v ${count ? "z-warn" : ""}">${count} / ${rules.devices.length}</span>
               <span class="s">devices</span></div>
           </div>
         </div>
         <div class="pad barpad">
           <div class="bar">
-            <div class="fill" style="width:${soc === null ? 0 : Math.max(0, Math.min(100, soc))}%"></div>
-            ${marks}
+            <div class="fill z-${zone}" style="width:${level === null ? 0 : level}%"></div>
+            ${lowest !== null ? `<div class="danger" style="width:${lowest}%"></div>` : ""}
+            ${markHTML}
+            ${level !== null ? `<div class="knob z-${zone}" style="left:${level}%"><b>${Math.round(level)}%</b></div>` : ""}
           </div>
-          <div class="scale"><span>0%</span><span>battery</span><span>100%</span></div>
+          <div class="scale"><span>0%</span><span>25</span><span>50</span><span>75</span><span>100%</span></div>
         </div>
       </ha-card>`;
   }
@@ -644,38 +884,49 @@ class LoadSheddingCard extends HTMLElement {
     if (!step) return "deepest step reached";
     const domain = d.entity.split(".")[0];
     const svc = String(step.action || "").split(".")[1] || "";
-    const name = step.action === "climate.adjust_temperature" ? ADJUST.name : this._svcName(domain, svc);
+    const name = PSEUDO[step.action] ? PSEUDO[step.action].name : this._svcName(domain, svc);
     const data = step.data || {};
     const bits = Object.entries(data).map(([k, v]) => k.replace(/_/g, " ") + " " + v);
     return name + (bits.length ? " (" + bits.join(", ") + ")" : "");
   }
 
   _upcomingHTML() {
-    const outage = this._state(this._config.grid_unsafe) === "on";
+    const outage = this._state(this._config.on_battery) === "on";
     const armed = this._state(this._config.master) === "on";
     const margin = this._stored().warn_margin;
     const rows = this._upcoming();
+    // The status word's own text is its state: "Now — kept on by you".
+    const word = (cls, text) => `<span class="st ${cls}"${
+      this._tip("Now", text.replace(/(\d)%/g, "$1 %"), "up_status")}>${this._esc(text)}</span>`;
     const body = rows.map((r) => {
       let state;
       let btn = "";
+      const id = this._esc(r.d.id);
       if (r.held) {
-        state = `<span class="st warn">kept on by you</span>`;
-        btn = `<button class="btn small" data-act="release" data-id="${this._esc(r.d.id)}">Release</button>`;
+        state = word("warn", "kept on by you");
+        btn = `<button class="btn small" data-act="release" data-id="${id}"${
+          this._tip("Release", r.d.name, "release")}>Release</button>`;
       } else if (r.applied) {
-        state = `<span class="st bad">stepped down at ${Math.round(r.rec.step_soc)}%</span>`;
-        btn = `<button class="btn small" data-act="hold" data-id="${this._esc(r.d.id)}"
+        state = word("bad", "stepped down at " + Math.round(r.rec.step_soc) + "%");
+        btn = `<button class="btn small" data-act="hold" data-id="${id}"${this._tip("Put back", r.d.name, "put_back")}
           ${outage ? "" : "disabled"}>Put back</button>`;
       } else {
-        state = r.on ? (r.soon ? `<span class="st warn">about to step down</span>` : `<span class="st">on</span>`)
-          : `<span class="st dim">off — left alone</span>`;
-        btn = `<button class="btn small" data-act="hold" data-id="${this._esc(r.d.id)}"
+        state = r.on ? (r.soon ? word("warn", "about to step down") : word("", "on"))
+          : word("dim", "off — left alone");
+        btn = `<button class="btn small" data-act="hold" data-id="${id}"${this._tip("Keep on", r.d.name, "keep_on")}
           ${outage && r.on && r.next ? "" : "disabled"}>Keep on</button>`;
       }
       const at = r.next ? Math.round(r.next.at) + "%" : "—";
       const away = r.away === null ? "—" : r.away > 0 ? Math.round(r.away * 10) / 10 + "%" : "now";
-      return `<tr class="${r.soon && !r.held ? "soon" : ""}">
-        <td><span class="name" data-act="more" data-ent="${r.d.entity}">${this._esc(r.d.name)}</span></td>
-        <td>${r.next ? this._esc(this._stepLabel(r.d, r.next.step)) : `<span class="st dim">nothing left</span>`}</td>
+      const row = r.next ? "next step at " + Math.round(r.next.at) + " %"
+        + (r.away === null ? "" : r.away > 0 ? ", " + Math.round(r.away * 10) / 10 + " % away" : ", due now")
+        : "nothing left";
+      const st = this._obj(r.d.entity);
+      return `<tr class="${r.soon && !r.held ? "soon" : ""}"${this._tip(r.d.name, row, "up_row")}>
+        <td><span class="name" data-act="more" data-ent="${r.d.entity}"${
+          this._tip(r.d.name, st ? st.state : "not found", "up_device")}>${this._esc(r.d.name)}</span></td>
+        <td>${r.next ? this._esc(this._stepLabel(r.d, r.next.step))
+          : `<span class="st dim"${this._tip("Next step", "nothing left", "up_next")}>nothing left</span>`}</td>
         <td class="mono">${at}</td>
         <td class="mono">${away}</td>
         <td>${state}</td>
@@ -736,10 +987,12 @@ class LoadSheddingCard extends HTMLElement {
       const msg = SHARED.error || (problems.length ? problems.join("; ") : "Unsaved changes");
       bar = `<div class="savebar ${SHARED.error || problems.length ? "err" : ""}">
         <span>${this._esc(msg)}</span>
-        ${dirty ? `<button class="btn" data-act="discard">Discard</button>
-          <button class="btn primary" data-act="save" ${problems.length || SHARED.saving ? "disabled" : ""}>
+        ${dirty ? `<button class="btn" data-act="discard"${this._tip("Discard", "", "discard")}>Discard</button>
+          <button class="btn primary" data-act="save" ${problems.length || SHARED.saving ? "disabled" : ""}${
+            this._tip("Save", SHARED.saving ? "saving" : problems.length ? "fix the problems first" : "",
+              "save")}>
             ${SHARED.saving ? "Saving…" : "Save"}</button>`
-          : `<button class="btn" data-act="discard">Dismiss</button>`}
+          : `<button class="btn" data-act="discard"${this._tip("Dismiss", "", "dismiss")}>Dismiss</button>`}
       </div>`;
     }
 
@@ -753,12 +1006,13 @@ class LoadSheddingCard extends HTMLElement {
           ${bar}
           ${devs || `<p class="empty">No devices yet. Add one below.</p>`}
           <div class="addrow">
-            <button class="btn" data-act="picker">${this._ui.picker ? "Close" : "+ Add device"}</button>
+            <button class="btn" data-act="picker"${this._tip("+ Add device", this._ui.picker ? "list open" : "",
+              "picker")}>${this._ui.picker ? "Close" : "+ Add device"}</button>
           </div>
           ${this._ui.picker ? `
           <div class="picker">
             <input class="txt" data-kind="query" placeholder="Search devices — name or entity id"
-                   value="${this._esc(this._ui.query)}">
+                   value="${this._esc(this._ui.query)}"${this._tip("Search", this._ui.query, "pick_query")}>
             <div class="plist">${this._pickerList()}</div>
           </div>` : ""}
         </div>
@@ -777,7 +1031,8 @@ class LoadSheddingCard extends HTMLElement {
     if (!rows.length) return `<p class="empty">Nothing matches.</p>`;
     return rows.map((s) => {
       const domain = s.entity_id.split(".")[0];
-      return `<button class="pick" data-act="pick" data-ent="${s.entity_id}">
+      return `<button class="pick" data-act="pick" data-ent="${s.entity_id}"${
+        this._tip((s.attributes || {}).friendly_name || s.entity_id, s.state, "pick_item")}>
         <ha-icon icon="${(s.attributes || {}).icon || ICONS[domain] || "mdi:power-plug"}"></ha-icon>
         <span class="pn">${this._esc((s.attributes || {}).friendly_name || s.entity_id)}</span>
         <code>${s.entity_id}</code><span class="ps">${this._esc(s.state)}</span></button>`;
@@ -805,20 +1060,31 @@ class LoadSheddingCard extends HTMLElement {
           <span class="n">${n + 1}</span>
           <ha-icon icon="${(st && st.attributes && st.attributes.icon) || ICONS[domain] || "mdi:power-plug"}"></ha-icon>
           <div class="who">
-            <input class="txt name" data-kind="name" data-dev="${i}" value="${this._esc(d.name)}" aria-label="Name">
-            <span class="sub"><code data-act="more" data-ent="${d.entity}">${d.entity}</code>
-              <span class="st ${status.cls}">${this._esc(status.text)}</span></span>
+            <input class="txt name" data-kind="name" data-dev="${i}" value="${this._esc(d.name)}" aria-label="Name"${
+              this._tip("Name", d.name, "dev_name")}>
+            <span class="sub"><code data-act="more" data-ent="${d.entity}"${
+              this._tip(d.entity, st ? st.state : "not found", "dev_entity")}>${d.entity}</code>
+              <span class="st ${status.cls}"${this._tip("Status", status.text, "dev_status")}>${
+                this._esc(status.text)}</span></span>
           </div>
-          ${this._toggle(enabled, `data-act="enable" data-dev="${i}"`, "Use this device")}
-          <button class="icon" data-act="remove-dev" data-dev="${i}" title="Remove device">✕</button>
+          ${this._toggle(enabled, `data-act="enable" data-dev="${i}"`,
+            this._tip("Use this device", enabled ? "on" : "off", "dev_enable"))}
+          <button class="icon" data-act="remove-dev" data-dev="${i}"${
+            this._tip("Remove device", d.name, "dev_remove")}>✕</button>
         </div>
         <div class="steps">
           ${steps.map(({ s, si }) => this._stepHTML(d, i, s, si)).join("")}
-          <button class="btn small" data-act="add-step" data-dev="${i}">+ Add step</button>
+          <button class="btn small" data-act="add-step" data-dev="${i}"${
+            this._tip("+ Add step", (d.steps || []).length + ((d.steps || []).length === 1 ? " step" : " steps"),
+              "add_step")}>+ Add step</button>
+          <p class="only-on">Applies only while it is on${g.running
+            ? ` (measured by <code>${this._esc(g.running)}</code>)` : ""}. Never switches it on, and the grid's
+            return never switches on what you switched off.</p>
         </div>
         <div class="guard">
-          <button class="link" data-act="guard" data-dev="${i}">${guardOpen ? "▾" : "▸"} Make sure it is really off${
-            Object.keys(g).length ? " · on" : ""}</button>
+          <button class="link" data-act="guard" data-dev="${i}"${
+            this._tip("Make sure it is really off", Object.keys(g).length ? "on" : "not set", "guard")}>${
+            guardOpen ? "▾" : "▸"} Make sure it is really off${Object.keys(g).length ? " · on" : ""}</button>
           ${guardOpen ? `
           <p class="blurb">For a device whose "off" might not arrive (an infrared A/C). After a step that turns it
             off, if <b>running</b> still says on 90 s later, or <b>online</b> says the bridge is down, the <b>plug</b> is cut.
@@ -833,7 +1099,8 @@ class LoadSheddingCard extends HTMLElement {
   }
 
   _guardInput(i, field, value, domain, label) {
-    return `<label class="gf"><span class="cap">${label}</span>
+    return `<label class="gf"${this._tip(label.split(" (")[0], value || "not set", "guard_" + field)}>
+      <span class="cap">${label}</span>
       <input class="txt" list="ents-${domain}" data-kind="guard" data-dev="${i}" data-field="${field}"
              value="${this._esc(value || "")}" placeholder="${domain}.…">
       ${this._datalist(domain)}</label>`;
@@ -863,23 +1130,28 @@ class LoadSheddingCard extends HTMLElement {
       fieldsHTML = fields.filter((f) => !f.adv || showAdv || data[f.key] !== undefined)
         .map((f) => this._fieldHTML(d, i, si, svc, f, data[f.key])).join("");
     } else if (s.action) {
-      fieldsHTML = `<label class="fld"><span class="cap">data (JSON)</span>
+      fieldsHTML = `<label class="fld"${this._tip("Data", JSON.stringify(data), "step_json")}><span class="cap">data (JSON)</span>
         <input class="txt mono" data-kind="field" data-type="json" data-dev="${i}" data-step="${si}"
                data-field="__all" value="${this._esc(JSON.stringify(data))}"></label>`;
     }
     let more = "";
-    if (hasAdv && !showAdv) more = `<button class="link" data-act="adv" data-dev="${i}" data-step="${si}">more fields</button>`;
-    else if (showAdv) more = `<button class="link" data-act="adv" data-dev="${i}" data-step="${si}">fewer fields</button>`;
+    const adv = this._tip(showAdv ? "Fewer fields" : "More fields", "", "step_adv");
+    if (hasAdv && !showAdv) more = `<button class="link" data-act="adv" data-dev="${i}" data-step="${si}"${adv}>more fields</button>`;
+    else if (showAdv) more = `<button class="link" data-act="adv" data-dev="${i}" data-step="${si}"${adv}>fewer fields</button>`;
     return `
       <div class="step">
         <span class="at">at</span>
         <input class="num soc" type="number" min="1" max="100" step="1" data-kind="soc"
-               data-dev="${i}" data-step="${si}" value="${Number.isFinite(soc) && s.soc !== null ? soc : ""}"><span class="u">%</span>
+               data-dev="${i}" data-step="${si}" value="${Number.isFinite(soc) && s.soc !== null ? soc : ""}"${
+                 this._tip("Battery %", Number.isFinite(soc) && s.soc !== null ? soc + " %" : "not set", "step_soc")}><span class="u">%</span>
         <span class="arrow">→</span>
-        <select class="sel" data-kind="action" data-dev="${i}" data-step="${si}">${options}</select>
+        <select class="sel" data-kind="action" data-dev="${i}" data-step="${si}"${
+          this._tip("Action", cur ? cur.name : s.action || "not set", "step_action")}>${options}</select>
         <span class="flds">${fieldsHTML}</span>
+        ${couldSwitchOn(s) ? '<span class="note-on">only while on</span>' : ""}
         ${more}
-        <button class="icon" data-act="remove-step" data-dev="${i}" data-step="${si}" title="Remove step">✕</button>
+        <button class="icon" data-act="remove-step" data-dev="${i}" data-step="${si}"${
+          this._tip("Remove step", Number.isFinite(soc) && s.soc !== null ? "at " + soc + " %" : "", "step_remove")}>✕</button>
       </div>`;
   }
 
@@ -930,7 +1202,9 @@ class LoadSheddingCard extends HTMLElement {
       input = `<input class="txt mono" ${base} data-type="json" placeholder="JSON"
         value="${value === undefined ? "" : this._esc(JSON.stringify(value))}">`;
     }
-    return `<label class="fld"><span class="cap">${this._esc(label)}</span><span class="in">${input}</span></label>`;
+    const shown = value === undefined ? "not set" : typeof value === "object" ? JSON.stringify(value) : String(value);
+    return `<label class="fld"${this._tip(label, shown, "step_field")}><span class="cap">${this._esc(label)}</span><span class="in">${
+      input}</span></label>`;
   }
 
   _backupHTML() {
@@ -947,7 +1221,7 @@ class LoadSheddingCard extends HTMLElement {
                 fallen this much further. Then the deepest step reached is applied again.</p>
             </div>
             <span class="in"><input class="num" type="number" min="1" max="50" step="1" data-kind="ostep"
-              value="${this._esc(rules.override_step)}"><span class="u">%</span></span>
+              value="${this._esc(rules.override_step)}"${this._tip("Override step", rules.override_step + " %", "ostep")}><span class="u">%</span></span>
           </div>
           <div class="kvrow">
             <div>
@@ -956,7 +1230,8 @@ class LoadSheddingCard extends HTMLElement {
                 50% warns at 51%. 0 turns the warnings off.</p>
             </div>
             <span class="in"><input class="num" type="number" min="0" max="20" step="1" data-kind="margin"
-              value="${this._esc(rules.warn_margin === undefined ? 1 : rules.warn_margin)}"><span class="u">%</span></span>
+              value="${this._esc(rules.warn_margin === undefined ? 1 : rules.warn_margin)}"${
+              this._tip("Warn before a step", (rules.warn_margin === undefined ? 1 : rules.warn_margin) + " %", "margin")}><span class="u">%</span></span>
           </div>
           <div class="kvrow">
             <div>
@@ -964,21 +1239,22 @@ class LoadSheddingCard extends HTMLElement {
               <p class="blurb">The rules live in Home Assistant, not in git. Keep a copy.</p>
             </div>
             <span class="btns">
-              <button class="btn" data-act="export">${this._ui.exportOpen ? "Hide" : "Show JSON"}</button>
-              <button class="btn" data-act="copy">Copy</button>
-              <button class="btn" data-act="download">Download</button>
+              <button class="btn" data-act="export"${this._tip(this._ui.exportOpen ? "Hide JSON" : "Show JSON", "", "export")}>${this._ui.exportOpen ? "Hide" : "Show JSON"}</button>
+              <button class="btn" data-act="copy"${this._tip("Copy", "", "copy")}>Copy</button>
+              <button class="btn" data-act="download"${this._tip("Download", "", "download")}>Download</button>
             </span>
           </div>
-          ${this._ui.exportOpen ? `<textarea class="code" readonly>${this._esc(json)}</textarea>` : ""}
+          ${this._ui.exportOpen ? `<textarea class="code" readonly${this._tip("Rules JSON", "", "export_json")}>${this._esc(json)}</textarea>` : ""}
           <div class="kvrow">
             <div>
               <span class="name">Import</span>
               <p class="blurb">Paste exported JSON. It opens as unsaved changes in the editor; nothing is
                 replaced until you press Save.</p>
             </div>
-            <span class="btns"><button class="btn" data-act="import">Load into editor</button></span>
+            <span class="btns"><button class="btn" data-act="import"${this._tip("Load into editor", "", "import")}>Load into editor</button></span>
           </div>
-          <textarea class="code" data-kind="import" placeholder='{"override_step": 10, "devices": [...]}'>${
+          <textarea class="code" data-kind="import" placeholder='{"override_step": 10, "devices": [...]}'${
+            this._tip("Import JSON", "", "import_text")}>${
             this._esc(this._ui.importText)}</textarea>
           <p class="foot">Rules are saved through <code>script.load_shedding_save_config</code>, which checks them.
             The engine is <code>packages/load_shedding.yaml</code>; it acts only while the inverter reports the grid as
@@ -989,158 +1265,251 @@ class LoadSheddingCard extends HTMLElement {
 }
 
 // --- styles: the Shutdowns card's, plus the editor -----------------------------
+// --- styles ----------------------------------------------------------------
+//
+// The console palette of the Shutdowns tab, as the card's own colours (--ls-*
+// on :host), not the HA theme's: the panels are graphite whatever the theme, so
+// their text must not take the theme's text colours, which are dark in the
+// light theme. test_power_cards.js checks every text colour for 4.5:1.
+/*
+ * Effect styles (card-fx.js), appended only when the card has an fx key and
+ * gated on the host's data-fx.
+ *
+ * Both effects improve on something the tab already draws: the near markers
+ * glow (pulsing only during an outage) and the band below the lowest step is
+ * hatched. live_thresholds scales the glow with how close the battery is and
+ * pulses whenever a step is near; danger_zone deepens the band to a red that
+ * fades toward the step, with the hatch drifting.
+ */
+const FX_STYLE = `
+:host([data-fx~="live_thresholds"]) .mark.near {
+  box-shadow: 0 0 calc(4px + var(--fxp, 0) * 18px) calc(var(--fxp, 0) * 3px) var(--ls-warn-hi);
+  animation: fxNear calc(2.4s - var(--fxp, 0) * 1.6s) ease-in-out infinite; }
+@keyframes fxNear { 50% { opacity: .55; } }
+:host([data-fx~="danger_zone"]) .danger {
+  background: repeating-linear-gradient(135deg, rgba(255, 146, 138, .38) 0 4px, transparent 4px 10px) 0 0 / 14px 14px,
+    linear-gradient(90deg, color-mix(in srgb, var(--ls-bad) 55%, transparent), color-mix(in srgb, var(--ls-bad) 12%, transparent));
+  box-shadow: inset -2px 0 0 var(--ls-bad-hi), 0 0 14px color-mix(in srgb, var(--ls-bad) 45%, transparent);
+  animation: fxHatch 3s linear infinite; }
+@keyframes fxHatch { to { background-position: 14px 0, 0 0; } }
+:host([paused]) .mark.near, :host([paused]) .danger { animation-play-state: paused; }
+@media (prefers-reduced-motion: reduce) {
+  :host([data-fx]) .mark.near, :host([data-fx]) .danger { animation: none !important; }
+}
+`;
+
 const STYLE = `
-:host { display: block; }
+:host {
+  display: block; color-scheme: dark; container-type: inline-size;
+  --ls-panel: #0b0c0f;
+  --ls-inner: #0e1014;
+  --ls-line: #1c1e24;
+  --ls-line2: #23262e;
+  --ls-text: #e8eaed;
+  --ls-text2: #a9b5c3;
+  --ls-muted: #8a909b;
+  --ls-dim: #2a2e36;
+  --ls-ok: #589569;
+  --ls-ok-hi: #62d6a8;
+  --ls-warn: #ae8446;
+  --ls-warn-hi: #f2be62;
+  --ls-bad: #bb635b;
+  --ls-bad-hi: #ff928a;
+  --ls-link: #86b3e3;
+  --ls-sans: "IBM Plex Sans", system-ui, "Segoe UI", sans-serif;
+  --ls-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+:host([paused]) *, :host([paused]) *::before { animation-play-state: paused !important; }
 .wrap {
-  --mono: var(--code-font-family, ui-monospace, "Roboto Mono", SFMono-Regular, Consolas, monospace);
-  display: flex; flex-direction: column; gap: 16px;
-  font-family: var(--paper-font-body1_-_font-family, Roboto, system-ui, sans-serif);
-  font-size: 14px; line-height: 1.45; color: var(--primary-text-color);
+  display: flex; flex-direction: column; gap: 12px;
+  font-family: var(--ls-sans); font-size: 14px; line-height: 1.45; color: var(--ls-text);
   -webkit-font-smoothing: antialiased;
 }
-.pad { padding: 20px 22px; display: flex; flex-direction: column; gap: 14px; }
-h1 { margin: 0; font-size: 34px; font-weight: 300; line-height: 1.15; }
-h2 { margin: 0; font-size: 17px; font-weight: 500; }
+ha-card { display: block; background: var(--ls-panel); color: var(--ls-text); border: 1px solid var(--ls-line);
+  border-radius: 12px; box-shadow: none; }
+.pad { padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; }
+h1 { margin: 0; font: 600 30px/1.15 var(--ls-sans); }
+h2 { margin: 0; font: 600 15px/1.3 var(--ls-sans); }
 p { margin: 0; }
-code { font-family: var(--mono); font-size: 12px; }
-b { font-weight: 500; }
+code { font-family: var(--ls-mono); font-size: 12px; }
+b { font-weight: 600; }
 
-.hero { border-left: 4px solid var(--accent); }
-.hero-pad { padding: 24px 28px 8px; flex-direction: row; flex-wrap: wrap; gap: 32px; align-items: center; }
-.hero-left { flex: 1 1 380px; min-width: 240px; display: flex; flex-direction: column; gap: 10px; }
-.eyebrow { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
-.eyebrow .lbl, .tile .k, .scale, .cap {
-  font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--secondary-text-color);
-}
-.eyebrow .lbl { font-size: 12px; letter-spacing: .12em; }
-.dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; background: var(--accent);
+/* --- hero --- */
+.hero { --k: var(--ls-ok); --k-hi: var(--ls-ok-hi); position: relative; overflow: hidden;
+  border-color: color-mix(in srgb, var(--k) 50%, var(--ls-line)); }
+.hero.k-bad { --k: var(--ls-bad); --k-hi: var(--ls-bad-hi); }
+.hero.k-off { --k: var(--ls-muted); --k-hi: var(--ls-text2); }
+.hero::before { content: ""; position: absolute; inset: -40% -10% auto auto; width: 65%; height: 170%;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--k) 26%, transparent), transparent);
+  animation: breathe 5s ease-in-out infinite; pointer-events: none; }
+.hero.live::before { animation-duration: 2.6s; }
+.hero.k-off::before { animation: none; opacity: .25; }
+@keyframes breathe { 0%, 100% { opacity: .35; transform: scale(.96); } 50% { opacity: .9; transform: scale(1.04); } }
+.hero-pad { position: relative; padding: 22px 24px 6px; flex-direction: row; flex-wrap: wrap; gap: 28px; align-items: center; }
+.hero-left { flex: 1 1 360px; min-width: 240px; display: flex; flex-direction: column; gap: 9px; }
+.eyebrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.pill { display: inline-flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px;
+  font: 600 10.5px/1 var(--ls-mono); letter-spacing: .06em; text-transform: uppercase;
+  color: var(--k-hi); background: color-mix(in srgb, var(--k) 18%, transparent); }
+.dot { width: 6px; height: 6px; border-radius: 50%; background: var(--k); box-shadow: 0 0 8px var(--k);
   animation: lspulse 2.4s ease-in-out infinite; }
+.k-off .dot { animation: none; box-shadow: none; }
 @keyframes lspulse { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }
-@media (prefers-reduced-motion: reduce) { .dot { animation: none } }
-.hero h1 { color: var(--accent); }
-.lede { font-size: 16px; opacity: .82; max-width: 46ch; text-wrap: pretty; }
-.arm { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--secondary-text-color); }
-.tiles { flex: 1 1 420px; display: flex; flex-wrap: wrap; gap: 12px; }
-.tile { flex: 1 1 130px; background: var(--secondary-background-color, rgba(127,127,127,.12));
-  border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 4px; }
-.tile .v { font-size: 22px; font-weight: 400; font-family: var(--mono); }
-.tile .v.dim { color: var(--disabled-text-color); }
-.tile .s { font-size: 12px; color: var(--secondary-text-color); }
+.hero h1 { color: var(--k-hi); }
+.lede { font-size: 15px; color: var(--ls-text); max-width: 52ch; text-wrap: pretty; }
+.arm { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--ls-text2); }
+.tiles { position: relative; flex: 1 1 440px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.tile { background: var(--ls-inner); border: 1px solid var(--ls-line2); border-radius: 8px;
+  padding: 11px 13px; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.tile .k, .scale, .cap, th { font: 600 10.5px/1.2 var(--ls-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--ls-muted); }
+.tile .v { font: 600 19px/1.2 var(--ls-mono); font-variant-numeric: tabular-nums; color: var(--ls-text); }
+.tile .v.dim { color: var(--ls-muted); }
+.tile .s { font-size: 12px; color: var(--ls-muted); }
+.z-ok { color: var(--ls-ok-hi) !important; }
+.z-warn { color: var(--ls-warn-hi) !important; }
+.z-bad { color: var(--ls-bad-hi) !important; }
 
-.barpad { padding: 8px 28px 20px; gap: 6px; }
-.bar { position: relative; height: 12px; border-radius: 6px; margin-top: 40px;
-  background: rgba(127,127,127,.16); }
-.fill { position: absolute; inset: 0 auto 0 0; border-radius: 6px; background: var(--success-color, #43a047); opacity: .55; }
-.mark { position: absolute; top: -5px; bottom: -5px; width: 2px; margin-left: -1px; background: ${AMBER}; }
-.mark.done { background: ${RED}; }
-.mark span { position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); margin-bottom: 4px;
-  font-family: var(--mono); font-size: 10px; white-space: nowrap; color: var(--secondary-text-color); }
-.mark.alt span { margin-bottom: 18px; }
-.scale { display: flex; justify-content: space-between; }
+/* --- the battery against the steps --- */
+.barpad { position: relative; padding: 6px 24px 18px; gap: 6px; }
+.bar { position: relative; height: 18px; border-radius: 6px; margin-top: 44px;
+  background: var(--ls-inner); border: 1px solid var(--ls-line2); }
+/* Over the fill, translucent, so the zone shows whatever the battery says. */
+.danger { position: absolute; inset: 0 auto 0 0; border-radius: 5px 0 0 5px; pointer-events: none;
+  background: repeating-linear-gradient(135deg, rgba(255, 146, 138, .30) 0 4px, transparent 4px 10px);
+  box-shadow: inset -2px 0 0 color-mix(in srgb, var(--ls-bad) 70%, transparent); }
+.fill { position: absolute; inset: 2px auto 2px 2px; border-radius: 4px; background: var(--ls-ok);
+  transition: width .6s ease, background-color .6s ease; }
+.fill.z-warn { background: var(--ls-warn); }
+.fill.z-bad { background: var(--ls-bad); }
+.knob { position: absolute; top: -5px; bottom: -5px; width: 3px; margin-left: -1.5px; border-radius: 2px;
+  background: var(--ls-text); box-shadow: 0 0 8px rgba(255,255,255,.45); transition: left .6s ease; }
+.knob b { position: absolute; top: calc(100% + 4px); left: 50%; transform: translateX(-50%);
+  font: 600 11px var(--ls-mono); color: var(--ls-text); white-space: nowrap; }
+.mark { position: absolute; top: -7px; bottom: -7px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--ls-muted); }
+.mark span { position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); margin-bottom: 5px;
+  font: 500 10.5px var(--ls-mono); white-space: nowrap; color: var(--ls-muted);
+  padding: 2px 6px; border-radius: 999px; background: var(--ls-inner); border: 1px solid var(--ls-line2); }
+.mark.alt span { margin-bottom: 26px; }
+.mark span i { font-style: normal; }
+.mark.right span { left: auto; right: -6px; transform: none; }
+.mark.left span { left: -6px; transform: none; }
+.mark.near { background: var(--ls-warn-hi); box-shadow: 0 0 8px var(--ls-warn); }
+.mark.near span { color: var(--ls-warn-hi); border-color: color-mix(in srgb, var(--ls-warn) 60%, transparent);
+  background: color-mix(in srgb, var(--ls-warn) 16%, var(--ls-inner)); }
+.live .mark.near, .live .mark.near span { animation: nearpulse 1.6s ease-in-out infinite; }
+@keyframes nearpulse { 0%, 100% { box-shadow: 0 0 4px var(--ls-warn); } 50% { box-shadow: 0 0 14px var(--ls-warn-hi); } }
+.mark.done { background: var(--ls-bad-hi); }
+.mark.done span { color: var(--ls-bad-hi); border-color: color-mix(in srgb, var(--ls-bad) 60%, transparent);
+  background: color-mix(in srgb, var(--ls-bad) 16%, var(--ls-inner)); }
+.scale { display: flex; justify-content: space-between; margin-top: 16px; }
 
+/* --- shared --- */
 .head { display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; }
 .head h2 { flex: 1 1 auto; }
-.stamp { font-size: 12px; color: var(--secondary-text-color); }
-.blurb { font-size: 13px; color: var(--secondary-text-color); max-width: 70ch; text-wrap: pretty; }
-.empty { font-size: 13px; color: var(--disabled-text-color); }
-.foot { border-top: 1px solid var(--divider-color); padding-top: 12px;
-  font-size: 12px; color: var(--secondary-text-color); line-height: 1.6; }
-
-.savebar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 14px;
-  border-radius: 10px; background: rgba(3,169,244,.10); border: 1px solid rgba(3,169,244,.35); font-size: 13px; }
+.stamp { font: 500 11.5px var(--ls-mono); color: var(--ls-muted); }
+.blurb { font-size: 13px; color: var(--ls-text2); max-width: 70ch; text-wrap: pretty; }
+.empty { font-size: 13px; color: var(--ls-muted); }
+.foot { border-top: 1px solid var(--ls-line); padding-top: 10px; font-size: 12px; color: var(--ls-muted); line-height: 1.6; }
+.savebar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 14px; border-radius: 8px;
+  background: color-mix(in srgb, var(--ls-link) 10%, transparent); border: 1px solid color-mix(in srgb, var(--ls-link) 40%, transparent);
+  font-size: 13px; }
 .savebar span { flex: 1 1 auto; }
-.savebar.err { background: rgba(219,68,55,.10); border-color: rgba(219,68,55,.45); }
+.savebar.err { background: color-mix(in srgb, var(--ls-bad) 12%, transparent); border-color: color-mix(in srgb, var(--ls-bad) 50%, transparent); }
 
-.dev { border: 1px solid var(--divider-color); border-radius: 12px; padding: 14px 16px;
+/* --- the rules --- */
+.dev { background: var(--ls-inner); border: 1px solid var(--ls-line2); border-radius: 10px; padding: 14px 16px;
   display: flex; flex-direction: column; gap: 10px; }
 .dev.off { opacity: .6; }
 .devhead { display: flex; align-items: center; gap: 12px; }
-.devhead .n { font-family: var(--mono); color: var(--secondary-text-color); width: 1.2em; text-align: right; }
-.devhead ha-icon { --mdc-icon-size: 22px; color: var(--secondary-text-color); }
+.devhead .n { font-family: var(--ls-mono); color: var(--ls-muted); width: 1.2em; text-align: right; }
+.devhead ha-icon { --mdc-icon-size: 22px; color: var(--ls-text2); }
 .who { flex: 1 1 auto; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .sub { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; font-size: 12px; }
-.sub code { color: var(--secondary-text-color); cursor: pointer; }
-.st { color: var(--primary-text-color); }
-.st.dim { color: var(--secondary-text-color); }
-.st.bad { color: ${RED}; }
-.st.warn { color: ${AMBER}; }
-
+.sub code { color: var(--ls-muted); cursor: pointer; }
+.st { color: var(--ls-text); }
+.st.dim { color: var(--ls-muted); }
+.st.bad { color: var(--ls-bad-hi); }
+.st.warn { color: var(--ls-warn-hi); }
 .steps { display: flex; flex-direction: column; gap: 8px; padding-left: 34px; }
 .step { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding: 8px 10px;
-  border-radius: 10px; background: var(--secondary-background-color, rgba(127,127,127,.08)); }
-.at, .arrow, .u { color: var(--secondary-text-color); font-size: 13px; }
+  border-radius: 8px; background: var(--ls-panel); border: 1px solid var(--ls-line); }
+.at, .arrow, .u { color: var(--ls-muted); font-size: 13px; }
+/* What the engine guarantees, said where the steps are written. */
+.only-on { margin: 2px 0 0; font-size: 12px; color: var(--ls-muted); max-width: 70ch; }
+.only-on code { color: var(--ls-text2); }
+.note-on { font: 500 10.5px/1 var(--ls-mono); color: var(--ls-text2); padding: 4px 8px; border-radius: 999px;
+  border: 1px dashed var(--ls-line2); white-space: nowrap; }
 .flds { display: contents; }
 .fld { display: inline-flex; flex-direction: column; gap: 2px; }
 .fld .in { display: inline-flex; align-items: center; gap: 4px; }
 .guard { padding-left: 34px; display: flex; flex-direction: column; gap: 8px; }
 .gfields { display: flex; flex-wrap: wrap; gap: 10px; }
 .gf { display: inline-flex; flex-direction: column; gap: 2px; min-width: 220px; }
-
-.txt, .num, .sel, .code {
-  font: inherit; font-size: 13px; color: var(--primary-text-color);
-  background: var(--card-background-color, transparent); border: 1px solid var(--divider-color);
-  border-radius: 8px; padding: 6px 8px; box-sizing: border-box;
-}
-.txt.name { font-size: 15px; border-color: transparent; padding: 2px 6px; margin-left: -6px; background: transparent; }
-.txt.name:hover, .txt.name:focus { border-color: var(--divider-color); }
-.txt.mono, .code { font-family: var(--mono); font-size: 12px; }
-.num { width: 5.5em; font-family: var(--mono); }
+.txt, .num, .sel, .code { font: inherit; font-size: 13px; color: var(--ls-text); background: var(--ls-panel);
+  border: 1px solid var(--ls-line2); border-radius: 6px; padding: 6px 8px; box-sizing: border-box; }
+.txt.name { font-size: 15px; font-weight: 600; border-color: transparent; padding: 2px 6px; margin-left: -6px; background: transparent; }
+.txt.name:hover, .txt.name:focus { border-color: var(--ls-line2); }
+.txt.mono, .code, .num { font-family: var(--ls-mono); font-size: 12.5px; }
+.num { width: 5.5em; }
 .num.soc { width: 4.2em; }
 .sel { max-width: 16em; }
 .code { width: 100%; min-height: 120px; resize: vertical; }
-.txt:focus, .num:focus, .sel:focus, .code:focus { outline: 2px solid var(--primary-color, #03a9f4); outline-offset: -1px; }
-
-.btn { font: inherit; font-size: 13px; padding: 6px 14px; border-radius: 8px; cursor: pointer;
-  border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); }
-.btn:hover { background: rgba(127,127,127,.12); }
-.btn.primary { background: var(--primary-color, #03a9f4); border-color: transparent; color: var(--text-primary-color, #fff); }
+.txt:focus, .num:focus, .sel:focus, .code:focus { outline: 2px solid var(--ls-ok-hi); outline-offset: -1px; }
+.btn { font: inherit; font-size: 13px; padding: 6px 14px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--ls-line2); background: var(--ls-inner); color: var(--ls-text); }
+.btn:hover { border-color: var(--ls-muted); }
+.btn.primary { background: var(--ls-ok); border-color: transparent; color: #08110c; font-weight: 600; }
 .btn[disabled] { opacity: .5; cursor: default; }
 .btn.small { align-self: flex-start; padding: 4px 10px; font-size: 12px; }
 .btns { display: inline-flex; gap: 8px; flex-wrap: wrap; }
-.icon { border: 0; background: transparent; color: var(--secondary-text-color); cursor: pointer;
-  font-size: 14px; width: 28px; height: 28px; border-radius: 8px; }
-.icon:hover { background: rgba(127,127,127,.14); color: var(--primary-text-color); }
-.link { border: 0; background: transparent; color: var(--primary-color, #03a9f4); cursor: pointer;
-  font: inherit; font-size: 12px; padding: 0; align-self: flex-start; }
+.icon { border: 0; background: transparent; color: var(--ls-muted); cursor: pointer; font-size: 14px; width: 28px; height: 28px; border-radius: 6px; }
+.icon:hover { background: var(--ls-dim); color: var(--ls-text); }
+.link { border: 0; background: transparent; color: var(--ls-link); cursor: pointer; font: inherit; font-size: 12px; padding: 0; align-self: flex-start; }
 .addrow { display: flex; }
 .picker { display: flex; flex-direction: column; gap: 8px; }
-.plist { display: flex; flex-direction: column; max-height: 320px; overflow-y: auto;
-  border: 1px solid var(--divider-color); border-radius: 10px; }
+.plist { display: flex; flex-direction: column; max-height: 320px; overflow-y: auto; border: 1px solid var(--ls-line2); border-radius: 8px; }
 .pick { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 0; background: transparent;
-  color: var(--primary-text-color); text-align: left; cursor: pointer; font: inherit; font-size: 13px;
-  border-bottom: 1px solid var(--divider-color); }
+  color: var(--ls-text); text-align: left; cursor: pointer; font: inherit; font-size: 13px; border-bottom: 1px solid var(--ls-line); }
 .pick:last-child { border-bottom: 0; }
-.pick:hover { background: rgba(127,127,127,.10); }
-.pick ha-icon { --mdc-icon-size: 18px; color: var(--secondary-text-color); }
+.pick:hover { background: var(--ls-inner); }
+.pick ha-icon { --mdc-icon-size: 18px; color: var(--ls-muted); }
 .pick .pn { flex: 1 1 auto; }
-.pick code, .pick .ps { color: var(--secondary-text-color); }
+.pick code, .pick .ps { color: var(--ls-muted); }
+
+/* --- coming up --- */
 .tablewrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th { text-align: left; font-weight: 400; font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
-  color: var(--secondary-text-color); padding: 6px 10px; border-bottom: 1px solid var(--divider-color); }
-td { padding: 9px 10px; border-bottom: 1px solid var(--divider-color); vertical-align: middle; }
+th { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--ls-line2); }
+td { padding: 9px 10px; border-bottom: 1px solid var(--ls-line); vertical-align: middle; color: var(--ls-text); }
 tr:last-child td { border-bottom: 0; }
-td.mono { font-family: var(--mono); white-space: nowrap; }
+td.mono { font-family: var(--ls-mono); white-space: nowrap; font-variant-numeric: tabular-nums; }
 td.act { text-align: right; white-space: nowrap; }
 td .name { cursor: pointer; }
 td .name:hover { text-decoration: underline; text-underline-offset: 3px; }
-tr.soon td { background: rgba(255,166,0,.10); }
-tr.soon td:first-child { box-shadow: inset 3px 0 0 ${AMBER}; }
+tr.soon td { background: color-mix(in srgb, var(--ls-warn) 12%, transparent); }
+tr.soon td:first-child { box-shadow: inset 3px 0 0 var(--ls-warn-hi); }
 .kvrow { display: flex; align-items: center; gap: 16px; justify-content: space-between; flex-wrap: wrap;
-  border-top: 1px solid var(--divider-color); padding-top: 12px; }
+  border-top: 1px solid var(--ls-line); padding-top: 12px; }
 .kvrow .name { font-size: 15px; }
 .kvrow .in { display: inline-flex; align-items: center; gap: 4px; }
 
-.sw { position: relative; flex: none; width: 40px; height: 22px; border-radius: 11px; border: 0;
-  background: var(--disabled-text-color); opacity: .6; cursor: pointer; padding: 0; }
-.sw i { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%;
-  background: #fff; transition: left .15s; }
-.sw.on { background: var(--primary-color, #03a9f4); opacity: 1; }
-.sw.on i { left: 21px; }
+.sw { position: relative; flex: none; width: 40px; height: 22px; border-radius: 11px; border: 1px solid var(--ls-line2);
+  background: var(--ls-dim); cursor: pointer; padding: 0; }
+.sw i { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--ls-text2); transition: left .15s; }
+.sw.on { background: var(--ls-ok); border-color: transparent; }
+.sw.on i { left: 21px; background: #fff; }
 
-@media (max-width: 560px) {
+/* Narrow cards (a phone, a column): by the card's width, not the screen's. */
+@container (max-width: 640px) {
+  .tiles { grid-template-columns: 1fr 1fr; flex-basis: 100%; }
   .steps, .guard { padding-left: 0; }
-  .hero-pad, .barpad { padding-left: 18px; padding-right: 18px; }
+  .hero-pad, .barpad { padding-left: 16px; padding-right: 16px; }
+  .mark .nm { display: none; }
+  .bar { margin-top: 36px; }
+  .mark.alt span { margin-bottom: 22px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dot, .hero::before, .live .mark.near, .live .mark.near span { animation: none; }
 }
 `;
 

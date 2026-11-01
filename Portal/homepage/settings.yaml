@@ -1,0 +1,21 @@
+# Homepage settings. Reference: https://gethomepage.dev/configs/settings/
+title: Home Sweet Home
+theme: dark
+color: slate
+headerStyle: clean
+statusStyle: dot
+hideVersion: true
+# No call to GitHub's releases API on every page view. Homepage is updated by
+# bumping HOMEPAGE_VERSION in deploy/_lxc_env.sh, not from the page.
+disableUpdateCheck: true
+
+layout:
+  Infrastructure:
+    style: row
+    columns: 3
+  Home:
+    style: row
+    columns: 3
+  Meters:
+    style: row
+    columns: 3

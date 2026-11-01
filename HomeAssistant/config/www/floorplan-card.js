@@ -35,6 +35,54 @@
  * Tapping toggles what can be toggled (lights, switches, the TV) and opens the
  * dialog for the rest; holding always opens the dialog.
  *
+ * ROOM TINT
+ * ---------
+ * A room with a `tint` (its mask from build_overlays.py, as the alpha of a
+ * white image) and a `temperature` entity washes its floor when that reading
+ * leaves 20-26 °C, a little more with every degree: warm from 26, at its
+ * fullest by 34, cool from 20, at its fullest by 14. Even at its fullest it
+ * stays a soft wash (TINT, ALPHA), never a red alarm. A comfortable room is
+ * not tinted at all. The tint sits under the lamps' light, so a lit room
+ * still glows on top of it.
+ *
+ * POWER PATH AND OUTAGES
+ * ----------------------
+ * Everything in the flat runs through the inverter, so with a `power` block the
+ * plan shows how: a stream from the grid's entry and one between the pack and
+ * the inverter (backwards while it charges), and one from the inverter along
+ * the tops of the walls, like real wiring, to every lamp, plug and screen that is on.
+ * The paths come from make_dashboard.py, in pixels like an A/C's air; width and
+ * pace follow the watts. The inverter's label says what it gives the house and
+ * from where ("274 W to the house · on battery"), the pack's which way its own
+ * power goes ("47% · −300 W").
+ *
+ * The grid is down when the inverter says so (its grid sensor is on), never
+ * because DTEK says so. Then the flat dims, a red chip reads "Grid down · on
+ * battery · 3.4 h left" (amber "Grid returning" during the 5-minute wait), and
+ * what load shedding stepped down or cut gets an amber or red ring and a word.
+ * With the grid up, a DTEK window today shows as an amber "Outage 14:00–18:00".
+ *
+ * DAY AND NIGHT
+ * -------------
+ * The base is a 22:00 render. With a `day_image` (the same view at noon, lamps
+ * off) and a `sun` entity, the noon picture fades in over it as the sun rises:
+ * none below -6° of elevation, all of it above +6°, in between through civil
+ * twilight. Lamps look weaker by day, as real ones do, so their overlays are
+ * added at half strength at full day; the ring round the icon still says on.
+ *
+ * PRESENCE
+ * --------
+ * A `presence` sensor (a binary_sensor) sits where it hangs; while it sees
+ * someone, rings ripple out from it. Tapping or holding opens its dialog.
+ *
+ * READABLE ON ANY PICTURE, UNDER ANY THEME
+ * ----------------------------------------
+ * The card is a dark scene whatever HA's theme: its colours are its own
+ * (--fp-* on :host), never the theme's text colours, which are dark in the
+ * light theme. Every word on the picture sits on a dark pill, so it reads the
+ * same on the night render and the bright noon one. The tests check each pair
+ * against WCAG AA (4.5:1), a pill as if over pure white.
+ *
  * TWO LAYOUTS, ONE CONFIG
  * -----------------------
  * Wide (a desktop, a tablet): the whole flat, sized to fit the screen's height,
@@ -47,7 +95,8 @@
  *   type: custom:floorplan-card
  *   image: /local/floorplan/base.png?v=1
  *   rooms:
- *     - { id: kitchen, name: Kitchen, focus: { x0: 53.5, y0: 10.2, x1: 100, y1: 63.5 } }
+ *     - { id: kitchen, name: Kitchen, focus: { x0: 53.5, y0: 10.2, x1: 100, y1: 63.5 },
+ *         tint: /local/floorplan/tint_kitchen.png?v=1, temperature: sensor.kitchen_temperature }
  *   lights:            # things with an overlay: light.*, switch.* (a relay), or a
  *                      # media_player.* whose screen glows; `color` sets the glow
  *     - { entity: light.kitchen, overlay: /local/floorplan/kitchen.png?v=1,
@@ -59,13 +108,29 @@
  *   badges:
  *     - { entities: [sensor.kitchen_temperature, sensor.kitchen_humidity],
  *         x: 70.8, y: 29.6, room: kitchen }
+ *   presence:
+ *     - { entity: binary_sensor.hallway_motion, x: 30, y: 40, room: hallway, name: Motion }
+ *   day_image: /local/floorplan/base_day.png?v=1    # optional, with sun
+ *   sun: sun.sun
  *
- * x and y are % of the image (a flow alone is in its pixels); everything but
+ *   power:             # optional; written by make_dashboard.py from rooms.py POWER
+ *     hub_entity: sensor.inverter_output, battery_entity: sensor.battery_soc,
+ *     grid: sensor.grid_power, battery_power: sensor.battery_power,
+ *     down: binary_sensor.house_on_battery, returning: binary_sensor.grid_in_range,
+ *     runtime: sensor.battery_runtime, shedding: sensor.load_shedding,
+ *     priority: select.power_priority, dtek_start: sensor.next_start, dtek_end: sensor.next_end,
+ *     grid_path: "M ...", battery_path: "M ...",
+ *     loads: [{ entity: light.kitchen, room: kitchen, path: "M ..." },
+ *             { entity: switch.ac_plug, value: sensor.ac_plug_power, room: bedroom, path: "M ..." }]
+ *
+ * x and y are % of the image (a flow or power path alone is in its pixels); everything but
  * entity, x and y is optional.
  */
 
 const CARD = "floorplan-card";
-const VERSION = "1.5.0";
+import { cardTip } from "./card-tip.js?v=1.0.0";
+
+const VERSION = "1.14.0";
 
 // Glow colour for a lamp that reports none: the warm white it was rendered in.
 const WARM = [255, 180, 107];
@@ -86,9 +151,46 @@ const HVAC = {
   auto: ["Auto", [129, 199, 132]],
   heat_cool: ["Auto", [129, 199, 132]],
 };
+// The climate card's bands (climate-console-card.js `_comfort`), named in a
+// badge's tooltip so both cards say the same about a room.
+const COMFORT = [
+  [(t) => t >= 32, "hot"],
+  [(t) => t > 26, "warm"],
+  [(t) => t < 20, "cool"],
+];
+// A room's floor tint: none at 20-26 °C, then a wash that deepens degree by
+// degree to its fullest `span` degrees out, and no further. Its hue drifts from
+// `from` to `to` on the way, and its opacity from ALPHA[0] to ALPHA[1] -- low
+// on purpose: a very hot room reads as a warmer floor, never as a red alarm.
+const TINT = {
+  warm: { edge: 26, span: 8, from: [255, 179, 113], to: [236, 128, 98] },
+  cool: { edge: 20, span: -6, from: [160, 205, 235], to: [120, 175, 225] },
+};
+const ALPHA = [0.05, 0.2];
+// The power path: grid and battery in the inverter console card's colours. Its load
+// blue would read here as an A/C's cool air, so loads are a lavender that no A/C mode
+// or lamp uses. A stream's speed and width follow its watts against that card's scales.
+const GRID_C = [174, 132, 70];
+const BATT_C = [88, 149, 105];
+const LOAD_C = [190, 170, 255];
+const BAD_C = [187, 99, 91];
+const MAX_LOAD_W = 2400;
+const MAX_BATT_W = 1600;
+// Below this a reading is noise or standby, not power moving.
+const MOVING_W = 20;
+// One dash plus its gap along a wire, in px of the picture; `.stream path.current` in STYLE.
+const CURRENT_PERIOD = 60;
+const PLUG_W = 5;
 const ON_GREEN = [102, 187, 106];
 const MEDIA = [186, 104, 200];
 const NEUTRAL = [144, 164, 174];
+// A presence sensor's ripple: a mint no lamp, A/C mode or wire uses.
+const PRESENCE_C = [77, 220, 190];
+// Sun elevation (°) at which the noon picture starts to show, and is all there is.
+const DAWN = [-6, 6];
+// A lamp's overlay at full day, as a share of its night strength.
+const DAY_LAMP = 0.5;
+const BLOOM_MS = 900;
 const SVG = "http://www.w3.org/2000/svg";
 // One puff's trip along a stream; keep in step with `.flow path` in STYLE.
 const BLOW_S = 2.6;
@@ -96,16 +198,70 @@ const BLOW_S = 2.6;
 const DEFAULT_ICON = {
   light: "mdi:lightbulb", switch: "mdi:power-socket-eu", climate: "mdi:air-conditioner",
   media_player: "mdi:television", sensor: "mdi:router-wireless", fan: "mdi:fan",
+  binary_sensor: "mdi:motion-sensor",
+};
+
+// Lines 2-4 of every tooltip (HomeAssistant/docs/dashboard-tooltips.md); line 1,
+// the name and its state, is built as the card renders. Keep in step with the
+// header above and FloorPlan/README.md.
+const PRESS = "Tap the icon: on or off. Hold it for 500 ms: opens its dialog.";
+const HELP = {
+  lamp: "A lamp; its room on the plan lights up with it, dimmer at a lower brightness.\n"
+    + "E.g. the LED strip at 25 %: the kitchen glows faintly and its ring is a quarter full.\n"
+    + PRESS,
+  screen: "The TV; while it is on, its screen lights the living room on the plan.\n"
+    + "E.g. On while it plays or sits idle; Off or standby leaves the room dark.\n"
+    + PRESS,
+  slider: "Sets the lamp's brightness; the room on the plan glows to match as you drag.\n"
+    + "E.g. drag the LED strip to 25 % for a soft kitchen light; at 0 % it turns off.\n"
+    + "The level is sent once, when you let go.",
+  switch: "Switches it on or off, the same as a tap on its icon.\n"
+    + "E.g. off on a lamp darkens its room on the plan; off on an A/C plug cuts that A/C.",
+  ac: "The room's A/C: its mode and target; while it runs, air streams out in the mode's colour.\n"
+    + "E.g. Cool 23°: cooling to 23 °C in blue streams; Heat is orange, Off is grey and still.\n"
+    + "The living room unit is infrared: its mode is what was last sent, not read back.",
+  plug: "A switched device; with a meter on it, the power it draws right now.\n"
+    + "E.g. an A/C plug at 25–60 W: the A/C's fan alone; from about 150 W, its compressor.\n"
+    + PRESS,
+  reading: "A live reading from the device pinned here.\n"
+    + "E.g. Battery: the 8S 280 Ah pack's charge in %; Router: its current download speed.",
+  presence: "A presence sensor where it hangs; rings ripple out from it while it sees someone.\n"
+    + "E.g. the hallway's motion sensor: ripples for 30 s after you walk past, then Clear.\n"
+    + "Tap or hold: opens its dialog.",
+  badge: "Temperature and humidity from the room's Aqara sensor; outside 20–26 °C its floor tints.\n"
+    + "E.g. 27 °C: a faint warm wash, deeper each degree up to 34 °C; under 20 °C, a cool one.\n"
+    + "Tap: opens the temperature's dialog.",
+  hub: "The inverter every socket runs through: the power it gives the house, and its source.\n"
+    + "E.g. 274 W to the house · on battery while the pack gives 300 W: the inverter uses 26 W.\n"
+    + "Tap: opens its dialog.",
+  down: "The inverter sees no mains, so the whole flat runs on the 280 Ah pack.\n"
+    + "E.g. 3.4 h left at the current draw; load shedding steps the A/Cs down at 80 % and 60 %.\n"
+    + "The grid counts as back after 5 minutes of steady 185–250 V.",
+  returning: "Mains is back in 185–250 V; the inverter waits 5 steady minutes before using it.\n"
+    + "E.g. a flicker during the wait starts it again; the house stays on the pack meanwhile.",
+  dtek: "DTEK's schedule says the power will be off then; the plan turns red if it really goes.\n"
+    + "E.g. 14:00–18:00: the pack is charged up beforehand so the house rides it out.",
+  chip: "Zooms the plan to this room and lists only its controls below it.\n"
+    + "E.g. Bedroom: its A/C, the A/C plug, the router and the room's climate.\n"
+    + "This phone remembers the choice.",
+  all: "Shows the whole flat, with every control listed below under its room.\n"
+    + "E.g. 5 lights and 7 devices across six rooms, each room under its own heading.\n"
+    + "This phone remembers the choice.",
 };
 
 class FloorplanCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
+    cardTip(this, this.shadowRoot);
     this._fingerprint = null;
     this._dragging = null;
     this._narrow = false;
     this._ar = null;
+    this._day = 0;
+    // Off screen or in a hidden tab, nothing on the plan needs to move.
+    this._offscreen = false;
+    this._onVisibility = () => this._pause();
     try {
       this._room = window.localStorage.getItem(ROOM_KEY) || "all";
     } catch (e) {
@@ -118,6 +274,7 @@ class FloorplanCard extends HTMLElement {
     const lights = config.lights || [];
     const devices = config.devices || [];
     const badges = config.badges || [];
+    const presence = config.presence || [];
     const rooms = (config.rooms || []).slice();
     for (const l of lights) {
       if (!l.entity || !l.overlay || l.x == null || l.y == null) {
@@ -134,6 +291,14 @@ class FloorplanCard extends HTMLElement {
         throw new Error(CARD + ": every badge needs entities (a list), x and y");
       }
     }
+    for (const p of presence) {
+      if (!p.entity || p.x == null || p.y == null) {
+        throw new Error(CARD + ": every presence sensor needs entity, x and y");
+      }
+    }
+    if (!!config.day_image !== !!config.sun) {
+      throw new Error(CARD + ": day_image and sun go together");
+    }
     // The single-room config of 1.1 (a top-level focus) still works: it is one room.
     if (!rooms.length && config.focus) rooms.push({ id: "main", name: "Rooms", focus: config.focus });
     for (const r of rooms) {
@@ -142,7 +307,14 @@ class FloorplanCard extends HTMLElement {
         throw new Error(CARD + ": every room needs an id and a focus with x0 < x1, y0 < y1");
       }
     }
-    this._config = { image: config.image, rooms, lights, devices, badges };
+    const power = config.power || null;
+    if (power && (!Array.isArray(power.loads) || power.loads.some((l) => !l.entity || !l.path))) {
+      throw new Error(CARD + ": power needs loads, each with entity and path");
+    }
+    this._config = {
+      image: config.image, rooms, lights, devices, badges, presence, power,
+      dayImage: config.day_image || null, sun: config.sun || null,
+    };
     if (this._room !== "all" && !rooms.some((r) => r.id === this._room)) this._room = "all";
     this._built = false;
     this._fingerprint = null;
@@ -166,10 +338,29 @@ class FloorplanCard extends HTMLElement {
       });
     }
     if (this._resize) this._resize.observe(this);
+    if (!this._seen && window.IntersectionObserver) {
+      this._seen = new window.IntersectionObserver((entries) => {
+        this._offscreen = !entries[entries.length - 1].isIntersecting;
+        this._pause();
+      });
+    }
+    if (this._seen) this._seen.observe(this);
+    if (typeof document.addEventListener === "function") {
+      document.addEventListener("visibilitychange", this._onVisibility);
+    }
   }
 
   disconnectedCallback() {
     if (this._resize) this._resize.disconnect();
+    if (this._seen) this._seen.disconnect();
+    if (typeof document.removeEventListener === "function") {
+      document.removeEventListener("visibilitychange", this._onVisibility);
+    }
+  }
+
+  /** Every animation on the plan holds still while no one can see it. */
+  _pause() {
+    if (this._card) this._card.classList.toggle("paused", this._offscreen || !!document.hidden);
   }
 
   getCardSize() {
@@ -251,6 +442,107 @@ class FloorplanCard extends HTMLElement {
     return { text: this._number(value || st), active: true, rgb: NEUTRAL };
   }
 
+  /** The COMFORT band a temperature entity is in, or null: comfortable, or no reading. */
+  _comfort(id) {
+    const st = id && this._stateObj(id);
+    if (!st || st.state === "" || isNaN(Number(st.state))) return null;
+    const t = Number(st.state);
+    return COMFORT.find(([test]) => test(t)) || null;
+  }
+
+  /** 0 at night, 1 by day: how much of the noon picture shows, by the sun's elevation. */
+  _daylight() {
+    if (!this._config.dayImage) return 0;
+    const st = this._stateObj(this._config.sun);
+    const e = st && Number(st.attributes.elevation);
+    if (!st || isNaN(e)) return 0;
+    return Math.max(0, Math.min(1, (e - DAWN[0]) / (DAWN[1] - DAWN[0])));
+  }
+
+  /** A number from an entity's state, or null. */
+  _num(id) {
+    const st = id && this._stateObj(id);
+    return st && st.state !== "" && !isNaN(Number(st.state)) ? Number(st.state) : null;
+  }
+
+  /**
+   * The house's power, read once per render. `down` is the inverter's own verdict
+   * (its grid sensor is on when the grid is NOT safe), never DTEK's: DTEK is a
+   * claim about the schedule, the inverter is the measurement.
+   */
+  _powerState() {
+    const P = this._config.power;
+    const on = (id) => {
+      const st = id && this._stateObj(id);
+      return !!st && st.state === "on";
+    };
+    const down = on(P.down);
+    const gridW = down ? 0 : this._num(P.grid) || 0;
+    const battW = this._num(P.battery_power) || 0;
+    const hours = this._num(P.runtime);
+    // What load shedding did, by entity: "cut" (its plug switched off) beats "shed".
+    const shed = {};
+    const sh = this._stateObj(P.shedding);
+    const loads = (sh && sh.attributes.loads) || {};
+    for (const rec of Object.values(loads)) {
+      if (!rec) continue;
+      if (rec.entity && rec.step_soc != null && rec.override_soc == null && !shed[rec.entity]) {
+        shed[rec.entity] = { kind: "shed", soc: rec.step_soc };
+      }
+      if (rec.plug && rec.plug_cut) shed[rec.plug] = { kind: "cut", soc: rec.step_soc };
+    }
+    // DTEK's next window, if it falls today and has not ended.
+    let dtek = null;
+    const start = Date.parse((this._stateObj(P.dtek_start) || {}).state);
+    const end = Date.parse((this._stateObj(P.dtek_end) || {}).state);
+    const now = new Date();
+    if (!isNaN(start) && !isNaN(end) && end > now.getTime()
+        && new Date(start).toDateString() === now.toDateString()) {
+      dtek = { start: new Date(start), end: new Date(end) };
+    }
+    return { down, returning: down && on(P.returning), gridW, battW, hours, shed, dtek };
+  }
+
+  /** One power stream: a faint track, so its route reads, and two puffs along it. */
+  _stream(parent, path, room, i) {
+    const g = document.createElementNS(SVG, "g");
+    g.setAttribute("class", "stream");
+    g.dataset.room = room || "";
+    // A cable: a dark casing so it reads on the light wall tops, the coloured core over it.
+    for (const cls of ["casing", "track"]) {
+      const el = document.createElementNS(SVG, "path");
+      el.setAttribute("class", cls);
+      el.setAttribute("d", path);
+      g.appendChild(el);
+    }
+    // The current: dashes every CURRENT_PERIOD px marching along the whole wire, so a long
+    // run reads as busy as a short one (two puffs per wire thinned out on the long ones).
+    const p = document.createElementNS(SVG, "path");
+    p.setAttribute("class", "current");
+    p.setAttribute("d", path);
+    p.style.animationDelay = -((i * 0.29) % 1) + "s";
+    g.appendChild(p);
+    parent.appendChild(g);
+    return { g, paths: [p] };
+  }
+
+  /**
+   * Shows a stream or not. `watts` against `max` sets its width and speed; with no
+   * meter (null) it is a thin, steady one. `back` runs it the other way.
+   */
+  _paintStream(S, on, watts, max, rgb, back) {
+    S.g.classList.toggle("on", on);
+    if (!on) return;
+    const f = watts == null ? 0.15 : Math.max(0.1, Math.min(1, Math.abs(watts) / max));
+    S.g.style.setProperty("--glow", `rgb(${rgb.join(", ")})`);
+    S.g.style.setProperty("--width", (1.5 + 3 * f).toFixed(1));
+    // Pace in px per second, so every wire carrying the same watts moves alike.
+    for (const p of S.paths) {
+      p.style.animationDuration = (CURRENT_PERIOD / (30 + 90 * f)).toFixed(2) + "s";
+      p.style.animationDirection = back ? "reverse" : "normal";
+    }
+  }
+
   /**
    * Everything that can change what is drawn, in one string. `set hass` fires
    * on every state change in the house; without this an unrelated sensor
@@ -272,6 +564,18 @@ class FloorplanCard extends HTMLElement {
         return [s(d.entity), st && st.attributes.temperature, st && st.attributes.hvac_action, s(d.value)];
       }),
       cfg.badges.map((b) => b.entities.map(s)),
+      cfg.rooms.map((r) => s(r.temperature)),
+      cfg.presence.map((p) => s(p.entity)),
+      // The sun to the degree: the picture fades over twelve of them.
+      cfg.sun && Math.round(Number((this._stateObj(cfg.sun) || { attributes: {} }).attributes.elevation)),
+      // Power to the nearest 10 W, so the streams do not restyle on every watt.
+      cfg.power && [
+        [cfg.power.grid, cfg.power.battery_power].map((id) => Math.round((this._num(id) || 0) / 10)),
+        [cfg.power.down, cfg.power.returning, cfg.power.runtime, cfg.power.priority,
+          cfg.power.dtek_start, cfg.power.dtek_end].map(s),
+        JSON.stringify((this._stateObj(cfg.power.shedding) || { attributes: {} }).attributes.loads || null),
+        new Date().toDateString(),
+      ],
     ]);
   }
 
@@ -391,7 +695,7 @@ class FloorplanCard extends HTMLElement {
       sw.setAttribute("role", "switch");
       sw.addEventListener("click", () => this._call("homeassistant", "toggle", { entity_id: item.entity }));
     }
-    return { row, rowLamp: b.btn, rowIcon: b.icon, name, value, sw };
+    return { row, head, rowLamp: b.btn, rowIcon: b.icon, name, value, sw };
   }
 
   _build() {
@@ -416,11 +720,25 @@ class FloorplanCard extends HTMLElement {
         this._layout();
       }
     });
+    // The noon picture over the night one, faded in by the sun; same crop, same size.
+    this._dayBase = null;
+    if (cfg.dayImage) {
+      this._dayBase = this._el("img", "base day", plane);
+      this._dayBase.src = cfg.dayImage;
+      this._dayBase.alt = "";
+    }
+    // Under the lamps' light: a tint is the room's colour, shown through its mask.
+    this._tints = cfg.rooms.filter((r) => r.tint && r.temperature).map((r) => {
+      const el = this._el("div", "tint", plane);
+      for (const p of ["mask-image", "-webkit-mask-image"]) el.style.setProperty(p, `url("${r.tint}")`);
+      return { cfg: r, el };
+    });
 
     const chips = this._el("div", "chips", card);
     this._chips = [{ id: "all", name: "All" }].concat(cfg.rooms).map((r) => {
       const c = this._el("button", "chip", chips);
       c.textContent = r.name || r.id;
+      c.dataset.tip = (r.name || r.id) + "\n" + HELP[r.id === "all" ? "all" : "chip"];
       c.addEventListener("click", () => this._selectRoom(r.id));
       return { id: r.id, el: c };
     });
@@ -448,6 +766,9 @@ class FloorplanCard extends HTMLElement {
       spot.style.left = l.x + "%";
       spot.style.top = l.y + "%";
       spot.dataset.room = l.room || "";
+      // The flash of a lamp switching on, behind its icon.
+      const bloom = this._el("span", "bloom", spot);
+      bloom.addEventListener("animationend", () => spot.classList.remove("blooming"));
       const b = this._button(l.entity, false);
       spot.appendChild(b.btn);
       const pct = this._el("div", "pct", spot);
@@ -457,7 +778,7 @@ class FloorplanCard extends HTMLElement {
       const rowSlider = this._slider(i, l.entity, "row-slider");
       r.row.appendChild(rowSlider);
       group(l.room).appendChild(r.row);
-      return Object.assign({ cfg: l, overlay, spot, btn: b.btn, icon: b.icon, pct, slider, rowSlider }, r);
+      return Object.assign({ cfg: l, overlay, spot, btn: b.btn, icon: b.icon, pct, slider, rowSlider, wasOn: null }, r);
     });
 
     // Air sits over the picture and under every icon, which are added after it.
@@ -467,6 +788,29 @@ class FloorplanCard extends HTMLElement {
     air.setAttribute("class", "air");
     plane.appendChild(air);
     this._air = air;
+
+    // The power path, under the A/Cs' air: what feeds the inverter, and a stream
+    // from it to every load. A status chip over the stage, not the plane, so it
+    // stays put when a phone zooms to a room.
+    this._streams = null;
+    if (cfg.power) {
+      const P = cfg.power;
+      const g = document.createElementNS(SVG, "g");
+      g.setAttribute("class", "power");
+      air.appendChild(g);
+      this._streams = {
+        grid: this._stream(g, P.grid_path, "vestibule", 0),
+        battery: this._stream(g, P.battery_path, "vestibule", 1),
+        loads: P.loads.map((l, i) => Object.assign({ cfg: l }, this._stream(g, l.path, l.room, i + 2))),
+      };
+      this._status = this._el("div", "status", stage);
+      this._status.tabIndex = 0;
+      this._status.setAttribute("role", "button");
+      this._status.addEventListener("click", () => {
+        const s = this._status.dataset.kind;
+        this._moreInfo(s === "dtek" ? P.dtek_start : s ? P.runtime : P.down);
+      });
+    }
 
     this._devices = cfg.devices.map((d) => {
       let flow = null;
@@ -514,7 +858,25 @@ class FloorplanCard extends HTMLElement {
       const rowValue = this._el("div", "value", row);
       row.addEventListener("click", () => this._moreInfo(b.entities[0]));
       group(b.room).appendChild(row);
-      return { cfg: b, el, rowName, rowValue };
+      return { cfg: b, el, row, rowName, rowValue };
+    });
+
+    // Presence sensors: an icon with two rings behind it that ripple out while it sees someone.
+    this._presence = cfg.presence.map((p) => {
+      const spot = this._el("div", "spot presence", plane);
+      spot.style.left = p.x + "%";
+      spot.style.top = p.y + "%";
+      spot.dataset.room = p.room || "";
+      spot.style.setProperty("--glow", `rgb(${PRESENCE_C.join(", ")})`);
+      for (let i = 0; i < 2; i++) this._el("span", "ripple", spot);
+      const b = this._button(p.entity, false);
+      b.btn.classList.add("device");
+      spot.appendChild(b.btn);
+      const r = this._row(p, false);
+      r.rowLamp.classList.add("device");
+      r.row.style.setProperty("--glow", `rgb(${PRESENCE_C.join(", ")})`);
+      group(p.room).appendChild(r.row);
+      return Object.assign({ cfg: p, spot, btn: b.btn, icon: b.icon }, r);
     });
 
     this._card = card;
@@ -522,6 +884,7 @@ class FloorplanCard extends HTMLElement {
     this._plane = plane;
     this._groups = groups;
     this._built = true;
+    this._pause();
     this._layout();
   }
 
@@ -563,7 +926,7 @@ class FloorplanCard extends HTMLElement {
     }
     // A zoom box is a rectangle and rooms are not, so neighbours show at its edges:
     // their icons would be controls for a room that is not the one chosen.
-    for (const el of this._plane.querySelectorAll(".spot, .badge, .flow")) {
+    for (const el of this._plane.querySelectorAll(".spot, .badge, .flow, .stream")) {
       el.classList.toggle("elsewhere", only !== null && el.dataset.room !== only);
     }
   }
@@ -576,7 +939,20 @@ class FloorplanCard extends HTMLElement {
     const dimmable = this._dimmable(st);
     // A configured colour wins: the TV's glow is blue whatever the TV reports.
     const [r, g, b] = Array.isArray(L.cfg.color) ? L.cfg.color : this._rgb(st);
-    L.overlay.style.opacity = on ? String(FLOOR + (1 - FLOOR) * level) : "0";
+    // By day the same lamp adds less to what the eye sees: half its light at full day.
+    const daylight = 1 - (1 - DAY_LAMP) * this._day;
+    L.overlay.style.opacity = on ? String(+((FLOOR + (1 - FLOOR) * level) * daylight).toFixed(3)) : "0";
+    // Switching on flashes once: not on the first paint, not while a slider is dragged.
+    if (!preview) {
+      if (on && L.wasOn === false && !reducedMotion()) {
+        L.spot.classList.remove("blooming");
+        void L.spot.offsetWidth;
+        L.spot.classList.add("blooming");
+        // animationend can be missed (a hidden tab); the class must not stick.
+        window.setTimeout(() => L.spot.classList.remove("blooming"), BLOOM_MS + 100);
+      }
+      L.wasOn = on;
+    }
     // On the spot and the row, not the buttons: the sliders take the colour too.
     for (const el of [L.spot, L.row]) {
       el.style.setProperty("--level", String(on ? level : 0));
@@ -603,6 +979,9 @@ class FloorplanCard extends HTMLElement {
     if (fp === this._fingerprint) return;
     this._fingerprint = fp;
 
+    this._day = this._daylight();
+    if (this._dayBase) this._dayBase.style.opacity = String(+this._day.toFixed(3));
+
     this._lights.forEach((L, i) => {
       const st = this._stateObj(L.cfg.entity);
       const name = this._name(L.cfg, L.cfg.entity);
@@ -611,11 +990,18 @@ class FloorplanCard extends HTMLElement {
       L.rowIcon.setAttribute("icon", icon);
       L.name.textContent = name;
       L.sw.setAttribute("aria-label", name);
-      for (const el of [L.btn, L.rowLamp]) {
-        el.title = name;
-        el.setAttribute("aria-label", name);
-      }
+      for (const el of [L.btn, L.rowLamp]) el.setAttribute("aria-label", name);
       const unavailable = !st || st.state === "unavailable";
+      // One tooltip for the plan icon, its number and the row head (icon, name, value);
+      // the switch and the sliders mean something else and carry their own.
+      const on = this._isOn(st);
+      const pct = Math.round(this._level(st) * 100);
+      const state = unavailable ? "Unavailable" : !on ? "Off" : this._dimmable(st) ? "On " + pct + " %" : "On";
+      const kind = this._domain(L.cfg.entity) === "media_player" ? "screen" : "lamp";
+      L.btn.dataset.tip = L.pct.dataset.tip = L.head.dataset.tip = name + " — " + state + "\n" + HELP[kind];
+      L.sw.dataset.tip = name + " — " + (on ? "On" : "Off") + "\n" + HELP.switch;
+      L.slider.dataset.tip = L.rowSlider.dataset.tip = name + " brightness — " + (on ? pct + " %" : "Off")
+        + "\n" + HELP.slider;
       L.btn.classList.toggle("unavailable", unavailable);
       L.row.classList.toggle("unavailable", unavailable);
       const dimmable = this._dimmable(st) && this._domain(L.cfg.entity) === "light";
@@ -633,8 +1019,10 @@ class FloorplanCard extends HTMLElement {
       D.icon.setAttribute("icon", icon);
       D.rowIcon.setAttribute("icon", icon);
       D.name.textContent = name;
+      const domain = this._domain(D.cfg.entity);
+      const kind = domain === "climate" ? "ac" : TOGGLES.indexOf(domain) >= 0 ? "plug" : "reading";
+      D.btn.dataset.tip = D.label.dataset.tip = D.head.dataset.tip = name + " — " + spaced(look.text) + "\n" + HELP[kind];
       for (const el of [D.btn, D.rowLamp]) {
-        el.title = name + ": " + look.text;
         el.setAttribute("aria-label", name);
         el.classList.toggle("on", look.active);
         el.classList.toggle("unavailable", !st || st.state === "unavailable");
@@ -658,6 +1046,16 @@ class FloorplanCard extends HTMLElement {
         D.sw.classList.toggle("on", look.active);
         D.sw.setAttribute("aria-checked", look.active ? "true" : "false");
         D.sw.setAttribute("aria-label", name);
+        D.sw.dataset.tip = name + " — " + (look.active ? "On" : "Off") + "\n" + HELP.switch;
+      }
+    });
+
+    this._tints.forEach((T) => {
+      const tint = tintOf(this._num(T.cfg.temperature));
+      T.el.classList.toggle("on", !!tint);
+      if (tint) {
+        T.el.style.setProperty("--tint", `rgb(${tint.rgb.join(", ")})`);
+        T.el.style.setProperty("--alpha", tint.alpha.toFixed(3));
       }
     });
 
@@ -666,13 +1064,175 @@ class FloorplanCard extends HTMLElement {
       B.el.textContent = text;
       B.rowValue.textContent = text;
       B.rowName.textContent = B.cfg.name || "Climate";
+      const room = this._config.rooms.find((r) => r.id === B.cfg.room);
+      const label = room ? (room.name || room.id) + " climate" : B.cfg.name || "Climate";
+      const band = room && room.tint ? this._comfort(room.temperature) : null;
+      B.el.dataset.tip = B.row.dataset.tip = label + " — " + spaced(text) + (band ? " · " + band[1] : "")
+        + "\n" + HELP.badge;
     });
+
+    this._presence.forEach((X) => {
+      const st = this._stateObj(X.cfg.entity);
+      const name = this._name(X.cfg, X.cfg.entity);
+      const unavailable = !st || st.state === "unavailable";
+      const seen = !unavailable && st.state === "on";
+      const text = unavailable ? "Unavailable" : seen ? "Detected" : "Clear";
+      const icon = X.cfg.icon || DEFAULT_ICON.binary_sensor;
+      X.icon.setAttribute("icon", icon);
+      X.rowIcon.setAttribute("icon", icon);
+      X.name.textContent = name;
+      X.value.textContent = text;
+      X.spot.classList.toggle("on", seen);
+      for (const el of [X.spot, X.row]) el.style.setProperty("--level", seen ? "1" : "0");
+      for (const el of [X.btn, X.rowLamp]) {
+        el.setAttribute("aria-label", name);
+        el.classList.toggle("on", seen);
+        el.classList.toggle("unavailable", unavailable);
+      }
+      X.btn.dataset.tip = X.head.dataset.tip = name + " — " + text + "\n" + HELP.presence;
+    });
+
+    if (this._streams) this._renderPower();
+  }
+
+  /** The power path, the inverter's label, and what an outage changes. */
+  _renderPower() {
+    const P = this._config.power;
+    const S = this._powerState();
+    const charging = S.battW > MOVING_W;
+    this._paintStream(this._streams.grid, S.gridW > MOVING_W, S.gridW, MAX_LOAD_W, GRID_C, false);
+    // The battery path runs pack -> inverter; charging runs it backwards.
+    this._paintStream(this._streams.battery, Math.abs(S.battW) > MOVING_W, S.battW, MAX_BATT_W,
+      S.down ? BAD_C : BATT_C, charging);
+    for (const L of this._streams.loads) {
+      const st = this._stateObj(L.cfg.entity);
+      const watts = L.cfg.value ? this._num(L.cfg.value) : null;
+      const on = this._isOn(st) && (watts == null || watts > PLUG_W);
+      this._paintStream(L, on, watts, MAX_LOAD_W, LOAD_C, false);
+    }
+
+    // The inverter says what it delivers and where from, and in an outage for how long.
+    // Its number is AC out, so it is lower than the pack's: the inverter uses some itself.
+    const hub = this._devices.find((D) => D.cfg.entity === P.hub_entity);
+    if (hub) {
+      const load = this._num(P.hub_entity);
+      const onBattery = S.down || (S.gridW <= MOVING_W && S.battW < -MOVING_W);
+      // "to the house", not "out from battery": the number is what the inverter delivers,
+      // and the battery's own (larger) figure is on the pack.
+      let text = (load != null ? watt(load) + " to the house · " : "") + "on " + (onBattery ? "battery" : "grid");
+      if (S.down && S.hours != null) text += " · " + S.hours.toFixed(1) + " h";
+      // On battery alone, what the pack gives minus what comes out is the inverter's own use.
+      const own = onBattery && load != null ? -S.battW - load : null;
+      const mode = (this._stateObj(P.priority) || {}).state;
+      // Beside its icon, not under it: the pack's icon sits just below-left.
+      hub.spot.classList.add("side");
+      hub.label.textContent = hub.value.textContent = text;
+      hub.btn.dataset.tip = hub.label.dataset.tip = hub.head.dataset.tip = this._name(hub.cfg, hub.cfg.entity)
+        + " — " + text + (own > 0 ? " · uses " + watt(own) + " itself" : "") + (mode ? " (" + mode + ")" : "")
+        + "\n" + HELP.hub;
+    }
+    // The pack says which way its power goes: + charging, − feeding the house.
+    const pack = this._devices.find((D) => D.cfg.entity === P.battery_entity);
+    if (pack && Math.abs(S.battW) > MOVING_W) {
+      const flow = (S.battW > 0 ? "+" : "−") + watt(S.battW);
+      pack.label.textContent += " · " + flow;
+      pack.value.textContent += " · " + flow;
+      for (const el of [pack.btn, pack.label, pack.head]) {
+        const [first, ...rest] = el.dataset.tip.split("\n");
+        el.dataset.tip = [first + (S.battW > 0 ? " · charging " : " · feeding the house ") + watt(S.battW)]
+          .concat(rest).join("\n");
+      }
+    }
+
+    // An outage dims the flat, so what the battery still lights stands out.
+    this._stage.classList.toggle("outage", S.down);
+    const hhmm = (d) => d.toTimeString().slice(0, 5);
+    let status = null;
+    if (S.returning) {
+      status = { kind: "returning", text: "Grid returning · on battery", tip: "Grid returning — on battery" };
+    } else if (S.down) {
+      const left = S.hours != null ? S.hours.toFixed(1) + " h left" : null;
+      status = { kind: "down", text: "Grid down · on battery" + (left ? " · " + left : ""),
+        tip: "Grid down — on battery" + (left ? ", " + left : "") };
+    } else if (S.dtek) {
+      const span = hhmm(S.dtek.start) + "–" + hhmm(S.dtek.end);
+      status = { kind: "dtek", text: "Outage " + span, tip: "DTEK outage — today " + span };
+    }
+    this._status.hidden = !status;
+    this._status.dataset.kind = status ? status.kind : "";
+    this._status.className = "status" + (status ? " " + status.kind : "");
+    this._status.textContent = status ? status.text : "";
+    this._status.dataset.tip = status ? status.tip + "\n" + HELP[status.kind] : "";
+
+    // What load shedding did, on the icon and its row: amber when stepped down,
+    // red when its plug was cut, and said in the first line of its tooltip.
+    for (const X of this._lights.concat(this._devices)) {
+      const mark = S.shed[X.cfg.entity];
+      for (const el of [X.spot, X.row]) {
+        el.classList.toggle("shed", !!mark && mark.kind === "shed");
+        el.classList.toggle("cut", !!mark && mark.kind === "cut");
+      }
+      if (!mark) continue;
+      for (const el of [X.label || X.pct, X.value]) {
+        el.textContent = (el.textContent ? el.textContent + " · " : "") + mark.kind;
+      }
+      const note = mark.kind === "cut" ? " · plug cut by load shedding"
+        : " · stepped down" + (mark.soc != null ? " at " + mark.soc + " %" : "");
+      for (const el of [X.btn, X.head, X.label, X.pct]) {
+        if (!el || !el.dataset.tip) continue;
+        const [first, ...rest] = el.dataset.tip.split("\n");
+        el.dataset.tip = [first + note].concat(rest).join("\n");
+      }
+    }
   }
 }
 
+/** A temperature's floor tint, {rgb, alpha}, or null inside 20-26 °C or with no reading. */
+function tintOf(t) {
+  if (t == null) return null;
+  const side = t > TINT.warm.edge ? TINT.warm : t < TINT.cool.edge ? TINT.cool : null;
+  if (!side) return null;
+  const k = Math.min(1, (t - side.edge) / side.span);
+  return {
+    rgb: side.from.map((c, i) => Math.round(c + (side.to[i] - c) * k)),
+    alpha: ALPHA[0] + (ALPHA[1] - ALPHA[0]) * k,
+  };
+}
+
+/** The viewer asked for less motion: no one-off flashes either. */
+function reducedMotion() {
+  return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+/** 380 W, 1.2 kW: a power, unsigned. */
+function watt(w) {
+  const a = Math.abs(w);
+  return a >= 1000 ? (a / 1000).toFixed(1) + " kW" : Math.round(a) + " W";
+}
+
+/** "48%" as the tooltips write it, "48 %"; the plan keeps the tighter form. */
+function spaced(text) {
+  return text.replace(/(\d)%/g, "$1 %");
+}
+
 const STYLE = `
-:host { display: block; }
-ha-card { overflow: hidden; background: #1c1c1c; }
+/* The card's own colours: a dark scene under any HA theme. The tests read these
+   and check every text/background pair for 4.5:1, a pill as if over pure white. */
+:host {
+  display: block;
+  --fp-surface: #1c1c1c;
+  --fp-text: #ececec;
+  --fp-text-dim: #b4b4b4;
+  --fp-on-plan: #ffffff;
+  --fp-pill: rgba(0, 0, 0, 0.62);
+  --fp-rim: rgba(255, 255, 255, 0.2);
+  --fp-line: rgba(255, 255, 255, 0.08);
+  --fp-chip-active: #e8e8e8;
+  --fp-chip-active-text: #141414;
+}
+/* display: block here, not left to ha-card's own styles: an inline card paints its
+   surface behind the text alone, and the light page shows between the lines. */
+ha-card { display: block; overflow: hidden; background: var(--fp-surface); color: var(--fp-text); }
 .stage {
   --ar: 1.4928;
   position: relative;
@@ -687,6 +1247,10 @@ ha-card { overflow: hidden; background: #1c1c1c; }
 }
 .narrow .stage { width: 100%; }
 .plane { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
+/* Off screen or in a hidden tab: every loop holds where it is. */
+.paused *, .paused *::before, .paused *::after { animation-play-state: paused !important; }
+/* The noon picture: opacity set from the sun, faded slowly so a dawn never jumps. */
+.base.day { opacity: 0; transition: opacity 2s ease, filter 0.8s ease; }
 .base, .overlay {
   position: absolute; inset: 0; width: 100%; height: 100%;
   display: block; pointer-events: none;
@@ -699,6 +1263,29 @@ ha-card { overflow: hidden; background: #1c1c1c; }
 @supports not (mix-blend-mode: plus-lighter) {
   .overlay { mix-blend-mode: screen; }
 }
+.tint {
+  position: absolute; inset: 0; pointer-events: none;
+  background: var(--tint);
+  mask-size: 100% 100%; -webkit-mask-size: 100% 100%;
+  opacity: 0;
+  transition: opacity 0.6s ease, background-color 0.6s ease;
+}
+.tint.on { opacity: var(--alpha, 0.1); }
+/* An outage: the flat dims and the battery's light stands out. */
+.base, .tint { transition: filter 0.8s ease, opacity 0.6s ease, background-color 0.6s ease; }
+.stage.outage .base, .stage.outage .tint { filter: brightness(0.6); }
+.status {
+  position: absolute; left: 10px; top: 10px; z-index: 2;
+  padding: 4px 12px; border-radius: 14px; cursor: pointer;
+  color: var(--fp-on-plan); background: var(--fp-pill);
+  font: 600 13px/18px var(--paper-font-body1_-_font-family, sans-serif);
+  border: 1px solid var(--status, transparent);
+  box-shadow: 0 0 10px var(--status, transparent);
+}
+.status[hidden] { display: none; }
+.status.down { --status: var(--error-color, #db4437); }
+.status.returning, .status.dtek { --status: var(--warning-color, #ffa600); }
+.narrow .status { left: 6px; top: 6px; padding: 2px 10px; font-size: 12px; }
 .air {
   position: absolute; inset: 0; width: 100%; height: 100%;
   overflow: visible; pointer-events: none;
@@ -728,8 +1315,29 @@ ha-card { overflow: hidden; background: #1c1c1c; }
   100% { stroke-dashoffset: -100; opacity: 0; }
 }
 /* Without motion: the streams stand still, faint, so the mode still shows. */
+/* Power streams: a wire (the track) with current marching along it, dash after dash,
+   its width and pace set per stream. One period is CURRENT_PERIOD (60) px: keep in step. */
+.stream { opacity: 0; transition: opacity 0.8s ease; }
+.stream.on { opacity: 0.9; }
+.stream.elsewhere { display: none; }
+.stream path { fill: none; stroke: var(--glow); stroke-linecap: round; }
+.stream path.current {
+  stroke-width: var(--width, 2);
+  stroke-dasharray: 12 48;
+  filter: drop-shadow(0 0 2px var(--glow));
+  animation: march 1s linear infinite;
+  animation-play-state: paused;
+}
+.stream.on path.current { animation-play-state: running; }
+.stream path.casing { stroke: rgba(15, 15, 25, 0.6); stroke-width: calc(var(--width, 2) + 3px); stroke-linejoin: round; }
+.stream path.track { stroke-width: 1.5; opacity: 0.6; stroke-linejoin: round; }
+@keyframes march {
+  from { stroke-dashoffset: 60; }
+  to   { stroke-dashoffset: 0; }
+}
 @media (prefers-reduced-motion: reduce) {
   .flow path { animation: none; stroke-dasharray: none; opacity: 0.45; }
+  .stream path.current { animation: none; }
 }
 .narrow:not(.zoomed) .flow path { stroke-width: 4; }
 .spot, .row {
@@ -746,10 +1354,13 @@ ha-card { overflow: hidden; background: #1c1c1c; }
   width: 40px; height: 40px; border-radius: 50%;
   display: grid; place-items: center; flex: none;
   cursor: pointer; touch-action: manipulation;
-  color: rgba(255, 255, 255, 0.75);
+  color: rgba(255, 255, 255, 0.78);
+  /* Glass: a disc lit from above-left over the level ring, and a soft shadow that
+     lifts it off the picture, light or dark. */
   background:
-    radial-gradient(circle, rgba(20, 20, 20, 0.82) 62%, transparent 63%),
-    conic-gradient(var(--glow) calc(var(--level) * 360deg), rgba(255, 255, 255, 0.18) 0);
+    radial-gradient(circle at 38% 30%, rgba(62, 62, 70, 0.9), rgba(16, 16, 19, 0.9) 61%, transparent 63%),
+    conic-gradient(var(--glow) calc(var(--level) * 360deg), var(--fp-rim) 0);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
   transition: box-shadow 0.6s ease, color 0.3s ease;
 }
 .lamp.on {
@@ -758,9 +1369,50 @@ ha-card { overflow: hidden; background: #1c1c1c; }
 }
 /* A device is not a light source: its colour says its state, it does not glow. */
 .lamp.device { width: 34px; height: 34px; }
-.lamp.device.on { box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35); }
+.lamp.device.on { box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35), 0 2px 6px rgba(0, 0, 0, 0.45); }
 .lamp.device ha-icon { --mdc-icon-size: 19px; }
+/* A lamp switching on: one soft burst in its colour behind the icon. */
+.bloom {
+  position: absolute; left: 50%; top: 20px; z-index: -1;
+  width: 40px; height: 40px; margin: -20px 0 0 -20px; border-radius: 50%;
+  background: radial-gradient(circle, var(--glow) 0, transparent 70%);
+  opacity: 0; pointer-events: none;
+}
+.spot.blooming .bloom { animation: bloom 0.9s ease-out; }
+@keyframes bloom {
+  from { transform: scale(0.6); opacity: 0.75; }
+  to   { transform: scale(2.4); opacity: 0; }
+}
+/* A presence sensor that sees someone: two rings rippling out, half a beat apart. */
+.spot.presence .ripple {
+  position: absolute; left: 50%; top: 17px; z-index: -1;
+  width: 34px; height: 34px; margin: -17px 0 0 -17px; border-radius: 50%;
+  border: 2px solid var(--glow); box-sizing: border-box;
+  box-shadow: 0 0 6px var(--glow), inset 0 0 4px rgba(0, 0, 0, 0.4);
+  opacity: 0; pointer-events: none;
+}
+.spot.presence.on .ripple { animation: ripple 2.4s ease-out infinite; }
+.spot.presence.on .ripple + .ripple { animation-delay: -1.2s; }
+@keyframes ripple {
+  from { transform: scale(1); opacity: 0.9; }
+  to   { transform: scale(3.2); opacity: 0; }
+}
+.narrow:not(.zoomed) .spot.presence .ripple { top: 12px; width: 24px; height: 24px; margin: -12px 0 0 -12px; }
+.narrow:not(.zoomed) .bloom { top: 12px; }
+@media (prefers-reduced-motion: reduce) {
+  .spot.presence.on .ripple { animation: none; opacity: 0.6; transform: scale(1.7); }
+  .spot.presence.on .ripple + .ripple { opacity: 0; }
+  .spot.blooming .bloom { animation: none; }
+}
 .lamp.unavailable, .row.unavailable { opacity: 0.4; }
+/* The inverter's label goes beside its icon: the pack's icon sits just below-left. */
+.spot.side .pct {
+  position: absolute; left: calc(100% + 6px); top: 50%;
+  transform: translateY(-50%); margin: 0;
+}
+/* Load shedding's marks: amber stepped down, red its plug cut. */
+.shed .lamp { box-shadow: 0 0 0 2px var(--warning-color, #ffa600) !important; }
+.cut .lamp { box-shadow: 0 0 0 2px var(--error-color, #db4437) !important; }
 .lamp:focus-visible, .switch:focus-visible, .chip:focus-visible {
   outline: 2px solid var(--primary-color, #03a9f4); outline-offset: 2px;
 }
@@ -768,7 +1420,13 @@ ha-card { overflow: hidden; background: #1c1c1c; }
 .pct {
   margin-top: 3px; min-height: 14px; white-space: nowrap;
   font: 600 11px/14px var(--paper-font-body1_-_font-family, sans-serif);
-  color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+  color: var(--fp-on-plan);
+}
+/* A label sits on the same dark pill as a badge, so it reads on the bright noon
+   picture as well as the night one; an empty one keeps its line but shows nothing. */
+.pct:not(:empty) {
+  padding: 0 6px; border-radius: 7px;
+  background: var(--fp-pill);
 }
 .slider { display: none; }
 .spot.dimmable .slider {
@@ -788,8 +1446,8 @@ ha-card { overflow: hidden; background: #1c1c1c; }
   position: absolute;
   transform: translate(-50%, -50%);
   padding: 3px 10px; border-radius: 12px;
-  background: rgba(0, 0, 0, 0.6);
-  color: #fff; white-space: nowrap; cursor: pointer;
+  background: var(--fp-pill);
+  color: var(--fp-on-plan); white-space: nowrap; cursor: pointer;
   font: 600 13px/18px var(--paper-font-body1_-_font-family, sans-serif);
 }
 
@@ -801,25 +1459,26 @@ ha-card { overflow: hidden; background: #1c1c1c; }
 }
 .chips::-webkit-scrollbar { display: none; }
 .chip {
-  flex: none; border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 16px;
+  flex: none; border: 1px solid var(--fp-rim); border-radius: 16px;
   padding: 6px 14px; background: transparent; cursor: pointer;
-  color: var(--primary-text-color, #e1e1e1);
+  color: var(--fp-text);
   font: 500 14px/18px var(--paper-font-body1_-_font-family, sans-serif);
 }
-.chip.active { background: var(--primary-color, #03a9f4); border-color: transparent; color: #fff; }
+/* Not the theme's primary colour: white on its default blue is 2.6:1. */
+.chip.active { background: var(--fp-chip-active); border-color: transparent; color: var(--fp-chip-active-text); }
 .narrow .controls { display: block; padding: 4px 12px 8px; }
 .group[hidden] { display: none; }
 .group-title { display: none; }
 .group.titled .group-title {
   display: block; padding: 14px 0 2px;
-  color: var(--secondary-text-color, #9e9e9e);
+  color: var(--fp-text-dim);
   font: 600 12px/16px var(--paper-font-body1_-_font-family, sans-serif);
   text-transform: uppercase; letter-spacing: 0.06em;
 }
 .row {
   padding: 8px 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-  color: var(--primary-text-color, #e1e1e1);
+  border-top: 1px solid var(--fp-line);
+  color: var(--fp-text);
   font: 400 15px/20px var(--paper-font-body1_-_font-family, sans-serif);
 }
 .group-title + .row, .group > .row:first-child { border-top: 0; }
@@ -827,7 +1486,7 @@ ha-card { overflow: hidden; background: #1c1c1c; }
 .lamp.small { width: 36px; height: 36px; }
 .lamp.small ha-icon { --mdc-icon-size: 20px; }
 .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
-.value { color: var(--secondary-text-color, #9e9e9e); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.value { color: var(--fp-text-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .switch {
   position: relative; flex: none;
   width: 48px; height: 28px; border-radius: 14px; border: 0; padding: 0;
@@ -847,8 +1506,8 @@ ha-card { overflow: hidden; background: #1c1c1c; }
   accent-color: var(--glow, #ffb46b); cursor: pointer;
 }
 .row.info { display: flex; align-items: center; gap: 12px; min-height: 44px; cursor: pointer; }
-.info-icon { --mdc-icon-size: 20px; width: 36px; display: grid; place-items: center; color: var(--secondary-text-color, #9e9e9e); }
-.row.info .value { color: var(--primary-text-color, #e1e1e1); font-weight: 600; }
+.info-icon { --mdc-icon-size: 20px; width: 36px; display: grid; place-items: center; color: var(--fp-text-dim); }
+.row.info .value { color: var(--fp-text); font-weight: 600; }
 `;
 
 if (!customElements.get(CARD)) customElements.define(CARD, FloorplanCard);

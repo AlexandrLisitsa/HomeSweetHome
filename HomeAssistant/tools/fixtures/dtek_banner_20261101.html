@@ -1,0 +1,87 @@
+<div class="m-attention micromodal-slide newdesign-modal" id="modal-attention" aria-hidden="true">
+    <div class="modal__overlay modal__overlay--opacity" tabindex="-1" data-micromodal-close>
+    <div class="modal__container m-attention__container modal__container--firstPopup" role="dialog" aria-modal="true" aria-labelledby="modal-1-title" >
+        <button class="modal__close m-attention__close" aria-label="Close modal" data-micromodal-close>
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M5.63281 14.3686L10.0017 9.99973M10.0017 9.99973L14.3705 5.63086M10.0017 9.99973L5.63281 5.63086M10.0017 9.99973L14.3705 14.3686" stroke="black" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+        </button>
+        <div class="modal__picture">
+            <div class="modal__picture__inner"></div>
+        </div>
+        <div class="modal__container__inner">
+            <div class="modal__head" style="padding: 0; width: 100%">
+                                    <h6 class="modal__title">Шановні клієнти!</h6>
+                            </div>
+            <div class="m-attention__body" style="padding-top: 37px">
+                                    <div class="m-attention__text"><p class="MsoNormal"><span style="font-size: 16.0pt; line-height: 115%;">За рішенням Укренерго запроваджено екстрені відключення по місту Дніпро.</span></p>
+<p class="MsoNormal"><span style="font-size: 16.0pt; line-height: 115%;">Це непередбачені графіками обмеження, тож прогнозувати тривалість відключень наразі неможливо.</span></p>
+<p class="MsoNormal"> </p>
+<p class="MsoNormal"><span style="font-size: 16.0pt; line-height: 115%;">Якщо у вашій оселі є світло – споживайте його свідомо та ощадливо.</span></p>
+<p> </p></div>
+                                            </div>
+        </div>
+        <button class="modal__close m-attention__close modal__close__ok" aria-label="Close modal" data-micromodal-close>
+            Добре        </button>
+        <div class="modal__footerDecor_new">
+            <div class="modal__footerDecor_new__inner"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+    function isSafari() {
+        return /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+    }
+    if (document.querySelector("#modal-attention")) {
+        if (isSafari()) {
+            let savedScrollPosition = sessionStorage.getItem('scrollPosition');
+
+            if (savedScrollPosition !== null) {
+                window.scrollTo(0, parseInt(savedScrollPosition));
+                document.body.style.position = 'fixed';
+                document.body.style.top = `-${savedScrollPosition}px`;
+                document.body.style.width = '100%';
+            }
+        }
+    }
+    document.addEventListener('DOMContentLoaded', function () {
+        if (document.querySelector("#modal-attention")) {
+            MicroModal.show('modal-attention', {
+                onShow: modal => {
+                    if (isSafari()) {
+                        $('body').css({
+                            'position': 'fixed',
+                            'top': `-${sessionStorage.getItem('scrollPosition')}px`,
+                            'width': '100%'
+                        });
+                    }
+                    $('body').addClass('m-attention__overflow-hidden');
+                },
+                onClose: modal => {
+                    if (isSafari()) {
+                        $('body').css({
+                            'position': '',
+                            'top': '',
+                            'width': ''
+                        });
+
+                        if (sessionStorage.getItem('scrollPosition') !== null) window.scrollTo(0, parseInt(sessionStorage.getItem('scrollPosition')));
+                    }
+
+                    if (document.activeElement && modal.contains(document.activeElement)) document.activeElement.blur();
+                    $('body').removeClass('m-attention__overflow-hidden');
+                }
+            });
+        }
+    });
+    if (isSafari()) {
+        window.addEventListener('scroll', function() {
+            let scrollPosition = window.pageYOffset || document.documentElement.scrollTop;
+            if (scrollPosition == 0  || scrollPosition == null) scrollPosition = sessionStorage.getItem('scrollPosition');
+            sessionStorage.setItem('scrollPosition', scrollPosition);
+        });
+    }
+</script>
+        </main>
+    </div>

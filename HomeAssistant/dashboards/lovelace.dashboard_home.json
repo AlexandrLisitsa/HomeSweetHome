@@ -13,7 +13,9 @@
           "cards": [
             {
               "type": "custom:floorplan-card",
-              "image": "/local/floorplan/base.png?v=aec422c2",
+              "image": "/local/floorplan/base.png?v=316dcf34",
+              "day_image": "/local/floorplan/base_day.png?v=93289230",
+              "sun": "sun.sun",
               "rooms": [
                 {
                   "id": "kitchen",
@@ -23,7 +25,9 @@
                     "y0": 11.4,
                     "x1": 100.0,
                     "y1": 66.2
-                  }
+                  },
+                  "tint": "/local/floorplan/tint_kitchen.png?v=7be8897e",
+                  "temperature": "sensor.0xa4c1383900dd497c_temperature"
                 },
                 {
                   "id": "hallway",
@@ -43,7 +47,9 @@
                     "y0": 18.7,
                     "x1": 80.6,
                     "y1": 74.0
-                  }
+                  },
+                  "tint": "/local/floorplan/tint_bedroom.png?v=195d0da7",
+                  "temperature": "sensor.0xa4c138437ae3f5a6_temperature"
                 },
                 {
                   "id": "living",
@@ -53,7 +59,9 @@
                     "y0": 6.2,
                     "x1": 52.1,
                     "y1": 70.6
-                  }
+                  },
+                  "tint": "/local/floorplan/tint_living.png?v=cc85c5bb",
+                  "temperature": "sensor.0xa4c13858c97f07f8_temperature"
                 },
                 {
                   "id": "bathroom",
@@ -79,7 +87,7 @@
               "lights": [
                 {
                   "entity": "light.kitchen_relay",
-                  "overlay": "/local/floorplan/kitchen_ceiling.png?v=a300e357",
+                  "overlay": "/local/floorplan/kitchen_ceiling.png?v=e4c5cb3f",
                   "name": "Ceiling",
                   "icon": "mdi:ceiling-light",
                   "x": 76.6,
@@ -87,8 +95,8 @@
                   "room": "kitchen"
                 },
                 {
-                  "entity": "light.0xa4c1385443844c1e",
-                  "overlay": "/local/floorplan/kitchen_led.png?v=a125e33d",
+                  "entity": "light.led_ambient",
+                  "overlay": "/local/floorplan/kitchen_led.png?v=9acd8325",
                   "name": "LED strip",
                   "icon": "mdi:led-strip-variant",
                   "x": 81.0,
@@ -97,7 +105,7 @@
                 },
                 {
                   "entity": "light.hallway_relay",
-                  "overlay": "/local/floorplan/hallway.png?v=f4cd9095",
+                  "overlay": "/local/floorplan/hallway.png?v=ffaaea74",
                   "name": "Light",
                   "icon": "mdi:lightbulb",
                   "x": 48.8,
@@ -106,7 +114,7 @@
                 },
                 {
                   "entity": "light.bathroom_relay",
-                  "overlay": "/local/floorplan/bathroom.png?v=974a7519",
+                  "overlay": "/local/floorplan/bathroom.png?v=0f1e3e72",
                   "name": "Light",
                   "icon": "mdi:lightbulb-group",
                   "x": 69.1,
@@ -115,7 +123,7 @@
                 },
                 {
                   "entity": "media_player.samsung_7_series_43_ue43nu7090",
-                  "overlay": "/local/floorplan/living_tv.png?v=2dbcc452",
+                  "overlay": "/local/floorplan/living_tv.png?v=0dbcda90",
                   "name": "TV",
                   "icon": "mdi:television",
                   "x": 8.3,
@@ -193,9 +201,9 @@
                 {
                   "entity": "sensor.jkbms_gateway_bms_state_of_charge",
                   "name": "Battery",
-                  "icon": "mdi:home-battery",
-                  "x": 32.7,
-                  "y": 19.5,
+                  "icon": "mdi:battery",
+                  "x": 30.2,
+                  "y": 21.1,
                   "room": "vestibule"
                 }
               ],
@@ -230,7 +238,79 @@
                   "y": 32.9,
                   "room": "living"
                 }
-              ]
+              ],
+              "presence": [
+                {
+                  "entity": "binary_sensor.0xa4c1386081a8a521_occupancy",
+                  "name": "Motion",
+                  "icon": "mdi:motion-sensor",
+                  "x": 42.2,
+                  "y": 21.9,
+                  "room": "hallway"
+                },
+                {
+                  "entity": "binary_sensor.0xa4c138bd02b6c32c_presence",
+                  "name": "Presence",
+                  "icon": "mdi:motion-sensor",
+                  "x": 66.8,
+                  "y": 21.8,
+                  "room": "bathroom"
+                }
+              ],
+              "power": {
+                "hub_entity": "sensor.powmr_inverter_ac_output_power",
+                "grid": "sensor.powmr_inverter_grid_real_power_calculated",
+                "battery_power": "sensor.jkbms_gateway_bms_power",
+                "priority": "select.powmr_inverter_power_priority",
+                "down": "binary_sensor.house_on_battery",
+                "returning": "binary_sensor.powmr_inverter_grid_voltage_in_range",
+                "runtime": "sensor.battery_runtime_remaining",
+                "shedding": "sensor.load_shedding",
+                "dtek_start": "sensor.dtek_next_outage_start",
+                "dtek_end": "sensor.dtek_next_outage_end",
+                "grid_path": "M690.9 87.0 L691.0 87.0 L694.6 90.6 L721.4 119.4 L719.9 123.7 L620.4 136.4 L610.5 137.7 L600.7 139.0 L590.8 140.2 L449.5 158.4 L444.3 154.1 L443.3 132.9",
+                "battery_path": "M370.9 178.0 L371.3 178.0 L369.3 173.5 L369.2 173.4 L371.7 168.4 L439.6 159.7 L444.3 154.1 L443.3 132.9",
+                "battery_entity": "sensor.jkbms_gateway_bms_state_of_charge",
+                "loads": [
+                  {
+                    "entity": "light.kitchen_relay",
+                    "room": "kitchen",
+                    "path": "M443.3 132.9 L444.3 154.1 L449.5 158.4 L610.5 137.7 L620.4 136.4 L719.9 123.7 L728.2 126.7 L741.3 140.8 L748.1 148.2 L806.3 210.9 L814.6 213.8 L932.0 197.0 L938.3 197.7 L939.6 199.0"
+                  },
+                  {
+                    "entity": "light.led_ambient",
+                    "room": "kitchen",
+                    "path": "M443.3 132.9 L444.3 154.1 L449.5 158.4 L610.5 137.7 L620.4 136.4 L719.9 123.7 L729.8 122.4 L873.8 103.9 L882.5 106.6 L972.9 187.4 L980.4 194.0 L1034.0 241.8 L1032.7 245.9 L982.2 253.6 L980.9 257.8 L998.9 274.8 L999.1 282.0 L992.6 289.2"
+                  },
+                  {
+                    "entity": "light.hallway_relay",
+                    "room": "hallway",
+                    "path": "M443.3 132.9 L444.3 154.1 L449.5 158.4 L590.8 140.2 L596.1 144.6 L598.5 173.5"
+                  },
+                  {
+                    "entity": "light.bathroom_relay",
+                    "room": "bathroom",
+                    "path": "M443.3 132.9 L444.3 154.1 L449.5 158.4 L590.8 140.2 L600.7 139.0 L610.5 137.7 L620.4 136.4 L719.9 123.7 L729.8 122.4 L837.2 108.6 L843.2 112.9 L847.2 131.6"
+                  },
+                  {
+                    "entity": "switch.0xa4c13820fe9ec412",
+                    "room": "bedroom",
+                    "path": "M443.3 132.9 L444.3 154.1 L439.6 159.7 L371.7 168.4 L369.2 173.4 L403.4 232.6 L408.2 241.3 L467.8 357.0 L472.3 365.9 L528.3 475.9 L532.9 484.8 L583.3 581.5 L590.6 584.9 L721.5 559.7 L725.0 553.9 L716.4 523.1",
+                    "value": "sensor.0xa4c13820fe9ec412_power"
+                  },
+                  {
+                    "entity": "switch.0x70b3d52b600fddcb",
+                    "room": "living",
+                    "path": "M443.3 132.9 L444.3 154.1 L439.6 159.7 L371.7 168.4 L369.2 173.4 L403.4 232.6 L408.2 241.3 L467.8 357.0 L472.3 365.9 L528.3 475.9 L525.7 481.2 L356.8 510.6 L350.9 506.5 L341.0 454.3",
+                    "value": "sensor.0x70b3d52b600fddcb_power"
+                  },
+                  {
+                    "entity": "media_player.samsung_7_series_43_ue43nu7090",
+                    "room": "living",
+                    "path": "M443.3 132.9 L444.3 154.1 L439.6 159.7 L371.7 168.4 L369.2 173.4 L403.4 232.6 L408.2 241.3 L467.8 357.0 L472.3 365.9 L528.3 475.9 L525.7 481.2 L356.8 510.6 L346.9 512.3 L101.7 554.9 L95.9 550.9 L87.1 499.3 L91.3 493.9 L101.9 493.0"
+                  }
+                ]
+              }
             }
           ]
         }
