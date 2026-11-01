@@ -56,7 +56,7 @@ client, _ = load(TOKEN)
 r = client.get("/health")
 body = r.get_json()
 check("200 and ok", r.status_code == 200 and body["status"] == "ok")
-check("carries the version", body.get("version") == "1.3.0", body)
+check("carries the version", body.get("version") == "1.3.1", body)
 check("says which bots are configured", body.get("bots") == {"gas": True, "yasno": False, "water": False}, body)
 check("no secret in it", TOKEN not in r.get_data(as_text=True))
 

@@ -14,11 +14,15 @@ The screens, as of 2026-10-04:
      Останні активні показання на 31.08.2026  День: 38108  Ніч: 6384
      Введіть показання ДЕНЬ пробіл НІЧ (всі цифри до коми)."  -> "38500 6450"
 
-What it answers to the two numbers had not been seen when this was written
-(it takes a real submission). So that step is strict both ways: it confirms
-only a question that repeats BOTH numbers, counts only an answer with a
-success word and no refusal word as accepted, and reports anything else word
-for word as a failure -- including "it may have gone in, check the chat".
+    "Ваші показання на 2026-10-31 для рахунку <account>: ДЕНЬ: 38567 НІЧ: 6912
+     Якщо все вірно, натисніть кнопку меню ВІДПРАВИТИ ПОКАЗАННЯ."
+                                       -> [📤 Відправити показання]  (seen 2026-10-31)
+
+What it answers to that press has not been seen yet. So the step is strict
+both ways: it confirms only a question that repeats BOTH numbers, counts only
+an answer with a success word and no refusal word as accepted, and reports
+anything else word for word as a failure -- including "it may have gone in,
+check the chat".
 `status` walks to the prompt, reads the previous readings and backs out.
 
 Configuration, all in the environment (.env next to docker-compose.yml):
@@ -72,10 +76,12 @@ TXT_TWO_ZONES = "Зонність лічильника: 2"
 # stems. Never a substring anywhere: "так" is inside "Контакти" and "ні" is
 # inside "Ніч", and a menu keyboard sent alongside the answer must not be
 # taken for "yes".
-BTN_CONFIRM = {"words": ("так",), "stems": ("підтверд",)}
-BTN_CANCEL = {"words": ("ні",), "stems": ("скасув",)}
+# Since 2026-10-31 the bot echoes the numbers and offers a menu keyboard:
+# [📤 Відправити показання] [✏️ Редагувати показання] [⬅️ Назад] [🏠 Головне меню].
+BTN_CONFIRM = {"words": ("так",), "stems": ("підтверд", "відправ")}
+BTN_CANCEL = {"words": ("ні", "назад"), "stems": ("скасув",)}
 TXT_REFUSED = ("помилк", "не прийнят", "некоректн", "неможлив", "менш")
-TXT_ACCEPTED = ("прийнят", "успішн", "збережен")
+TXT_ACCEPTED = ("прийнят", "успішн", "збережен", "передан", "отриман")
 
 
 def _has(text, words):

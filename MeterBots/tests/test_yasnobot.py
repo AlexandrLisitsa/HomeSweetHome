@@ -4,9 +4,9 @@ one said on 2026-10-04. No network, no Telegram, no Telethon needed.
     python tests/test_yasnobot.py
 
 The real bot answers a button by editing its message in place, and so does
-this one. What it says after the two numbers had not been seen when this was
-written, so both shapes are played: a confirmation question first, and a
-verdict straight away.
+this one. The confirmation screen is the one seen on 2026-10-31; its verdict
+is still unseen, and older guesses (a yes/no question, a verdict at once)
+are played too.
 """
 import asyncio
 import pathlib
@@ -85,6 +85,14 @@ class FakeBot:
         elif self.state == "confirm" and t.startswith("❌"):
             self.state = "menu"
             msg.edit("Передачу скасовано.", [["🏠 Головне меню"]])
+        # The real screen since 2026-10-31: a menu keyboard, whose press the
+        # bot answers with a new message.
+        elif self.state == "send" and "Відправити показання" in t:
+            self.state, self.accepted = "menu", self.quirk != "rejected"
+            self.add(self.verdict(), [[b] for b in MENU])
+        elif self.state == "send" and "Назад" in t:
+            self.state = "value"
+            self.add(self.prompt(), [["⬅️ Назад"], ["🏠 Головне меню"]])
 
     def verdict(self):
         if self.quirk == "rejected":
@@ -102,7 +110,14 @@ class FakeBot:
             day, night = t.split()
             if self.quirk == "echo_wrong":
                 day = "99999"
-            if self.after == "confirm":
+            if self.after == "send":
+                self.state = "send"
+                self.add("Ваші показання на 2026-10-31 для рахунку %s:\nДЕНЬ: %s\nНІЧ: %s\n\n"
+                         "Якщо все вірно, натисніть кнопку меню ВІДПРАВИТИ ПОКАЗАННЯ."
+                         % (ACCOUNT, day, night),
+                         [["📤 Відправити показання"], ["✏️ Редагувати показання"],
+                          ["⬅️ Назад"], ["🏠 Головне меню"]])
+            elif self.after == "confirm":
                 self.state = "confirm"
                 if self.quirk == "split_confirm":
                     self.add("Перевірте показання:\nДень: %s\nНіч: %s" % (day, night))
@@ -191,6 +206,25 @@ b = FakeBot(after="direct")
 r = walk(b, 38500, 6450)
 check("submit answered at once is accepted", r["ok"] and "успішно" in r["reply"])
 
+print("the real confirmation screen (2026-10-31)")
+b = FakeBot(after="send")
+r = walk(b, 38500, 6450)
+check("the echo of both numbers is sent with 📤 Відправити показання",
+      r["ok"] and b.accepted and "📤 Відправити показання" in b.clicked)
+check("and nothing else is pressed after the numbers",
+      not any(c in b.clicked for c in ("✏️ Редагувати показання", "⬅️ Назад")))
+b = FakeBot(after="send", quirk="echo_wrong")
+r = walk(b, 38500, 6450)
+check("an echo of other numbers backs out with ⬅️ Назад, never sends",
+      not r["ok"] and b.accepted is None and "⬅️ Назад" in b.clicked
+      and "📤 Відправити показання" not in b.clicked)
+b = FakeBot(after="send", quirk="rejected")
+check("a refusal after sending is a failure", not walk(b, 38500, 6450)["ok"])
+b = FakeBot(after="send", quirk="unknown_answer")
+r = walk(b, 38500, 6450)
+check("an unknown answer after sending says to check the chat",
+      not r["ok"] and "check the chat" in r["error"])
+
 b = FakeBot(quirk="echo_wrong")
 r = walk(b, 38500, 6450)
 check("a confirmation with another number is refused",
@@ -241,7 +275,9 @@ from service import yasnobot as yb
 for label, want in [("✅ Так", "confirm"), ("Так", "confirm"), ("Так, підтверджую", "confirm"),
                     ("✔️ Підтвердити", "confirm"), ("❌ Ні", "cancel"), ("Скасувати", "cancel"),
                     ("📞 Контакти", None), ("🌙 Показання за ніч", None), ("Ніч", None),
-                    ("Інші питання", None), ("🏠 Головне меню", None), ("", None)]:
+                    ("Інші питання", None), ("🏠 Головне меню", None), ("", None),
+                    ("📤 Відправити показання", "confirm"), ("⬅️ Назад", "cancel"),
+                    ("✏️ Редагувати показання", None), ("📊 Передати показання", None)]:
     got = ("confirm" if yb._is(label, yb.BTN_CONFIRM)
            else "cancel" if yb._is(label, yb.BTN_CANCEL) else None)
     check("%r -> %s" % (label, want), got == want)
