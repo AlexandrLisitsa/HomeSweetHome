@@ -118,3 +118,4 @@ frames, which must never be accepted. Both must pass before a deploy.
 | [`docs/operations.md`](docs/operations.md) | Day to day: checking reads, the camera moved, a reading went wrong |
 | [`docs/guardrails.md`](docs/guardrails.md) | Each guard against a bad reading, and what it is worth |
 | [`docs/pitfalls.md`](docs/pitfalls.md) | The things that are easy to get wrong when reading a dial |
+| [`docs/water-camera-parts.md`](docs/water-camera-parts.md) | The water meter's camera: parts to buy, the sealed box, open questions |
