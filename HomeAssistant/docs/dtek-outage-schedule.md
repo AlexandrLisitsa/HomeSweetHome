@@ -4,8 +4,10 @@
 distributor's own view of this address — the queue it sits in, whether DTEK has
 an outage recorded against it, and the hourly stabilisation schedule for today
 and tomorrow — off the AJAX endpoint behind
-[the shutdowns page](https://www.dtek-dnem.com.ua/ua/shutdowns). A `command_line:`
-sensor runs the script every five minutes.
+[the shutdowns page](https://www.dtek-dnem.com.ua/ua/shutdowns). The same run
+also reads the popup on DTEK's home page, the only place Ukrenergo's
+emergency outages are announced ([below](#ukrenergos-emergency-outages)). A
+`command_line:` sensor runs the script every five minutes.
 
 The point is not to know that the power is out; the inverter already knows that
 within five seconds. It is to tell a scheduled four-hour window apart from the
@@ -133,7 +135,14 @@ The hero ranks its states, highest first:
    17:00", in orange. On 17.10.2026 the window opened at 13:30 and the mains
    lasted until 13:42. Before this rule the card said "The power is on" for
    the whole window.
-4. Otherwise **"The power is on"**, in green, turning amber with an "Outage
+4. **Ukrenergo's emergency outages announced, mains still up:** "The power is
+   on", but amber, with an "Emergency outages" pill: the power can go at any
+   time and no schedule applies. The clock's hours turn amber (hours the
+   schedule has definitely off stay red), the centre reads "emergency
+   outages", and the Next window tile says schedules don't apply now. With
+   mains down it is rank 1, but the pill says "Power off" rather than "Off ·
+   not announced", because the popup is the announcement.
+5. Otherwise **"The power is on"**, in green, turning amber with an "Outage
    soon" pill an hour before the next window starts, so the page warns before
    the alert does.
 
@@ -197,6 +206,15 @@ to see the outage layout would be to set
 which fires `❌ Alert: Grid Outage!` and pushes to both phones. Take it out
 again afterwards.
 
+`debug_banner: emergency | pending | notice | none` does the same for the
+popup: DTEK's 01.11.2026 text in red, the same text grey (`pending`, the
+sensor still debouncing), a country-wide notice in grey, or nothing. For a
+page you can click through, `debug_state_entity` and `debug_banner_entity`
+name an `input_select` each, whose options are those values plus `live`; the
+card follows them as they change. That is how the Playground for this feature
+was built: two temporary helpers above one full Shutdowns card, all removed
+afterwards. Real dashboards set none of the four.
+
 Its sidebar *position* comes from `panelOrder` in
 `.storage/frontend.user_data_<user>`, which is per-user and is **not** mirrored
 by `ha_pull.sh` — the one part of that dashboard git does not record. Re-apply
@@ -212,6 +230,86 @@ plan_off`), so the week block shows the reason and then today and tomorrow,
 while the alerts run on `fact`. If the weekly table comes back, its cells are
 mostly `maybe`. The grid draws those as amber hatching, not red, and counts a
 possible outage as off, the same way `OFF_HALVES` and the alerts already do.
+
+## Ukrenergo's emergency outages
+
+When generation runs short, Ukrenergo orders emergency outages: no schedule,
+no end time. DTEK announces them **only** in a hand-written popup on its home
+page, `<div id="modal-attention">`, which its own script shows on load
+whenever it is in the page. No AJAX answer mentions it, and every house
+entry stays blank. On 01.11.2026 it read "За рішенням Укренерго запроваджено
+екстрені відключення по місту Дніпро" while `binary_sensor.dtek_outage_now`
+said off.
+
+So each run also GETs `/ua` gzipped (~72 KB, ~20 MB a day) and reads that
+div: `fetch_banner()` and `parse_banner()` in `dtek_poll.py`. A page without
+the div means no announcement. A page without the site's own markup is an
+error, not "none", so a challenge page cannot clear a real announcement. The
+sensor publishes:
+
+| attribute | |
+| --- | --- |
+| `banner_title`, `banner_text` | DTEK's words, verbatim, one line per paragraph |
+| `banner_scope` | `city`, `region` or `other`: which place the popup names |
+| `banner_emergency` | whether it announces emergency outages here, now |
+| `banner_checked_at` | when the popup was last read successfully |
+| `banner_error` | why the latest read failed, else null |
+
+A failed read never fails the poll. The last banner stays, `banner_checked_at`
+keeps its old time, and `banner_error` says why. It is not a `warnings` entry
+on purpose: those trigger captures, and a flaky GET would rotate the real ones
+out. Captures do fire when the banner text changes, with the banner in
+`_meta`, so real wordings pile up to test against.
+
+### Built to miss rather than cry wolf
+
+An alert hangs off this, so a false "on" costs more than a late one. The text
+is on the dashboard whatever the flag says.
+
+1. **One sentence at a time** (`banner_emergency()`). A sentence counts only
+   if it has all four:
+   - the outage words (`екстрен… відключен…`, one н or two);
+   - a now-in-force verb: запроваджено, застосовано, діють, тривають,
+     введено, оголошено…;
+   - none of the not-now words: скасовано, завершено, припинено, не діють,
+     більше не, вчора, минул…, запобігання, уникнути, можливі, загроза,
+     ризик;
+   - this city or region named **in that same sentence**. The city comes
+     from `dtek_city` with at most a two-letter case ending (Дніпро, Дніпра,
+     Дніпрі), so neither Дніпропетровській nor DTEK's own name, Дніпровські
+     електромережі, counts as the city. The region is
+     Дніпропетровськ… / Дніпропетровщин….
+
+   A country-wide notice, another city's, advice to save power, or an
+   all-clear is shown in grey and never raises the flag.
+2. **Two polls must agree.** `binary_sensor.dtek_emergency_shutdowns` has
+   `delay_on: 10 min`.
+3. **Fresh or nothing.** The sensor goes `unavailable`, not `on`, once the
+   popup has not been read for 20 minutes.
+
+The card turns red and amber from that binary sensor, never from the raw
+attribute. Section 14 of `test_dtek_schedule.py` replays the real popup and
+the false-positive sentences; section 5h of `check_dtek_templates.py` covers
+the sensor and the alerts.
+
+### The alerts
+
+`⚠️ Alert: Ukrenergo emergency outages` fires when the sensor goes `off` →
+`on`, and `✅ Alert: Ukrenergo emergency outages lifted` on `on` → `off`, on
+the same two channels as the DTEK outage pair and with one tag,
+`dtek_emergency_banner`, so "lifted" replaces "announced" on the lock screen:
+
+> За рішенням Укренерго запроваджено екстрені відключення по місту Дніпро. No
+> schedule applies and DTEK gives no end time. The inverter still sees mains.
+> Battery 100%.
+
+Edges out of `unknown` (a restart) or `unavailable` (an unread popup) fire
+nothing. That includes the sensor's first `on` after it is created, so an
+emergency already running when this is deployed is not pushed.
+
+`binary_sensor.grid_outage_unscheduled` and the grid alerts do not read any of
+this yet: during emergency outages every outage is still unscheduled, which
+is true.
 
 ## When the schedule changes
 

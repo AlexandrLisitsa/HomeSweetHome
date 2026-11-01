@@ -42,7 +42,7 @@ function render(at, attrs, opts) {
   const [hh, mm] = at.split(":").map(Number);
   const L = loadCard(FILE, { Date: pinnedDate(hh, mm) });
   const card = new L.Card();
-  card.setConfig({ blocks: opts.blocks || ["hero", "days"] });
+  card.setConfig(Object.assign({ blocks: opts.blocks || ["hero", "days"] }, opts.config || {}));
   const asked = [];
   card.hass = mkHass(Object.assign({
     "sensor.dtek_shutdowns": S("ok", Object.assign({
@@ -112,6 +112,90 @@ eq("tomorrow unpublished: no false end time", r.text(".lede"),
 console.log("possible outage hours");
 r = render("10:15", { today: "yyyyyyyyyymmyyyyyyyyyyyy" });
 eq("hedged wording", r.text(".lede"), "DTEK's schedule for (1.1) has 10:00–12:00 as a possible outage. The inverter still sees mains.");
+
+console.log("the announcement banner (01.11.2026)");
+const EMERG = "binary_sensor.dtek_emergency_shutdowns";
+const BANNER = {
+  banner_title: "Шановні клієнти!", banner_scope: "city", banner_emergency: true,
+  banner_text: "За рішенням Укренерго запроваджено екстрені відключення по місту Дніпро.\n"
+    + "Якщо у вашій оселі є світло – споживайте його свідомо та ощадливо.",
+  banner_checked_at: new Date(2026, 9, 17, 10, 0).toISOString(),
+};
+const noSched = { today: null, schedule_in_effect: false };
+r = render("10:00", Object.assign({}, noSched, BANNER), { states: { [EMERG]: S("on") } });
+eq("red strip with DTEK's text", [r.root.querySelector(".banner").getAttribute("class"),
+  r.root.querySelectorAll(".banner p").length], ["banner emerg", 2]);
+eq("labelled as Ukrenergo's", r.text(".banner .k"), "Ukrenergo emergency outages");
+eq("mains up: amber, not green", [r.wrap.classList.contains("k-warn"), r.text(".pill .lbl")],
+  [true, "Emergency outages"]);
+eq("lede says it can go any time", /can go at any time/.test(r.text(".lede")), true);
+eq("next window: schedules don't apply", r.tile("Next window")[1], "schedules don't apply now");
+{
+  const ring = r.root.querySelectorAll(".arc").map((a) => a.getAttribute("class"));
+  eq("the ring is amber, the past dimmed", [ring.length, ring.every((c) => /^arc maybe( past)?$/.test(c)),
+    ring.filter((c) => / past$/.test(c)).length], [48, true, 20]);
+  eq("the centre names it", r.root.querySelector(".ctr .small").textContent, "emergency outages");
+}
+r = render("13:39", Object.assign({}, BANNER), { states: { [EMERG]: S("on") } });
+eq("a window DTEK has off stays red inside the amber",
+  r.root.querySelectorAll(".arc").map((a) => a.getAttribute("class")).filter((c) => /out/.test(c)).length, 7);
+
+r = render("10:00", Object.assign({}, noSched, BANNER),
+  { gridDown: true, states: { [EMERG]: S("on"), "binary_sensor.grid_outage_unscheduled": S("on") } });
+eq("mains gone: announced, so not 'not announced'", r.text(".pill .lbl"), "Power off");
+eq("...and the lede says why", /Ukrenergo has emergency outages/.test(r.text(".lede")), true);
+
+// The attribute alone never turns the page red: the entity is the debounced,
+// freshness-checked verdict, and while it is off or unavailable the text is a
+// plain note.
+for (const st of ["off", "unavailable"]) {
+  r = render("10:00", Object.assign({}, noSched, BANNER), { states: { [EMERG]: S(st) } });
+  eq("entity " + st + ": grey note, page stays green",
+    [r.root.querySelector(".banner").getAttribute("class"), r.text(".banner .k"),
+      r.wrap.classList.contains("k-ok")], ["banner", "DTEK announcement", true]);
+}
+r = render("10:00", Object.assign({}, noSched, BANNER, { banner_scope: "other", banner_emergency: false }),
+  { states: { [EMERG]: S("off") } });
+eq("a notice about elsewhere says so", r.text(".banner .k"), "DTEK announcement · not for this area");
+r = render("10:00", noSched, { states: { [EMERG]: S("off") } });
+eq("no banner: no strip", r.root.querySelector(".banner"), null);
+
+console.log("debug_banner, for the Playground");
+r = render("10:00", noSched, { config: { debug_banner: "emergency" } });
+eq("emergency sample, entity ignored", [r.text(".banner .k"), r.text(".pill .lbl")],
+  ["Ukrenergo emergency outages", "Emergency outages"]);
+r = render("10:00", noSched, { config: { debug_banner: "notice" } });
+eq("country-wide sample stays grey", r.root.querySelector(".banner").getAttribute("class"), "banner");
+r = render("10:00", Object.assign({}, noSched, BANNER), { config: { debug_banner: "none" }, states: { [EMERG]: S("on") } });
+eq("none hides a live one", [r.root.querySelector(".banner"), r.text(".pill .lbl")], [null, "Power on"]);
+r = render("10:00", noSched, { config: { debug_banner: "pending" } });
+eq("pending: the text, grey, while the entity debounces",
+  [r.root.querySelector(".banner").getAttribute("class"), r.text(".banner .k")],
+  ["banner", "DTEK announcement"]);
+
+console.log("the Playground's switches: the mock read from entities");
+const PB = "input_select.playground_dtek_banner";
+const PS = "input_select.playground_dtek_power";
+const pg = { debug_banner_entity: PB, debug_state_entity: PS };
+r = render("10:00", noSched, { config: pg, states: { [PB]: S("emergency"), [PS]: S("unscheduled") } });
+eq("both switches drive the page", [r.text(".banner .k"), r.text(".pill .lbl")],
+  ["Ukrenergo emergency outages", "Power off"]);
+r = render("10:00", Object.assign({}, noSched, BANNER),
+  { config: pg, states: { [PB]: S("live"), [PS]: S("live"), [EMERG]: S("on") } });
+eq("live on both: the real data", [r.text(".banner .k"), r.text(".pill .lbl")],
+  ["Ukrenergo emergency outages", "Emergency outages"]);
+r = render("10:00", noSched, { config: Object.assign({ debug_banner: "notice" }, pg),
+  states: { [PB]: S("live"), [PS]: S("live") } });
+eq("an entity set to live overrides a static debug_banner", r.root.querySelector(".banner"), null);
+r = render("10:00", noSched, { config: pg });
+eq("switch entities missing: the real data, no error", r.text(".pill .lbl"), "Power on");
+
+{
+  const L = loadCard(FILE, {});
+  let err = null;
+  try { new L.Card().setConfig({ debug_banner: "loud" }); } catch (e) { err = e.message; }
+  eq("unknown debug_banner refused", /debug_banner must be one of/.test(err || ""), true);
+}
 
 console.log("the days block");
 r = render("13:39");

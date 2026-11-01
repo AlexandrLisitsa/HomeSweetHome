@@ -145,7 +145,10 @@ def base_attrs(**over):
             "hidden_reason": None, "updated_at": "12:00 01.09.2026",
             "dtek_flags": {k: True for k in dtek_poll.FLAG_KEYS},
             "fetched_at": "2026-09-01T12:00:00+03:00", "stale": False,
-            "error": None}
+            "error": None, "banner_title": None, "banner_text": None,
+            "banner_scope": None, "banner_emergency": False,
+            "banner_checked_at": "2026-09-01T12:00:00+03:00",
+            "banner_error": None}
     data.update(over)
     return {(SENSOR, k): v for k, v in data.items()}
 
@@ -234,6 +237,25 @@ check("no upcoming outage -> None", render(nxt, {}, base_attrs(), NOON), "None")
 check("upcoming outage passes through",
       render(nxt, {}, base_attrs(next_outage_start="2026-09-01T14:00:00+03:00"), NOON),
       "2026-09-01T14:00:00+03:00")
+
+# The announcement banner. The flag itself is decided in dtek_poll.py; what
+# this template adds is refusing to vouch for a banner nobody has read lately.
+emerg = ents["DTEK emergency shutdowns"]
+on = base_attrs(banner_emergency=True, banner_scope="city", banner_text="x")
+check("emergency banner -> on", render(emerg["state"], {SENSOR: "ok"}, on, NOON), "True")
+check("no banner -> off", render(emerg["state"], {SENSOR: "ok"}, base_attrs(), NOON), "False")
+check("a missing flag reads off, never on",
+      render(emerg["state"], {SENSOR: "ok"}, base_attrs(banner_emergency=None), NOON), "False")
+avail = emerg["availability"]
+check("read 5 min ago -> available",
+      render(avail, {SENSOR: "ok"}, on, NOON + timedelta(minutes=5)), "True")
+check("not read for 25 min -> unavailable, not a stale on",
+      render(avail, {SENSOR: "ok"}, on, NOON + timedelta(minutes=25)), "False")
+check("never read -> unavailable",
+      render(avail, {SENSOR: "ok"}, base_attrs(banner_checked_at=None), NOON), "False")
+check("sensor itself down -> unavailable",
+      render(avail, {SENSOR: "unavailable"}, on, NOON), "False")
+check("two polls must agree before it turns on", emerg.get("delay_on"), {"minutes": 10})
 
 reason = ents["DTEK outage reason"]["state"]
 check("long reason truncated to fit a state",
@@ -354,7 +376,9 @@ for aid, want_channel in [("dtek_outage_starting_soon", "DTEK emergency starts")
                           ("dtek_outage_ending_soon", "DTEK emergency ends"),
                           ("dtek_outage_reported", "DTEK emergency starts"),
                           ("dtek_outage_cleared", "DTEK emergency ends"),
-                          ("dtek_outage_overdue", "DTEK emergency starts")]:
+                          ("dtek_outage_overdue", "DTEK emergency starts"),
+                          ("dtek_emergency_announced", "DTEK emergency starts"),
+                          ("dtek_emergency_lifted", "DTEK emergency ends")]:
     a = {x["id"]: x for x in pkg["automation"]}[aid]
     sends = [x for x in a["action"] if x.get("service", "").startswith("notify.")]
     push = [x for x in sends if x["service"] in PHONES]
@@ -506,6 +530,38 @@ check("scope lands in the message",
       "Аварійні ремонтні роботи, queue 1.1: off since 11:05, expected back by "
       "15:25. Only this building on the street. The inverter still sees mains. "
       "Battery 87.0%, about 9.4 h left at the current draw.")
+
+# --- 5h. Ukrenergo's emergency outages, from the announcement popup --------
+# The flag is the binary sensor's; what these must get right is firing only on
+# a real off<->on edge -- never out of unknown after a restart or unavailable
+# after an unread banner -- and quoting DTEK's first line, not the whole popup.
+print("\n5h. 'Ukrenergo emergency outages' automations")
+for aid, frm, to in [("dtek_emergency_announced", "off", "on"),
+                     ("dtek_emergency_lifted", "on", "off")]:
+    trg = autos[aid]["trigger"]
+    check("%s fires on %s -> %s only" % (aid, frm, to),
+          [(t["entity_id"], t.get("from"), t.get("to")) for t in trg],
+          [("binary_sensor.dtek_emergency_shutdowns", frm, to)])
+    check("%s replaces the other on the lock screen" % aid,
+          {x["data"]["data"]["tag"] for x in autos[aid]["action"]
+           if x.get("service") in PHONES}, {"dtek_emergency_banner"})
+BAN = dict(GOLD)
+BAN.update(base_attrs(banner_text="За рішенням Укренерго запроваджено екстрені відключення "
+                                  "по місту Дніпро.\nЯкщо у вашій оселі є світло – споживайте "
+                                  "його свідомо та ощадливо."))
+v = fire(autos["dtek_emergency_announced"], rstates, BAN, {})
+check("announced: DTEK's first line, then what it means",
+      v["message"],
+      "За рішенням Укренерго запроваджено екстрені відключення по місту Дніпро. "
+      "No schedule applies and DTEK gives no end time. The inverter still sees mains. "
+      "Battery 87.0%, about 9.4 h left at the current draw.")
+v = fire(autos["dtek_emergency_announced"], rstates, base_attrs(banner_text=None), {})
+check("announced with the text gone already: still a sentence",
+      v["message"].startswith("No schedule applies"), True)
+v = fire(autos["dtek_emergency_lifted"], dict(rstates, **{GRID: "on"}), BAN, {})
+check("lifted", v["message"],
+      "DTEK no longer announces emergency outages here; schedules apply again where "
+      "published. The inverter still sees no mains.")
 
 # --- 5e. the estimate passing ----------------------------------------------
 print("\n5e. 'DTEK estimate passed' automation")
@@ -701,7 +757,9 @@ _probe = dtek_poll.resolve(
     {"data": [], "update": "24.07.2026 08:30"}, {}, NOON)
 # Written by poll(), after resolve() returns.
 _probe.update(address=None, status="ok", fetched_at=None, stale=False,
-              error=None)
+              error=None, banner_title=None, banner_text=None,
+              banner_scope=None, banner_emergency=False,
+              banner_checked_at=None, banner_error=None)
 _listed = set()
 for _block in pkg.get("command_line") or []:
     for _item in _block.values():
@@ -863,10 +921,12 @@ else:
     check("both week-derived tiles can blank",
           len(re.findall(r'tile\("(?:Next window|Off this week)"', js)), 2)
     # green = all good, warn = DTEK has a notice but mains is present, red =
-    # the power is actually off. In that order of precedence.
-    check("hero accent: red, then warn for a DTEK notice or schedule, then green",
+    # the power is actually off. In that order of precedence. Ukrenergo's
+    # emergency outages are a claim like a notice: warn, never red.
+    check("hero accent: red, then warn for a DTEK notice, schedule or emergency, then green",
           bool(re.search(r"accent:\s*gridDown\s*\?\s*RED\s*:\s*dtekOutage\s*\|\|"
-                         r"\s*schedNow\s*\?\s*ORANGE\s*:\s*GREEN", js)), True)
+                         r"\s*schedNow\s*\|\|\s*emergencyOn\s*\?\s*ORANGE\s*:\s*GREEN", js)),
+          True)
     check("weekOff is null rather than 0h when withheld",
           bool(re.search(r"weekOff:\s*weekLive\s*\?", js)), True)
 

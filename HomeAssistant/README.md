@@ -21,7 +21,9 @@ read before it goes live, and a `git revert` if it was wrong.
   `card-ramp.js`, the colour fade the two power cards share.
   Each card is versioned (see [MANIFEST, Versions](../MANIFEST.md#6-versions)).
 - **The DTEK outage schedule**: a poller for the distributor's queue and hourly
-  schedule, so a planned outage can be told apart from a fault
+  schedule, so a planned outage can be told apart from a fault, plus
+  Ukrenergo's emergency outages, which DTEK announces only in a popup on its
+  home page, with an alert when they start and end
   ([`docs/dtek-outage-schedule.md`](docs/dtek-outage-schedule.md)).
 - **Outage pre-charge**: when DTEK schedules an outage, the battery is charged
   to full before it starts, at the lowest current that makes it and at night
