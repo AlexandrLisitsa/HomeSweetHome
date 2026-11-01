@@ -47,6 +47,10 @@ sections 12 and 13 (both reading sensors, the water alert).
 - The ESP32-CAM-MB programmer base adds about 15 mm and does not fit there. It is used only for the first USB
   flash; later updates come over Wi-Fi, as with the gas camera.
 - A phone charger in a socket feeds the board. No 230 V cable runs to the meter: only 5 V.
+- **Glare off the meter glass.** At 20–25 mm the LEDs bounce off the glass straight into the lens. Keep them off the
+  lens axis, angled at the dial, as on the gas camera, and put a short black foam or tape tube around the lens.
+- **Open question:** whether the meter's own glass fogs. The cold pipe sweats, and nothing on the board's side helps
+  with fog behind the glass.
 
 ## Parts to buy: 658 UAH
 
@@ -65,6 +69,10 @@ Alternatives checked on 2026-10-12 cost more, or come without a Smart charger. 1
 CH341A at 155 UAH, but no mains charger and no in-stock CH340. ФОП Корнієнко has the board and base at 634.80 UAH,
 but no charger. Rozetka had no cheaper ESP32-CAM in stock.
 
+**Also needed, outside this order:** two **white 5 mm LEDs**. The water build shares the gas board's lighting: left
+LED on IO14, right on IO13, no resistors, white only ([`firmware.md`](../MeterCam/docs/firmware.md)). It is dark under
+the bath panel, so without them there is nothing to read. Any radio shop, a few hryvnias.
+
 **Not bought:**
 - **Cable:** two broken 2 m USB cables are spliced into one longer one. Only power is needed, so only the red
   (+5 V) and black (GND) wires are joined. The USB-A plug goes into the charger, and the other end is soldered
@@ -72,5 +80,6 @@ but no charger. Rozetka had no cheaper ESP32-CAM in stock.
 - **Box:** left out for now. If it is needed later, only the lens needs a clear window: a flat box with a hole
   over the lens and a piece of microscope slide glued over it. Plastic lids are too cloudy for a photo this close.
 
-**Before paying:** check that the listing still shows the Smart badge, and that the photo shows the MB base in the kit.
+**Before paying:** check that the listing still shows the Smart badge, that the photo shows the MB base in the kit,
+and that the camera is the stock OV2640, not a 120° or 160° wide-angle module: their distortion bends the digits.
 Test the board on the base as soon as it arrives. The seller lists 14 days for exchange and return.
