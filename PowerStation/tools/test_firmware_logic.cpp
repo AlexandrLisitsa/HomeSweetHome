@@ -1036,6 +1036,81 @@ TEST(reply, ack_ends_the_tick) {
   CHECK_EQ(id(sns_grid_v).state, 210.0f);
 }
 
+// --- read-back: QMOD ----------------------------------------------------------
+static std::string qmod_reply(const char *mode) { return std::string("(") + mode + "\x49\xC1" + "\r"; }
+static bool is_qmod(const std::vector<uint8_t> &f) {
+  return f == std::vector<uint8_t>{0x51, 0x4D, 0x4F, 0x44, 0x49, 0xC1, 0x0D};
+}
+static const char *RUN_HEAL = "script:inverter_self_heal";
+
+TEST(readback, poll_rotation) {
+  for (int i = 0; i < 40; i++) interval_3s();
+  int qmod = 0;
+  for (auto &f : id(uart_0).tx) qmod += is_qmod(f);
+  CHECK_EQ(polls(), 36);
+  CHECK_EQ(qmod, 4);
+  CHECK_EQ(id(uart_0).tx.size(), (size_t) 40);
+  // Never two QMODs in a row: the link watchdog sees a QPIGS at least every 6 s.
+  auto &tx = id(uart_0).tx;
+  for (size_t i = 1; i < tx.size(); i++)
+    if (is_qmod(tx[i]) && is_qmod(tx[i - 1])) g_fail.push_back("back-to-back QMOD at " + std::to_string(i));
+}
+
+TEST(readback, pending_follows_the_last_send) {
+  for (int i = 0; i < 5; i++) interval_3s();  // slot 4
+  CHECK(id(qmod_pending));
+  interval_3s();
+  CHECK(!id(qmod_pending));
+  for (int i = 0; i < 9; i++) interval_3s();  // slots 6..14
+  CHECK(id(qmod_pending));
+  push("POP00");
+  interval_3s();  // the command's turn
+  CHECK(!id(qmod_pending));
+}
+
+TEST(readback, qmod_stores_the_letter_and_runs_the_heal) {
+  for (const char *l : {"P", "S", "L", "B", "F", "H", "D"}) {
+    fw_events.clear();
+    id(qmod_pending) = true;
+    rx(qmod_reply(l));
+    CHECK_EQ(id(inverter_mode), l[0]);
+    CHECK_EQ(count(RUN_HEAL), 1);
+    CHECK(!id(qmod_pending));
+  }
+}
+
+TEST(readback, unknown_or_empty_qmod_ignored) {
+  id(qmod_pending) = true;
+  rx(qmod_reply("X"));
+  id(qmod_pending) = true;
+  rx("(\r");
+  CHECK_EQ(id(inverter_mode), ' ');
+  CHECK_EQ(count(RUN_HEAL), 0);
+}
+
+TEST(readback, qpigs_while_qmod_pending_is_dropped_not_misread) {
+  id(qmod_pending) = true;
+  rx(qpigs_reply("221.0", "230.0", "0100", "26.50"));  // a late QPIGS
+  CHECK_EQ(id(sns_grid_v).state, 230.0f);
+  CHECK_EQ(id(inverter_mode), ' ');
+  rx(qpigs_reply("222.0", "230.0", "0100", "26.50"));
+  CHECK_EQ(id(sns_grid_v).state, 222.0f);
+}
+
+TEST(readback, qmod_reply_without_pending_is_not_a_qpigs) {
+  rx(qmod_reply("B"));
+  CHECK_EQ(id(inverter_mode), ' ');
+  CHECK_EQ(id(sns_grid_v).state, 230.0f);
+}
+
+TEST(readback, qpigs_still_parsed_after_a_command) {
+  push("POP00");
+  interval_3s();
+  rx(ACK);
+  rx(qpigs_reply("221.0", "230.0", "0100", "26.50"));
+  CHECK_EQ(id(sns_grid_v).state, 221.0f);
+}
+
 // ============================================================================
 // Grid health and calculated sensors
 // ============================================================================
@@ -1206,6 +1281,181 @@ TEST(uptime, accumulates_with_carry_and_survives_millis_wrap) {
   interval_60s();
   CHECK_EQ(id(total_uptime_sec) - base, 60u);
   CHECK_EQ(*sns_total_uptime_lambda(), (float) (id(total_uptime_sec) / 86400.0));
+}
+
+// ============================================================================
+// inverter_self_heal: Utility First, but the inverter still runs on battery
+// ============================================================================
+static const uint32_t T0 = 1000000;    // when the target changed
+static const uint32_t GRACE = 180000;
+static const uint32_t SPACING = 900000;
+static void mode(const char *l) { id(qmod_pending) = true; rx(qmod_reply(l)); }
+static void sent_ok() { clear_effects(); }  // the target's POP went out and was ACKed
+static Q NUDGE_UPS = {"PGR00", "PGR01"};
+
+// The house as it runs: UPS input, the inverter still on SBU when the target moves.
+static void heal_baseline() {
+  id(select_inverter_mode).preset("UPS");
+  id(select_power_priority).preset("SBU Battery");
+  fake_millis_value = T0;
+}
+
+static void expect_nudge_after_grace() {
+  sent_ok();
+  fake_millis_value = T0 + GRACE - 1;
+  mode("B");
+  CHECK(queue().empty());
+  fake_millis_value = T0 + GRACE;
+  mode("B");
+  CHECK_EQ(queue(), NUDGE_UPS);
+  CHECK_EQ(id(command_retries), 20);
+  CHECK_EQ(id(heal_attempts), 1);
+}
+
+TEST(self_heal, night_tariff) {
+  heal_baseline();
+  at(23, 0);
+  time_sntp_time_on_time_23();
+  CHECK_EQ(prio(), std::string("Utility First"));
+  expect_nudge_after_grace();
+}
+
+TEST(self_heal, precharge_start_by_day) {
+  heal_baseline();
+  at(12, 0);
+  until(18, 0);
+  charge_window();
+  CHECK_EQ(prio(), std::string("Utility First"));
+  expect_nudge_after_grace();
+}
+
+TEST(self_heal, grid_recovery_with_tariff_off) {
+  heal_baseline();
+  id(switch_auto_tariff).preset(false);
+  id(grid_safe).publish_state(true);
+  CHECK_EQ(prio(), std::string("SBU Battery"));
+  fake_millis_value = T0;
+  id(grid_safe).publish_state(false);
+  CHECK_EQ(prio(), std::string("Utility First"));
+  expect_nudge_after_grace();
+}
+
+TEST(self_heal, manual_pick) {
+  heal_baseline();
+  id(switch_auto_tariff).preset(false);
+  id(switch_auto_protection).preset(false);
+  id(select_power_priority).make_call().set_option("Utility First").perform();
+  expect_nudge_after_grace();
+}
+
+TEST(self_heal, boot_replay_of_the_restored_select) {
+  heal_baseline();
+  id(select_power_priority).publish_state("Utility First");  // TemplateSelect::setup
+  expect_nudge_after_grace();
+}
+
+TEST(self_heal, apl_input_ends_on_apl) {
+  heal_baseline();
+  id(select_inverter_mode).preset("APL");
+  id(select_power_priority).make_call().set_option("Utility First").perform();
+  sent_ok();
+  fake_millis_value = T0 + GRACE;
+  mode("B");
+  CHECK_EQ(queue(), (Q{"PGR01", "PGR00"}));
+}
+
+TEST(self_heal, on_line_or_other_modes_do_nothing) {
+  heal_baseline();
+  id(select_power_priority).make_call().set_option("Utility First").perform();
+  sent_ok();
+  fake_millis_value = T0 + GRACE;
+  for (const char *l : {"L", "S", "F", "P", "H", "D"}) mode(l);
+  CHECK(queue().empty());
+  CHECK_EQ(id(heal_attempts), 0);
+}
+
+TEST(self_heal, battery_under_sbu_or_solar_is_normal) {
+  heal_baseline();
+  for (const char *target : {"Solar First", "SBU Battery"}) {
+    id(select_power_priority).make_call().set_option(target).perform();
+    sent_ok();
+    fake_millis_value = T0 + GRACE;
+    mode("B");
+    CHECK(queue().empty());
+  }
+}
+
+TEST(self_heal, bad_or_unjudged_grid_never_acts) {
+  heal_baseline();
+  id(select_power_priority).make_call().set_option("Utility First").perform();
+  sent_ok();
+  grid_bad(true);
+  fake_millis_value = T0 + GRACE;
+  mode("B");
+  CHECK(queue().empty());
+  id(grid_safe).reset();
+  mode("B");
+  CHECK(queue().empty());
+}
+
+TEST(self_heal, waits_for_the_queue) {
+  heal_baseline();
+  id(select_power_priority).make_call().set_option("Utility First").perform();
+  fake_millis_value = T0 + GRACE;
+  mode("B");
+  CHECK_EQ(queue(), (Q{"POP00"}));  // still the original, nothing added
+}
+
+TEST(self_heal, spacing_budget_and_give_up) {
+  heal_baseline();
+  id(select_power_priority).make_call().set_option("Utility First").perform();
+  uint32_t t = T0 + GRACE;
+  for (int attempt = 1; attempt <= 3; attempt++) {
+    sent_ok();
+    fake_millis_value = t;
+    mode("B");
+    CHECK_EQ(queue(), NUDGE_UPS);
+    CHECK_EQ(id(heal_attempts), attempt);
+    sent_ok();
+    fake_millis_value = t + SPACING - 1;  // too soon for the next one
+    mode("B");
+    CHECK(queue().empty());
+    t += SPACING;
+  }
+  fake_millis_value = t;
+  mode("B");
+  CHECK(queue().empty());
+  fake_millis_value = t + 10 * SPACING;  // and stays quiet, logging it once
+  mode("B");
+  CHECK(queue().empty());
+  int gave_up = 0;
+  for (auto &l : fw_log_lines) gave_up += l.find("NUDGE GAVE UP") != std::string::npos;
+  CHECK_EQ(gave_up, 1);
+}
+
+TEST(self_heal, new_target_gets_a_fresh_budget) {
+  heal_baseline();
+  id(select_power_priority).make_call().set_option("Utility First").perform();
+  id(heal_attempts) = 4;  // gave up last night
+  id(select_power_priority).make_call().set_option("SBU Battery").perform();
+  CHECK_EQ(id(heal_attempts), 0);
+  fake_millis_value = T0 + 5000;
+  id(select_power_priority).make_call().set_option("Utility First").perform();
+  CHECK_EQ(id(priority_target_ms), T0 + 5000);
+  sent_ok();
+  fake_millis_value = T0 + 5000 + GRACE;
+  mode("B");
+  CHECK_EQ(queue(), NUDGE_UPS);
+}
+
+TEST(self_heal, survives_millis_wrap) {
+  heal_baseline();
+  fake_millis_value = 0xFFFFFFFFu - 60000u;
+  id(select_power_priority).make_call().set_option("Utility First").perform();
+  sent_ok();
+  fake_millis_value += GRACE;  // wrapped
+  mode("B");
+  CHECK_EQ(queue(), NUDGE_UPS);
 }
 
 // ============================================================================

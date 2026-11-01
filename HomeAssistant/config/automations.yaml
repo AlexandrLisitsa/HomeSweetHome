@@ -17,10 +17,10 @@
   mode: single
 - id: '1775345704528'
   alias: '❌ Alert: Grid Outage!'
-  description: 'on = UNSAFE (the ESPHome sensor''s polarity). From ''off'' only, so an ESPHome reconnect during an outage does not page again, and held 20 s, so the few-second blips the grid has many times a day do not page at all.'
+  description: 'No mains: binary_sensor.grid_down (under 150 V, packages/grid_state.yaml), not the 185-250 V quality check, which a low but live grid trips too. From ''off'' only, so an ESPHome reconnect during an outage does not page again, and held 20 s, so the few-second blips the grid has many times a day do not page at all.'
   triggers:
   - trigger: state
-    entity_id: binary_sensor.powmr_inverter_grid_condition_safe
+    entity_id: binary_sensor.grid_down
     from: 'off'
     to: 'on'
     for:
@@ -47,10 +47,10 @@
   mode: single
 - id: '1775345768954'
   alias: ✅ Power Restored
-  description: Only after an outage long enough to have been announced (20 s, the Grid Outage alert's hold).
+  description: Only after an outage long enough to have been announced (20 s, the Grid Outage alert's hold). With grid protection on the house stays on battery until the grid has been in range for 5 minutes, and the message says so.
   triggers:
   - entity_id:
-    - binary_sensor.powmr_inverter_grid_condition_safe
+    - binary_sensor.grid_down
     from:
     - 'on'
     to:
@@ -62,10 +62,11 @@
   actions:
   - variables:
       dtek_line: "{% if is_state('binary_sensor.dtek_outage_now', 'on') %}{% set e = state_attr('sensor.dtek_shutdowns', 'outage_end') %}DTEK still reports an outage{% if e %} until {{ as_datetime(e) | as_local | as_timestamp | timestamp_custom('%H:%M') }}{% endif %}.{% elif is_state('binary_sensor.dtek_scheduled_dark', 'on') %}{% set se = state_attr('sensor.dtek_shutdowns', 'next_outage_end') %}{% set sq = state_attr('sensor.dtek_shutdowns', 'queue') %}Back early: DTEK's schedule has it off{% if se %} until {{ as_datetime(se) | as_local | as_timestamp | timestamp_custom('%H:%M') }}{% endif %}.{% endif %}"
+      grid_line: "{% set v = states('sensor.powmr_inverter_grid_voltage') | float(0) | round(0) | int %}{% if is_state('binary_sensor.house_on_battery', 'on') %}Mains is back at {{ v }} V. Grid protection keeps the house on battery until the grid has been steady in 185-250 V for 5 minutes.{% else %}Mains is back at {{ v }} V. The inverter has switched to grid power.{% endif %}"
   - action: notify.household
     data:
       title: ✅ Power Restored
-      message: 'Grid parameters are normal. The inverter has switched to grid power. {{ dtek_line }}'
+      message: '{{ grid_line }} {{ dtek_line }}'
       data:
         ttl: 0
         priority: high
@@ -73,7 +74,69 @@
   - action: notify.persistent_notification
     data:
       title: ✅ Power Restored
-      message: 'Grid parameters are normal. The inverter has switched to grid power. {{ dtek_line }}'
+      message: '{{ grid_line }} {{ dtek_line }}'
+  mode: single
+- id: '1793462400101'
+  alias: '⚠️ Alert: Grid Voltage Out of Range'
+  description: 'Mains is there but outside 185-250 V (the firmware''s grid_safe, on = UNSAFE) and grid protection is on, so the firmware has moved the house to battery. With protection off the inverter keeps running on the grid and nothing pages. A real outage is the Grid Outage alert''s: grid_down is on by the time the 20 s hold ends, and the condition skips it.'
+  triggers:
+  - trigger: state
+    entity_id: binary_sensor.powmr_inverter_grid_condition_safe
+    from: 'off'
+    to: 'on'
+    for:
+      seconds: 20
+  conditions:
+  - condition: state
+    entity_id: binary_sensor.grid_down
+    state: 'off'
+  - condition: state
+    entity_id: switch.powmr_inverter_auto_grid_protection
+    state: 'on'
+  actions:
+  - variables:
+      volts: "{{ states('sensor.powmr_inverter_grid_voltage') | float(0) | round(0) | int }}"
+      title: "⚠️ Grid Voltage {{ 'High' if volts | int >= 250 else 'Low' }}"
+      battery_line: "{% set r = states('sensor.battery_runtime_remaining') %}{% set s = states('sensor.jkbms_gateway_bms_state_of_charge') %}{% if r | is_number and s | is_number %}Battery {{ s | float | round(0) }}%, about {{ r | float | round(1) }} h left at the current draw.{% elif s | is_number %}Battery {{ s | float | round(0) }}%.{% endif %}"
+  - action: notify.household
+    data:
+      title: '{{ title }}'
+      message: 'Mains is at {{ volts }} V, outside 185-250 V. Grid protection has moved the house to battery until the grid is steady in range for 5 minutes. {{ battery_line }}'
+      data:
+        ttl: 0
+        priority: high
+        channel: Emergency
+  - action: notify.persistent_notification
+    data:
+      title: '{{ title }}'
+      message: 'Mains is at {{ volts }} V, outside 185-250 V. Grid protection has moved the house to battery until the grid is steady in range for 5 minutes. {{ battery_line }}'
+  mode: single
+- id: '1793462400102'
+  alias: ✅ Grid Voltage Normal
+  description: 'Closes the Grid Voltage Out of Range alert: only when that alert fired during this unsafe spell, and not when Power Restored has already spoken since (an outage inside the spell).'
+  triggers:
+  - trigger: state
+    entity_id: binary_sensor.powmr_inverter_grid_condition_safe
+    from: 'on'
+    to: 'off'
+  conditions:
+  - condition: template
+    value_template: "{% set lo = state_attr('automation.alert_grid_voltage_out_of_range', 'last_triggered') %}{% set pr = state_attr('automation.power_restored', 'last_triggered') %}{{ lo is not none and lo > trigger.from_state.last_changed and (pr is none or pr < lo) }}"
+  actions:
+  - variables:
+      volts: "{{ states('sensor.powmr_inverter_grid_voltage') | float(0) | round(0) | int }}"
+  - action: notify.household
+    data:
+      title: ✅ Grid Voltage Normal
+      message: 'Mains has been steady in range for 5 minutes ({{ volts }} V now). The inverter is back on grid power.'
+      data:
+        ttl: 0
+        priority: high
+        channel: Emergency resolved
+  - action: notify.persistent_notification
+    data:
+      title: ✅ Grid Voltage Normal
+      message: 'Mains has been steady in range for 5 minutes ({{ volts }} V now). The inverter is back on grid power.'
   mode: single
 - id: '1778275569737'
   alias: "\U0001F4A7 Alert: Water Leak Detected!"

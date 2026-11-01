@@ -387,6 +387,8 @@ with tempfile.TemporaryDirectory() as tmp:
     check("keeps the last %d" % p.CAPTURE_KEEP, len(files), p.CAPTURE_KEEP)
     got = json.loads(files[-1].read_text(encoding="utf-8"))
     check("fixture-shaped", sorted(got), ["_meta", "fact", "getHomeNum", "preset"])
+    check("the banner rides in _meta", sorted(got["_meta"]["banner"]),
+          ["emergency", "scope", "text", "title"])
     check("replays like the fixture",
           p.resolve(p.house_entry(got["getHomeNum"]["data"], got["_meta"]["house"]),
                     got["getHomeNum"], got["fact"], got["preset"],
@@ -397,6 +399,166 @@ with tempfile.TemporaryDirectory() as tmp:
     check("no session secrets inside",
           any(k in files[-1].read_text(encoding="utf-8").lower()
               for k in ("csrf", "cookie")), False)
+
+# --- 13. windows: the whole schedule, for the change alert -----------------
+# dtek_schedule_changed diffs this list between two polls, so the property
+# that matters is stability: the same schedule must give the same list at any
+# moment it is read, or the alert reports DTEK changing its mind when only the
+# clock moved.
+print("\n13. windows")
+W1 = ["2026-06-10T08:00:00+03:00", "2026-06-10T10:00:00+03:00"]
+W2 = ["2026-06-10T14:30:00+03:00", "2026-06-10T15:00:00+03:00"]
+for label, at, want in [("before both", datetime(2026, 6, 10, 7, 15, tzinfo=KYIV), [W1, W2]),
+                        ("running one keeps its start",
+                         datetime(2026, 6, 10, 8, 40, tzinfo=KYIV), [W1, W2]),
+                        ("ended exactly now: gone",
+                         datetime(2026, 6, 10, 10, 0, tzinfo=KYIV), [W2]),
+                        ("all over", datetime(2026, 6, 10, 15, 0, tzinfo=KYIV), [])]:
+    check("windows: " + label,
+          p.resolve(entry(["GPV3.2"]), {}, fact, preset, at)["windows"], want)
+
+check("no schedule in force -> []",
+      p.resolve(entry(["GPV3.2"]), {}, {"data": [], "update": "24.07.2026 08:30"},
+                preset, datetime(2026, 6, 10, 12, 0, tzinfo=KYIV))["windows"], [])
+
+# The day this was built for: 18:00-22:00 published overnight, withdrawn at
+# 15:34. The first day after the clocks went back, so +02:00.
+oct26 = date(2026, 10, 26)
+published = ["yes"] * 18 + ["no"] * 4 + ["yes"] * 2     # yyyyyyyyyyyyyyyyyynnnnyy
+r = p.resolve(entry(["GPV1.1"]), {}, fact_from({oct26: {"GPV1.1": day(published)}}),
+              preset, datetime(2026, 10, 26, 1, 5, tzinfo=KYIV))
+check("26.10 as published", r["windows"],
+      [["2026-10-26T18:00:00+02:00", "2026-10-26T22:00:00+02:00"]])
+r = p.resolve(entry(["GPV1.1"]), {}, fact_from({oct26: {"GPV1.1": day(["yes"] * 24)}}),
+              preset, datetime(2026, 10, 26, 15, 41, tzinfo=KYIV))
+check("26.10 as republished", r["windows"], [])
+
+# Across midnight it is one window, not two, or tomorrow's publication would
+# read as "23:00-00:00 cancelled, 23:00-01:00 new".
+late = ["yes"] * 23 + ["no"]
+early = ["no"] + ["yes"] * 23
+r = p.resolve(entry(["GPV3.2"]), {},
+              fact_from({today: {"GPV3.2": day(late)},
+                         today + timedelta(days=1): {"GPV3.2": day(early)}}),
+              preset, datetime(2026, 6, 10, 12, 0, tzinfo=KYIV))
+check("one window across midnight", r["windows"],
+      [["2026-06-10T23:00:00+03:00", "2026-06-11T01:00:00+03:00"]])
+r = p.resolve(entry(["GPV3.2"]), {}, fact_from({today: {"GPV3.2": day(late)}}),
+              preset, datetime(2026, 6, 10, 12, 0, tzinfo=KYIV))
+check("dark at the last slot ends where the schedule does", r["windows"],
+      [["2026-06-10T23:00:00+03:00", "2026-06-11T00:00:00+03:00"]])
+
+# Fall back: wall clock 02:00-05:00 spans the offset change.
+dst = ["yes"] * 2 + ["no"] * 3 + ["yes"] * 19
+r = p.resolve(entry(["GPV3.2"]), {}, fact_from({date(2026, 10, 25): {"GPV3.2": day(dst)}}),
+              preset, datetime(2026, 10, 25, 0, 30, tzinfo=KYIV))
+check("DST day: wall clock, offsets as they fall", r["windows"],
+      [["2026-10-25T02:00:00+03:00", "2026-10-25T05:00:00+02:00"]])
+
+
+# --- 14. the announcement banner ------------------------------------------
+# Ukrenergo's city-wide emergency outages exist only in the home page's
+# #modal-attention popup; on 01.11.2026 every house entry was blank under one.
+# The fixture is that day's modal, verbatim. The flag must be about THIS city
+# or region: a country-wide notice is shown, never flagged.
+print("\n14. announcement banner")
+FIX = Path(__file__).resolve().parent / "fixtures"
+REAL = (FIX / "dtek_banner_20261101.html").read_text(encoding="utf-8")
+b = p.parse_banner("<html><body>" + REAL + "</body></html>", "м. Дніпро")
+check("title", b["title"], "Шановні клієнти!")
+check("one line per paragraph, empty ones dropped", b["text"].split("\n"), [
+    "За рішенням Укренерго запроваджено екстрені відключення по місту Дніпро.",
+    "Це непередбачені графіками обмеження, тож прогнозувати тривалість "
+    "відключень наразі неможливо.",
+    "Якщо у вашій оселі є світло – споживайте його свідомо та ощадливо."])
+check("the button and the script stay out", "Добре" in b["text"] or "isSafari" in b["text"], False)
+check("01.11.2026 is our city's emergency", (b["scope"], b["emergency"]), ("city", True))
+check("the city without the м. prefix", p.parse_banner(REAL, "Дніпро")["emergency"], True)
+check("no modal on the page = no banner", p.parse_banner("<div class='x'>екстрені відключення</div>", "Дніпро"), None)
+check("an empty modal = no banner",
+      p.parse_banner('<div id="modal-attention"><div class="m-attention__text"><p> </p></div></div>', "Дніпро"), None)
+
+
+def said(text, city="м. Дніпро"):
+    got = p.parse_banner('<div id="modal-attention"><h6 class="modal__title">Увага</h6>'
+                         '<div class="m-attention__text"><p>' + text + "</p></div></div>", city)
+    return got["scope"], got["emergency"]
+
+
+for text, want in [
+    ("Діють екстрені відключення у Дніпрі.", ("city", True)),
+    ("Екстренні відключення світла в Дніпрі тривають.", ("city", True)),
+    ("Діють екстрені відключення по Дніпропетровській області.", ("region", True)),
+    ("На Дніпропетровщині застосовано екстрені відключення.", ("region", True)),
+    ("Екстрені відключення по всій Україні.", ("other", False)),
+    ("Екстрені відключення у Києві та Київській області.", ("other", False)),
+    # DTEK's own name starts with the city's stem and must not count as it.
+    ("ДТЕК Дніпровські електромережі: екстрені відключення в Україні.", ("other", False)),
+    ("Графіки стабілізаційних відключень у Дніпрі скасовано.", ("city", False)),
+    ("Шановні клієнти! Оновлено сайт.", ("other", False)),
+    # False positives: the words are there, the outages are not on now.
+    ("Щоб уникнути екстрених відключень у Дніпрі, економте світло.", ("city", False)),
+    ("Для запобігання екстреним відключенням у Дніпрі вимикайте бойлери.", ("city", False)),
+    ("Екстрені відключення у Дніпрі скасовано.", ("city", False)),
+    ("Екстрені відключення по місту Дніпро завершено, діють графіки.", ("city", False)),
+    ("Вчора в Дніпрі діяли екстрені відключення.", ("city", False)),
+    ("У Дніпрі більше не діють екстрені відключення.", ("city", False)),
+    ("Можливі екстрені відключення у Дніпрі через атаки.", ("city", False)),
+    ("Екстрені відключення у Дніпрі.", ("city", False)),
+    # City and outage words in different sentences: not about this city.
+    ("Шановні дніпряни! Шановні клієнти Дніпра! Діють екстрені відключення по всій Україні.",
+     ("city", False)),
+    # ...but our city named in the sentence that says it is on, with the
+    # all-clear about somewhere else in another sentence, still counts.
+    ("У Києві екстрені відключення скасовано. У Дніпрі діють екстрені відключення.",
+     ("city", True)),
+]:
+    check(text[:46], said(text), want)
+
+
+# poll() keeps the last banner when the GET fails, says so in banner_error,
+# and never lets it reach `warnings` (that would rotate the real captures out).
+class _Fake:
+    def __init__(self, *_):
+        self.cookies, self.csrf, self.preset, self.fact = {"s": "1"}, "t", GOLDEN["preset"], GOLDEN["fact"]
+        self.bootstrapped = True
+
+    def bootstrap(self):
+        pass
+
+    def post(self, fields):
+        return ans if dict(fields).get("method") == "getHomeNum" else {"result": True}
+
+
+saved = (p.Session, p.read_secrets, p.fetch_banner, p.save_cache, p.save_capture)
+captured = []
+with tempfile.TemporaryDirectory() as tmp:
+    p.Session, p.save_cache = _Fake, lambda c: None
+    p.save_capture = lambda a, payload, s, h: captured.append(payload["banner_text"])
+    p.read_secrets = lambda: ("м. Дніпро", "вул. Тестова", "1")
+    p.fetch_banner = lambda s, c: p.parse_banner(REAL, c)
+    cache = {}
+    first = p.poll(cache)
+    check("published", (first["banner_emergency"], first["banner_scope"], first["banner_error"]),
+          (True, "city", None))
+    check("checked_at is the poll's time", first["banner_checked_at"], first["fetched_at"])
+
+    def boom(s, c):
+        raise OSError("timed out")
+    p.fetch_banner = boom
+    second = p.poll(cache)
+    check("a failed GET keeps the last banner", second["banner_text"], first["banner_text"])
+    check("...and says why", second["banner_error"], "OSError: timed out")
+    check("...not in warnings", second["warnings"], first["warnings"])
+    check("...and keeps the old checked_at", second["banner_checked_at"], first["banner_checked_at"])
+
+    p.fetch_banner = lambda s, c: None
+    third = p.poll(cache)
+    check("a page without the modal clears it", (third["banner_text"], third["banner_emergency"]),
+          (None, False))
+    check("one capture per banner change", [t and t[:12] for t in captured],
+          ["За рішенням ", None])
+p.Session, p.read_secrets, p.fetch_banner, p.save_cache, p.save_capture = saved
 
 
 print("\n%s" % ("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed"))

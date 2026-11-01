@@ -67,8 +67,8 @@ const READ_ONLY = {
   "climate-console-card.js": [".badge", ".tile", ".well", ".row", ".fval", ".zone", ".vbox",
     ".st-v", ".ch-name", ".win", ".dial", ".dial-v", ".rmark", ".fine", "#bed-fan-fine",
     ".cost-c", ".feat-l"],
-  "dtek-shutdowns-card.js": [".eyebrow", ".ident", "h1", ".reason", ".tile", ".c", ".dtot",
-    ".legend span", ".stamp", ".kv div"],
+  "dtek-shutdowns-card.js": [".eyebrow", ".ident", ".banner", "h1", ".reason", ".tile", ".c", ".dtot",
+    ".legend span", ".stamp", ".kv div", ".arc", ".ctr", ".tlname", ".blk"],
   "floorplan-card.js": [".badge", ".row .value", ".pct"],
 };
 
@@ -131,7 +131,7 @@ const FIXTURES = {
           step_soc: 80, plug_cut: false, override_soc: 70 },
       } }),
       "input_boolean.load_shedding_enabled": S("on"),
-      "binary_sensor.powmr_inverter_grid_condition_safe": S("on"),
+      "binary_sensor.house_on_battery": S("on"),
       "sensor.jkbms_gateway_bms_state_of_charge": S("61"),
       "sensor.battery_runtime_remaining": S("4.3"),
     };
@@ -183,8 +183,12 @@ const FIXTURES = {
         next_outage_start: null, next_outage_end: null,
         week: week, week_in_effect: true, schedule_visible: false, hidden_reason: null,
         fetched_at: new Date(now).toISOString(), stale: false, error: null,
+        banner_title: "Шановні клієнти!", banner_scope: "city", banner_emergency: true,
+        banner_text: "За рішенням Укренерго запроваджено екстрені відключення по місту Дніпро.",
+        banner_checked_at: new Date(now).toISOString(), banner_error: null,
       }),
-      "binary_sensor.powmr_inverter_grid_condition_safe": S("off", {}),
+      "binary_sensor.dtek_emergency_shutdowns": S("on", {}),
+      "binary_sensor.grid_down": S("off", {}),
       "binary_sensor.grid_outage_unscheduled": S("off", {}),
       "binary_sensor.dtek_data_stale": S("off", {}),
     };
@@ -209,6 +213,9 @@ const FIXTURES = {
       out[b.entities[0]] = S(i ? "24.3" : "28.4", { unit_of_measurement: "°C" });
       if (b.entities[1]) out[b.entities[1]] = S("48", { unit_of_measurement: "%" });
     });
+    // Someone in the hallway, so a presence sensor's "Detected" tooltip is checked.
+    (cfg.presence || []).forEach((p, i) => { out[p.entity] = S(i ? "off" : "on", {}); });
+    if (cfg.sun) out[cfg.sun] = S("above_horizon", { elevation: 25 });
     // An outage: on battery with hours left, the LED strip stepped down and an
     // A/C plug cut by load shedding, so every outage tooltip is checked.
     const P = cfg.power;

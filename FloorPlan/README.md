@@ -58,14 +58,15 @@ wash, never a red alarm; a comfortable room stays untinted.
 
 Everything in the flat runs through the inverter, and the plan shows how: a
 stream from the grid's entry to it and one between it and the pack (backwards
-while the pack charges), then one along the hallway and in through each door to
+while the pack charges), then one along the tops of the walls to
 every lamp, plug and TV that is on, its width and pace set by its watts. The
 inverter's label says what feeds it, the pack's which way its power goes. When
 the inverter loses the grid, the flat dims, a red chip says so with the hours the
 pack has left, and whatever load shedding stepped down or cut gets an amber or
 red ring. With the grid up, a DTEK outage scheduled for today shows as an amber
-chip. The routes come from `make_dashboard.py`: each room's `door` in `rooms.py`
-is where its path crosses into it, and `POWER` names the entities. Tap toggles what can be toggled and opens the dialog for
+chip. The routes come from `make_dashboard.py`: the walls of the model are a graph,
+each wire takes the shortest way along their tops and drops to its icon from the
+wall point nearest it in the picture; `POWER` in `rooms.py` names the entities. Tap toggles what can be toggled and opens the dialog for
 the rest; holding always opens the dialog. Every icon, number, badge, chip, switch
 and slider explains itself on hover, in the house tooltip format
 ([`dashboard-tooltips.md`](../HomeAssistant/docs/dashboard-tooltips.md)).
@@ -80,7 +81,7 @@ Run from the repository root. Each one reads the room list in `tools/rooms.py`.
 
 | Script | Does |
 | --- | --- |
-| `tools/rooms.py` | the one list: the rooms the dashboard knows (and their doors, for the power path), where each lamp and control sits, its colour and brightness gain, and the power entities |
+| `tools/rooms.py` | the one list: the rooms the dashboard knows, where each lamp and control sits, its colour and brightness gain, and the power entities |
 | `tools/catalog.py <what>` | searches every furniture catalog installed with Sweet Home 3D, to find a model before placing it |
 | `tools/make_render_copy.py` | writes `build/MySweetHome-render.sh3d`: walls and tall furniture cut, doors and windows hidden, night |
 | `tools/render.sh [room...]` | renders the dashboard photos into `renders/` with Sweet Home 3D's own renderer (`tools/Render.java`), no UI |
@@ -99,6 +100,10 @@ black except where that lamp adds light, and the card *adds* it onto the base wi
 `mix-blend-mode: plus-lighter`. Any combination of lamps then looks the way the
 real ones do together, without a render per combination.
 
+There are two lights-off pictures: the night one (22:00) and the same view at noon.
+The card fades the noon one in over the night one by the sun's elevation, and the
+lamps' overlays add onto either.
+
 Each overlay is also clipped to its room. The render copy cuts the walls to 120 cm
 so the rooms can be seen from above, which puts every lamp above the walls — in the
 raw photo the kitchen strip lights the ground outside and the ceiling light reaches
@@ -109,7 +114,8 @@ and rises above the wall line (cabinets, fridge, lamps).
 
 **`tools/rooms.py` is the one list**: the rooms (each found in the model by a point
 inside it), the lamps with an overlay and their brightness gain, the plan points
-where icons go, and which HA entity is which item in which room.
+where icons go, and which HA entity is which item in which room. `DAY` names the noon
+picture and the sun entity.
 
 ## Changing something
 
@@ -126,15 +132,17 @@ where icons go, and which HA entity is which item in which room.
    at its best quality (`tools/Render.java`, against the jars in `SweetHome3D/lib`;
    see [Sweet Home 3D](#sweet-home-3d)), with the camera, time and size saved in the render
    copy, into `renders/`. About 25 minutes for all of them at 2400 × 1800. It takes one photo with
-   every lamp off (`base.png`), then one per `LIGHTS` key with only that lamp on at
-   power 0.5; the lamps each photo switches on are listed in `render.sh`.
+   every lamp off (`base.png`), the same at noon (`base_day.png`: a shot named
+   `name@<epoch ms>` takes its own camera time), then one per `LIGHTS` key with only
+   that lamp on at power 0.5; the lamps each photo switches on are listed in `render.sh`.
 4. `python FloorPlan/tools/check_camera.py` — must say `OK`. If it doesn't, the
    photos were taken from a different camera than the file holds.
 5. `python FloorPlan/tools/build_overlays.py` — denoises every photo (a guided
    filter: render grain smoothed on flat surfaces, edges kept), then writes the
    dashboard images and a mask per room. A room with a climate badge also gets its
    mask served, as `tint_<room>.png` (white, the mask as alpha), for the card's
-   temperature tint. Brightness per lamp is its `gain` in `rooms.py`; changing it
+   temperature tint. The noon photo gets the same denoise and crop as
+   `base_day.png`. Brightness per lamp is its `gain` in `rooms.py`; changing it
    needs no re-render.
 6. `python FloorPlan/tools/make_dashboard.py` — writes the card config into
    `HomeAssistant/dashboards/lovelace.dashboard_home.json`: every item at its spot,
@@ -159,7 +167,8 @@ where icons go, and which HA entity is which item in which room.
 
 Adding a lamp is: the lamp in the model, a shot in `render.sh`, a `LIGHTS` entry,
 a spot and an item in `rooms.py`, then the loop from step 2. A device without a
-light is only the spot and the item.
+light is only the spot and the item; so is a presence sensor (`"kind": "presence"`,
+a `binary_sensor`), which ripples on the plan while it sees someone.
 
 ## Docs
 

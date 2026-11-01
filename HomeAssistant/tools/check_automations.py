@@ -103,11 +103,11 @@ for hour, want in ((0, "night"), (6, "night"), (7, "day"), (15, "day"),
 print("\n2. grid outage: once per real outage")
 outage = by_alias(autos, "Grid Outage")
 trig = outage["triggers"][0]
-check("state trigger on the grid sensor",
+check("state trigger on grid_down, not the 185-250 V quality check",
       (trig.get("trigger"), trig.get("entity_id")),
-      ("state", "binary_sensor.powmr_inverter_grid_condition_safe"))
+      ("state", "binary_sensor.grid_down"))
 check("from off (a reconnect is not an outage)", trig.get("from"), "off")
-check("to on (on = UNSAFE)", trig.get("to"), "on")
+check("to on (on = no mains)", trig.get("to"), "on")
 check("held 20 s (a blip is not an outage)", trig.get("for"), {"seconds": 20})
 check("waits for the runtime figure first",
       "wait_template" in outage["actions"][0], True)
@@ -120,6 +120,53 @@ for secs, want in ((5, "False"), (19, "False"), (20, "True"), (3600, "True")):
                "to_state": {"last_changed": t0 + timedelta(seconds=secs)}}
     check("restored after a %ds outage -> %s" % (secs, want),
           render(cond, trigger=trigger), want)
+check("restored follows grid_down too",
+      restored["triggers"][0]["entity_id"], ["binary_sensor.grid_down"])
+grid_line = restored["actions"][0]["variables"]["grid_line"]
+for on_batt, want in (("on", "Grid protection keeps the house on battery"),
+                      ("off", "The inverter has switched to grid power.")):
+    got = render(grid_line, states={"binary_sensor.house_on_battery": on_batt,
+                                    "sensor.powmr_inverter_grid_voltage": "231.4"})
+    check("restored, house_on_battery %s -> says %r" % (on_batt, want[:30]),
+          want in got and "231 V" in got, True)
+
+print("\n2b. grid out of range: only when protection moved the house")
+low_v = by_alias(autos, "Grid Voltage Out of Range")
+trig = low_v["triggers"][0]
+check("trigger: quality check unsafe for 20 s",
+      (trig.get("entity_id"), trig.get("from"), trig.get("to"), trig.get("for")),
+      ("binary_sensor.powmr_inverter_grid_condition_safe", "off", "on", {"seconds": 20}))
+check("conditions: mains present and protection on",
+      sorted((c["entity_id"], c["state"]) for c in low_v["conditions"]),
+      [("binary_sensor.grid_down", "off"),
+       ("switch.powmr_inverter_auto_grid_protection", "on")])
+title = low_v["actions"][0]["variables"]["title"]
+for volts, want in (("180", "⚠️ Grid Voltage Low"), ("252", "⚠️ Grid Voltage High")):
+    check("%s V -> %s" % (volts, want), render(title, volts=volts), want)
+
+normal = by_alias(autos, "Grid Voltage Normal")
+cond = normal["conditions"][0]["value_template"]
+spell = datetime(2026, 10, 31, 16, 0, tzinfo=KYIV)
+
+
+def normal_fires(low_at, restored_at):
+    attrs = {"automation.alert_grid_voltage_out_of_range": low_at,
+             "automation.power_restored": restored_at}
+    env = jinja2.Environment()
+    env.globals["state_attr"] = lambda e, a: attrs.get(e)
+    return env.from_string(cond).render(
+        trigger={"from_state": {"last_changed": spell}}).strip()
+
+
+check("alert fired this spell -> fires",
+      normal_fires(spell + timedelta(seconds=20), None), "True")
+check("alert fired in an earlier spell -> quiet",
+      normal_fires(spell - timedelta(hours=1), None), "False")
+check("alert never fired -> quiet", normal_fires(None, None), "False")
+check("outage inside the spell, Power Restored spoke since -> quiet",
+      normal_fires(spell + timedelta(seconds=20), spell + timedelta(minutes=3)), "False")
+check("Power Restored older than the alert -> fires",
+      normal_fires(spell + timedelta(seconds=20), spell - timedelta(hours=2)), "True")
 
 # --- battery low -----------------------------------------------------------
 print("\n3. battery low: crossings, not reconnects")

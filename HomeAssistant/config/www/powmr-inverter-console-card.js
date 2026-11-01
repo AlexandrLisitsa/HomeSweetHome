@@ -33,7 +33,9 @@
  *
  *   - binary_sensor.powmr_inverter_grid_condition_safe is `device_class:
  *     safety`, so ON means UNSAFE. Reading it the obvious way inverts the
- *     grid tile.
+ *     grid tile. And it is the 185-250 V quality check, not "mains present":
+ *     a live 180 V grid trips it. No mains is binary_sensor.grid_down
+ *     (HomeAssistant/config/packages/grid_state.yaml).
  *   - sensor.powmr_inverter_grid_real_power_calculated is derived, not
  *     measured. It returns 0 below 150 V of grid and adds a hardcoded +30 W of
  *     inverter overhead, and it is import-only -- there is no export on this
@@ -74,9 +76,10 @@
 
 const CARD = "powmr-inverter-console-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
+import { fxConfig, fxOn, fxSetup, FX_CSS } from "./card-fx.js?v=1.1.0";
 import { ramp, rampCss } from "./card-ramp.js?v=1.0.0";
 
-const VERSION = "2.11.6";
+const VERSION = "2.14.2";
 
 /*
  * Brand colours stay literal: they identify a leg of the diagram (amber =
@@ -115,6 +118,10 @@ const DEFAULTS = {
   grid_voltage: "sensor.powmr_inverter_grid_voltage",
   grid_frequency: "sensor.powmr_inverter_grid_frequency",
   grid_power: "sensor.powmr_inverter_grid_real_power_calculated",
+  // No mains: under 150 V (packages/grid_state.yaml).
+  grid_down: "binary_sensor.grid_down",
+  // The firmware's 185-250 V quality check, ON = unsafe. It moves the house
+  // to battery only while Protect is on.
   grid_safe: "binary_sensor.powmr_inverter_grid_condition_safe",
   // Unfiltered 185-250 V check. ON while grid_safe is still unsafe means the
   // firmware's delayed_off is running; the header counts it down.
@@ -141,6 +148,11 @@ const DEFAULTS = {
   meter_night: "sensor.electricity_meter_tariff_night",
   meter_total: "sensor.electricity_meter_energy",
   meter_tariff: "select.electricity_meter_tariff",
+  // The pack's lifetime kWh in and out (Riemann sums of the inverter's
+  // charging / discharging power). Read through their hourly statistics for
+  // the Saved by battery row; see _loadSavings.
+  battery_out: "sensor.powmr_inverter_battery_energy_out",
+  battery_in: "sensor.powmr_inverter_battery_energy_in",
   // Controls
   max_charge_current: "select.powmr_inverter_max_ac_charge_current",
   power_priority: "select.powmr_inverter_power_priority",
@@ -176,7 +188,7 @@ const DEFAULTS = {
  * The design had a fifth chip ("Quiet / night fan limit"). This system has no
  * such switch and it is deliberately not faked. The badge row's other three
  * entries are elsewhere in this card: uptime and tariff in the header, and
- * grid_condition_safe in the Grid tile's status word.
+ * grid_down in the Grid tile's status word.
  */
 const CHIPS = [
   { label: "Auto", cfg: "chip_auto", ent: "switch.powmr_inverter_auto_tariff_mode", icon: "mdi:clock-check-outline", color: BATT_C },
@@ -213,7 +225,7 @@ const HELP = {
   uptime: "How long the PowerStation controller has run in total, across reboots and updates."
     + "\nE.g. up 41d 6h; a hard power cut loses at most the last 5 min of it.",
   pill: "Whether the inverter trusts the grid, with its AC input mode and the clock."
-    + "\nE.g. Grid down after 5 s under 185 V; back in range, Grid returning counts 5:00.",
+    + "\nE.g. Grid down under 150 V; Grid unsafe at 170 V under Protect, then Grid returning 5:00.",
   ret: "Time left until the firmware trusts the grid again: 5 min of stable voltage."
     + "\nE.g. voltage back at 14:02: it counts down from 5:00 and the grid is trusted at 14:07.",
   // Chips and the AC charge chip's icons
@@ -249,7 +261,7 @@ const HELP = {
   tile_batt: "The 8S 280 Ah pack's state of charge, as the BMS reports it."
     + "\nE.g. 87 %: green from 70 %, amber below, red under 20 %.",
   volt_state: "The voltage band: NOMINAL 220–240 V, LOW or HIGH out to 200 or 250 V, then UNDER/OVER."
-    + "\nE.g. 243.0 V reads HIGH in amber; on Grid, NO GRID once the inverter calls it unsafe.",
+    + "\nE.g. 243.0 V reads HIGH in amber; on Grid, NO GRID once the mains is gone (under 150 V).",
   load_state: "How hard the circuit is worked: NORMAL to 60 %, ELEVATED to 85 %, HEAVY, OVERLOAD."
     + "\nE.g. House load 2100 W of 2400 W is 87.5 %: HEAVY; Meter reads HEAVY above 5100 W.",
   batt_state: "Whether the pack charges, discharges or idles (within ±2 W), then its charge band."
@@ -280,6 +292,8 @@ const HELP = {
     + "\nE.g. 123.46 kWh at 4.32 ₴/kWh is 533.35 ₴; marked active from 07:00 to 23:00.",
   erow_night: "Grid energy the meter counted on the night tariff, 23:00–07:00, this month."
     + "\nE.g. 78.90 kWh at 2.16 ₴/kWh is 170.42 ₴; marked active from 23:00 to 07:00.",
+  erow_saved: "kWh the pack gave out 07:00–23:00 this month, at day price less the night refill."
+    + "\nE.g. 91.83 kWh × (4.32 − 2.16 ÷ 0.95) = 187.90 ₴; under it, the total since records began.",
   erow_total: "The meter's own register: the whole flat's lifetime grid energy, both tariffs."
     + "\nE.g. 15234.6 kWh, the same figure as the total on the meter's display.",
   // History
@@ -353,10 +367,12 @@ const SERIES = [
  * from the electricity meter -- what YASNO bills -- not the inverter's
  * estimate, which misses the boiler's circuit. The tariff rows are this
  * month's, with their cost at the Energy dashboard's price when it has one.
+ * Saved by battery is the one row not off the meter: see _loadSavings.
  */
 const ENERGY = [
   { key: "mtr_d", cfg: "meter_day", priced: true, short: "Day this month", unit: "kWh", dec: 2, tariff: "day", help: "erow_day" },
   { key: "mtr_n", cfg: "meter_night", priced: true, short: "Night this month", unit: "kWh", dec: 2, tariff: "night", help: "erow_night" },
+  { key: "saved", cfg: "battery_out", saved: true, short: "Saved by battery", unit: "kWh", dec: 2, help: "erow_saved" },
   { key: "mtr_t", cfg: "meter_total", short: "Meter total", unit: "kWh", dec: 1, help: "erow_total" },
 ];
 
@@ -476,6 +492,31 @@ function installFonts() {
   style.textContent = FONTS;
   document.head.appendChild(style);
 }
+
+/*
+ * Effect styles (card-fx.js). Appended to STYLE only when the card has an fx
+ * key, and each rule is gated on the host's data-fx, so a switch flips them
+ * without touching the DOM.
+ */
+const FX_STYLE = `
+/* power_glow: --fxg runs 0..1 with the watts through the tile */
+:host([data-fx~="power_glow"]) .tile { transition: box-shadow .6s, border-color .15s; }
+:host([data-fx~="power_glow"]) .tile.t-grid, :host([data-fx~="power_glow"]) .tile.t-dir { --fxgc: 174,132,70; }
+:host([data-fx~="power_glow"]) .tile.t-batt { --fxgc: 88,149,105; }
+:host([data-fx~="power_glow"]) .tile.t-load { --fxgc: 110,168,254; }
+:host([data-fx~="power_glow"]) .tile.t-inv { --fxgc: 154,160,171; }
+:host([data-fx~="power_glow"]) .tile {
+  box-shadow: 0 0 calc(var(--fxg, 0) * 34px) calc(var(--fxg, 0) * 2px) rgba(var(--fxgc, 154,160,171), calc(var(--fxg, 0) * .45)); }
+:host([data-fx~="power_glow"]) .run.x i { height: calc(2px + var(--fxg, 0) * 3px);
+  filter: drop-shadow(0 0 calc(var(--fxg, 0) * 6px) var(--c)); }
+:host([data-fx~="power_glow"]) .run.y i { width: calc(2px + var(--fxg, 0) * 3px);
+  filter: drop-shadow(0 0 calc(var(--fxg, 0) * 6px) var(--c)); }
+/* chart_polish */
+.fx-dot { position: absolute; width: 8px; height: 8px; margin: -4px 0 0 -4px; border-radius: 50%;
+  background: var(--fxc, ${OK}); pointer-events: none; animation: fxRing 1.8s ease-out infinite; }
+@keyframes fxRing { 0% { box-shadow: 0 0 0 0 var(--fxc, ${OK}); } 100% { box-shadow: 0 0 0 10px transparent; } }
+@media (prefers-reduced-motion: reduce) { .fx-dot { animation: none !important; } }
+`;
 
 const STYLE = `
 :host { display: block; container-type: inline-size; container-name: pmcard; }
@@ -693,6 +734,11 @@ select:disabled { cursor: not-allowed; color: #5C616B; }
 .erow .tag { font-family: var(--mono); font-size: calc(9px * var(--s)); letter-spacing: .16em; text-transform: uppercase; color: ${LOAD_C}; }
 .erow .ev { font-family: var(--mono); font-size: calc(14px * var(--s)); color: ${LOAD_C}; white-space: nowrap; }
 .erow .ev small { font-size: calc(12px * var(--s)); color: #8A7550; margin-left: 6px; }
+/* Saved by battery: the tariff rows' shape in the pack's green, a second line under the name. */
+.erow .el.col { flex-direction: column; align-items: flex-start; gap: 1px; }
+.erow .esub { font-family: var(--mono); font-size: calc(11px * var(--s)); color: #6E737E; }
+.erow.saved .ev { color: ${BATT_C}; }
+.erow.saved .ev small { color: #7FC493; }
 
 /* --- history ------------------------------------------------------------ */
 .hhead { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px; }
@@ -816,6 +862,11 @@ class PowmrInverterConsoleCard extends HTMLElement {
     this._prices = null;
     this._pricesAt = 0;
     this._pricesBusy = false;
+    // The pack's day-hour kWh out, this month and since records began; see
+    // _loadSavings. `failed` once the recorder said no.
+    this._savings = null;
+    this._savingsAt = 0;
+    this._savingsBusy = false;
     // Where the cursor is, so a redraw can put the readout back under it
     // rather than being held off until the pointer leaves.
     this._hovering = false;
@@ -861,7 +912,9 @@ class PowmrInverterConsoleCard extends HTMLElement {
         }
       }
     });
+    cfg.fx = fxConfig(CARD, cfg.fx);
     this._config = cfg;
+    this._fxWire();
     // A changed config means a changed DOM, so drop the built tree.
     this._built = false;
     this._print = null;
@@ -876,6 +929,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
   set hass(hass) {
     this._hass = hass;
     this._loadPrices();
+    this._loadSavings();
     if (this._config) this._render();
   }
 
@@ -930,6 +984,72 @@ class PowmrInverterConsoleCard extends HTMLElement {
       });
   }
 
+  /*
+   * What the pack saved: the charger only fills it 23:00-07:00
+   * (`night_charging_only`), so every kWh it gives back 07:00-23:00 is one not
+   * bought at the day price, less what refilling it cost at night, grossed up
+   * for the round trip:
+   *
+   *     saved = kWh out by day × (day price − night price ÷ efficiency)
+   *
+   * Outage hours count too: that power would have been bought at the day
+   * price had the grid been there. Efficiency is the pack's own lifetime
+   * out ÷ in, read when the statistics are. No helper entity: the hourly
+   * `change` of the lifetime counter, split by the hour it started in, is
+   * the whole of it. Asked hourly like the prices, and again when the month
+   * turns.
+   */
+  _loadSavings() {
+    const c = this._config;
+    if (!c || !this._hass || typeof this._hass.callWS !== "function" || this._savingsBusy) return;
+    const now = new Date();
+    const month0 = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    if (this._savings && this._savings.month0 === month0
+        && Date.now() - this._savingsAt < 3600000) return;
+    this._savingsBusy = true;
+    this._savingsAt = Date.now();
+    const id = c.battery_out;
+    Promise.resolve()
+      .then(() => this._hass.callWS({
+        type: "recorder/statistics_during_period",
+        start_time: "2020-01-01T00:00:00Z",
+        statistic_ids: [id],
+        period: "hour",
+        types: ["change"],
+      }))
+      .then((reply) => {
+        const rows = (reply && reply[id]) || [];
+        let month = 0;
+        let life = 0;
+        let since = null;
+        rows.forEach((r) => {
+          const t = new Date(r.start);
+          const ch = Number(r.change);
+          if (isNaN(t.getTime()) || !Number.isFinite(ch)) return;
+          if (since === null) since = t;
+          const h = t.getHours();
+          if (h < 7 || h >= 23) return;
+          life += ch;
+          if (t.getTime() >= month0) month += ch;
+        });
+        const out = this._num(c.battery_out);
+        const inn = this._num(c.battery_in);
+        const eta = out !== null && inn ? Math.min(1, out / inn) : null;
+        this._savings = rows.length
+          ? { month, life, since, eta: eta > 0 ? eta : 1, month0 }
+          : { failed: "no statistics", month0 };
+      })
+      .catch(() => {
+        // Kept as a failure, not dropped, so the row says so and this is
+        // not asked again until the hour is up.
+        this._savings = { failed: "unavailable", month0 };
+      })
+      .then(() => {
+        this._savingsBusy = false;
+        if (this._config && this._hass) this._render();
+      });
+  }
+
   /** The price per kWh set on this meter, or null. */
   _price(id) {
     const p = this._prices && this._prices[id];
@@ -943,11 +1063,64 @@ class PowmrInverterConsoleCard extends HTMLElement {
     installFonts();
     // The clock is the only thing that moves without a state change.
     if (!this._timer) this._timer = window.setInterval(() => this._tick(), 1000);
+    this._fxWire();
   }
 
   disconnectedCallback() {
     if (this._timer) window.clearInterval(this._timer);
     this._timer = null;
+    if (this._fxOff) this._fxOff();
+    this._fxOff = null;
+  }
+
+  /** Effects (card-fx.js): data-fx on the host and the off-screen pause. */
+  _fxWire() {
+    if (this._fxOff) this._fxOff();
+    this._fxOff = null;
+    if (!this.isConnected || !this._config) return;
+    this._fxOff = fxSetup(this, this._config.fx);
+  }
+
+  /**
+   * Glow follows power: --fxg 0..1 on a tile and its run, by the watts
+   * against the same ceiling the run's speed uses. Cleared when off.
+   */
+  _fxGlow(nodes, watts, max) {
+    const on = fxOn(this._config.fx, "power_glow");
+    const g = watts === null ? 0 : Math.max(0, Math.min(1, Math.abs(watts) / max));
+    nodes.forEach((n) => {
+      if (!n) return;
+      if (on) n.style.setProperty("--fxg", g.toFixed(3));
+      else n.style.removeProperty("--fxg");
+    });
+  }
+
+  /**
+   * Chart polish: the fill fades from the line's colour to nothing, and a dot
+   * pulses on the latest reading. The dot is HTML, not SVG, because the plot
+   * stretches (preserveAspectRatio none) and an SVG circle would be an oval.
+   */
+  _fxChart(col, xy) {
+    const el = this._el;
+    const on = fxOn(this._config.fx, "chart_polish");
+    if (el.fxStop0) {
+      el.fxStop0.setAttribute("stop-color", col);
+      el.fxStop0.setAttribute("stop-opacity", "0.38");
+      el.fxStop1.setAttribute("stop-color", col);
+      el.fxStop1.setAttribute("stop-opacity", "0");
+    }
+    if (on) {
+      el.chArea.setAttribute("fill", "url(#pmfxgrad)");
+      el.chArea.setAttribute("fill-opacity", "1");
+    }
+    if (!el.fxDot) return;
+    const last = on && xy && xy.length ? xy[xy.length - 1] : null;
+    el.fxDot.hidden = !last;
+    if (last) {
+      el.fxDot.style.left = (last[0] / CH_W * 100).toFixed(3) + "%";
+      el.fxDot.style.top = (last[1] / CH_H * 100).toFixed(3) + "%";
+      el.fxDot.style.setProperty("--fxc", col);
+    }
   }
 
   getCardSize() {
@@ -1045,13 +1218,19 @@ class PowmrInverterConsoleCard extends HTMLElement {
   }
 
   /**
-   * True when there is no usable mains. Two independent tells, because either
-   * can lag: the safety binary_sensor (ON = unsafe) and the voltage itself,
-   * below the 150 V the firmware treats as "no grid".
+   * True when there is no mains. Two tells, because grid_down holds 5 s: the
+   * sensor and the voltage itself, below the 150 V the firmware treats as
+   * "no grid". Not grid_safe: a live but low grid trips that one.
    */
   _gridDown() {
     const v = this._num(this._config.grid_voltage);
-    return this._state(this._config.grid_safe) === "on" || (v !== null && v < 150);
+    return this._state(this._config.grid_down) === "on" || (v !== null && v < 150);
+  }
+
+  /** Mains there but out of 185–250 V, and Protect has moved the house to battery. */
+  _gridUnsafe() {
+    const c = this._config;
+    return !this._gridDown() && this._state(c.grid_safe) === "on" && this._state(c.chip_protect) === "on";
   }
 
   /*
@@ -1184,6 +1363,8 @@ class PowmrInverterConsoleCard extends HTMLElement {
     const safe = this._stateObj(c.grid_safe);
     const rng = this._stateObj(c.grid_in_range);
     if (!safe || !rng || safe.state !== "on" || rng.state !== "on") return null;
+    // Without Protect the firmware never left the grid: nothing to return to.
+    if (this._state(c.chip_protect) !== "on") return null;
     const t = Date.parse(rng.last_changed || "");
     if (!Number.isFinite(t)) return null;
     return Math.max(0, Math.min(c.grid_return_s, c.grid_return_s - (Date.now() - t) / 1000));
@@ -1297,9 +1478,10 @@ class PowmrInverterConsoleCard extends HTMLElement {
     const el = this._el;
     const left = this._returnLeft();
     const down = this._gridDown();
-    const word = left !== null ? "Grid returning" : down ? "Grid down" : "Grid connected";
+    const unsafe = this._gridUnsafe();
+    const word = left !== null ? "Grid returning" : down ? "Grid down" : unsafe ? "Grid unsafe" : "Grid connected";
     if (el.mode) el.mode.textContent = word + " · " + this._state(c.ac_input_mode);
-    if (el.livedot) el.livedot.style.background = left !== null ? WARN : down ? BAD : OK;
+    if (el.livedot) el.livedot.style.background = left !== null || unsafe ? WARN : down ? BAD : OK;
     let count = "";
     if (el.ret) {
       el.ret.hidden = el.retsep.hidden = left === null;
@@ -1312,7 +1494,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
     }
     if (el.pill) {
       el.pill.dataset.tip = tip("Grid — " + (left !== null ? "returning" + (count ? ", " + count + " left" : "")
-        : down ? "down" : "connected") + " · " + this._state(c.ac_input_mode), "pill");
+        : down ? "down" : unsafe ? "unsafe, on battery" : "connected") + " · " + this._state(c.ac_input_mode), "pill");
     }
   }
 
@@ -1362,7 +1544,7 @@ class PowmrInverterConsoleCard extends HTMLElement {
           </div>
           <div class="title">${this._esc(c.title)}</div>
         </div>
-        <div class="pill" data-ref="pill" data-more="${c.grid_safe}" role="button" tabindex="0">
+        <div class="pill" data-ref="pill" data-more="${c.grid_down}" role="button" tabindex="0">
           <div class="livedot" data-ref="livedot"></div>
           <span class="mono" data-ref="mode"></span>
           <span class="vsep" data-ref="retsep" hidden></span>
@@ -1499,10 +1681,11 @@ ${ch.dots ? "" : `
           </div>
         </div>`).join("")}
         <div class="erows">${ENERGY.map((e, i) => `
-          <div class="erow" data-ref="erow${i}" data-more="${c[e.cfg]}" role="button" tabindex="0">
-            <span class="el">
+          <div class="erow${e.saved ? " saved" : ""}" data-ref="erow${i}" data-more="${c[e.cfg]}" role="button" tabindex="0">
+            <span class="el${e.saved ? " col" : ""}">
               <span class="en">${e.short}</span>
-              <span class="tag" data-ref="etag${i}"></span>
+              ${e.saved ? `<span class="esub" data-ref="esub${i}"></span>`
+                : `<span class="tag" data-ref="etag${i}"></span>`}
             </span>
             <span class="ev" data-ref="eval${i}"></span>
           </div>`).join("")}
@@ -1543,7 +1726,9 @@ ${ch.dots ? "" : `
             <svg class="ch" data-ref="chSvg" viewBox="0 0 ${CH_W} ${CH_H}" preserveAspectRatio="none">
               <defs><clipPath id="plotclip">
                 <rect x="0" y="0" width="${CH_W}" height="${CH_H}"></rect>
-              </clipPath></defs>
+              </clipPath>${c.fx ? `<linearGradient id="pmfxgrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" data-ref="fxStop0"></stop><stop offset="1" data-ref="fxStop1"></stop>
+              </linearGradient>` : ""}</defs>
               ${gy}
               <g clip-path="url(#plotclip)">
                 <path data-ref="chArea" stroke="none" fill-opacity="0.08"></path>
@@ -1552,7 +1737,7 @@ ${ch.dots ? "" : `
               </g>
             </svg>
             <div class="hv hvline" data-ref="hvLine"></div>
-            <div class="hv hvdot" data-ref="hvDot"></div>
+            <div class="hv hvdot" data-ref="hvDot"></div>${c.fx ? '<div class="fx-dot" data-ref="fxDot"></div>' : ""}
             <div class="tip" data-ref="tip"></div>
             <div class="note" data-ref="chNote"></div>
             <div class="xax" data-ref="xax"></div>
@@ -1566,7 +1751,7 @@ ${ch.dots ? "" : `
       has("history") ? " Drag the chart to move through time, pinch or scroll to zoom;"
         + " double-click or pick a range to go back to live." : ""}</div>`);
 
-    this.shadowRoot.innerHTML = "<style>" + STYLE + "</style>"
+    this.shadowRoot.innerHTML = "<style>" + STYLE + (c.fx ? FX_CSS + FX_STYLE : "") + "</style>"
       + '<ha-card><div class="root">' + parts.join("") + "</div></ha-card>";
 
     this._el = {};
@@ -1657,7 +1842,7 @@ ${ch.dots ? "" : `
   _fingerprint() {
     const c = this._config;
     const ids = [
-      c.grid_voltage, c.grid_frequency, c.grid_power, c.grid_safe, c.grid_in_range,
+      c.grid_voltage, c.grid_frequency, c.grid_power, c.grid_down, c.grid_safe, c.grid_in_range,
       c.ac_output_voltage, c.load_power, c.load_percentage, c.uptime,
       c.battery_power, c.battery_soc, c.battery_voltage,
       c.charge_current, c.discharge_current,
@@ -1672,7 +1857,47 @@ ${ch.dots ? "" : `
       + "|" + this._state(c.adaptive_charge) + "|" + this._state(c.adaptive_plan)
       + "|" + ad.current + "|" + ad.until + "|" + ad.reason
       + "|" + prices.join(",")
+      + "|" + (this._savings ? this._savingsAt : "")
       + "|" + this._range + "|" + this._sel;
+  }
+
+  /*
+   * The Saved by battery row: kWh and ₴ like the tariff rows, in the pack's
+   * green, and the total since records began on a line under the name. With
+   * no Energy prices it is kWh alone; with no statistics it says so rather
+   * than showing a 0 that reads as a measured month.
+   */
+  _patchSaved(e, i) {
+    const el = this._el;
+    const s = this._savings;
+    const row = el["erow" + i];
+    const val = el["eval" + i];
+    const sub = el["esub" + i];
+    if (!s || s.failed) {
+      const word = s ? s.failed : "loading";
+      val.textContent = s ? "—" : "…";
+      sub.textContent = word;
+      row.dataset.tip = tip(e.short + " — " + word, e.help);
+      return;
+    }
+    const pDay = this._price(this._config.meter_day);
+    const pNight = this._price(this._config.meter_night);
+    const per = pDay !== null && pNight !== null ? pDay - pNight / s.eta : null;
+    const month = per !== null ? s.month * per : null;
+    const life = per !== null ? s.life * per : null;
+    const since = s.since
+      ? String(s.since.getDate()).padStart(2, "0") + "." + String(s.since.getMonth() + 1).padStart(2, "0")
+      : "the start";
+    val.innerHTML = this._esc(this._fmt(s.month, e.dec) + " " + e.unit)
+      + (month !== null ? "<small>" + this._esc(month.toFixed(2)) + " ₴</small>" : "");
+    sub.textContent = "since " + since + " · "
+      + (life !== null ? Math.round(life) + " ₴" : this._fmt(s.life, 1) + " kWh");
+    // Line 1 is clipped at 90 characters, so the kWh stay on the row.
+    row.dataset.tip = tip(e.short + " — "
+      + (month !== null
+        ? month.toFixed(2) + " ₴ · " + life.toFixed(2) + " ₴ since " + since
+          + " · efficiency " + Math.round(s.eta * 100) + " %"
+        : this._fmt(s.month, e.dec) + " kWh, no Energy prices set"), e.help);
   }
 
   _patch() {
@@ -1687,6 +1912,12 @@ ${ch.dots ? "" : `
     this._setFlow(el.runLoad, loadW, c.max_load_w, false);
     this._setFlow(el.runBatt, battW, c.max_batt_w, true);
     this._setFlow(el.runDir, this._num(c.meter_power), c.max_meter_w, false);
+    if (c.fx) {
+      this._fxGlow([el.gridTile, el.gridRun], gridW, c.max_grid_w);
+      this._fxGlow([el.invTile, el.loadTile, el.loadRun], loadW, c.max_load_w);
+      this._fxGlow([el.battTile, el.battRun], battW, c.max_batt_w);
+      this._fxGlow([el.dirTile, el.dirRun], this._num(c.meter_power), c.max_meter_w);
+    }
 
     const print = this._fingerprint();
     if (print === this._print) return;
@@ -1854,6 +2085,10 @@ ${ch.dots ? "" : `
     ENERGY.forEach((e, i) => {
       const row = el["erow" + i];
       if (!row) return;
+      if (e.saved) {
+        this._patchSaved(e, i);
+        return;
+      }
       const active = e.tariff && e.tariff === tariff;
       row.classList.toggle("on", !!active);
       el["etag" + i].textContent = active ? "active" : "";
@@ -2652,6 +2887,7 @@ ${ch.dots ? "" : `
     if (!pts.length) {
       el.chLine.setAttribute("d", "");
       el.chArea.setAttribute("d", "");
+      this._fxChart(col, []);
       el.yax.innerHTML = "";
       el.xax.innerHTML = "";
       el.stats.innerHTML = "";
@@ -2667,6 +2903,7 @@ ${ch.dots ? "" : `
     el.chLine.setAttribute("d", p.line);
     el.chArea.setAttribute("d", p.area);
     el.chArea.setAttribute("fill-opacity", p.ranged ? "0.22" : "0.08");
+    this._fxChart(col, p.xy);
     this._hv = { spec: spec, span: d.t1 - d.t0, pts: pts, xy: p.xy, col: col };
 
     const span = p.hi - p.lo;

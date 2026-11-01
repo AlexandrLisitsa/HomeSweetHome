@@ -97,6 +97,7 @@ async function inverterSuite() {
     gv: "sensor.powmr_inverter_grid_voltage",
     gf: "sensor.powmr_inverter_grid_frequency",
     gp: "sensor.powmr_inverter_grid_real_power_calculated",
+    down: "binary_sensor.grid_down",
     safe: "binary_sensor.powmr_inverter_grid_condition_safe",
     rng: "binary_sensor.powmr_inverter_grid_voltage_in_range",
     acv: "sensor.powmr_inverter_ac_output_voltage",
@@ -131,7 +132,7 @@ async function inverterSuite() {
   function base() {
     return {
       [E.gv]: S("230.0"), [E.gf]: S("50.00"), [E.gp]: S("300"),
-      [E.safe]: S("off"), [E.rng]: S("on"),
+      [E.down]: S("off"), [E.safe]: S("off"), [E.rng]: S("on"),
       [E.acv]: S("230.0"), [E.lw]: S("500"), [E.lp]: S("21"), [E.up]: S("3.5"),
       [E.bw]: S("0"), [E.soc]: S("80"), [E.bv]: S("26.8"), [E.cc]: S("0"), [E.dc]: S("0"),
       [E.td]: S("123.456"), [E.tn]: S("78.9"), [E.tot]: S("202.3457"),
@@ -403,7 +404,8 @@ async function inverterSuite() {
       ["exactly 2 W is not charging", { [E.bw]: "2" }, false],
       ["discharging", { [E.bw]: "-500" }, false],
       ["battery power unavailable", { [E.bw]: "unavailable" }, false],
-      ["grid unsafe (safe=on)", { [E.bw]: "800", [E.safe]: "on" }, false],
+      ["grid down (grid_down=on)", { [E.bw]: "800", [E.down]: "on" }, false],
+      ["grid out of range but live (safe=on)", { [E.bw]: "800", [E.safe]: "on" }, true],
       ["grid at 149.9 V", { [E.bw]: "800", [E.gv]: "149.9" }, false],
       ["grid at exactly 150 V is up", { [E.bw]: "800", [E.gv]: "150" }, true],
       ["voltage unknown, safe off: up", { [E.bw]: "800", [E.gv]: "unknown" }, true],
@@ -432,13 +434,15 @@ async function inverterSuite() {
     c.setConfig({});
     const g = (o) => { c._hass = mkHass(Object.assign(base(), o)); return c._gridDown(); };
     eq("healthy", g({}), false);
-    eq("safety sensor on means down", g({ [E.safe]: S("on") }), true);
+    eq("grid_down on means down", g({ [E.down]: S("on") }), true);
+    eq("the 185-250 V check alone is not down", g({ [E.safe]: S("on") }), false);
     eq("149 V is down", g({ [E.gv]: S("149") }), true);
     eq("0 V is down", g({ [E.gv]: S("0") }), true);
     eq("150 V is up", g({ [E.gv]: S("150") }), false);
-    eq("nothing known is not down", g({ [E.gv]: S("unknown"), [E.safe]: S("unknown") }), false);
+    eq("nothing known is not down", g({ [E.gv]: S("unknown"), [E.down]: S("unknown") }), false);
 
     const st = base();
+    st[E.down] = S("on");
     st[E.safe] = S("on");
     st[E.rng] = S("off");
     st[E.gv] = S("0");
@@ -449,6 +453,24 @@ async function inverterSuite() {
     eq("down: tile red", r.el.gridVal.style.color, BAD_C);
     check("down: no countdown", r.el.ret.hidden);
     eq("down: mark clamps at the left", r.el.gridMark.style.left, "0.00%");
+
+    // 31 Oct: the grid came back at 180-199 V. Live, just low.
+    const low = (prot) => {
+      const s2 = base();
+      s2[E.gv] = S("186.3");
+      s2[E.safe] = S("on");
+      s2[E.rng] = S("off");
+      s2[E.prot] = S(prot, {});
+      return mk(s2);
+    };
+    let r2 = low("off");
+    eq("low, Protect off: tile word", r2.el.gridState.textContent, "UNDERVOLTAGE");
+    eq("low, Protect off: header word", r2.el.mode.textContent, "Grid connected · UPS");
+    eq("low, Protect off: dot green", r2.el.livedot.style.background, OK_C);
+    r2 = low("on");
+    eq("low, Protect on: tile word", r2.el.gridState.textContent, "UNDERVOLTAGE");
+    eq("low, Protect on: header word", r2.el.mode.textContent, "Grid unsafe · UPS");
+    eq("low, Protect on: dot amber", r2.el.livedot.style.background, WARN_C);
   }
 
   group = "inverter/return: ";
@@ -474,6 +496,10 @@ async function inverterSuite() {
     eq("garbage last_changed", rl("on", "on", "not a date"), null);
     eq("missing safe sensor", rl(null, "on", ago(60)), null);
     eq("missing range sensor", rl("on", null, ago(60)), null);
+    c.setConfig({});
+    c._hass = mkHass(Object.assign(base(), { [E.safe]: S("on"), [E.prot]: S("off", {}),
+      [E.rng]: S("on", {}, { last_changed: ago(60) }) }));
+    eq("Protect off: the firmware never left the grid, nothing counting", c._returnLeft(), null);
     const l2 = rl("on", "on", ago(60), { grid_return_s: 600 });
     check("grid_return_s is honoured", l2 > 539 && l2 <= 540, String(l2));
     const skew = rl("on", "on", new Date(Date.now() + 60000).toISOString());
@@ -502,6 +528,20 @@ async function inverterSuite() {
   }
 
   /* --- Pre-charge sub-label ------------------------------------------------- */
+  group = "inverter/fx: ";
+  {
+    let r = mk(base());
+    check("off: no effect styles", !r.c.shadowRoot.innerHTML.includes("fxRing"));
+    eq("off: no glow", r.el.gridTile.style.getPropertyValue("--fxg"), "");
+    // As lovelace.dashboard_inverter.json lists them.
+    r = mk(base(), { fx: ["power_glow", "chart_polish"] });
+    check("on: effect styles", r.c.shadowRoot.innerHTML.includes("fxRing"));
+    eq("the grid value is plain text", r.el.gridVal.innerHTML, "230.0<i>V</i>");
+    check("glow: set on the grid tile and its run",
+      r.el.gridTile.style.getPropertyValue("--fxg") !== "" && r.el.gridRun.style.getPropertyValue("--fxg") !== "");
+    check("chart: gradient and dot nodes exist", !!r.el.fxStop0 && !!r.el.fxDot);
+  }
+
   group = "inverter/precharge: ";
   {
     const until = localIso(9, 30);
@@ -650,7 +690,7 @@ async function inverterSuite() {
     check("Night only on, pack charging: pulses", act("Nt", el) && el.chipNt2.classList.contains("on"));
     check("Night only off, pack charging: still", !act("Nt", run({ [E.night]: S("off"), [E.bw]: S("900") })));
     check("Night only on, charging but grid down: still",
-      !act("Nt", run({ [E.night]: S("on"), [E.bw]: S("900"), [E.safe]: S("on") })));
+      !act("Nt", run({ [E.night]: S("on"), [E.bw]: S("900"), [E.down]: S("on") })));
     // Adaptive: on AND its plan charging.
     check("adaptive on, plan charging: pulses",
       act("Ad", run({ [E.ad]: S("on"), [E.aplan]: S("charging", { current: 20, until: until }) })));
@@ -731,7 +771,7 @@ async function inverterSuite() {
     fire(q(".tile.t-grid .t-val"), "click");
     eq("a tile's child opens the tile's entity", r.c.dispatched.pop().detail.entityId, E.gv);
     fire(q(".pill"), "click");
-    eq("header pill opens grid_safe", r.c.dispatched.pop().detail.entityId, E.safe);
+    eq("header pill opens grid_down", r.c.dispatched.pop().detail.entityId, E.down);
     fire(r.el.battSub, "click");
     eq("battery sub opens what it shows", r.c.dispatched.pop().detail.entityId, E.bv);
     const d1 = r.c.dispatched.length, n1 = ncalls();
@@ -854,20 +894,20 @@ async function inverterSuite() {
   {
     const r = mk(base());
     check("day row active", r.el.erow0.classList.contains("on") && !r.el.erow1.classList.contains("on"));
-    eq("day tag", [r.el.etag0.textContent, r.el.etag1.textContent, r.el.etag2.textContent], ["active", "", ""]);
-    eq("values and decimals", [r.el.eval0.textContent, r.el.eval1.textContent, r.el.eval2.textContent],
+    eq("day tag", [r.el.etag0.textContent, r.el.etag1.textContent, r.el.etag3.textContent], ["active", "", ""]);
+    eq("values and decimals", [r.el.eval0.textContent, r.el.eval1.textContent, r.el.eval3.textContent],
       ["123.46 kWh", "78.90 kWh", "202.3 kWh"]);
     check("labelled as this month's, from the meter",
-      r.c.shadowRoot.querySelectorAll(".erow .en").map((n) => n.textContent).join("|") === "Day this month|Night this month|Meter total");
-    eq("rows open the meter's entities", [0, 1, 2].map((i) => r.el["erow" + i].getAttribute("data-more")), [E.td, E.tn, E.tot]);
+      r.c.shadowRoot.querySelectorAll(".erow .en").map((n) => n.textContent).join("|") === "Day this month|Night this month|Saved by battery|Meter total");
+    eq("rows open the meter's entities", [0, 1, 3].map((i) => r.el["erow" + i].getAttribute("data-more")), [E.td, E.tn, E.tot]);
     eq("no Energy prices: no cost", r.el.eval0.innerHTML.indexOf("<small>"), -1);
     rerender(r, (s) => { s[E.tariff] = S("night"); });
     check("night row active", !r.el.erow0.classList.contains("on") && r.el.erow1.classList.contains("on"));
     rerender(r, (s) => { s[E.tariff] = S("unavailable"); s[E.td] = S("unknown"); });
-    check("unknown tariff: no row active", [0, 1, 2].every((i) => !r.el["erow" + i].classList.contains("on")));
+    check("unknown tariff: no row active", [0, 1, 3].every((i) => !r.el["erow" + i].classList.contains("on")));
     eq("unknown meter", r.el.eval0.textContent, "— kWh");
-    check("the total never shows a cost", r.el.eval2.innerHTML.indexOf("<small>") < 0);
-    check("the total is never 'active'", !r.el.erow2.classList.contains("on"));
+    check("the total never shows a cost", r.el.eval3.innerHTML.indexOf("<small>") < 0);
+    check("the total is never 'active'", !r.el.erow3.classList.contains("on"));
   }
 
   /* --- energy rows: cost at the Energy dashboard's price ---------------------- */
@@ -889,7 +929,7 @@ async function inverterSuite() {
     eq("kWh times price", [r.el.eval0.textContent, r.el.eval1.textContent], ["123.46 kWh533.33 ₴", "78.90 kWh170.42 ₴"]);
     eq("cost is its own element", r.el.eval0.innerHTML, "123.46 kWh<small>533.33 ₴</small>");
     check("cost in the tooltip", head(r.el.erow0.dataset.tip).indexOf("533.33 ₴") > 0, r.el.erow0.dataset.tip);
-    check("the total never shows a cost", r.el.eval2.innerHTML.indexOf("<small>") < 0);
+    check("the total never shows a cost", r.el.eval3.innerHTML.indexOf("<small>") < 0);
     // The bug: HA's own *_cost sensors restart at 0. They are not read at all.
     rerender(r, (s) => { s["sensor.electricity_meter_tariff_day_cost"] = S("0.0"); });
     eq("a restarted *_cost sensor changes nothing", r.el.eval0.textContent, "123.46 kWh533.33 ₴");
@@ -911,6 +951,67 @@ async function inverterSuite() {
     const r3 = mk(base(), {}, { callWS: (m) => { if (m.type === "energy/get_prefs") throw new Error("unauthorized"); return {}; } });
     await flush();
     eq("prefs refused: kWh only", r3.el.eval0.textContent, "123.46 kWh");
+  }
+
+  /* --- energy rows: what the battery saved ----------------------------------------- */
+  group = "inverter/battery saved: ";
+  {
+    const OUT = "sensor.powmr_inverter_battery_energy_out";
+    const IN = "sensor.powmr_inverter_battery_energy_in";
+    const prefs = { energy_sources: [
+      { type: "grid", stat_energy_from: E.td, number_energy_price: 4.32 },
+      { type: "grid", stat_energy_from: E.tn, number_energy_price: 2.16 },
+    ] };
+    const nowD = new Date();
+    const y = nowD.getFullYear();
+    const m = nowD.getMonth();
+    const row = (d, h, change) => ({ start: d === "prev" ? new Date(y, m - 1, 15, h).getTime()
+      : new Date(y, m, d, h).getTime(), change });
+    // This month: 2 + 3 kWh by day, 5 + 1 at night. Last month: 4 by day.
+    const stats = { [OUT]: [row("prev", 10, 4), row(1, 3, 1), row(1, 8, 2), row(1, 12, 3), row(1, 23, 5)] };
+    const pad = (n) => String(n).padStart(2, "0");
+    const since = "15." + pad(new Date(y, m - 1, 15).getMonth() + 1);
+    const st = () => Object.assign(base(), { [OUT]: S("95"), [IN]: S("100") });
+    const ws = (opts) => (msg) => {
+      if (msg.type === "energy/get_prefs") return opts.prefs === false ? {} : prefs;
+      if (msg.type === "recorder/statistics_during_period" && msg.types[0] === "change") {
+        if (opts.fail) throw new Error("recorder busy");
+        return stats;
+      }
+      return {};
+    };
+    let r = mk(st(), {}, { callWS: ws({}) });
+    await flush();
+    const asked = r.h.ws.filter((x) => x.type === "recorder/statistics_during_period" && x.types[0] === "change");
+    eq("one hourly change request for the out counter", asked.map((x) => [x.statistic_ids, x.period]), [[[OUT], "hour"]]);
+    eq("the row sits between Night and the total", r.el.erow2.classList.contains("saved"), true);
+    eq("opens the out counter", r.el.erow2.getAttribute("data-more"), OUT);
+    // 5 kWh × (4.32 − 2.16 ÷ 0.95) = 10.23; 9 kWh = 18.42.
+    eq("day-hour kWh this month, ₴ beside it", r.el.eval2.innerHTML, "5.00 kWh<small>10.23 ₴</small>");
+    eq("since records began underneath", r.el.esub2.textContent, "since " + since + " · 18 ₴");
+    check("both sums and the efficiency in the tooltip",
+      head(r.el.erow2.dataset.tip) === "Saved by battery — 10.23 ₴ · 18.42 ₴ since " + since + " · efficiency 95 %",
+      r.el.erow2.dataset.tip);
+    check("line 1 fits the 90-character tooltip line", head(r.el.erow2.dataset.tip).length <= 90);
+    rerender(r, (s) => { s[OUT] = S("96"); });
+    check("not asked again within the hour",
+      r.h.ws.filter((x) => x.type === "recorder/statistics_during_period" && x.types[0] === "change").length === 1);
+
+    r = mk(st(), {}, { callWS: ws({ prefs: false }) });
+    await flush();
+    eq("no Energy prices: kWh only", r.el.eval2.innerHTML, "5.00 kWh");
+    eq("... and the lifetime in kWh", r.el.esub2.textContent, "since " + since + " · 9.0 kWh");
+
+    r = mk(Object.assign(base(), { [OUT]: S("95") }), {}, { callWS: ws({}) });
+    await flush();
+    eq("no in counter: efficiency 1", r.el.eval2.innerHTML, "5.00 kWh<small>10.80 ₴</small>");
+
+    r = mk(st(), {}, { callWS: ws({ fail: true }) });
+    await flush();
+    eq("statistics refused: says so, no 0 ₴", [r.el.eval2.textContent, r.el.esub2.textContent], ["—", "unavailable"]);
+    r = mk(st());
+    await flush();
+    eq("no statistics at all", [r.el.eval2.textContent, r.el.esub2.textContent], ["—", "no statistics"]);
   }
 
   /* --- the Meter tile ------------------------------------------------------------ */
@@ -1092,7 +1193,7 @@ async function inverterSuite() {
     eq(v + "battery", [el.socVal.textContent, el.battState.textContent, el.battSub.textContent],
       ["—%", "IDLE · NO DATA", "— V · — W idle"]);
     check(v + "selects disabled", el.maxChg.disabled && el.prio.disabled && el.acMode.disabled);
-    eq(v + "energy", el.eval2.textContent, "— kWh");
+    eq(v + "energy", el.eval3.textContent, "— kWh");
     check(v + "no chip on", [0, 1, 2].every((i) => !el["chip" + i].classList.contains("on")));
     check(v + "no icon lit", ["Nt", "Ad", "Pc"].every((k) => !el["chip" + k + "2"].classList.contains("on")));
     check(v + "adaptive dimmed", el.chipAd2.classList.contains("dis"));
@@ -1406,6 +1507,59 @@ async function batterySuite() {
     eq("rails idle", [el.railBus.style._props["--play"], el.railPack.style._props["--play"]], ["paused", "paused"]);
   }
 
+  group = "battery/fx: ";
+  {
+    // No fx key -- every real dashboard: no effect node, no effect style.
+    let r = mk(Object.assign(base(), { [E.a]: S("60"), [E.w]: S("1600") }));
+    const html = () => r.c.shadowRoot.innerHTML;
+    check("off: no effect styles", !html().includes("fx-shim") && !html().includes("fxShimmer"));
+    eq("off: no effect nodes", [!!r.el.fxShim, !!r.el.fxDot, !!r.el.fxStop0], [false, false, false]);
+    throws("unknown effect", () => new Card().setConfig({ fx: ["sparkle"] }), /unknown fx sparkle/);
+
+    throws("the dropped odometer", () => new Card().setConfig({ fx: ["odometer"] }), /unknown fx odometer/);
+
+    // As lovelace.dashboard_inverter.json lists them.
+    const ALL = ["power_glow", "liquid_soc", "balance_pulse", "chart_polish"];
+    r = mk(Object.assign(base(), { [E.a]: S("60"), [E.w]: S("1600") }), { fx: ALL });
+    check("on: effect styles", html().includes("fx-shim") && html().includes("fxShimmer"));
+    eq("numbers stay plain text", [r.el.mVal0.innerHTML, r.el.busIn.innerHTML], ["55", "1600.0"]);
+    eq("glow: full at max_power_w", r.el.busCard.style.getPropertyValue("--fxg"), "1.000");
+    check("liquid: shimmer while charging", r.el.fxShim.classList.contains("on"));
+    rerender(r, (st) => { st[E.a] = S("-20"); st[E.w] = S("-400"); });
+    check("liquid: no shimmer while draining", !r.el.fxShim.classList.contains("on"));
+    eq("glow: a quarter at 400 W", r.el.packCard.style.getPropertyValue("--fxg"), "0.250");
+
+    // Balancer on, 25 mV spread: the top cells pulse.
+    const cells = [3.402, 3.39, 3.385, 3.38, 3.377, 3.38, 3.4, 3.39];
+    r = mk(Object.assign(base(cells), { [E.d]: S("0.025"), [E.cmax]: S("3.402") }), { fx: ALL });
+    eq("balancing: the top cells pulse (within 2 mV)",
+      cells.map((_v, i) => r.el["pcellWrap" + i].classList.contains("fx-bal")),
+      [true, false, false, false, false, false, true, false]);
+    r = mk(Object.assign(base(cells), { [E.d]: S("0.025"), [E.swb]: S("off") }), { fx: ALL });
+    check("balancer off: nothing pulses",
+      cells.every((_v, i) => !r.el["pcellWrap" + i].classList.contains("fx-bal")));
+    r = mk(Object.assign(base(cells), { [E.d]: S("0.025") }), { fx: ["liquid_soc"] });
+    check("balance_pulse not listed: nothing pulses",
+      cells.every((_v, i) => !r.el["pcellWrap" + i].classList.contains("fx-bal")));
+    eq("power_glow not listed: no --fxg", r.el.busCard.style.getPropertyValue("--fxg"), "");
+
+  }
+
+  group = "battery/rate: ";
+  {
+    const c = new Card();
+    c.setConfig({});
+    eq("60 A -> 2m 48s", c._perPercent(60), "2m 48s");
+    eq("-6.5 A -> 25m 51s", c._perPercent(-6.5), "25m 51s");
+    eq("2 A -> 1h 24m", c._perPercent(2), "1h 24m");
+    eq("0.2 A -> 14h 00m", c._perPercent(0.2), "14h 00m");
+    eq("0.19 A -> nothing (noise)", c._perPercent(0.19), null);
+    eq("0 A -> nothing", c._perPercent(0), null);
+    eq("no reading -> nothing", c._perPercent(null), null);
+    const idle = mk(Object.assign(base(), { [E.a]: S("0.1"), [E.w]: S("2") }));
+    eq("idle: both lines empty", [idle.el.ttfRate.textContent, idle.el.rtlRate.textContent], ["", ""]);
+  }
+
   group = "battery/flow: ";
   {
     const r = mk(Object.assign(base(), { [E.a]: S("-50"), [E.w]: S("-1300"), [E.dc]: S("48.5"), [E.rtl]: S("2.5"), [E.ttf]: S("3") }));
@@ -1422,6 +1576,8 @@ async function batterySuite() {
     check("runtime clock shown", /^\d{4}-\d\d-\d\d \d\d:\d\d$/.test(el.rtlAt.textContent), el.rtlAt.textContent);
     eq("time to full grey while draining", el.ttf.style.color, MUTED);
     eq("no 'full at' clock while draining", el.ttfAt.textContent, "");
+    eq("rate: -50 A loses 1% every 3m 22s", el.rtlRate.textContent, "−1% every 3m 22s");
+    eq("rate: no charge line while draining", el.ttfRate.textContent, "");
     eq("discharge chip lit", el.dot1.classList.contains("live"), true);
     eq("discharge chip title", el.chip1.dataset.tip.split("\n")[0], "Discharging — on · discharging now");
 
@@ -1433,6 +1589,10 @@ async function batterySuite() {
     eq("time to full green", el.ttf.style.color, OK);
     check("full-at clock shown", el.ttfAt.textContent !== "");
     eq("runtime clock hidden while charging", el.rtlAt.textContent, "");
+    eq("rate: 60 A gains 1% every 2m 48s", el.ttfRate.textContent, "+1% every 2m 48s");
+    eq("rate: no drain line while charging", el.rtlRate.textContent, "");
+    check("rate: in the time-to-full tooltip", el.ttfTile.dataset.tip.includes("+1% every 2m 48s"),
+      el.ttfTile.dataset.tip.split("\n")[0]);
     eq("charge chip lit", el.dot0.classList.contains("live"), true);
     eq("charge dot colour", el.dot0.style._props["--dc"], OK);
 
@@ -1666,7 +1826,7 @@ async function loadSheddingSuite() {
     master: "input_boolean.load_shedding_enabled",
     soc: "sensor.jkbms_gateway_bms_state_of_charge",
     rt: "sensor.battery_runtime_remaining",
-    grid: "binary_sensor.powmr_inverter_grid_condition_safe",
+    grid: "binary_sensor.house_on_battery",
   };
   const AC = "climate.hall_ac";
   const BOILER = "switch.boiler";
@@ -1787,18 +1947,24 @@ async function loadSheddingSuite() {
     const c = new Card();
     c.setConfig({});
     c._hass = mkHass({}, { services: SERVICES });
-    eq("climate order: off, on, adjust, then a-z; reload/toggle hidden", c._services("climate").map((s) => s.action),
-      ["climate.turn_off", "climate.turn_on", "climate.adjust_temperature", "climate.set_fan_mode",
+    eq("climate order: off, on, adjust, fan only, then a-z; reload/toggle hidden", c._services("climate").map((s) => s.action),
+      ["climate.turn_off", "climate.turn_on", "climate.adjust_temperature", "climate.fan_only", "climate.set_fan_mode",
         "climate.set_hvac_mode", "climate.set_temperature"]);
-    eq("names from the service id", c._services("climate").map((s) => s.name).slice(0, 4),
-      ["Turn off", "Turn on", "Change temperature by", "Set fan mode"]);
+    eq("names from the service id", c._services("climate").map((s) => s.name).slice(0, 5),
+      ["Turn off", "Turn on", "Change temperature by", "Fan only", "Set fan mode"]);
+    eq("light: Dim to first, then off, on", c._services("light").map((s) => s.action),
+      ["light.dim_to", "light.turn_off", "light.turn_on"]);
+    eq("Dim to's one field is a 1-100 % number",
+      c._fields(c._services("light")[0].def).map((f) => [f.key, f.f.selector.number.max]),
+      [["brightness_pct", 100]]);
     eq("switch", c._services("switch").map((s) => s.action), ["switch.turn_off", "switch.turn_on"]);
     eq("unknown domain", c._services("vacuum"), []);
     c._hass = mkHass({}, { services: { climate: { set_temperature: {} } } });
-    eq("climate with one service: adjust goes after it", c._services("climate").map((s) => s.action),
-      ["climate.set_temperature", "climate.adjust_temperature"]);
+    eq("climate with one service: the panel's two go after it", c._services("climate").map((s) => s.action),
+      ["climate.set_temperature", "climate.adjust_temperature", "climate.fan_only"]);
     c._hass = mkHass({}, { services: {} });
-    eq("climate with no services: adjust alone", c._services("climate").map((s) => s.action), ["climate.adjust_temperature"]);
+    eq("climate with no services: the panel's two alone", c._services("climate").map((s) => s.action),
+      ["climate.adjust_temperature", "climate.fan_only"]);
     c._hass = { states: {} };
     eq("no services map at all", c._services("switch"), []);
     c._hass = mkHass({}, { services: SERVICES, localize: (k) => (k === "component.switch.services.turn_off.name" ? "Localized turn off" : "") });
@@ -1986,6 +2152,86 @@ async function loadSheddingSuite() {
     eq("master toggle", r.h.calls.pop(), ["input_boolean", "toggle", { entity_id: E.master }]);
   }
 
+  group = "shed/fx: ";
+  {
+    const devs = [dev("ac", AC, [{ soc: 80, action: "x" }, { soc: 50, action: "x" }])];
+    let r = mk(states({ grid: "on", soc: "84", devices: devs }), { blocks: ["hero"] });
+    check("off: no effect styles", !r.root.innerHTML.includes("fxHatch"));
+    eq("off: no proximity on the near mark", r.q(".mark.near").style.getPropertyValue("--fxp"), "");
+    r = mk(states({ grid: "on", soc: "84", devices: devs }), { blocks: ["hero"], fx: ["live_thresholds", "danger_zone"] });
+    check("on: effect styles", r.root.innerHTML.includes("fxHatch"));
+    eq("live thresholds: 4 % above an 80 % step reads 0.6 close",
+      r.q(".mark.near").style.getPropertyValue("--fxp"), "0.600");
+    eq("the danger band is still the lowest step", r.q(".danger").style.getPropertyValue("width"), "50%");
+  }
+
+  group = "shed/hero-bar: ";
+  {
+    // Three devices: two step at 80 %, one at 50 %.
+    const devs = [dev("ac", AC, [{ soc: 80, action: "x" }, { soc: 60, action: "x" }]),
+      dev("lamp", LAMP, [{ soc: 80, action: "x" }, { soc: 50, action: "x" }])];
+    const bar = (soc, extra) => mk(states(Object.assign({ grid: "on", soc: String(soc), devices: devs }, extra || {})),
+      { blocks: ["hero"] });
+    const marks = (r) => r.qa(".mark").map((m) => [m.style.getPropertyValue("left"),
+      ["done", "near", "ahead"].find((k) => m.classList.contains(k)), m.textContent.trim()]);
+    let r = bar(95);
+    eq("one marker per %, names joined", marks(r),
+      [["80%", "ahead", "AC, LAMP · 80%"], ["60%", "ahead", "AC · 60%"], ["50%", "ahead", "LAMP · 50%"]]);
+    check("above every step: green fill", r.q(".fill").classList.contains("z-ok"));
+    eq("the danger zone runs to the lowest step", r.q(".danger").style.getPropertyValue("width"), "50%");
+    eq("the knob sits at the battery", [r.q(".knob").style.getPropertyValue("left"), r.q(".knob b").textContent], ["95%", "95%"]);
+    r = bar(86);
+    eq("within 10 % of a step: it lights", marks(r)[0][1], "near");
+    check("armed: the card pulses", r.q(".hero").classList.contains("live"));
+    r = bar(75, { loads: { ac: { step_soc: 80 }, lamp: { step_soc: 80 } } });
+    eq("both taken at 80: red", marks(r)[0][1], "done");
+    eq("60 is next, 15 % away: not lit yet", marks(r)[1][1], "ahead");
+    check("between steps: amber fill", r.q(".fill").classList.contains("z-warn"));
+    r = bar(78, { loads: { ac: { step_soc: 80 } } });
+    eq("only one of two taken: the shared marker is not red", marks(r)[0][1], "ahead");
+    r = bar(45, { loads: { ac: { step_soc: 60 }, lamp: { step_soc: 50 } } });
+    check("below the lowest step: red fill", r.q(".fill").classList.contains("z-bad"));
+    eq("the battery tile follows the zone", r.qa(".tile .v")[0].classList.contains("z-bad"), true);
+    r = mk(states({ grid: "off", soc: "86", devices: devs }), { blocks: ["hero"] });
+    check("standing by: lit, but no pulse", marks(r)[0][1] === "near" && !r.q(".hero").classList.contains("live"));
+    eq("standing by: green", r.q(".hero").classList.contains("k-ok"), true);
+    r = mk(states({ master: "off", devices: devs }), { blocks: ["hero"] });
+    eq("off: grey", r.q(".hero").classList.contains("k-off"), true);
+    r = mk(states({ soc: "50", devices: [] }), { blocks: ["hero"] });
+    eq("no rules: no danger zone, no markers", [r.q(".danger"), r.qa(".mark").length], [null, 0]);
+    r = mk(states({ soc: "unknown", devices: devs }), { blocks: ["hero"] });
+    eq("unknown battery: no knob", r.q(".knob"), null);
+    r = mk(states({ soc: "50", devices: [dev("x", AC, [{ soc: 92, action: "x" }]), dev("y", LAMP, [{ soc: 8, action: "x" }])] }),
+      { blocks: ["hero"] });
+    eq("labels near the ends hang inward", r.qa(".mark").map((m) => ["right", "left"].find((k) => m.classList.contains(k)) || null),
+      ["right", "left"]);
+  }
+
+  group = "shed/readable: ";
+  {
+    const src = fs.readFileSync(path.join(__dirname, "..", "config", "www", "load-shedding-card.js"), "utf8");
+    const style = src.slice(src.indexOf("const STYLE = `"));
+    const host = /:host \{([^}]*)\}/.exec(style)[1];
+    const hex = (name) => {
+      const m = new RegExp("--ls-" + name + ":\\s*#([0-9a-f]{6});").exec(host);
+      return [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16));
+    };
+    const lum = (c) => c.map((v) => v / 255).map((v) => (v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)))
+      .reduce((t, v, i) => t + v * [0.2126, 0.7152, 0.0722][i], 0);
+    const ratio = (a, b) => { const [x, y] = [lum(hex(a)), lum(hex(b))].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+    for (const fg of ["text", "text2", "muted", "ok-hi", "warn-hi", "bad-hi", "link"]) {
+      for (const bg of ["panel", "inner"]) {
+        const v = ratio(fg, bg);
+        check("--ls-" + fg + " on --ls-" + bg + " is at least 4.5:1", v >= 4.5, v.toFixed(2) + ":1");
+      }
+    }
+    // The primary button's dark text on the sage fill.
+    const btn = (lum(hex("ok")) + 0.05) / (lum([8, 17, 12]) + 0.05);
+    check("Save's dark text on sage is at least 4.5:1", btn >= 4.5, btn.toFixed(2) + ":1");
+    eq("no theme text colour in the styles", /--(primary|secondary|disabled)-text-color/.test(style), false);
+    check("the panels are the card's own", /ha-card \{[^}]*background: var\(--ls-panel\)/.test(style));
+  }
+
   group = "shed/upcoming-html: ";
   {
     const steps = [{ soc: 50, action: "climate.set_temperature", data: { temperature: 28 } }, { soc: 30, action: "climate.turn_off" }];
@@ -2059,6 +2305,30 @@ async function loadSheddingSuite() {
 
     r = mk(states({ devices: [] }), { blocks: ["rules"] });
     eq("no devices", r.q(".empty").textContent, "No devices yet. Add one below.");
+  }
+
+  group = "shed/only-while-on: ";
+  {
+    const devs = [
+      dev("ac", AC, [{ soc: 80, action: "climate.fan_only", data: {} },
+        { soc: 60, action: "climate.set_hvac_mode", data: { hvac_mode: "off" } }],
+        { guard: { running: "binary_sensor.ac_running" } }),
+      dev("lamp", LAMP, [{ soc: 70, action: "light.dim_to", data: { brightness_pct: 30 } },
+        { soc: 40, action: "light.turn_on", data: { brightness_pct: 10 } }, { soc: 20, action: "light.turn_off" }]),
+    ];
+    const r = mk(states({ devices: devs }), { blocks: ["rules"] });
+    const line = (i) => r.qa(".dev")[i].querySelector(".only-on").textContent.replace(/\s+/g, " ").trim();
+    eq("each device says it applies only while on, measured where it can be", line(0),
+      "Applies only while it is on (measured by binary_sensor.ac_running). Never switches it on, "
+      + "and the grid's return never switches on what you switched off.");
+    check("...without a meter, no measured-by", !/measured/.test(line(1)));
+    const notes = (i) => r.qa(".dev")[i].querySelectorAll(".step").map((s) => !!s.querySelector(".note-on"));
+    eq("A/C: fan only noted, the off step not", notes(0), [true, false]);
+    eq("lamp: dim to and turn on noted, turn off not", notes(1), [true, true, false]);
+    eq("the panel's actions are selected by name", r.qa(".dev")[0].querySelector("select.sel").value, "climate.fan_only");
+    const c = r.c;
+    eq("step labels", [c._stepLabel(devs[0], devs[0].steps[0]), c._stepLabel(devs[1], devs[1].steps[0])],
+      ["Fan only", "Dim to (brightness pct 30)"]);
   }
 
   group = "shed/editing: ";

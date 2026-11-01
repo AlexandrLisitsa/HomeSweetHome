@@ -8,7 +8,7 @@
 #
 # Everything here is DTEK's *claim*. The measurement lives elsewhere:
 #
-#     binary_sensor.powmr_inverter_grid_condition_safe   (ESPHome, grid volts)
+#     binary_sensor.grid_down   (packages/grid_state.yaml, under 150 V)
 #
 # ---------------------------------------------------------------------------
 # Why this file exists
@@ -79,7 +79,9 @@ command_line:
       # Five minutes is what the site's own JS uses to re-check itself
       # (discon-schedule.js, limitUpdateCheck). Matching its cadence keeps this
       # unremarkable to the CDN in front of it. Steady state is two POSTs and
-      # about 600 bytes; the 190 KB page is only fetched when the session dies.
+      # about 600 bytes, plus one GET of the home page for the announcement
+      # banner (~72 KB gzipped, ~20 MB a day); the 190 KB shutdowns page is
+      # only fetched when the session dies.
       scan_interval: 300
 
       # A cold start — first run, or after the container is rebuilt — does have
@@ -153,6 +155,22 @@ command_line:
         - address
         - next_outage_start
         - next_outage_end
+        # Every window not yet ended, as [start, end]. dtek_schedule_changed
+        # diffs it between polls; the two edges above cannot show a window
+        # that was withdrawn.
+        - windows
+        # The home page's announcement popup: DTEK's title and text verbatim,
+        # which part of the country it names (city, region, other), and
+        # whether it says Ukrenergo's emergency outages are on here now. See
+        # binary_sensor.dtek_emergency_shutdowns for what that flag is worth.
+        - banner_title
+        - banner_text
+        - banner_scope
+        - banner_emergency
+        # When the banner was last read, and why the latest read failed. A
+        # failed read keeps the last banner, so these two say how old it is.
+        - banner_checked_at
+        - banner_error
         - fetched_at
         - stale
         - error
@@ -210,6 +228,42 @@ template:
           error: "{{ state_attr('sensor.dtek_shutdowns', 'error') }}"
           last_poll: "{{ state_attr('sensor.dtek_shutdowns', 'fetched_at') }}"
 
+      # Ukrenergo's emergency outages, announced for this city or region.
+      #
+      # DTEK announces these ONLY in the home page's popup, which no AJAX
+      # answer carries, and they leave this address's own record blank: on
+      # 01.11.2026 the city was under them while dtek_outage_now said off. So
+      # this is the one place that says "the schedule does not apply now".
+      #
+      # Built to miss rather than to cry wolf, because an alert hangs off it:
+      #   * dtek_poll.py's banner_emergency() counts a sentence only when it
+      #     names this city or region, says the outages are on now, and has
+      #     none of the advice/history/all-clear words. A country-wide notice
+      #     shows on the dashboard and never turns this on.
+      #   * delay_on: two polls in a row must agree. One odd read is not news.
+      #   * unavailable, not on, once the banner has not been read for 20
+      #     minutes: a stale "on" from a fetch that keeps failing is exactly
+      #     the false alarm this is guarding against. dtek_data_stale and
+      #     banner_error say why.
+      - name: "DTEK emergency shutdowns"
+        unique_id: dtek_emergency_shutdowns
+        device_class: problem
+        icon: mdi:flash-alert-outline
+        availability: >-
+          {% set t = state_attr('sensor.dtek_shutdowns', 'banner_checked_at') %}
+          {{ states('sensor.dtek_shutdowns') not in ['unknown', 'unavailable']
+             and t is not none and as_datetime(t) is not none
+             and now() - as_datetime(t) < timedelta(minutes=20) }}
+        state: >-
+          {{ state_attr('sensor.dtek_shutdowns', 'banner_emergency') | bool(false) }}
+        delay_on:
+          minutes: 10
+        attributes:
+          scope: "{{ state_attr('sensor.dtek_shutdowns', 'banner_scope') }}"
+          title: "{{ state_attr('sensor.dtek_shutdowns', 'banner_title') }}"
+          text: "{{ state_attr('sensor.dtek_shutdowns', 'banner_text') }}"
+          checked_at: "{{ state_attr('sensor.dtek_shutdowns', 'banner_checked_at') }}"
+
       # DTEK sent something the poller could not fully read. Everything else
       # keeps publishing -- the raw strings included -- so this is the only
       # place a changed format shows up before it costs an alert.
@@ -254,10 +308,9 @@ template:
 
       # The grid is down and nobody said it would be.
       #
-      # POLARITY WARNING, and this is not a typo: the ESPHome sensor is called
-      # "Grid Condition Safe" but it reports on for UNSAFE. Its lambda in
-      # PowerStation/power-station.yaml returns true when the voltage is OUT of
-      # the 185-250 V band. Anything that touches that entity needs this note.
+      # Down means no mains (grid_down, under 150 V). Not the ESPHome "Grid
+      # Condition Safe" sensor: that is the 185-250 V quality check, on for
+      # UNSAFE, and a low but live grid trips it for hours.
       #
       # With schedules suspended this is true for every outage, which is
       # correct — right now every outage genuinely is unscheduled.
@@ -266,7 +319,7 @@ template:
         device_class: problem
         icon: mdi:flash-alert
         state: >-
-          {{ is_state('binary_sensor.powmr_inverter_grid_condition_safe', 'on')
+          {{ is_state('binary_sensor.grid_down', 'on')
              and not is_state('binary_sensor.dtek_scheduled_dark', 'on')
              and not is_state('binary_sensor.dtek_outage_now', 'on') }}
 
@@ -362,6 +415,15 @@ automation:
   # follows the outage DTEK records against this address -- the yellow box on
   # its site -- and shares the same two channels, so the design stays two
   # knobs on the phone, one per edge.
+  #
+  # After those, one watches the schedule itself: a window DTEK adds,
+  # withdraws or moves. The countdowns cannot see that -- a withdrawn window
+  # just never arrives -- which is how 18:00-22:00 on 26.10.2026 was
+  # cancelled at 15:34 without a word.
+  #
+  # The last pair, at the bottom, follows Ukrenergo's emergency outages, which
+  # DTEK announces only in its home-page popup and never per address. Same two
+  # channels again.
 
   # Fifteen minutes of warning before a scheduled window.
   #
@@ -530,9 +592,9 @@ automation:
             {% set of = state_attr('sensor.dtek_shutdowns', 'street_houses') %}
             {% if n is number and of is number and n > 0 %}{% if n == 1 %}Only this building on the street.{% else %}{{ n }} of {{ of }} houses on the street.{% endif %}{% endif %}
           # The claim against the measurement, the whole point of this package.
-          # on = UNSAFE -- see the POLARITY WARNING above.
+          # on = no mains (grid_down).
           grid_line: >-
-            {% if is_state('binary_sensor.powmr_inverter_grid_condition_safe', 'on') %}The inverter sees no mains.{% else %}The inverter still sees mains.{% endif %}
+            {% if is_state('binary_sensor.grid_down', 'on') %}The inverter sees no mains.{% else %}The inverter still sees mains.{% endif %}
           battery_line: >-
             {% set r = states('sensor.battery_runtime_remaining') %}
             {% set s = states('sensor.jkbms_gateway_bms_state_of_charge') %}
@@ -573,7 +635,7 @@ automation:
     action:
       - variables:
           grid_line: >-
-            {% if is_state('binary_sensor.powmr_inverter_grid_condition_safe', 'on') %}The inverter still sees no mains.{% else %}The inverter sees mains.{% endif %}
+            {% if is_state('binary_sensor.grid_down', 'on') %}The inverter still sees no mains.{% else %}The inverter sees mains.{% endif %}
           message: >-
             DTEK no longer reports an outage for queue {{ states('sensor.dtek_queue') }}. {{ grid_line }}
       - service: notify.household
@@ -615,7 +677,7 @@ automation:
           reason_line: >-
             {{ state_attr('sensor.dtek_shutdowns', 'outage_reason') or 'Outage' }}
           grid_line: >-
-            {% if is_state('binary_sensor.powmr_inverter_grid_condition_safe', 'on') %}The inverter sees no mains.{% else %}The inverter still sees mains.{% endif %}
+            {% if is_state('binary_sensor.grid_down', 'on') %}The inverter sees no mains.{% else %}The inverter still sees mains.{% endif %}
           message: >-
             DTEK's {{ end_line }} estimate has passed and the outage is still on record ({{ reason_line }}, queue {{ states('sensor.dtek_queue') }}). {{ grid_line }}
       - service: notify.household
@@ -630,4 +692,163 @@ automation:
       - service: notify.persistent_notification
         data:
           title: '⚠️ Alert: DTEK estimate passed'
+          message: "{{ message }}"
+
+  # DTEK has changed the stabilisation schedule: a window added, withdrawn or
+  # moved. Driven by the `windows` attribute, which lists every window that has
+  # not ended as [start, end] and reads the same on every poll until DTEK
+  # changes its mind (dark_windows() in dtek_poll.py).
+  #
+  # Only windows still ahead of the trigger count, so one that ends between two
+  # polls is not reported as cancelled. A moved window is one cancelled and one
+  # new, which is what it is. No from_state, or one without `windows` (restart,
+  # command_line.reload, the first poll after this shipped), is a fresh read,
+  # not a change. A failed poll keeps the last attributes, so it never fires.
+  #
+  # Cancellations alone are good news and go out on the "ends" channel;
+  # anything new is something to plan for and goes on "starts". One tag, so a
+  # schedule DTEK revises three times in an evening leaves one notification.
+  - id: dtek_schedule_changed
+    alias: '📅 DTEK schedule changed'
+    mode: queued
+    trigger:
+      - platform: state
+        entity_id: sensor.dtek_shutdowns
+        attribute: windows
+    condition:
+      - condition: template
+        value_template: >-
+          {{ trigger.from_state is not none and trigger.to_state is not none
+             and trigger.from_state.attributes.get('windows') is not none
+             and trigger.to_state.attributes.get('windows') is not none }}
+    action:
+      - variables:
+          # Each a sentence fragment rather than a list: variables render to
+          # text, and the message only ever wants them as text.
+          cancelled_line: >-
+            {% set old = trigger.from_state.attributes.get('windows') %}
+            {% set new = trigger.to_state.attributes.get('windows') %}
+            {% set ns = namespace(out=[]) %}
+            {% for w in old if w not in new and as_datetime(w[1]) > now() %}
+            {% set a = as_datetime(w[0]) | as_local %}{% set b = as_datetime(w[1]) | as_local %}
+            {% set d = 'today' if a.date() == now().date() else 'tomorrow' if a.date() == (now() + timedelta(days=1)).date() else a.strftime('%d.%m') %}
+            {% set ns.out = ns.out + [(a | as_timestamp | timestamp_custom('%H:%M')) ~ '–' ~ (b | as_timestamp | timestamp_custom('%H:%M')) ~ ' ' ~ d] %}
+            {% endfor %}
+            {{ ns.out | join(', ') }}
+          added_line: >-
+            {% set old = trigger.from_state.attributes.get('windows') %}
+            {% set new = trigger.to_state.attributes.get('windows') %}
+            {% set ns = namespace(out=[]) %}
+            {% for w in new if w not in old and as_datetime(w[1]) > now() %}
+            {% set a = as_datetime(w[0]) | as_local %}{% set b = as_datetime(w[1]) | as_local %}
+            {% set d = 'today' if a.date() == now().date() else 'tomorrow' if a.date() == (now() + timedelta(days=1)).date() else a.strftime('%d.%m') %}
+            {% set ns.out = ns.out + [(a | as_timestamp | timestamp_custom('%H:%M')) ~ '–' ~ (b | as_timestamp | timestamp_custom('%H:%M')) ~ ' ' ~ d] %}
+            {% endfor %}
+            {{ ns.out | join(', ') }}
+          # The windows this change left alone, so a cancellation does not
+          # leave you wondering whether the other one is still on. Nothing
+          # left at all is said outright; only new ones left is said already.
+          kept_line: >-
+            {% set old = trigger.from_state.attributes.get('windows') %}
+            {% set new = trigger.to_state.attributes.get('windows') %}
+            {% set ns = namespace(kept=[], left=0) %}
+            {% for w in new if as_datetime(w[1]) > now() %}
+            {% set ns.left = ns.left + 1 %}
+            {% if w in old %}{% set ns.kept = ns.kept + [w] %}{% endif %}
+            {% endfor %}
+            {% if ns.kept %}{% set a = as_datetime(ns.kept[0][0]) | as_local %}{% set b = as_datetime(ns.kept[0][1]) | as_local %}
+            {% set d = 'today' if a.date() == now().date() else 'tomorrow' if a.date() == (now() + timedelta(days=1)).date() else a.strftime('%d.%m') %}
+            Still on: {{ a | as_timestamp | timestamp_custom('%H:%M') }}–{{ b | as_timestamp | timestamp_custom('%H:%M') }} {{ d }}{% if ns.kept | count > 1 %} and {{ ns.kept | count - 1 }} more{% endif %}.
+            {% elif ns.left == 0 %}No windows left on the schedule.{% endif %}
+          channel: >-
+            {{ 'DTEK emergency ends' if added_line == '' else 'DTEK emergency starts' }}
+          message: >-
+            DTEK queue {{ states('sensor.dtek_queue') }}: {% if cancelled_line %}cancelled {{ cancelled_line }}. {% endif %}{% if added_line %}New: {{ added_line }}. {% endif %}{{ kept_line }}
+      - condition: template
+        value_template: "{{ cancelled_line != '' or added_line != '' }}"
+      - service: notify.household
+        data:
+          title: '📅 DTEK schedule changed'
+          message: "{{ message }}"
+          data:
+            ttl: 0
+            priority: high
+            channel: "{{ channel }}"
+            tag: dtek_schedule
+      - service: notify.persistent_notification
+        data:
+          title: '📅 DTEK schedule changed'
+          message: "{{ message }}"
+
+  # Ukrenergo's emergency outages, announced for this city or region in DTEK's
+  # home-page popup -- see binary_sensor.dtek_emergency_shutdowns. Same two
+  # channels and the same shape as the DTEK outage pair above, one tag, so the
+  # "lifted" push replaces the "announced" one on the lock screen.
+  #
+  # Edges only between real states. The sensor goes unavailable while the
+  # banner is unread for 20 minutes and unknown after a restart; neither of
+  # those may announce or lift anything, or a flaky fetch would push twice.
+  # The sensor itself has already waited out two polls (delay_on).
+  - id: dtek_emergency_announced
+    alias: '⚠️ Alert: Ukrenergo emergency outages'
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.dtek_emergency_shutdowns
+        from: 'off'
+        to: 'on'
+    action:
+      - variables:
+          # DTEK's own first line, verbatim: it names the place and the cause.
+          dtek_line: >-
+            {% set t = state_attr('sensor.dtek_shutdowns', 'banner_text') or '' %}
+            {{ (t.split('\n') | first)[:200] }}
+          grid_line: >-
+            {% if is_state('binary_sensor.grid_down', 'on') %}The inverter sees no mains.{% else %}The inverter still sees mains.{% endif %}
+          battery_line: >-
+            {% set r = states('sensor.battery_runtime_remaining') %}
+            {% set s = states('sensor.jkbms_gateway_bms_state_of_charge') %}
+            {% if r | is_number and s | is_number %}Battery {{ s | float | round(0) }}%, about {{ r | float | round(1) }} h left at the current draw.{% elif s | is_number %}Battery {{ s | float | round(0) }}%.{% endif %}
+          message: >-
+            {% if dtek_line %}{{ dtek_line }} {% endif %}No schedule applies and DTEK gives no end time. {{ grid_line }} {{ battery_line }}
+      - service: notify.household
+        data:
+          title: '⚠️ Alert: Ukrenergo emergency outages'
+          message: "{{ message }}"
+          data:
+            ttl: 0
+            priority: high
+            channel: DTEK emergency starts
+            tag: dtek_emergency_banner
+      - service: notify.persistent_notification
+        data:
+          title: '⚠️ Alert: Ukrenergo emergency outages'
+          message: "{{ message }}"
+
+  - id: dtek_emergency_lifted
+    alias: '✅ Alert: Ukrenergo emergency outages lifted'
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.dtek_emergency_shutdowns
+        from: 'on'
+        to: 'off'
+    action:
+      - variables:
+          grid_line: >-
+            {% if is_state('binary_sensor.grid_down', 'on') %}The inverter still sees no mains.{% else %}The inverter sees mains.{% endif %}
+          message: >-
+            DTEK no longer announces emergency outages here; schedules apply again where published. {{ grid_line }}
+      - service: notify.household
+        data:
+          title: '✅ Alert: Ukrenergo emergency outages lifted'
+          message: "{{ message }}"
+          data:
+            ttl: 0
+            priority: high
+            channel: DTEK emergency ends
+            tag: dtek_emergency_banner
+      - service: notify.persistent_notification
+        data:
+          title: '✅ Alert: Ukrenergo emergency outages lifted'
           message: "{{ message }}"

@@ -377,9 +377,9 @@ automation:
       - platform: state
         entity_id: binary_sensor.dtek_outage_now
         to: 'off'
-      # on = UNSAFE (the ESPHome sensor's polarity): off is mains back.
+      # Mains back (packages/grid_state.yaml).
       - platform: state
-        entity_id: binary_sensor.powmr_inverter_grid_condition_safe
+        entity_id: binary_sensor.grid_down
         to: 'off'
       # Self-healing, and a restart that lands after the outage ended.
       - platform: time_pattern
@@ -405,7 +405,7 @@ automation:
         entity_id: binary_sensor.dtek_outage_now
         state: 'off'
       - condition: state
-        entity_id: binary_sensor.powmr_inverter_grid_condition_safe
+        entity_id: binary_sensor.grid_down
         state: 'off'
     action:
       # The flag first: one attempt per outage, whatever the guard says.

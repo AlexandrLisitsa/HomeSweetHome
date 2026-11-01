@@ -21,6 +21,13 @@
  * on one view share ONE draft (SHARED below), so the Backup block's Import
  * lands in the Rules block's editor.
  *
+ * Nothing is ever switched on: a step runs only while its device is on (by
+ * its guard's running sensor where it has one, since an IR A/C only believes
+ * its mode), and the grid's return puts back only what is on or what a step
+ * switched off. The editor says so under every device. Three actions are the
+ * panel's own (PSEUDO): Change temperature by, Fan only, and Dim to, which
+ * only ever lowers a lamp.
+ *
  * Editing is on a local draft: nothing reaches Home Assistant until Save,
  * which calls script.load_shedding_save_config. That script validates and
  * raises on a bad config; the error is shown under the Save bar.
@@ -32,12 +39,43 @@
 
 const CARD = "load-shedding-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
+import { fxConfig, fxOn, fxSetup, FX_CSS } from "./card-fx.js?v=1.1.0";
 
-const VERSION = "3.3.0";
+const VERSION = "4.2.2";
 
-const RED = "var(--error-color, #db4437)";
-const GREEN = "var(--success-color, #43a047)";
-const AMBER = "var(--warning-color, #ffa600)";
+// Text colours, so the bright variants: they must read at 4.5:1 on the panels.
+const RED = "var(--ls-bad-hi)";
+const GREEN = "var(--ls-ok-hi)";
+const AMBER = "var(--ls-warn-hi)";
+
+/*
+ * IBM Plex, served from /local/fonts/ like the Power station cards. Chrome
+ * ignores an @font-face declared inside a shadow tree (see the long note in
+ * jkbms-battery-console-card.js), so the faces go on document.head, once.
+ */
+const FONT_STYLE_ID = "load-shedding-card-fonts";
+const LATIN = "U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, "
+  + "U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD";
+const CYRILLIC = "U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116";
+const FONTS = [
+  ["IBM Plex Mono", 400, "ibm-plex-mono-400-latin.woff2", LATIN],
+  ["IBM Plex Mono", 500, "ibm-plex-mono-500-latin.woff2", LATIN],
+  ["IBM Plex Mono", 600, "ibm-plex-mono-600-latin.woff2", LATIN],
+  ["IBM Plex Mono", 400, "ibm-plex-mono-400-cyrillic.woff2", CYRILLIC],
+  ["IBM Plex Sans", "400 600", "ibm-plex-sans-latin.woff2", LATIN],
+  ["IBM Plex Sans", "400 600", "ibm-plex-sans-cyrillic.woff2", CYRILLIC],
+].map(([family, weight, file, range]) => "@font-face{font-family:'" + family + "';font-style:normal;"
+  + "font-weight:" + weight + ";font-display:swap;src:url('/local/fonts/" + file + "') format('woff2');"
+  + "unicode-range:" + range + "}").join("\n");
+
+function installFonts() {
+  if (typeof document === "undefined" || !document.head) return;
+  if (document.getElementById(FONT_STYLE_ID)) return;
+  const style = document.createElement("style");
+  style.id = FONT_STYLE_ID;
+  style.textContent = FONTS;
+  document.head.appendChild(style);
+}
 
 const BLOCKS = ["hero", "upcoming", "rules", "backup"];
 
@@ -47,8 +85,8 @@ const DEFAULTS = {
   master: "input_boolean.load_shedding_enabled",
   soc: "sensor.jkbms_gateway_bms_state_of_charge",
   runtime: "sensor.battery_runtime_remaining",
-  // on = UNSAFE (device_class: safety)
-  grid_unsafe: "binary_sensor.powmr_inverter_grid_condition_safe",
+  // on = the grid has put the house on the pack (packages/grid_state.yaml)
+  on_battery: "binary_sensor.house_on_battery",
   save_script: "load_shedding_save_config",
   hold_script: "load_shedding_hold",
   release_script: "load_shedding_release",
@@ -77,11 +115,28 @@ const ICONS = {
 
 // The one action that is not a real service: relative to the setpoint the
 // device had before its first step, resolved by the package.
-const ADJUST = {
-  name: "Change temperature by",
-  fields: { by: { required: true,
-    selector: { number: { min: -10, max: 10, step: 0.5, unit_of_measurement: "°" } } } },
+// The panel's own actions, each a real service underneath, resolved by
+// load_shed_apply in the package. All three only ever reduce: the setpoint is
+// relative to the one before the first step; Dim to never brightens; Fan only,
+// like every step, runs only while the unit is on. `at` is where each goes in
+// its domain's list.
+const PSEUDO = {
+  "climate.adjust_temperature": { name: "Change temperature by", at: 2,
+    fields: { by: { required: true,
+      selector: { number: { min: -10, max: 10, step: 0.5, unit_of_measurement: "°" } } } } },
+  "climate.fan_only": { name: "Fan only", at: 3, fields: {} },
+  "light.dim_to": { name: "Dim to", at: 0,
+    fields: { brightness_pct: { required: true,
+      selector: { number: { min: 1, max: 100, step: 1, unit_of_measurement: "%" } } } } },
 };
+
+/** Could this step switch the device on, were it off? The engine never lets it. */
+function couldSwitchOn(step) {
+  const a = String((step && step.action) || "");
+  const mode = step && step.data && step.data.hvac_mode;
+  return a.endsWith(".turn_on") || a === "climate.fan_only" || a === "light.dim_to"
+    || (a === "climate.set_hvac_mode" && !!mode && mode !== "off");
+}
 
 /*
  * Lines 2-4 of every tooltip (docs/dashboard-tooltips.md); line 1, the name
@@ -215,7 +270,11 @@ class LoadSheddingCard extends HTMLElement {
     super();
     this.attachShadow({ mode: "open" });
     cardTip(this, this.shadowRoot);
+    installFonts();
     this._print = null;
+    // Off screen or in a hidden tab: the glow and the step pulses hold still.
+    this._offscreen = false;
+    this._onVisibility = () => this._pause();
     this._pending = false;
     this._ui = { picker: false, query: "", adv: {}, guard: {}, exportOpen: false, importText: "" };
     this._onShared = () => this._render(true);
@@ -233,7 +292,9 @@ class LoadSheddingCard extends HTMLElement {
         || cfg.blocks.some((b) => BLOCKS.indexOf(b) < 0)) {
       throw new Error(CARD + ": blocks must be a non-empty list of " + BLOCKS.join(", "));
     }
+    cfg.fx = fxConfig(CARD, cfg.fx);
     this._config = cfg;
+    this._fxWire();
     this._print = null;
     if (this._hass) this._render(true);
   }
@@ -243,12 +304,43 @@ class LoadSheddingCard extends HTMLElement {
     if (this._config) this._render(false);
   }
 
+  /** Effects (card-fx.js): only with an `fx` key, so the real tab is untouched. */
+  _fxWire() {
+    if (this._fxOff) this._fxOff();
+    this._fxOff = null;
+    if (!this.isConnected || !this._config) return;
+    this._fxOff = fxSetup(this, this._config.fx);
+  }
+
   connectedCallback() {
     SHARED.subs.add(this._onShared);
+    if (!this._seen && window.IntersectionObserver) {
+      this._seen = new window.IntersectionObserver((entries) => {
+        this._offscreen = !entries[entries.length - 1].isIntersecting;
+        this._pause();
+      });
+    }
+    if (this._seen) this._seen.observe(this);
+    if (typeof document.addEventListener === "function") {
+      document.addEventListener("visibilitychange", this._onVisibility);
+    }
+    this._fxWire();
   }
 
   disconnectedCallback() {
     SHARED.subs.delete(this._onShared);
+    if (this._seen) this._seen.disconnect();
+    if (typeof document.removeEventListener === "function") {
+      document.removeEventListener("visibilitychange", this._onVisibility);
+    }
+    if (this._fxOff) this._fxOff();
+    this._fxOff = null;
+  }
+
+  /** Every animation holds while no one can see the card. */
+  _pause() {
+    if (this._offscreen || !!document.hidden) this.setAttribute("paused", "");
+    else this.removeAttribute("paused");
   }
 
   getCardSize() {
@@ -312,10 +404,9 @@ class LoadSheddingCard extends HTMLElement {
     const rank = (s) => (s === "turn_off" ? 0 : s === "turn_on" ? 1 : 2);
     names.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
     const list = names.map((s) => ({ action: domain + "." + s, name: this._svcName(domain, s), def: all[s] }));
-    if (domain === "climate") {
-      list.splice(Math.min(list.length, 2), 0,
-        { action: "climate.adjust_temperature", name: ADJUST.name, def: ADJUST });
-    }
+    Object.entries(PSEUDO).filter(([action]) => action.split(".")[0] === domain)
+      .sort((a, b) => a[1].at - b[1].at)
+      .forEach(([action, def]) => list.splice(Math.min(list.length, def.at), 0, { action, name: def.name, def }));
     return list;
   }
 
@@ -365,7 +456,7 @@ class LoadSheddingCard extends HTMLElement {
   _fingerprint() {
     const c = this._config;
     const rules = this._rules();
-    const ids = [c.config, c.state, c.master, c.soc, c.runtime, c.grid_unsafe];
+    const ids = [c.config, c.state, c.master, c.soc, c.runtime, c.on_battery];
     const parts = ids.map((id) => {
       const st = this._obj(id);
       return st ? st.state + JSON.stringify(st.attributes) : "-";
@@ -632,7 +723,8 @@ class LoadSheddingCard extends HTMLElement {
     const render = { hero: () => this._heroHTML(), upcoming: () => this._upcomingHTML(),
       rules: () => this._rulesHTML(), backup: () => this._backupHTML() };
     const parts = this._config.blocks.map((b) => render[b]());
-    this.shadowRoot.innerHTML = `<style>${STYLE}</style><div class="wrap">${parts.join("")}</div>`;
+    const fx = this._config.fx ? FX_CSS + FX_STYLE : "";
+    this.shadowRoot.innerHTML = `<style>${STYLE}${fx}</style><div class="wrap">${parts.join("")}</div>`;
   }
 
   /** Every enabled device's steps, for the bar. */
@@ -653,42 +745,66 @@ class LoadSheddingCard extends HTMLElement {
   _heroHTML() {
     const c = this._config;
     const master = this._state(c.master) === "on";
-    const gridDown = this._state(c.grid_unsafe) === "on";
+    const gridDown = this._state(c.on_battery) === "on";
     const soc = this._num(c.soc);
     const runtime = this._num(c.runtime);
     const shed = this._shed();
     const rules = this._stored();
     const count = Object.keys(shed).length;
 
-    let accent;
+    let kind;
     let word;
     let lede;
     if (!master) {
-      accent = "var(--disabled-text-color)";
+      kind = "off";
       word = "Off";
       lede = "Nothing is changed automatically. Turn it on to arm the rules.";
     } else if (gridDown) {
-      accent = RED;
+      kind = "bad";
       word = "Armed";
       lede = "The grid is down and the house is on battery. Devices step down as the battery passes their %.";
     } else {
-      accent = GREEN;
+      kind = "ok";
       word = "Standing by";
       lede = "The grid is up, so nothing changes whatever the battery says. The rules apply only during an outage.";
     }
 
-    const marks = this._marks(rules, shed).map((m, i) => `
-      <div class="mark ${m.done ? "done" : ""} ${i % 2 ? "alt" : ""}" style="left:${m.soc}%"${
-        this._tip(m.name + " at " + Math.round(m.soc) + " %", m.done ? "taken" : "ahead", "mark")}>
-        <span>${this._esc(m.name)} · ${Math.round(m.soc)}%</span></div>`).join("");
+    // The battery against the steps. A step lights amber once the battery is
+    // within NEAR % above it, and pulses while that matters (armed); it turns
+    // red once taken. Below the lowest step is the danger zone.
+    const NEAR = 10;
+    const marks = this._marks(rules, shed);
+    const lowest = marks.length ? Math.min(...marks.map((m) => m.soc)) : null;
+    const highest = marks.length ? Math.max(...marks.map((m) => m.soc)) : null;
+    const level = soc === null ? null : Math.max(0, Math.min(100, soc));
+    const zone = level === null || highest === null ? "ok"
+      : level <= lowest ? "bad" : level <= highest ? "warn" : "ok";
+    // One marker per percentage: two devices stepping at 80 % share a label.
+    const groups = [];
+    marks.forEach((m) => {
+      const g = groups.find((x) => x.soc === m.soc);
+      if (g) { g.names.push(m.name); g.done = g.done && m.done; } else groups.push({ soc: m.soc, names: [m.name], done: m.done });
+    });
+    const markHTML = groups.map((m, i) => {
+      const near = !m.done && level !== null && level > m.soc && level - m.soc <= NEAR;
+      const st = m.done ? "done" : near ? "near" : "ahead";
+      const names = m.names.join(", ");
+      // A label near either end hangs inward, so it never leaves the card.
+      const edge = m.soc >= 85 ? " right" : m.soc <= 15 ? " left" : "";
+      // Live thresholds: how close, 0 at NEAR % away to 1 on the step.
+      const prox = near && fxOn(this._config.fx, "live_thresholds")
+        ? ";--fxp:" + (1 - (level - m.soc) / NEAR).toFixed(3) : "";
+      return `<div class="mark ${st} ${i % 2 ? "alt" : ""}${edge}" style="left:${m.soc}%${prox}"${
+        this._tip(names + " at " + Math.round(m.soc) + " %", m.done ? "taken" : near ? "close" : "ahead", "mark")}>
+        <span><i class="nm">${this._esc(names)} · </i>${Math.round(m.soc)}%</span></div>`;
+    }).join("");
 
     return `
-      <ha-card class="hero" style="--accent:${accent}">
+      <ha-card class="hero k-${kind}${gridDown && master ? " live" : ""}">
         <div class="pad hero-pad">
           <div class="hero-left">
             <div class="eyebrow">
-              <span class="dot"></span>
-              <span class="lbl">Load shedding</span>
+              <span class="pill"><span class="dot"></span><span class="lbl">Load shedding</span></span>
             </div>
             <h1${this._tip("Load shedding", word, "state")}>${word}</h1>
             <p class="lede">${lede}</p>
@@ -700,25 +816,27 @@ class LoadSheddingCard extends HTMLElement {
           <div class="tiles">
             <div class="tile"${this._tip("Battery", soc === null ? "unknown" : Math.round(soc) + " %", "tile_soc")}>
               <span class="k">Battery</span>
-              <span class="v">${soc === null ? "—" : Math.round(soc) + "%"}</span></div>
+              <span class="v z-${zone}">${soc === null ? "—" : Math.round(soc) + "%"}</span></div>
             <div class="tile"${this._tip("Grid", gridDown ? "down" : "up", "tile_grid")}><span class="k">Grid</span>
-              <span class="v" style="color:${gridDown ? RED : GREEN}">${gridDown ? "down" : "up"}</span></div>
+              <span class="v ${gridDown ? "z-bad" : "z-ok"}">${gridDown ? "down" : "up"}</span></div>
             <div class="tile"${this._tip("Runtime left", runtime === null ? "unknown" : runtime.toFixed(1) + " h",
               "tile_runtime")}><span class="k">Runtime left</span>
               <span class="v ${runtime === null ? "dim" : ""}">${runtime === null ? "—" : runtime.toFixed(1) + " h"}</span>
               <span class="s">at the current draw</span></div>
             <div class="tile"${this._tip("Stepped down", count + " / " + rules.devices.length, "tile_shed")}>
               <span class="k">Stepped down</span>
-              <span class="v" style="color:${count ? AMBER : "inherit"}">${count} / ${rules.devices.length}</span>
+              <span class="v ${count ? "z-warn" : ""}">${count} / ${rules.devices.length}</span>
               <span class="s">devices</span></div>
           </div>
         </div>
         <div class="pad barpad">
           <div class="bar">
-            <div class="fill" style="width:${soc === null ? 0 : Math.max(0, Math.min(100, soc))}%"></div>
-            ${marks}
+            <div class="fill z-${zone}" style="width:${level === null ? 0 : level}%"></div>
+            ${lowest !== null ? `<div class="danger" style="width:${lowest}%"></div>` : ""}
+            ${markHTML}
+            ${level !== null ? `<div class="knob z-${zone}" style="left:${level}%"><b>${Math.round(level)}%</b></div>` : ""}
           </div>
-          <div class="scale"><span>0%</span><span>battery</span><span>100%</span></div>
+          <div class="scale"><span>0%</span><span>25</span><span>50</span><span>75</span><span>100%</span></div>
         </div>
       </ha-card>`;
   }
@@ -766,14 +884,14 @@ class LoadSheddingCard extends HTMLElement {
     if (!step) return "deepest step reached";
     const domain = d.entity.split(".")[0];
     const svc = String(step.action || "").split(".")[1] || "";
-    const name = step.action === "climate.adjust_temperature" ? ADJUST.name : this._svcName(domain, svc);
+    const name = PSEUDO[step.action] ? PSEUDO[step.action].name : this._svcName(domain, svc);
     const data = step.data || {};
     const bits = Object.entries(data).map(([k, v]) => k.replace(/_/g, " ") + " " + v);
     return name + (bits.length ? " (" + bits.join(", ") + ")" : "");
   }
 
   _upcomingHTML() {
-    const outage = this._state(this._config.grid_unsafe) === "on";
+    const outage = this._state(this._config.on_battery) === "on";
     const armed = this._state(this._config.master) === "on";
     const margin = this._stored().warn_margin;
     const rows = this._upcoming();
@@ -959,6 +1077,9 @@ class LoadSheddingCard extends HTMLElement {
           <button class="btn small" data-act="add-step" data-dev="${i}"${
             this._tip("+ Add step", (d.steps || []).length + ((d.steps || []).length === 1 ? " step" : " steps"),
               "add_step")}>+ Add step</button>
+          <p class="only-on">Applies only while it is on${g.running
+            ? ` (measured by <code>${this._esc(g.running)}</code>)` : ""}. Never switches it on, and the grid's
+            return never switches on what you switched off.</p>
         </div>
         <div class="guard">
           <button class="link" data-act="guard" data-dev="${i}"${
@@ -1027,6 +1148,7 @@ class LoadSheddingCard extends HTMLElement {
         <select class="sel" data-kind="action" data-dev="${i}" data-step="${si}"${
           this._tip("Action", cur ? cur.name : s.action || "not set", "step_action")}>${options}</select>
         <span class="flds">${fieldsHTML}</span>
+        ${couldSwitchOn(s) ? '<span class="note-on">only while on</span>' : ""}
         ${more}
         <button class="icon" data-act="remove-step" data-dev="${i}" data-step="${si}"${
           this._tip("Remove step", Number.isFinite(soc) && s.soc !== null ? "at " + soc + " %" : "", "step_remove")}>✕</button>
@@ -1143,158 +1265,251 @@ class LoadSheddingCard extends HTMLElement {
 }
 
 // --- styles: the Shutdowns card's, plus the editor -----------------------------
+// --- styles ----------------------------------------------------------------
+//
+// The console palette of the Shutdowns tab, as the card's own colours (--ls-*
+// on :host), not the HA theme's: the panels are graphite whatever the theme, so
+// their text must not take the theme's text colours, which are dark in the
+// light theme. test_power_cards.js checks every text colour for 4.5:1.
+/*
+ * Effect styles (card-fx.js), appended only when the card has an fx key and
+ * gated on the host's data-fx.
+ *
+ * Both effects improve on something the tab already draws: the near markers
+ * glow (pulsing only during an outage) and the band below the lowest step is
+ * hatched. live_thresholds scales the glow with how close the battery is and
+ * pulses whenever a step is near; danger_zone deepens the band to a red that
+ * fades toward the step, with the hatch drifting.
+ */
+const FX_STYLE = `
+:host([data-fx~="live_thresholds"]) .mark.near {
+  box-shadow: 0 0 calc(4px + var(--fxp, 0) * 18px) calc(var(--fxp, 0) * 3px) var(--ls-warn-hi);
+  animation: fxNear calc(2.4s - var(--fxp, 0) * 1.6s) ease-in-out infinite; }
+@keyframes fxNear { 50% { opacity: .55; } }
+:host([data-fx~="danger_zone"]) .danger {
+  background: repeating-linear-gradient(135deg, rgba(255, 146, 138, .38) 0 4px, transparent 4px 10px) 0 0 / 14px 14px,
+    linear-gradient(90deg, color-mix(in srgb, var(--ls-bad) 55%, transparent), color-mix(in srgb, var(--ls-bad) 12%, transparent));
+  box-shadow: inset -2px 0 0 var(--ls-bad-hi), 0 0 14px color-mix(in srgb, var(--ls-bad) 45%, transparent);
+  animation: fxHatch 3s linear infinite; }
+@keyframes fxHatch { to { background-position: 14px 0, 0 0; } }
+:host([paused]) .mark.near, :host([paused]) .danger { animation-play-state: paused; }
+@media (prefers-reduced-motion: reduce) {
+  :host([data-fx]) .mark.near, :host([data-fx]) .danger { animation: none !important; }
+}
+`;
+
 const STYLE = `
-:host { display: block; }
+:host {
+  display: block; color-scheme: dark; container-type: inline-size;
+  --ls-panel: #0b0c0f;
+  --ls-inner: #0e1014;
+  --ls-line: #1c1e24;
+  --ls-line2: #23262e;
+  --ls-text: #e8eaed;
+  --ls-text2: #a9b5c3;
+  --ls-muted: #8a909b;
+  --ls-dim: #2a2e36;
+  --ls-ok: #589569;
+  --ls-ok-hi: #62d6a8;
+  --ls-warn: #ae8446;
+  --ls-warn-hi: #f2be62;
+  --ls-bad: #bb635b;
+  --ls-bad-hi: #ff928a;
+  --ls-link: #86b3e3;
+  --ls-sans: "IBM Plex Sans", system-ui, "Segoe UI", sans-serif;
+  --ls-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+:host([paused]) *, :host([paused]) *::before { animation-play-state: paused !important; }
 .wrap {
-  --mono: var(--code-font-family, ui-monospace, "Roboto Mono", SFMono-Regular, Consolas, monospace);
-  display: flex; flex-direction: column; gap: 16px;
-  font-family: var(--paper-font-body1_-_font-family, Roboto, system-ui, sans-serif);
-  font-size: 14px; line-height: 1.45; color: var(--primary-text-color);
+  display: flex; flex-direction: column; gap: 12px;
+  font-family: var(--ls-sans); font-size: 14px; line-height: 1.45; color: var(--ls-text);
   -webkit-font-smoothing: antialiased;
 }
-.pad { padding: 20px 22px; display: flex; flex-direction: column; gap: 14px; }
-h1 { margin: 0; font-size: 34px; font-weight: 300; line-height: 1.15; }
-h2 { margin: 0; font-size: 17px; font-weight: 500; }
+ha-card { display: block; background: var(--ls-panel); color: var(--ls-text); border: 1px solid var(--ls-line);
+  border-radius: 12px; box-shadow: none; }
+.pad { padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; }
+h1 { margin: 0; font: 600 30px/1.15 var(--ls-sans); }
+h2 { margin: 0; font: 600 15px/1.3 var(--ls-sans); }
 p { margin: 0; }
-code { font-family: var(--mono); font-size: 12px; }
-b { font-weight: 500; }
+code { font-family: var(--ls-mono); font-size: 12px; }
+b { font-weight: 600; }
 
-.hero { border-left: 4px solid var(--accent); }
-.hero-pad { padding: 24px 28px 8px; flex-direction: row; flex-wrap: wrap; gap: 32px; align-items: center; }
-.hero-left { flex: 1 1 380px; min-width: 240px; display: flex; flex-direction: column; gap: 10px; }
-.eyebrow { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
-.eyebrow .lbl, .tile .k, .scale, .cap {
-  font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--secondary-text-color);
-}
-.eyebrow .lbl { font-size: 12px; letter-spacing: .12em; }
-.dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; background: var(--accent);
+/* --- hero --- */
+.hero { --k: var(--ls-ok); --k-hi: var(--ls-ok-hi); position: relative; overflow: hidden;
+  border-color: color-mix(in srgb, var(--k) 50%, var(--ls-line)); }
+.hero.k-bad { --k: var(--ls-bad); --k-hi: var(--ls-bad-hi); }
+.hero.k-off { --k: var(--ls-muted); --k-hi: var(--ls-text2); }
+.hero::before { content: ""; position: absolute; inset: -40% -10% auto auto; width: 65%; height: 170%;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--k) 26%, transparent), transparent);
+  animation: breathe 5s ease-in-out infinite; pointer-events: none; }
+.hero.live::before { animation-duration: 2.6s; }
+.hero.k-off::before { animation: none; opacity: .25; }
+@keyframes breathe { 0%, 100% { opacity: .35; transform: scale(.96); } 50% { opacity: .9; transform: scale(1.04); } }
+.hero-pad { position: relative; padding: 22px 24px 6px; flex-direction: row; flex-wrap: wrap; gap: 28px; align-items: center; }
+.hero-left { flex: 1 1 360px; min-width: 240px; display: flex; flex-direction: column; gap: 9px; }
+.eyebrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.pill { display: inline-flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px;
+  font: 600 10.5px/1 var(--ls-mono); letter-spacing: .06em; text-transform: uppercase;
+  color: var(--k-hi); background: color-mix(in srgb, var(--k) 18%, transparent); }
+.dot { width: 6px; height: 6px; border-radius: 50%; background: var(--k); box-shadow: 0 0 8px var(--k);
   animation: lspulse 2.4s ease-in-out infinite; }
+.k-off .dot { animation: none; box-shadow: none; }
 @keyframes lspulse { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }
-@media (prefers-reduced-motion: reduce) { .dot { animation: none } }
-.hero h1 { color: var(--accent); }
-.lede { font-size: 16px; opacity: .82; max-width: 46ch; text-wrap: pretty; }
-.arm { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--secondary-text-color); }
-.tiles { flex: 1 1 420px; display: flex; flex-wrap: wrap; gap: 12px; }
-.tile { flex: 1 1 130px; background: var(--secondary-background-color, rgba(127,127,127,.12));
-  border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 4px; }
-.tile .v { font-size: 22px; font-weight: 400; font-family: var(--mono); }
-.tile .v.dim { color: var(--disabled-text-color); }
-.tile .s { font-size: 12px; color: var(--secondary-text-color); }
+.hero h1 { color: var(--k-hi); }
+.lede { font-size: 15px; color: var(--ls-text); max-width: 52ch; text-wrap: pretty; }
+.arm { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--ls-text2); }
+.tiles { position: relative; flex: 1 1 440px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.tile { background: var(--ls-inner); border: 1px solid var(--ls-line2); border-radius: 8px;
+  padding: 11px 13px; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.tile .k, .scale, .cap, th { font: 600 10.5px/1.2 var(--ls-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--ls-muted); }
+.tile .v { font: 600 19px/1.2 var(--ls-mono); font-variant-numeric: tabular-nums; color: var(--ls-text); }
+.tile .v.dim { color: var(--ls-muted); }
+.tile .s { font-size: 12px; color: var(--ls-muted); }
+.z-ok { color: var(--ls-ok-hi) !important; }
+.z-warn { color: var(--ls-warn-hi) !important; }
+.z-bad { color: var(--ls-bad-hi) !important; }
 
-.barpad { padding: 8px 28px 20px; gap: 6px; }
-.bar { position: relative; height: 12px; border-radius: 6px; margin-top: 40px;
-  background: rgba(127,127,127,.16); }
-.fill { position: absolute; inset: 0 auto 0 0; border-radius: 6px; background: var(--success-color, #43a047); opacity: .55; }
-.mark { position: absolute; top: -5px; bottom: -5px; width: 2px; margin-left: -1px; background: ${AMBER}; }
-.mark.done { background: ${RED}; }
-.mark span { position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); margin-bottom: 4px;
-  font-family: var(--mono); font-size: 10px; white-space: nowrap; color: var(--secondary-text-color); }
-.mark.alt span { margin-bottom: 18px; }
-.scale { display: flex; justify-content: space-between; }
+/* --- the battery against the steps --- */
+.barpad { position: relative; padding: 6px 24px 18px; gap: 6px; }
+.bar { position: relative; height: 18px; border-radius: 6px; margin-top: 44px;
+  background: var(--ls-inner); border: 1px solid var(--ls-line2); }
+/* Over the fill, translucent, so the zone shows whatever the battery says. */
+.danger { position: absolute; inset: 0 auto 0 0; border-radius: 5px 0 0 5px; pointer-events: none;
+  background: repeating-linear-gradient(135deg, rgba(255, 146, 138, .30) 0 4px, transparent 4px 10px);
+  box-shadow: inset -2px 0 0 color-mix(in srgb, var(--ls-bad) 70%, transparent); }
+.fill { position: absolute; inset: 2px auto 2px 2px; border-radius: 4px; background: var(--ls-ok);
+  transition: width .6s ease, background-color .6s ease; }
+.fill.z-warn { background: var(--ls-warn); }
+.fill.z-bad { background: var(--ls-bad); }
+.knob { position: absolute; top: -5px; bottom: -5px; width: 3px; margin-left: -1.5px; border-radius: 2px;
+  background: var(--ls-text); box-shadow: 0 0 8px rgba(255,255,255,.45); transition: left .6s ease; }
+.knob b { position: absolute; top: calc(100% + 4px); left: 50%; transform: translateX(-50%);
+  font: 600 11px var(--ls-mono); color: var(--ls-text); white-space: nowrap; }
+.mark { position: absolute; top: -7px; bottom: -7px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--ls-muted); }
+.mark span { position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); margin-bottom: 5px;
+  font: 500 10.5px var(--ls-mono); white-space: nowrap; color: var(--ls-muted);
+  padding: 2px 6px; border-radius: 999px; background: var(--ls-inner); border: 1px solid var(--ls-line2); }
+.mark.alt span { margin-bottom: 26px; }
+.mark span i { font-style: normal; }
+.mark.right span { left: auto; right: -6px; transform: none; }
+.mark.left span { left: -6px; transform: none; }
+.mark.near { background: var(--ls-warn-hi); box-shadow: 0 0 8px var(--ls-warn); }
+.mark.near span { color: var(--ls-warn-hi); border-color: color-mix(in srgb, var(--ls-warn) 60%, transparent);
+  background: color-mix(in srgb, var(--ls-warn) 16%, var(--ls-inner)); }
+.live .mark.near, .live .mark.near span { animation: nearpulse 1.6s ease-in-out infinite; }
+@keyframes nearpulse { 0%, 100% { box-shadow: 0 0 4px var(--ls-warn); } 50% { box-shadow: 0 0 14px var(--ls-warn-hi); } }
+.mark.done { background: var(--ls-bad-hi); }
+.mark.done span { color: var(--ls-bad-hi); border-color: color-mix(in srgb, var(--ls-bad) 60%, transparent);
+  background: color-mix(in srgb, var(--ls-bad) 16%, var(--ls-inner)); }
+.scale { display: flex; justify-content: space-between; margin-top: 16px; }
 
+/* --- shared --- */
 .head { display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; }
 .head h2 { flex: 1 1 auto; }
-.stamp { font-size: 12px; color: var(--secondary-text-color); }
-.blurb { font-size: 13px; color: var(--secondary-text-color); max-width: 70ch; text-wrap: pretty; }
-.empty { font-size: 13px; color: var(--disabled-text-color); }
-.foot { border-top: 1px solid var(--divider-color); padding-top: 12px;
-  font-size: 12px; color: var(--secondary-text-color); line-height: 1.6; }
-
-.savebar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 14px;
-  border-radius: 10px; background: rgba(3,169,244,.10); border: 1px solid rgba(3,169,244,.35); font-size: 13px; }
+.stamp { font: 500 11.5px var(--ls-mono); color: var(--ls-muted); }
+.blurb { font-size: 13px; color: var(--ls-text2); max-width: 70ch; text-wrap: pretty; }
+.empty { font-size: 13px; color: var(--ls-muted); }
+.foot { border-top: 1px solid var(--ls-line); padding-top: 10px; font-size: 12px; color: var(--ls-muted); line-height: 1.6; }
+.savebar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 14px; border-radius: 8px;
+  background: color-mix(in srgb, var(--ls-link) 10%, transparent); border: 1px solid color-mix(in srgb, var(--ls-link) 40%, transparent);
+  font-size: 13px; }
 .savebar span { flex: 1 1 auto; }
-.savebar.err { background: rgba(219,68,55,.10); border-color: rgba(219,68,55,.45); }
+.savebar.err { background: color-mix(in srgb, var(--ls-bad) 12%, transparent); border-color: color-mix(in srgb, var(--ls-bad) 50%, transparent); }
 
-.dev { border: 1px solid var(--divider-color); border-radius: 12px; padding: 14px 16px;
+/* --- the rules --- */
+.dev { background: var(--ls-inner); border: 1px solid var(--ls-line2); border-radius: 10px; padding: 14px 16px;
   display: flex; flex-direction: column; gap: 10px; }
 .dev.off { opacity: .6; }
 .devhead { display: flex; align-items: center; gap: 12px; }
-.devhead .n { font-family: var(--mono); color: var(--secondary-text-color); width: 1.2em; text-align: right; }
-.devhead ha-icon { --mdc-icon-size: 22px; color: var(--secondary-text-color); }
+.devhead .n { font-family: var(--ls-mono); color: var(--ls-muted); width: 1.2em; text-align: right; }
+.devhead ha-icon { --mdc-icon-size: 22px; color: var(--ls-text2); }
 .who { flex: 1 1 auto; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .sub { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; font-size: 12px; }
-.sub code { color: var(--secondary-text-color); cursor: pointer; }
-.st { color: var(--primary-text-color); }
-.st.dim { color: var(--secondary-text-color); }
-.st.bad { color: ${RED}; }
-.st.warn { color: ${AMBER}; }
-
+.sub code { color: var(--ls-muted); cursor: pointer; }
+.st { color: var(--ls-text); }
+.st.dim { color: var(--ls-muted); }
+.st.bad { color: var(--ls-bad-hi); }
+.st.warn { color: var(--ls-warn-hi); }
 .steps { display: flex; flex-direction: column; gap: 8px; padding-left: 34px; }
 .step { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding: 8px 10px;
-  border-radius: 10px; background: var(--secondary-background-color, rgba(127,127,127,.08)); }
-.at, .arrow, .u { color: var(--secondary-text-color); font-size: 13px; }
+  border-radius: 8px; background: var(--ls-panel); border: 1px solid var(--ls-line); }
+.at, .arrow, .u { color: var(--ls-muted); font-size: 13px; }
+/* What the engine guarantees, said where the steps are written. */
+.only-on { margin: 2px 0 0; font-size: 12px; color: var(--ls-muted); max-width: 70ch; }
+.only-on code { color: var(--ls-text2); }
+.note-on { font: 500 10.5px/1 var(--ls-mono); color: var(--ls-text2); padding: 4px 8px; border-radius: 999px;
+  border: 1px dashed var(--ls-line2); white-space: nowrap; }
 .flds { display: contents; }
 .fld { display: inline-flex; flex-direction: column; gap: 2px; }
 .fld .in { display: inline-flex; align-items: center; gap: 4px; }
 .guard { padding-left: 34px; display: flex; flex-direction: column; gap: 8px; }
 .gfields { display: flex; flex-wrap: wrap; gap: 10px; }
 .gf { display: inline-flex; flex-direction: column; gap: 2px; min-width: 220px; }
-
-.txt, .num, .sel, .code {
-  font: inherit; font-size: 13px; color: var(--primary-text-color);
-  background: var(--card-background-color, transparent); border: 1px solid var(--divider-color);
-  border-radius: 8px; padding: 6px 8px; box-sizing: border-box;
-}
-.txt.name { font-size: 15px; border-color: transparent; padding: 2px 6px; margin-left: -6px; background: transparent; }
-.txt.name:hover, .txt.name:focus { border-color: var(--divider-color); }
-.txt.mono, .code { font-family: var(--mono); font-size: 12px; }
-.num { width: 5.5em; font-family: var(--mono); }
+.txt, .num, .sel, .code { font: inherit; font-size: 13px; color: var(--ls-text); background: var(--ls-panel);
+  border: 1px solid var(--ls-line2); border-radius: 6px; padding: 6px 8px; box-sizing: border-box; }
+.txt.name { font-size: 15px; font-weight: 600; border-color: transparent; padding: 2px 6px; margin-left: -6px; background: transparent; }
+.txt.name:hover, .txt.name:focus { border-color: var(--ls-line2); }
+.txt.mono, .code, .num { font-family: var(--ls-mono); font-size: 12.5px; }
+.num { width: 5.5em; }
 .num.soc { width: 4.2em; }
 .sel { max-width: 16em; }
 .code { width: 100%; min-height: 120px; resize: vertical; }
-.txt:focus, .num:focus, .sel:focus, .code:focus { outline: 2px solid var(--primary-color, #03a9f4); outline-offset: -1px; }
-
-.btn { font: inherit; font-size: 13px; padding: 6px 14px; border-radius: 8px; cursor: pointer;
-  border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); }
-.btn:hover { background: rgba(127,127,127,.12); }
-.btn.primary { background: var(--primary-color, #03a9f4); border-color: transparent; color: var(--text-primary-color, #fff); }
+.txt:focus, .num:focus, .sel:focus, .code:focus { outline: 2px solid var(--ls-ok-hi); outline-offset: -1px; }
+.btn { font: inherit; font-size: 13px; padding: 6px 14px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--ls-line2); background: var(--ls-inner); color: var(--ls-text); }
+.btn:hover { border-color: var(--ls-muted); }
+.btn.primary { background: var(--ls-ok); border-color: transparent; color: #08110c; font-weight: 600; }
 .btn[disabled] { opacity: .5; cursor: default; }
 .btn.small { align-self: flex-start; padding: 4px 10px; font-size: 12px; }
 .btns { display: inline-flex; gap: 8px; flex-wrap: wrap; }
-.icon { border: 0; background: transparent; color: var(--secondary-text-color); cursor: pointer;
-  font-size: 14px; width: 28px; height: 28px; border-radius: 8px; }
-.icon:hover { background: rgba(127,127,127,.14); color: var(--primary-text-color); }
-.link { border: 0; background: transparent; color: var(--primary-color, #03a9f4); cursor: pointer;
-  font: inherit; font-size: 12px; padding: 0; align-self: flex-start; }
+.icon { border: 0; background: transparent; color: var(--ls-muted); cursor: pointer; font-size: 14px; width: 28px; height: 28px; border-radius: 6px; }
+.icon:hover { background: var(--ls-dim); color: var(--ls-text); }
+.link { border: 0; background: transparent; color: var(--ls-link); cursor: pointer; font: inherit; font-size: 12px; padding: 0; align-self: flex-start; }
 .addrow { display: flex; }
 .picker { display: flex; flex-direction: column; gap: 8px; }
-.plist { display: flex; flex-direction: column; max-height: 320px; overflow-y: auto;
-  border: 1px solid var(--divider-color); border-radius: 10px; }
+.plist { display: flex; flex-direction: column; max-height: 320px; overflow-y: auto; border: 1px solid var(--ls-line2); border-radius: 8px; }
 .pick { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 0; background: transparent;
-  color: var(--primary-text-color); text-align: left; cursor: pointer; font: inherit; font-size: 13px;
-  border-bottom: 1px solid var(--divider-color); }
+  color: var(--ls-text); text-align: left; cursor: pointer; font: inherit; font-size: 13px; border-bottom: 1px solid var(--ls-line); }
 .pick:last-child { border-bottom: 0; }
-.pick:hover { background: rgba(127,127,127,.10); }
-.pick ha-icon { --mdc-icon-size: 18px; color: var(--secondary-text-color); }
+.pick:hover { background: var(--ls-inner); }
+.pick ha-icon { --mdc-icon-size: 18px; color: var(--ls-muted); }
 .pick .pn { flex: 1 1 auto; }
-.pick code, .pick .ps { color: var(--secondary-text-color); }
+.pick code, .pick .ps { color: var(--ls-muted); }
+
+/* --- coming up --- */
 .tablewrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th { text-align: left; font-weight: 400; font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
-  color: var(--secondary-text-color); padding: 6px 10px; border-bottom: 1px solid var(--divider-color); }
-td { padding: 9px 10px; border-bottom: 1px solid var(--divider-color); vertical-align: middle; }
+th { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--ls-line2); }
+td { padding: 9px 10px; border-bottom: 1px solid var(--ls-line); vertical-align: middle; color: var(--ls-text); }
 tr:last-child td { border-bottom: 0; }
-td.mono { font-family: var(--mono); white-space: nowrap; }
+td.mono { font-family: var(--ls-mono); white-space: nowrap; font-variant-numeric: tabular-nums; }
 td.act { text-align: right; white-space: nowrap; }
 td .name { cursor: pointer; }
 td .name:hover { text-decoration: underline; text-underline-offset: 3px; }
-tr.soon td { background: rgba(255,166,0,.10); }
-tr.soon td:first-child { box-shadow: inset 3px 0 0 ${AMBER}; }
+tr.soon td { background: color-mix(in srgb, var(--ls-warn) 12%, transparent); }
+tr.soon td:first-child { box-shadow: inset 3px 0 0 var(--ls-warn-hi); }
 .kvrow { display: flex; align-items: center; gap: 16px; justify-content: space-between; flex-wrap: wrap;
-  border-top: 1px solid var(--divider-color); padding-top: 12px; }
+  border-top: 1px solid var(--ls-line); padding-top: 12px; }
 .kvrow .name { font-size: 15px; }
 .kvrow .in { display: inline-flex; align-items: center; gap: 4px; }
 
-.sw { position: relative; flex: none; width: 40px; height: 22px; border-radius: 11px; border: 0;
-  background: var(--disabled-text-color); opacity: .6; cursor: pointer; padding: 0; }
-.sw i { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%;
-  background: #fff; transition: left .15s; }
-.sw.on { background: var(--primary-color, #03a9f4); opacity: 1; }
-.sw.on i { left: 21px; }
+.sw { position: relative; flex: none; width: 40px; height: 22px; border-radius: 11px; border: 1px solid var(--ls-line2);
+  background: var(--ls-dim); cursor: pointer; padding: 0; }
+.sw i { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--ls-text2); transition: left .15s; }
+.sw.on { background: var(--ls-ok); border-color: transparent; }
+.sw.on i { left: 21px; background: #fff; }
 
-@media (max-width: 560px) {
+/* Narrow cards (a phone, a column): by the card's width, not the screen's. */
+@container (max-width: 640px) {
+  .tiles { grid-template-columns: 1fr 1fr; flex-basis: 100%; }
   .steps, .guard { padding-left: 0; }
-  .hero-pad, .barpad { padding-left: 18px; padding-right: 18px; }
+  .hero-pad, .barpad { padding-left: 16px; padding-right: 16px; }
+  .mark .nm { display: none; }
+  .bar { margin-top: 36px; }
+  .mark.alt span { margin-bottom: 22px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dot, .hero::before, .live .mark.near, .live .mark.near span { animation: none; }
 }
 `;
 

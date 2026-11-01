@@ -44,14 +44,24 @@
 # the plan keeps the last known window; when it passes, the ESP's deadline
 # ends the override anyway.
 #
-# An outage here means one thing only: a window in a schedule DTEK has
+# A scheduled outage means one thing only: a window in a schedule DTEK has
 # published. next_outage_start is built from the `fact` schedule and is null
-# whenever none is in force (dtek_poll.py resolve()), so nothing else can start
-# a charge:
-#   - the weekly preset table (the card's `maybe` heatmap) is never read --
-#     charging for it would mean charging at day rates most days
-#   - an emergency outage DTEK records against the address (outage_start) is
-#     ignored -- it is published after the lights are already out
+# whenever none is in force (dtek_poll.py resolve()). The weekly preset table
+# (the card's `maybe` heatmap) is never read -- charging for it would mean
+# charging at day rates most days.
+#
+# The one exception is an EMERGENCY outage DTEK records against the address
+# (sensor.dtek_shutdowns state `outage_emergency`, outage_type 2; a planned
+# one is type 1 and does not count). It is published after the lights are
+# already out, so there is nothing to plan for -- but while it stays on record
+# the grid comes and goes (31 Oct: back at 180 V at 09:26 with the record
+# running to 21:00), and every minute of mains is a minute to fill the pack.
+# So for as long as it is on record the plan is `charging` at the full 60 A
+# (or `holding` on grid once full), whatever the tariff, until DTEK's
+# `outage_end`. Without an end, or once it has passed with the record still
+# up, the deadline rolls an hour ahead on every render, so the ESP's own
+# fail-safe still ends the override within the hour of HA going quiet.
+# The Pre-charge switch gates this too: off means no automatic charging.
 # Inside a published schedule a `maybe` hour counts as dark, as it does for the
 # DTEK alerts: the schedule said it might go, and an unneeded charge costs less
 # than an empty pack. DTEK suspended the schedules on 24.07.2026, so this sits
@@ -90,11 +100,32 @@ template:
             {% set s = states('sensor.dtek_next_outage_start') %}
             {% set start = as_datetime(s) if s not in ['unknown', 'unavailable', 'none', ''] else none %}
             {% set cap = states('sensor.jkbms_gateway_bms_capacity_remaining') %}
+            {# An emergency on record; a stale or failed poll re-serves the last one. #}
+            {% set dtek = states('sensor.dtek_shutdowns') %}
+            {% set emergency = dtek == 'outage_emergency'
+               or (dtek in ['stale', 'error']
+                   and state_attr('sensor.dtek_shutdowns', 'outage_active') is true
+                   and state_attr('sensor.dtek_shutdowns', 'outage_type') | string == '2') %}
             {% set out = namespace(state='idle', reason='', current=none, need_ah=none,
-                                   hours_left=none, night_hours=none, until=none) %}
+                                   hours_left=none, night_hours=none, until=none,
+                                   emergency=false) %}
             {% if not is_state('switch.powmr_inverter_outage_pre_charge', 'on') %}
               {% set out.state = 'off' %}
               {% set out.reason = 'switched off' %}
+            {% elif emergency %}
+              {% set out.emergency = true %}
+              {% set e = state_attr('sensor.dtek_shutdowns', 'outage_end') %}
+              {% set end = as_datetime(e) if e else none %}
+              {% set out.until = (end if end and end > t + timedelta(minutes=5)
+                                  else t + timedelta(hours=1)).isoformat() %}
+              {% if cap | is_number and full_ah - cap | float <= full_ah * 0.01 %}
+                {% set out.state = 'holding' %}
+                {% set out.reason = 'DTEK emergency, full, holding on grid' %}
+              {% else %}
+                {% set out.state = 'charging' %}
+                {% set out.current = max_a %}
+                {% set out.reason = 'DTEK emergency, charging at full current' %}
+              {% endif %}
             {% elif start is none or start <= t %}
               {% set out.reason = 'no scheduled outage ahead' %}
             {% elif not cap | is_number %}
@@ -159,7 +190,8 @@ template:
             {% endif %}
             {{ {'state': out.state, 'reason': out.reason, 'current': out.current,
                 'need_ah': out.need_ah, 'hours_left': out.hours_left,
-                'night_hours': out.night_hours, 'until': out.until} }}
+                'night_hours': out.night_hours, 'until': out.until,
+                'emergency': out.emergency} }}
     sensor:
       # off            the dashboard chip is off; the ESP ignores any deadline
       # idle           no scheduled outage ahead (or no battery reading)
@@ -168,6 +200,7 @@ template:
       # charging       the override is on; `current` amps until `until`
       # holding        charged, still on grid (Utility First) until `until`;
       #                drops back to charging only below 95%
+      # `emergency` is true when a DTEK emergency drives it, not a schedule.
       - name: "Outage pre-charge plan"
         unique_id: outage_precharge_plan
         icon: mdi:battery-clock
@@ -179,6 +212,7 @@ template:
           hours_left: "{{ plan.hours_left }}"
           night_hours: "{{ plan.night_hours }}"
           until: "{{ plan.until }}"
+          emergency: "{{ plan.emergency }}"
 
 automation:
   # Carries the plan to the ESP. Writes only what differs, so the 5-minute
@@ -260,8 +294,9 @@ automation:
           at: >-
             {{ as_datetime(state_attr('sensor.outage_pre_charge_plan', 'until')) | as_local | as_timestamp | timestamp_custom('%H:%M') }}
           message: >-
-            Charging for the {{ at }} DTEK outage at {{ state_attr('sensor.outage_pre_charge_plan', 'current') }} A
-            (battery {{ states('sensor.jkbms_gateway_bms_state_of_charge') | float(0) | round(0) }}%, {{ state_attr('sensor.outage_pre_charge_plan', 'reason') }}).
+            {% if state_attr('sensor.outage_pre_charge_plan', 'emergency') is true %}DTEK emergency outage on record until {{ at }}: {{ 'no mains now, the inverter charges' if is_state('binary_sensor.grid_down', 'on') else 'on grid, charging' }} at {{ state_attr('sensor.outage_pre_charge_plan', 'current') }} A{{ ' the moment it is back' if is_state('binary_sensor.grid_down', 'on') }}
+            (battery {{ states('sensor.jkbms_gateway_bms_state_of_charge') | float(0) | round(0) }}%).{% else %}Charging for the {{ at }} DTEK outage at {{ state_attr('sensor.outage_pre_charge_plan', 'current') }} A
+            (battery {{ states('sensor.jkbms_gateway_bms_state_of_charge') | float(0) | round(0) }}%, {{ state_attr('sensor.outage_pre_charge_plan', 'reason') }}).{% endif %}
       - service: notify.household
         data:
           title: '🔋 Outage pre-charge started'

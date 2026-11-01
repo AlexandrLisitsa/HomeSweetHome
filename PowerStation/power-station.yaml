@@ -174,6 +174,30 @@ globals:
     type: int
     restore_value: true
     initial_value: '-1'
+  # The inverter's real mode (docs/architecture.md §16): the selects are
+  # optimistic and only say what the ESP asked for. Every 10th poll is a QMOD
+  # instead of a QPIGS; qmod_pending routes its short reply, and inverter_mode
+  # keeps the last letter (L line, B battery ...) for the log.
+  - id: poll_slot
+    type: uint32_t
+    initial_value: '0'
+  - id: qmod_pending
+    type: bool
+    initial_value: 'false'
+  - id: inverter_mode
+    type: char
+    initial_value: "' '"
+  # Self-heal bookkeeping. priority_target_ms is when the Power Priority last
+  # changed, whoever changed it; the attempts budget is per change.
+  - id: priority_target_ms
+    type: uint32_t
+    initial_value: '0'
+  - id: heal_attempts
+    type: int
+    initial_value: '0'
+  - id: heal_last_ms
+    type: uint32_t
+    initial_value: '0'
 
 # --- CENTRAL LOGIC BRAIN ---
 script:
@@ -308,6 +332,47 @@ script:
             ESP_LOGI("charge", "☀️ DAY TARIFF: Blocking battery charging.");
             id(switch_bms_charging).turn_off();
           }
+
+  # Gets the inverter onto the grid when Power Priority says Utility First
+  # (docs/architecture.md §16). The PowMr ACKs and stores POP00 but does not
+  # always transfer: it applies the priority at its next grid qualification.
+  # Toggling the AC input range forces one. Run from each QMOD reply (~30 s),
+  # so it covers every path to Utility First -- tariff, pre-charge, grid
+  # recovery, a manual pick, boot -- not only 23:00.
+  - id: inverter_self_heal
+    mode: restart
+    then:
+      - lambda: |-
+          const uint32_t GRACE_MS = 180000;      // let the inverter act on its own first
+          const uint32_t SPACING_MS = 900000;    // at most one nudge per 15 min
+          const int MAX_ATTEMPTS = 3;            // per target change
+          uint32_t now = millis();
+
+          if (id(inverter_mode) != 'B') return;
+          // On battery is what SBU and Solar First are for.
+          if (id(select_power_priority).current_option() != "Utility First") return;
+          // A bad (or absent) grid is grid protection's business, not a fault.
+          if (!id(grid_safe).has_state() || id(grid_safe).state) return;
+          if ((uint32_t) (now - id(priority_target_ms)) < GRACE_MS) return;
+          if (!id(command_queue).empty()) return;  // something is still being sent
+          if (id(heal_attempts) > MAX_ATTEMPTS) return;  // gave up on this target
+          if (id(heal_attempts) > 0 && (uint32_t) (now - id(heal_last_ms)) < SPACING_MS) return;
+
+          if (id(heal_attempts) == MAX_ATTEMPTS) {
+            id(heal_attempts) += 1;
+            ESP_LOGE("heal", "❌ NUDGE GAVE UP: still on battery after %d tries.", MAX_ATTEMPTS);
+            return;
+          }
+          id(heal_attempts) += 1;
+          id(heal_last_ms) = now;
+
+          // The manual fix: flip the input range and back, ending on the
+          // selected one.
+          bool ups = id(select_inverter_mode).current_option() == "UPS";
+          id(command_queue).push_back(ups ? "PGR00" : "PGR01");
+          if (id(command_queue).size() == 1) id(command_retries) = 20;
+          id(command_queue).push_back(ups ? "PGR01" : "PGR00");
+          ESP_LOGW("heal", "🔧 NUDGE %d: Utility First but on battery -- re-qualifying the grid.", id(heal_attempts));
 
 # --- SENSORS ---
 sensor:
@@ -651,6 +716,10 @@ select:
           id(command_queue).push_back(cmd);
           if (id(command_queue).size() == 1) id(command_retries) = 20;
           ESP_LOGI("dispatcher", "New Priority Queued: %s", x.c_str());
+          // A new target: inverter_self_heal gives the inverter its grace
+          // period and a fresh attempts budget, whoever made the change.
+          id(priority_target_ms) = millis();
+          id(heal_attempts) = 0;
 
   - platform: template
     name: "Inverter AC Input Mode"
@@ -892,6 +961,7 @@ interval:
               packet.push_back(0x0D);
           
               id(uart_0).write_array(packet.data(), packet.size());
+              id(qmod_pending) = false;
           
               ESP_LOGI("uart_tx", "-> Sent: %s (Retries left: %d | Queue size: %d)", cmd.c_str(), id(command_retries) - 1, id(command_queue).size());
               id(command_retries) -= 1; 
@@ -906,10 +976,20 @@ interval:
               }
             }
           } else {
-            // Regular data polling (QPIGS): every tick with an empty queue,
-            // every other tick while commands are waiting.
-            std::vector<uint8_t> qpigs = {0x51, 0x50, 0x49, 0x47, 0x53, 0xB7, 0xA9, 0x0D};
-            id(uart_0).write_array(qpigs.data(), qpigs.size());
+            // Regular data polling: every tick with an empty queue, every
+            // other tick while commands are waiting. Every 10th poll is a QMOD
+            // (the real mode, for inverter_self_heal) instead of a QPIGS: the
+            // same traffic, and a QPIGS still comes at least every 6 s, well
+            // inside the 20 s link watchdog.
+            bool qmod = (id(poll_slot)++ % 10) == 4;
+            if (qmod) {
+              std::vector<uint8_t> f = {0x51, 0x4D, 0x4F, 0x44, 0x49, 0xC1, 0x0D};
+              id(uart_0).write_array(f.data(), f.size());
+            } else {
+              std::vector<uint8_t> f = {0x51, 0x50, 0x49, 0x47, 0x53, 0xB7, 0xA9, 0x0D};
+              id(uart_0).write_array(f.data(), f.size());
+            }
+            id(qmod_pending) = qmod;
           }
 
   # Inverter link watchdog. A template sensor keeps its last value forever, so
@@ -985,7 +1065,20 @@ interval:
                 return;
               }
 
-              // 2. PARSE NORMAL DATA (QPIGS)
+              // 2. QMOD: "(L" plus two CRC bytes -- the inverter's mode letter.
+              if (id(qmod_pending)) {
+                id(qmod_pending) = false;
+                if (buffer.length() >= 2 && buffer[0] == '(' &&
+                    strchr("PSLBFHD", buffer[1]) != nullptr && buffer[1] != '\0') {
+                  if (buffer[1] != id(inverter_mode)) ESP_LOGI("uart_rx", "Inverter mode: %c", buffer[1]);
+                  id(inverter_mode) = buffer[1];
+                  id(inverter_self_heal).execute();
+                }
+                buffer.clear();
+                continue;
+              }
+
+              // 3. PARSE NORMAL DATA (QPIGS)
               if (buffer.length() > 0 && buffer[0] == '(' && buffer.length() > 50) {
                 int len = buffer.length() - 2;
                 std::string payload = buffer.substr(1, len - 1);

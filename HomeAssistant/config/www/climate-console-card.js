@@ -92,8 +92,9 @@
 
 const CARD = "climate-console-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
+import { fxConfig, fxOn, fxSetup, FX_CSS } from "./card-fx.js?v=1.1.0";
 
-const VERSION = "1.4.0";
+const VERSION = "1.5.2";
 
 const TABS = ["rooms", "hall", "bedroom"];
 
@@ -862,6 +863,19 @@ function installFonts() {
   document.head.appendChild(style);
 }
 
+/*
+ * Effect styles (card-fx.js), appended only when the card has an fx key and
+ * gated on the host's data-fx.
+ */
+const FX_STYLE = `
+.fx-ring { opacity: 0; transform-box: fill-box; transform-origin: center; transition: opacity .4s; }
+:host([data-fx~="gradient_dial"]) .fx-ring.on { opacity: .55; animation: fxSpin 24s linear infinite; }
+:host([data-fx~="tinted_rooms"]) .room {
+  background-image: linear-gradient(160deg, rgba(var(--fxt, 187,99,91), var(--fxa, 0)), transparent 70%);
+  transition: background-image .6s; }
+@media (prefers-reduced-motion: reduce) { .fx-ring.on { animation: none !important; } }
+`;
+
 const STYLE = `
 /*
  * A shadow root inherits no page reset, and the design is written in
@@ -1278,7 +1292,7 @@ class ClimateConsoleCard extends HTMLElement {
     // Every entity is overridable, so a typo should fail here rather than draw
     // a card full of em dashes.
     Object.keys(DEFAULTS).forEach((k) => {
-      if (k === "tab") return;
+      if (k === "tab" || k === "fx") return;
       if (typeof cfg[k] !== "string" || cfg[k].indexOf(".") < 1) {
         throw new Error(CARD + ": " + k + " must be an entity id, got " + cfg[k]);
       }
@@ -1288,7 +1302,9 @@ class ClimateConsoleCard extends HTMLElement {
         + ", got " + config.range);
     }
     if (config && config.range) this._range = config.range;
+    cfg.fx = fxConfig(CARD, cfg.fx);
     this._config = cfg;
+    this._fxWire();
     // A changed config means a changed DOM, so drop the built tree.
     this._built = false;
     this._optPrint = null;
@@ -1310,11 +1326,54 @@ class ClimateConsoleCard extends HTMLElement {
     // module can be evaluated before <head> exists.
     installFonts();
     if (!this._timer) this._timer = window.setInterval(() => this._tick(), 30000);
+    this._fxWire();
   }
 
   disconnectedCallback() {
     if (this._timer) window.clearInterval(this._timer);
     this._timer = null;
+    if (this._fxOff) this._fxOff();
+    this._fxOff = null;
+  }
+
+  /** Effects (card-fx.js): only with an `fx` key, so the Climate dashboard is untouched. */
+  _fxWire() {
+    if (this._fxOff) this._fxOff();
+    this._fxOff = null;
+    if (!this.isConnected || !this._config) return;
+    this._fxOff = fxSetup(this, this._config.fx);
+  }
+
+  /**
+   * Gradient dial: the arc runs from cold blue through the mode's own accent
+   * to warm amber, and a dashed ring turns slowly round it while the
+   * compressor runs. Called from _paintDial, so a drag keeps it.
+   */
+  _fxDial(pfx, acc) {
+    const c = this._config;
+    const q = (id) => this._el.q("#" + pfx + "-" + id);
+    const on = fxOn(c.fx, "gradient_dial");
+    const mid = q("fxmid");
+    if (mid && mid.getAttribute("stop-color") !== acc.c) mid.setAttribute("stop-color", acc.c);
+    const arc = q("arc");
+    if (on && arc) arc.setAttribute("stroke", "url(#" + pfx + "-fxg)");
+    const ring = q("fxring");
+    if (ring) {
+      const comp = this._state(pfx === "hall" ? c.hall_compressor : c.bed_compressor) === "on";
+      ring.classList.toggle("on", on && comp);
+      ring.setAttribute("stroke", acc.c);
+    }
+  }
+
+  /** Tinted rooms: blue under 20 °C, red over 26 °C, deeper the further out. */
+  _fxRoom(key, t) {
+    const card = this._el.q("#rm-" + key + "-card");
+    if (!card) return;
+    const on = fxOn(this._config.fx, "tinted_rooms") && t !== null;
+    const cold = on ? Math.min(1, Math.max(0, (20 - t) / 4)) : 0;
+    const hot = on ? Math.min(1, Math.max(0, (t - 26) / 4)) : 0;
+    card.style.setProperty("--fxt", cold ? "110,168,254" : "187,99,91");
+    card.style.setProperty("--fxa", (Math.max(cold, hot) * 0.22).toFixed(3));
   }
 
   getCardSize() {
@@ -2193,7 +2252,7 @@ class ClimateConsoleCard extends HTMLElement {
     const body = c.tab === "rooms" ? this._roomsHTML()
       : c.tab === "hall" ? this._hallHTML()
         : this._bedHTML();
-    this.shadowRoot.innerHTML = "<style>" + STYLE + "</style>"
+    this.shadowRoot.innerHTML = "<style>" + STYLE + (c.fx ? FX_CSS + FX_STYLE : "") + "</style>"
       + "<ha-card><div class='root'>" + body + "</div></ha-card>";
     // The painters above hold element references and the last value written
     // to each; every one of those elements has just been replaced.
@@ -2333,7 +2392,8 @@ class ClimateConsoleCard extends HTMLElement {
     const segs = RANGE_ORDER.map((k) => "<div class='seg' data-act='range' data-val='" + k
       + "' data-on='" + (k === this._range ? "1" : "0") + "'>"
       + this._esc(RANGES[k].label) + "</div>").join("");
-    const cards = rooms.map((r) => "<div class='panel room'>"
+    const cards = rooms.map((r) => "<div class='panel room'"
+      + (this._config.fx ? " id='rm-" + r.key + "-card'" : "") + ">"
       + "<div class='room-h'><span class='dot' style='background:" + r.color + "'></span>"
       + "<span class='room-n'>" + this._esc(r.name) + "</span><div class='grow'></div>"
       + "<span class='badges' id='rm-" + r.key + "-badge'><span class='badge'>—</span></span></div>"
@@ -2382,6 +2442,7 @@ class ClimateConsoleCard extends HTMLElement {
         this._tip(b, r.name, b.getAttribute("data-label"), "comfort"));
       const tEl = el.q("#rm-" + r.key + "-t");
       const hEl = el.q("#rm-" + r.key + "-h");
+      if (this._config.fx) this._fxRoom(r.key, t);
       tEl.textContent = this._fmt(t, 1);
       hEl.textContent = this._fmt(h, 1);
       this._tip(tEl.parentNode, r.name + " temperature", t === null ? "—" : t.toFixed(1) + " °C", "roomTemp");
@@ -2467,6 +2528,13 @@ class ClimateConsoleCard extends HTMLElement {
     return "<div class='hero' id='" + pfx + "-hero'><div class='hero-g'>"
       + "<div class='dial-col'><div class='dial' id='" + pfx + "-dial' data-dial='" + pfx + "'>"
       + "<svg viewBox='0 0 220 220'>"
+      + (this._config.fx ? "<defs><linearGradient id='" + pfx + "-fxg' gradientUnits='userSpaceOnUse'"
+        + " x1='20' y1='200' x2='200' y2='20'><stop offset='0' stop-color='#6EA8FE'></stop>"
+        + "<stop offset='.55' id='" + pfx + "-fxmid' stop-color='" + TXT + "'></stop>"
+        + "<stop offset='1' stop-color='#E0A33A'></stop></linearGradient></defs>"
+        + "<circle id='" + pfx + "-fxring' class='fx-ring' cx='" + DIAL_CX + "' cy='" + DIAL_CX
+        + "' r='" + (DIAL_R + DIAL_W) + "' fill='none' stroke-width='1.5'"
+        + " stroke-dasharray='3 9'></circle>" : "")
       + "<path id='" + pfx + "-track' fill='none' stroke='#2b3137' stroke-width='"
       + DIAL_W + "' stroke-linecap='round'></path>"
       + "<path id='" + pfx + "-arc' class='dial-arc' fill='none' stroke-width='"
@@ -2901,6 +2969,7 @@ class ClimateConsoleCard extends HTMLElement {
     if (w.cx !== a.x) { n.knob.setAttribute("cx", a.x); w.cx = a.x; }
     if (w.cy !== a.y) { n.knob.setAttribute("cy", a.y); w.cy = a.y; }
     if (w.text !== text) { n.text.textContent = text; w.text = text; }
+    if (this._config.fx) this._fxDial(pfx, acc);
   }
 
   /** The accent this tab was last painted in, for the same reason. */

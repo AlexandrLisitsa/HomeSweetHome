@@ -13,7 +13,11 @@
               "column_span": 5,
               "cards": [
                 {
-                  "type": "custom:powmr-inverter-console-card"
+                  "type": "custom:powmr-inverter-console-card",
+                  "fx": [
+                    "power_glow",
+                    "chart_polish"
+                  ]
                 }
               ]
             }
@@ -35,7 +39,13 @@
               "column_span": 5,
               "cards": [
                 {
-                  "type": "custom:jkbms-battery-console-card"
+                  "type": "custom:jkbms-battery-console-card",
+                  "fx": [
+                    "power_glow",
+                    "liquid_soc",
+                    "balance_pulse",
+                    "chart_polish"
+                  ]
                 }
               ]
             }

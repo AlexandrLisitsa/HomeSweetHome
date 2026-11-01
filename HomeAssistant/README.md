@@ -21,11 +21,15 @@ read before it goes live, and a `git revert` if it was wrong.
   `card-ramp.js`, the colour fade the two power cards share.
   Each card is versioned (see [MANIFEST, Versions](../MANIFEST.md#6-versions)).
 - **The DTEK outage schedule**: a poller for the distributor's queue and hourly
-  schedule, so a planned outage can be told apart from a fault
+  schedule, so a planned outage can be told apart from a fault, plus
+  Ukrenergo's emergency outages, which DTEK announces only in a popup on its
+  home page, with an alert when they start and end
   ([`docs/dtek-outage-schedule.md`](docs/dtek-outage-schedule.md)).
 - **Outage pre-charge**: when DTEK schedules an outage, the battery is charged
   to full before it starts, at the lowest current that makes it and at night
-  rates when they suffice ([`docs/outage-precharge.md`](docs/outage-precharge.md)).
+  rates when they suffice. While DTEK has an emergency outage on record, it
+  charges on grid at full current instead
+  ([`docs/outage-precharge.md`](docs/outage-precharge.md)).
 - **Adaptive night charge**: the night-tariff charge runs at the lowest current
   that still fills the pack by 07:00, re-sized every 10 minutes
   ([`docs/adaptive-charge.md`](docs/adaptive-charge.md)).
@@ -54,6 +58,9 @@ read before it goes live, and a `git revert` if it was wrong.
 - **Kitchen light button**: an Aqara double rocker. Left toggles the kitchen
   light, right toggles the LED strip, clicking both switches both, and holding
   a rocker glides the strip dimmer or brighter ([`docs/kitchen-button.md`](docs/kitchen-button.md)).
+- **TV power-on**: the Samsung TV can't be woken over its own API, so
+  `packages/tv_wake.yaml` turns it on with a wake-on-LAN packet. That is what
+  lets a tap on the floor plan, or Google, switch it on.
 - **Google Home and Gemini**: entities exposed through the Google Assistant
   integration, with the spoken names kept in a git-ignored file
   ([`docs/private-files.md`](docs/private-files.md)). Google reaches the box
@@ -121,6 +128,7 @@ sh tools/ha_get.sh /api/config
 | `tools/test_dtek_schedule.py` | fixture tests for `config/dtek/dtek_poll.py`'s schedule maths | no — no network |
 | `tools/test_outage_precharge.py` | renders the outage pre-charge plan in `packages/outage_precharge.yaml` and runs its drive and started automations through the simulator | no — pure local |
 | `tools/test_adaptive_charge.py` | renders the adaptive night charge plan in `packages/adaptive_charge.yaml` and runs its drive, outage-off and guard automations through the simulator, DST included | no — pure local |
+| `tools/test_grid_state.py` | renders `packages/grid_state.yaml`: `grid_down` (no mains, under 150 V) and `house_on_battery` (no mains, or out of range with grid protection on), including the low-but-live grid of 31 Oct | no — pure local |
 | `tools/test_battery_runtime.py` | renders `packages/battery_runtime.yaml`: runtime remaining, time to full and its edge triggers, against idle, unavailable, flat and full packs | no — pure local |
 | `tools/test_tariff_switch.py` | runs the day/night tariff automations (`automations.yaml`, `electricity_meter.yaml`) at 07:00 / 23:00, on HA start and over DST weekends, and the A/C meters' day/night/battery switch (`ac_tariffs.yaml`) with its 30 s hold; also pins the simulator's `for:` | no — pure local |
 | `tools/test_electricity_submit.py` | the monthly YASNO reading: `config/electricity/electricity_submit.py`'s window and month, the same window in `packages/electricity_submit.yaml` for every day of three years, and its button handler's parsing | no — pure local |
@@ -131,6 +139,7 @@ sh tools/ha_get.sh /api/config
 | `tools/test_climate_chart.js` | fixture tests for the climate card's chart and dial maths | no — no network |
 | `tools/test_console_history.js` | the inverter and battery cards' history: raw states inside the recorder's window, hourly statistics past it | no — pure local |
 | `tools/test_dtek_card.js` | the DTEK card's hero, Next window tile and today/tomorrow grid against the applied schedule, on a pinned clock | no — pure local |
+| `tools/test_card_fx.js` | `config/www/card-fx.js`, the cards' visual effects: the `fx` key, data-fx on the host, the off-screen pause | no — pure local |
 | `tools/test_card_tooltips.js` | renders every custom card and checks each meaningful element's tooltip against [the standard](docs/dashboard-tooltips.md); `tools/fake_dom.js` is the small DOM it, `test_power_cards.js` and `test_floorplan_card.js` share | no — pure local |
 | `tools/test_floorplan_card.js` | the Home floor plan card with its real config: room tints, the power path's streams and labels, the DTEK chip, outage mode with load shedding's marks, patching and taps | no — pure local |
 | `tools/ha_www_push.sh` | pushes `config/www/` (the custom cards) to the box over SSH; follow with `ha_dashboard.py --card` to bump the resource version — **changes the house** | yes, deliberately |
@@ -165,6 +174,7 @@ python tools/check_dtek_templates.py
 python tools/test_dtek_schedule.py
 python tools/test_outage_precharge.py
 python tools/test_adaptive_charge.py
+python tools/test_grid_state.py
 python tools/test_battery_runtime.py
 python tools/test_tariff_switch.py
 python tools/test_gas_submit.py
@@ -174,6 +184,7 @@ node tools/test_power_cards.js
 node tools/test_dtek_card.js
 node tools/test_console_history.js
 node tools/test_climate_chart.js
+node tools/test_card_fx.js
 node tools/test_card_tooltips.js
 node tools/test_floorplan_card.js
 python ../FloorPlan/tools/check_rooms.py
@@ -219,6 +230,7 @@ job or a nearly full Drive to `notify.household`.
 | [`docs/gas-and-water-meters.md`](docs/gas-and-water-meters.md) | hand-read gas and water meters on the Energy dashboard |
 | [`docs/gas-reading-submission.md`](docs/gas-reading-submission.md) | the monthly gas reading to Gazmerezhi's Telegram bot, confirmed from the phone |
 | [`docs/electricity-reading-submission.md`](docs/electricity-reading-submission.md) | the monthly day/night electricity reading to YASNO's Telegram bot: the T21/T22 registers, calibrating them, the ask and the buttons |
+| [`docs/dashboard-effects.md`](docs/dashboard-effects.md) | the console cards' visual effects and the `fx` key that switches them on per card |
 | [`docs/power-station-dashboard.md`](docs/power-station-dashboard.md) | the Power station dashboard: the inverter and battery cards, the grid-return countdown, the palette |
 | [`docs/climate-dashboard.md`](docs/climate-dashboard.md) | the climate dashboard and its checker |
 | [`docs/dashboard-tooltips.md`](docs/dashboard-tooltips.md) | the tooltip standard every custom card follows: format, scope, examples, the CI check |

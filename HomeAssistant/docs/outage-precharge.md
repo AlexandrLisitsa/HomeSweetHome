@@ -16,15 +16,37 @@ or off.
 
 ## What counts as an outage
 
-Only a window in a schedule DTEK has published, which is
+A window in a schedule DTEK has published, which is
 `sensor.dtek_next_outage_start` ([dtek-outage-schedule.md](dtek-outage-schedule.md)).
 The poller builds it from the `fact` schedule and leaves it null whenever no
-schedule is in force, so two things DTEK also publishes are not used:
+schedule is in force. The **weekly preset table**, the `maybe` heatmap on the
+Shutdowns card, is not used: it is not a schedule, and charging for it would
+mean charging at day rates most days.
 
-- **The weekly preset table**, the `maybe` heatmap on the Shutdowns card. It is
-  not a schedule, and charging for it would mean charging at day rates most days.
-- **An emergency outage recorded against the address.** It is published after
-  the lights are already out.
+## Emergency outages
+
+An **emergency** outage recorded against the address (`sensor.dtek_shutdowns`
+state `outage_emergency`, `outage_type` 2) is handled differently. It is
+published after the lights are already out, so there is nothing to plan. But
+while it stays on record the grid comes and goes. On 31 Oct the grid came back
+at 180 V at 09:26 and the record ran to 21:00. Every minute of mains is a
+minute to fill the pack. So while the record is up:
+
+- the plan reads `charging` at the full 60 A, whatever the tariff and the hour,
+  or `holding` (on grid, Utility First) once the pack is full;
+- `until` is DTEK's `outage_end`; with no end, or once it has passed with the
+  record still up, it rolls an hour ahead on every render, so the ESP's own
+  deadline still ends the override within an hour of HA going quiet;
+- the plan's `emergency` attribute is `true`, and the start message says
+  "DTEK emergency outage on record until 21:00". If mains is gone when the
+  message goes out, it says the charge starts when mains comes back.
+
+A **planned** outage on record (`outage_planned`, type 1) does not count.
+Neither does the published schedule. Those keep the normal plan. A stale or
+failed poll re-serves the last emergency, so the charge holds through a missed
+poll. The Pre-charge switch gates this too: with it off, nothing charges
+automatically. Grid protection still ranks above the override, so a grid out of
+185–250 V with protection on stays on battery.
 
 Inside a published schedule, a `maybe` hour counts as dark, the same as it does
 for the DTEK alerts.
