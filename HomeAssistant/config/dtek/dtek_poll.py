@@ -36,6 +36,12 @@ Steady state is two small POSTs per run. The 190 KB page is fetched only to
 establish a session, because checkDisconUpdate answers in 18 bytes when the
 schedule has not changed and returns the whole thing when it has.
 
+Plus one GET of the home page, ~72 KB gzipped, for the announcement banner:
+Ukrenergo's city-wide emergency outages ("екстрені відключення по місту
+Дніпро") are announced ONLY there, in a hand-written <div id="modal-attention">
+that no AJAX answer mentions, and that leaves every house entry blank. See
+fetch_banner().
+
 THE OTHER THING THAT IS NOT OBVIOUS: the getHomeNum answer carries six booleans
 next to `data` -- showCurOutageParam, showCurSchedule, showTableSchedule,
 showTablePlan, showTableFact, showUserGroup -- and DTEK's own page draws nothing
@@ -52,6 +58,7 @@ Absent flags default to True on purpose. A field DTEK renames must not blank a
 valid grid -- that is this same bug inverted, and harder to notice.
 """
 import argparse
+import gzip
 import json
 import os
 import re
@@ -59,6 +66,7 @@ import sys
 import urllib.error
 import urllib.request
 from datetime import datetime, time as dtime, timedelta
+from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -66,6 +74,8 @@ from zoneinfo import ZoneInfo
 BASE = "https://www.dtek-dnem.com.ua"
 SHUTDOWNS_URL = BASE + "/ua/shutdowns"
 AJAX_URL = BASE + "/ua/ajax"
+# The home page, for the announcement banner only. See fetch_banner().
+BANNER_URL = BASE + "/ua"
 KYIV = ZoneInfo("Europe/Kyiv")
 TIMEOUT = 15
 
@@ -131,6 +141,24 @@ OUTAGE_TYPES = frozenset(("1", "2"))
 # Matched verbatim against discon-schedule.js:492, which does the same.
 EMERGENCY_SUB_TYPE = ("Екстренні відключення (Аварійне без застосування "
                       "графіку погодинних відключень)")
+
+# Ukrenergo's emergency outages, as DTEK words them in the announcement banner:
+# "запроваджено екстрені відключення по місту Дніпро" on 01.11.2026. One н or
+# two, any case ending -- the sub_type above spells it with two.
+EMERGENCY_RE = re.compile(r"екстрен\w*\s+відключен", re.IGNORECASE)
+# The region this distributor covers. A region-wide announcement covers the
+# city too; a country-wide one is not about this address and must not count.
+REGION_RE = re.compile(r"дніпропетровськ\w*|дніпропетровщин\w*", re.IGNORECASE)
+# The banner raises an alert, so a sentence counts only when it says the
+# outages are on NOW: an in-force verb, and none of the words that turn the
+# same phrase into advice, history or an all-clear -- "щоб уникнути екстрених
+# відключень, економте", "вчора діяли", "скасовано". Stems, any ending.
+BANNER_ACTIVE_RE = re.compile(
+    r"запровадж|застосов|(?<!\w)ді[юєя]|трива|введен|вводят|оголош|розпочат"
+    r"|продовжу", re.IGNORECASE)
+BANNER_NOT_NOW_RE = re.compile(
+    r"скасов|відмін|заверш|припин|(?<!\w)не\s+ді|більше\s+не|вчора|минул"
+    r"|запобіг|уникн|можлив|загроз|ризик", re.IGNORECASE)
 
 
 def log(msg):
@@ -701,6 +729,142 @@ def refresh_schedule(session):
         session.preset = answer.get("preset") or session.preset
 
 
+# --- the announcement banner -------------------------------------------------
+
+class _BannerText(HTMLParser):
+    """Title and paragraphs of <div id="modal-attention">, as plain text.
+
+    The site writes that div into the page only while it has something to say,
+    and its own script shows it on load whenever it is there -- so a page
+    without it means no announcement, not a parse failure.
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.depth = 0          # divs open inside the modal; 0 = outside it
+        self.where = None       # "title", "text", or None
+        self.mark = 0           # self.depth when the text div opened
+        self.found = False
+        self.title = []
+        self.lines = [""]
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        classes = (a.get("class") or "").split()
+        if tag == "div" and a.get("id") == "modal-attention" and not self.depth:
+            self.found, self.depth = True, 1
+            return
+        if not self.depth:
+            return
+        if tag == "div":
+            self.depth += 1
+            if "m-attention__text" in classes:
+                self.where, self.mark = "text", self.depth
+        elif "modal__title" in classes:
+            self.where = "title"
+        elif self.where == "text" and tag in ("p", "br", "li"):
+            self.lines.append("")
+
+    def handle_endtag(self, tag):
+        if not self.depth:
+            return
+        if self.where == "title" and tag != "div":
+            self.where = None
+        elif tag == "div":
+            if self.where == "text" and self.depth == self.mark:
+                self.where = None
+            self.depth -= 1
+
+    def handle_data(self, data):
+        if self.where == "title":
+            self.title.append(data)
+        elif self.where == "text":
+            self.lines[-1] += data
+
+
+def banner_scope(text, city):
+    """Which part of the country the banner names: city, region, or other.
+
+    The city comes from secrets.yaml ("м. Дніпро" or "Дніпро"), matched with at
+    most a two-letter case ending: Дніпро, Дніпра, Дніпрі and Дніпром, but not
+    Дніпропетровській, which is the region and says so below, nor Дніпровські,
+    which is DTEK's own company name and appears in every notice they write.
+    """
+    name = re.sub(r"^(м\.|місто|смт\.?|с\.)\s*", "", (city or "").strip(),
+                  flags=re.IGNORECASE).strip()
+    if name:
+        stem = name[:-1] if len(name) > 4 and name[-1].lower() in "оаеиіїяуюь" else name
+        if re.search(r"(?<!\w)" + re.escape(stem) + r"\w{0,2}(?!\w)", text,
+                     re.IGNORECASE):
+            return "city"
+    if REGION_RE.search(text):
+        return "region"
+    return "other"
+
+
+def banner_emergency(text, city):
+    """(scope, emergency) for a banner, judged one sentence at a time.
+
+    A sentence raises the flag only if it has the outage words, an in-force
+    verb, none of the not-now words, AND names our city or region itself --
+    "Шановні дніпряни! ... екстрені відключення по всій Україні" names the
+    city in one sentence and the country in the other, and is not about us.
+    Leaning towards a missed flag over a false one is deliberate: the text is
+    on the dashboard either way, and the flag is what an alert would hang off.
+    """
+    for sentence in re.split(r"(?<=[.!?])\s+|\n", text):
+        if (EMERGENCY_RE.search(sentence) and BANNER_ACTIVE_RE.search(sentence)
+                and not BANNER_NOT_NOW_RE.search(sentence)):
+            scope = banner_scope(sentence, city)
+            if scope != "other":
+                return scope, True
+    return banner_scope(text, city), False
+
+
+def parse_banner(html, city):
+    """The announcement banner as a dict, or None when the page carries none.
+
+    DTEK writes these by hand, so `text` is always published verbatim: a
+    rewording the patterns miss is still read on the dashboard, it just does
+    not raise `emergency`. See banner_emergency() for what does.
+    """
+    p = _BannerText()
+    p.feed(html)
+    p.close()
+    if not p.found:
+        return None
+    tidy = lambda s: re.sub(r"\s+", " ", s.replace("\xa0", " ")).strip()
+    lines = [t for t in (tidy(x) for x in p.lines) if t]
+    if not lines:
+        return None
+    text = "\n".join(lines)
+    scope, emergency = banner_emergency(text, city)
+    return {"title": tidy("".join(p.title)) or None, "text": text,
+            "scope": scope, "emergency": emergency}
+
+
+def fetch_banner(session, city):
+    """GET the home page, gzipped, and read its banner. One attempt, no retry.
+
+    The home page rather than /ua/shutdowns: both carry the same modal, and
+    this one is ~72 KB gzipped against ~190 KB. Session cookies ride along
+    because _open() adds them, which keeps this one visitor to the CDN.
+    """
+    log("GET %s" % BANNER_URL)
+    req = urllib.request.Request(BANNER_URL)
+    req.add_header("Accept-Encoding", "gzip")
+    resp = session._open(req)
+    raw = resp.read()
+    if (resp.headers.get("Content-Encoding") or "").lower() == "gzip":
+        raw = gzip.decompress(raw)
+    html = raw.decode("utf-8", "replace")
+    # A page without the site's own markup is a challenge or an error page, not
+    # "no announcement"; saying "none" there would clear a real one.
+    if "csrf-token" not in html:
+        raise RuntimeError("the home page came back without the site's markup")
+    return parse_banner(html, city)
+
+
 def status_for(payload):
     if not payload.get("outage_active"):
         return "ok"
@@ -720,7 +884,11 @@ def save_capture(answer, payload, session, house):
     stamp = payload["fetched_at"][:19].replace(":", "").replace("-", "")
     body = {"_meta": {"captured_at": payload["fetched_at"], "house": house,
                       "status": payload["status"],
-                      "warnings": payload["warnings"]},
+                      "warnings": payload["warnings"],
+                      # The announcement banner as read, so real wordings
+                      # pile up to check EMERGENCY_RE against.
+                      "banner": {k: payload.get("banner_" + k) for k in
+                                 ("title", "text", "scope", "emergency")}},
             "getHomeNum": answer, "fact": session.fact, "preset": session.preset}
     try:
         CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
@@ -758,9 +926,28 @@ def poll(cache):
     payload["stale"] = False
     payload["error"] = None
 
+    # The announcement banner, which no AJAX answer carries. Its own failure
+    # never fails the poll: the last banner read stays published, with
+    # banner_checked_at still saying when that was. Deliberately not a
+    # `warnings` entry -- those trigger captures, and a flaky GET would rotate
+    # the real ones out.
+    try:
+        cache["banner"] = fetch_banner(session, city)
+        cache["banner_checked_at"] = now.isoformat()
+        payload["banner_error"] = None
+    except Exception as exc:                      # noqa: BLE001 - see above
+        log("banner not read: %r" % exc)
+        payload["banner_error"] = "%s: %s" % (type(exc).__name__, exc)
+    banner = cache.get("banner") or {}
+    payload.update(banner_title=banner.get("title"),
+                   banner_text=banner.get("text"),
+                   banner_scope=banner.get("scope"),
+                   banner_emergency=bool(banner.get("emergency")),
+                   banner_checked_at=cache.get("banner_checked_at"))
+
     prev = cache.get("last_good") or {}
-    if (prev.get("status"), prev.get("warnings")) != (payload["status"],
-                                                      payload["warnings"]):
+    if ((prev.get("status"), prev.get("warnings"), prev.get("banner_text"))
+            != (payload["status"], payload["warnings"], payload["banner_text"])):
         save_capture(answer, payload, session, house)
 
     cache.update(cookies=session.cookies, csrf=session.csrf,

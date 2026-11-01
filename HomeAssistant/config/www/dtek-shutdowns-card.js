@@ -45,7 +45,7 @@
 const CARD = "dtek-shutdowns-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "2.1.2";
+const VERSION = "2.2.2";
 
 /*
  * The grid shows the NORMAL condition, not the exception: a cell is green when
@@ -172,6 +172,8 @@ const WILL_RETURN = ["plan_off", "table_off", "empty_preset",
  * Keep in step with docs/dtek-outage-schedule.md.
  */
 const HELP = {
+  banner: "DTEK's home-page popup, word for word: where it announces Ukrenergo's emergency outages.\n"
+    + "E.g. red on 01.11.2026, outages in Dnipro; grey for a notice about elsewhere.",
   now: "The pill and the glow: red without mains, amber for a DTEK claim or a window soon.\n"
     + "E.g. green: mains present and nothing scheduled within the hour.",
   clock_hour: "One hour of today on the clock: the applied schedule, else the weekly table.\n"
@@ -256,8 +258,18 @@ const DEFAULTS = {
   // The timeline's other two rows: DTEK's live notice, and the schedule.
   outage_entity: "binary_sensor.dtek_outage_now",
   scheduled_entity: "binary_sensor.dtek_scheduled_dark",
+  // Ukrenergo's emergency outages, from the announcement popup. The card reads
+  // this rather than the raw banner_emergency attribute: the binary sensor is
+  // the debounced, freshness-checked verdict an alert would use.
+  emergency_entity: "binary_sensor.dtek_emergency_shutdowns",
   poll_interval: 5, // minutes; matches scan_interval: 300 on the sensor
   debug_state: null, // on | outage | dtek | unscheduled | stale -- render only
+  debug_banner: null, // emergency | pending | notice | none -- render only
+  // The same two overrides read from entities (an input_select whose options
+  // are the values above, plus "live" for the real data), so a Playground can
+  // switch them from the page. Null on every real dashboard.
+  debug_state_entity: null,
+  debug_banner_entity: null,
   // Which of the three blocks this instance draws, in the order given.
   //
   // It exists so the provenance block can sit BELOW the claim-against-
@@ -271,6 +283,22 @@ const BLOCKS = ["hero", "timeline", "days", "week", "source"];
 const HISTORY_TTL = 5 * 60000;
 
 const DEBUG_STATES = ["on", "outage", "dtek", "unscheduled", "stale"];
+
+// debug_banner: the announcement popup, render only, like debug_state. The
+// emergency text is DTEK's own of 01.11.2026; the notice is a country-wide
+// one, which the poller shows but never flags -- this is how it looks.
+// "pending" is the emergency text read but the entity not on yet: the ten
+// minutes of delay_on, or a banner older than twenty minutes.
+const DEBUG_BANNERS = ["emergency", "pending", "notice", "none"];
+const SAMPLE_BANNER = {
+  emergency: { title: "Шановні клієнти!", scope: "city", text:
+    "За рішенням Укренерго запроваджено екстрені відключення по місту Дніпро.\n"
+    + "Це непередбачені графіками обмеження, тож прогнозувати тривалість відключень наразі неможливо.\n"
+    + "Якщо у вашій оселі є світло – споживайте його свідомо та ощадливо." },
+  notice: { title: "Шановні клієнти!", scope: "other", text:
+    "Через масовані атаки на енергосистему в багатьох регіонах України діють екстрені відключення.\n"
+    + "Слідкуйте за оновленнями на сайті та в чат-ботах." },
+};
 
 const DASH = "–"; // en dash, for 07:00-10:00
 const MDASH = "—";
@@ -486,6 +514,9 @@ class DtekShutdownsCard extends HTMLElement {
     if (cfg.debug_state && DEBUG_STATES.indexOf(cfg.debug_state) < 0) {
       throw new Error(CARD + ": debug_state must be one of " + DEBUG_STATES.join(", "));
     }
+    if (cfg.debug_banner && DEBUG_BANNERS.indexOf(cfg.debug_banner) < 0) {
+      throw new Error(CARD + ": debug_banner must be one of " + DEBUG_BANNERS.join(", "));
+    }
     if (!Array.isArray(cfg.blocks) || !cfg.blocks.length) {
       throw new Error(CARD + ": blocks must be a non-empty list of "
         + BLOCKS.join(", "));
@@ -575,13 +606,14 @@ class DtekShutdownsCard extends HTMLElement {
     const cfg = this._config;
     const main = this._stateObj(cfg.entity);
     const watched = [cfg.grid_entity, cfg.unscheduled_entity, cfg.stale_entity,
-      cfg.outage_entity, cfg.scheduled_entity];
+      cfg.outage_entity, cfg.scheduled_entity, cfg.emergency_entity,
+      cfg.debug_state_entity, cfg.debug_banner_entity].filter(Boolean);
     return JSON.stringify([
       main ? main.state : null,
       main ? main.attributes : null,
       watched.map((id) => this._state(id)),
       now.getDay(), now.getHours(), now.getMinutes(),
-      cfg.debug_state,
+      cfg.debug_state, cfg.debug_banner,
       this._hist && [this._hist.at, this._hist.note],
     ]);
   }
@@ -669,7 +701,14 @@ class DtekShutdownsCard extends HTMLElement {
 
   _derive(now, a) {
     const cfg = this._config;
-    const dbg = cfg.debug_state;
+    // An entity's value wins over the static option; "live" (or anything that
+    // is not a known value) means the real data.
+    const pick = (id, fixed, known) => {
+      const v = id ? this._state(id) : null;
+      return known.indexOf(v) >= 0 ? v : id ? null : fixed;
+    };
+    const dbg = pick(cfg.debug_state_entity, cfg.debug_state, DEBUG_STATES);
+    const dbgBanner = pick(cfg.debug_banner_entity, cfg.debug_banner, DEBUG_BANNERS);
 
     let gridDown = this._state(cfg.grid_entity) === "on"; // on = no mains
     let unscheduled = this._state(cfg.unscheduled_entity) === "on";
@@ -698,6 +737,30 @@ class DtekShutdownsCard extends HTMLElement {
       gridDown = true; unscheduled = true; dtekOutage = false; stale = false;
     } else if (dbg === "stale") {
       stale = true;
+    }
+
+    // The announcement popup. Its text is shown whatever it says -- DTEK
+    // writes it by hand -- but it turns the page red only through the
+    // emergency entity, which has already refused a country-wide notice, a
+    // single odd read and a banner nobody has fetched for 20 minutes.
+    let banner = a.banner_text
+      ? { title: a.banner_title, text: a.banner_text, scope: a.banner_scope } : null;
+    let emergencyOn = this._state(cfg.emergency_entity) === "on";
+    if (dbgBanner === "none") {
+      banner = null; emergencyOn = false;
+    } else if (dbgBanner) {
+      banner = SAMPLE_BANNER[dbgBanner === "pending" ? "emergency" : dbgBanner];
+      emergencyOn = dbgBanner === "emergency";
+    }
+    if (banner) {
+      banner = Object.assign({}, banner, {
+        emergency: emergencyOn,
+        lines: String(banner.text).split("\n").filter((l) => l.trim()),
+        checked: dbgBanner ? "preview" : fmtClock(a.banner_checked_at) || "unknown",
+        label: emergencyOn ? "Ukrenergo emergency outages"
+          : banner.scope === "other" ? "DTEK announcement · not for this area"
+          : "DTEK announcement",
+      });
     }
 
     // The badges that used to carry the queue chip are gone, so the identity
@@ -863,7 +926,11 @@ class DtekShutdownsCard extends HTMLElement {
     let lede;
     if (gridDown) {
       headline = "The power is off.";
-      if (unscheduled) {
+      if (unscheduled && emergencyOn) {
+        // Unscheduled, but announced: the popup is the announcement.
+        lede = "The inverter sees no mains, and Ukrenergo has emergency outages "
+          + "on here: they follow no schedule and DTEK gives no end time.";
+      } else if (unscheduled) {
         lede = "The inverter sees no mains and nobody said it would be: DTEK "
           + "reports no outage for " + queue + " and the schedule does not have "
           + "this hour dark.";
@@ -904,6 +971,11 @@ class DtekShutdownsCard extends HTMLElement {
       lede = "DTEK's schedule for " + queue + " has " + schedSpan + " "
         + (schedNow.certain ? "off" : "as a possible outage")
         + ". The inverter still sees mains.";
+    } else if (emergencyOn) {
+      // Mains is up, but it can go at any minute and no table will say when.
+      headline = "The power is on.";
+      lede = "Ukrenergo has emergency outages on here: the power can go at any "
+        + "time, and no schedule applies until they are lifted.";
     } else {
       headline = "The power is on.";
       lede = win
@@ -994,10 +1066,11 @@ class DtekShutdownsCard extends HTMLElement {
       ? Math.round((win.start.getTime() - now.getTime()) / 60000) : null;
     // Amber an hour ahead of a window, so the page warns before the alert does.
     const soon = !gridDown && !dtekOutage && !schedNow && toNext !== null && toNext <= 60;
-    const kind = gridDown ? "bad" : dtekOutage || schedNow || soon ? "warn" : "ok";
-    const pill = gridDown ? (unscheduled ? "Off · not announced" : "Power off")
+    const kind = gridDown ? "bad" : dtekOutage || schedNow || emergencyOn || soon ? "warn" : "ok";
+    const pill = gridDown ? (unscheduled && !emergencyOn ? "Off · not announced" : "Power off")
       : dtekOutage ? "DTEK notice"
       : schedNow ? (schedNow.certain ? "Scheduled outage" : "Possible outage")
+      : emergencyOn ? "Emergency outages"
       : soon ? (win.certain ? "Outage soon" : "Possible outage soon")
       : "Power on";
     // The clock's ring is today: what DTEK applied, else the recurring row.
@@ -1042,17 +1115,20 @@ class DtekShutdownsCard extends HTMLElement {
     } else if (toNext !== null && toNext <= 36 * 60) {
       center = { big: left(toNext * 60000), small: win.certain ? "to outage" : "to maybe off" };
     } else {
-      center = { big: "ON", small: todayRow ? "nothing ahead" : "no schedule" };
+      center = { big: "ON", small: emergencyOn ? "emergency outages"
+        : todayRow ? "nothing ahead" : "no schedule" };
     }
 
     return {
       kind, pill, todayRow, center, nowH, emergency,
       // Orange when only DTEK says it is off: a claim, not a measurement.
-      accent: gridDown ? RED : dtekOutage || schedNow ? ORANGE : GREEN,
+      accent: gridDown ? RED : dtekOutage || schedNow || emergencyOn ? ORANGE : GREEN,
       // The accent in words, for the eyebrow's tooltip.
       nowWord: gridDown ? "power off"
         : dtekOutage ? "DTEK outage notice, mains present"
-        : schedNow ? "scheduled outage, mains present" : "power on",
+        : schedNow ? "scheduled outage, mains present"
+        : emergencyOn ? "emergency outages announced, mains present" : "power on",
+      banner, emergencyOn,
       identity,
       headline, lede, note, queue, week, days, win, applied, inEffect,
       weekLive, hiddenReason,
@@ -1121,6 +1197,7 @@ class DtekShutdownsCard extends HTMLElement {
       + (d.identity ? '<span class="ident"' + tip("Address and queue", d.identity, "ident")
         + ">" + esc(d.identity) + "</span>" : "")
       + "</div>"
+      + this._banner(d.banner)
       + "<h1" + tip("Headline", d.headline.replace(/\.$/, ""), "headline") + ">"
       + esc(d.headline) + "</h1>"
       + '<p class="lede">' + esc(d.lede) + "</p>"
@@ -1139,12 +1216,26 @@ class DtekShutdownsCard extends HTMLElement {
       // it they have no answer, and a dash is the honest one -- "0h off" would
       // be a claim about a week nobody has scheduled.
       + tile("Next window", d.win ? d.win.label : d.weekLive ? "none" : null,
-             d.win ? d.win.when
+             d.emergencyOn ? "schedules don't apply now"
+               : d.win ? d.win.when
                : d.weekLive ? "nothing in the table" : "no schedule published", "next")
       + tile("Off this week", d.weekOff,
              d.weekShare ? d.weekShare + " of the week" : "not published", "week_off")
       + tile("Feed", d.feedLabel, "Last poll " + d.lastPoll, "feed", d.feedColor)
       + "</div></div></ha-card>";
+  }
+
+  /**
+   * DTEK's announcement popup, verbatim, one line per paragraph. Red only when
+   * the emergency entity is on; any other announcement is a neutral note.
+   */
+  _banner(b) {
+    if (!b) return "";
+    return '<div class="banner' + (b.emergency ? " emerg" : "") + '"'
+      + tip(b.label, (b.title ? b.title + " " : "") + "checked " + b.checked, "banner") + ">"
+      + '<span class="k">' + esc(b.label) + "</span>"
+      + b.lines.map((l) => "<p>" + esc(l) + "</p>").join("")
+      + "</div>";
   }
 
   /**
@@ -1171,10 +1262,14 @@ class DtekShutdownsCard extends HTMLElement {
       const letter = row ? row[h] : null;
       const st = letter ? STATE[letter] || STATE["?"] : null;
       const t = tip(pad2(h) + ":00" + DASH + pad2(h + 1) + ":00",
-                    st ? st.label + ", " + d.todayRow.source : "no schedule published", "clock_hour");
+                    d.emergencyOn ? "possible outage, Ukrenergo emergency outages"
+                      : st ? st.label + ", " + d.todayRow.source : "no schedule published", "clock_hour");
       for (const half of [0, 1]) {
-        const cls = !st || st.cls === "unknown" ? "none"
+        // Under Ukrenergo's emergency outages no hour is safe, whatever the
+        // table says: every hour not already marked off reads as possible.
+        const base = !st || st.cls === "unknown" ? "none"
           : halfDark(letter, half) ? (CERTAIN.indexOf(letter) >= 0 ? "out" : "maybe") : "on";
+        const cls = d.emergencyOn && base !== "out" ? "maybe" : base;
         const past = h + (half + 1) / 2 <= d.nowH ? " past" : "";
         segs += '<path class="arc ' + cls + past + '" d="'
           + arc(h + half / 2, h + (half + 1) / 2, half ? 0 : GAP, half ? GAP : 0) + '"' + t + "></path>";
@@ -1513,6 +1608,23 @@ a:hover { text-decoration: underline; }
 .reason .v { font-size: 13px; color: var(--ds-text2); text-wrap: pretty; }
 .reason .v.dim, .tile .v.dim { color: var(--ds-muted); }
 .reason.sub { margin-top: 0; padding-top: 0; border-top: 0; }
+/* DTEK's announcement popup. Neutral unless it is Ukrenergo's emergency here. */
+.banner {
+  display: flex; flex-direction: column; gap: 4px; max-width: 60ch;
+  padding: 10px 12px; border-radius: 8px;
+  border: 1px solid var(--ds-line2); background: var(--ds-inner);
+}
+.banner .k {
+  font: 600 10.5px/1.2 var(--ds-mono); letter-spacing: .08em; text-transform: uppercase;
+  color: var(--ds-muted);
+}
+.banner p { font-size: 13px; color: var(--ds-text2); text-wrap: pretty; }
+.banner.emerg {
+  border-color: color-mix(in srgb, var(--ds-bad) 70%, var(--ds-line));
+  background: color-mix(in srgb, var(--ds-bad) 14%, var(--ds-inner));
+}
+.banner.emerg .k { color: var(--ds-bad-hi); }
+.banner.emerg p:first-of-type { color: var(--ds-text); font-weight: 500; }
 .reason.sub .v { font-family: var(--ds-mono); }
 
 .clock { grid-area: clock; width: clamp(180px, 26cqi, 232px); align-self: center; }
