@@ -29,19 +29,22 @@ As of 2026-10-04. The account and address are made up here.
 | 1 | `/start` → main menu | Press **📊 Передати показання** |
 | 2 | "Для передачі показань оберіть особовий рахунок" | Press the button starting with the account number |
 | 3 | "Особовий рахунок: 520000000000 … Зонність лічильника: 2. Останні активні показання на 31.08.2026. День: 38108, Ніч: 6384. Введіть показання ДЕНЬ пробіл НІЧ (всі цифри до коми)." | Read the previous readings; type `"DAY NIGHT"` |
-| 4 | Not yet seen | See below |
+| 4 | "Ваші показання на 2026-10-31 для рахунку 520000000000: ДЕНЬ: 38567, НІЧ: 6912. Якщо все вірно, натисніть кнопку меню ВІДПРАВИТИ ПОКАЗАННЯ." with a menu keyboard: **📤 Відправити показання**, **✏️ Редагувати показання**, **⬅️ Назад**, **🏠 Головне меню** (seen 2026-10-31) | Check that both numbers are echoed; press **📤 Відправити показання** |
+| 5 | Not yet seen | See below |
 
 **The bot answers a button by editing its own message**, not by sending a new
 one. The walker therefore watches the pressed message for changes
 (`Walk(watch_edits=True)`). The gas bot sends new messages, so its walk
 doesn't use this.
 
-**Step 4 hadn't been seen when this was written**, because seeing it takes a
-real submission. So the code is strict in both directions:
+**Step 5 hasn't been seen yet**, because seeing it takes a real submission.
+Until 2026-10-31 step 4 was unseen too: the walk did not know
+**Відправити**, backed out to the main menu, and nothing was sent. So the
+code is strict in both directions:
 
-- If the answer asks a question (a **Так** / **Підтверд…** button), the
-  question must repeat **both** numbers, or the walk presses **Ні** /
-  **Скасув…** and fails. The confirm button is pressed on that question's own
+- If the answer asks a question (a **Так** / **Підтверд…** / **Відправ…**
+  button), the question must repeat **both** numbers, or the walk presses
+  **Ні** / **Скасув…** / **Назад** and fails. The confirm button is pressed on that question's own
   message (or, when the numbers come in one message and the yes/no in the
   next, on the only yes/no in the answer).
 - A button counts as yes or no only by the **first word** of its label, with
@@ -49,7 +52,7 @@ real submission. So the code is strict in both directions:
   with the answer for a question: "так" is inside **Контакти** and "ні" is
   inside **Ніч**.
 - The answer counts as accepted only if it contains a success word
-  (`прийнят`, `успішн`, `збережен`) and no refusal word (`помилк`,
+  (`прийнят`, `успішн`, `збережен`, `передан`, `отриман`) and no refusal word (`помилк`,
   `не прийнят`, `некоректн`, `неможлив`, `менш`).
 - Any other answer fails with the bot's text quoted. Home Assistant passes
   that on, saying the reading may or may not have gone in and to check the
