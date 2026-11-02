@@ -78,30 +78,35 @@
   mode: single
 - id: '1793462400101'
   alias: '⚠️ Alert: Grid Voltage Out of Range'
-  description: 'Mains is there but outside 185-250 V (the firmware''s grid_safe, on = UNSAFE) and grid protection is on, so the firmware has moved the house to battery. With protection off the inverter keeps running on the grid and nothing pages. A real outage is the Grid Outage alert''s: grid_down is on by the time the 20 s hold ends, and the condition skips it.'
+  description: 'Mains is there but outside 185-250 V (the firmware''s grid_safe, on = UNSAFE) and grid protection is on, so the firmware has moved the house to battery. With protection off the inverter keeps running on the grid and nothing pages. The voltage is read at the trip, when it has been out of range for grid_safe''s 5 s: 20 s later a spike has usually passed, and the alert used to report 248 V as Low. The 20 s hold is in the actions. A real outage is the Grid Outage alert''s: if grid_down is still on 20 s after the hold, that alert has fired and this run stops; a shorter dropout pages here as Low.'
   triggers:
   - trigger: state
     entity_id: binary_sensor.powmr_inverter_grid_condition_safe
     from: 'off'
     to: 'on'
-    for:
-      seconds: 20
   conditions:
-  - condition: state
-    entity_id: binary_sensor.grid_down
-    state: 'off'
   - condition: state
     entity_id: switch.powmr_inverter_auto_grid_protection
     state: 'on'
   actions:
   - variables:
+      trip_volts: "{{ states('sensor.powmr_inverter_grid_voltage') | float(0) | round(0) | int }}"
+  - delay:
+      seconds: 20
+  - condition: state
+    entity_id: binary_sensor.powmr_inverter_grid_condition_safe
+    state: 'on'
+  - wait_template: "{{ is_state('binary_sensor.grid_down', 'off') }}"
+    timeout: '00:00:20'
+    continue_on_timeout: false
+  - variables:
       volts: "{{ states('sensor.powmr_inverter_grid_voltage') | float(0) | round(0) | int }}"
-      title: "⚠️ Grid Voltage {{ 'High' if volts | int >= 250 else 'Low' }}"
+      title: "⚠️ Grid Voltage {{ 'High' if trip_volts | int >= 250 else 'Low' if trip_volts | int <= 185 else 'Out of Range' }}"
       battery_line: "{% set r = states('sensor.battery_runtime_remaining') %}{% set s = states('sensor.jkbms_gateway_bms_state_of_charge') %}{% if r | is_number and s | is_number %}Battery {{ s | float | round(0) }}%, about {{ r | float | round(1) }} h left at the current draw.{% elif s | is_number %}Battery {{ s | float | round(0) }}%.{% endif %}"
   - action: notify.household
     data:
       title: '{{ title }}'
-      message: 'Mains is at {{ volts }} V, outside 185-250 V. Grid protection has moved the house to battery until the grid is steady in range for 5 minutes. {{ battery_line }}'
+      message: 'Mains went to {{ trip_volts }} V, outside 185-250 V ({{ volts }} V now). Grid protection has moved the house to battery until the grid is steady in range for 5 minutes. {{ battery_line }}'
       data:
         ttl: 0
         priority: high
@@ -109,7 +114,7 @@
   - action: notify.persistent_notification
     data:
       title: '{{ title }}'
-      message: 'Mains is at {{ volts }} V, outside 185-250 V. Grid protection has moved the house to battery until the grid is steady in range for 5 minutes. {{ battery_line }}'
+      message: 'Mains went to {{ trip_volts }} V, outside 185-250 V ({{ volts }} V now). Grid protection has moved the house to battery until the grid is steady in range for 5 minutes. {{ battery_line }}'
   mode: single
 - id: '1793462400102'
   alias: ✅ Grid Voltage Normal

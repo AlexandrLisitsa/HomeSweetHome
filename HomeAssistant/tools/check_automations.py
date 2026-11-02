@@ -133,16 +133,32 @@ for on_batt, want in (("on", "Grid protection keeps the house on battery"),
 print("\n2b. grid out of range: only when protection moved the house")
 low_v = by_alias(autos, "Grid Voltage Out of Range")
 trig = low_v["triggers"][0]
-check("trigger: quality check unsafe for 20 s",
+check("trigger: quality check unsafe, at once (the hold is in the actions)",
       (trig.get("entity_id"), trig.get("from"), trig.get("to"), trig.get("for")),
-      ("binary_sensor.powmr_inverter_grid_condition_safe", "off", "on", {"seconds": 20}))
-check("conditions: mains present and protection on",
-      sorted((c["entity_id"], c["state"]) for c in low_v["conditions"]),
-      [("binary_sensor.grid_down", "off"),
-       ("switch.powmr_inverter_auto_grid_protection", "on")])
-title = low_v["actions"][0]["variables"]["title"]
-for volts, want in (("180", "⚠️ Grid Voltage Low"), ("252", "⚠️ Grid Voltage High")):
-    check("%s V -> %s" % (volts, want), render(title, volts=volts), want)
+      ("binary_sensor.powmr_inverter_grid_condition_safe", "off", "on", None))
+check("conditions: protection on",
+      [(c["entity_id"], c["state"]) for c in low_v["conditions"]],
+      [("switch.powmr_inverter_auto_grid_protection", "on")])
+acts = low_v["actions"]
+check("reads the voltage at the trip, before the hold",
+      list(acts[0]["variables"]) + [list(acts[1])],
+      ["trip_volts", ["delay"]])
+check("held 20 s, still unsafe after it",
+      (acts[1]["delay"], acts[2].get("entity_id"), acts[2].get("state")),
+      ({"seconds": 20}, "binary_sensor.powmr_inverter_grid_condition_safe", "on"))
+check("grid still down 20 s on -> stops (Grid Outage has fired)",
+      ("grid_down" in acts[3]["wait_template"], acts[3]["timeout"],
+       acts[3]["continue_on_timeout"]),
+      (True, "00:00:20", False))
+title = acts[4]["variables"]["title"]
+for trip, want in (("2", "⚠️ Grid Voltage Low"), ("180", "⚠️ Grid Voltage Low"),
+                   ("252", "⚠️ Grid Voltage High"), ("250", "⚠️ Grid Voltage High"),
+                   ("226", "⚠️ Grid Voltage Out of Range")):
+    check("tripped at %s V -> %s" % (trip, want), render(title, trip_volts=trip), want)
+message = acts[5]["data"]["message"]
+check("message: trip voltage, then now",
+      render(message, trip_volts="252", volts="248", battery_line="").startswith(
+          "Mains went to 252 V, outside 185-250 V (248 V now)."), True)
 
 normal = by_alias(autos, "Grid Voltage Normal")
 cond = normal["conditions"][0]["value_template"]
