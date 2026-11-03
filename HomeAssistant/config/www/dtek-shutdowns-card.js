@@ -45,7 +45,7 @@
 const CARD = "dtek-shutdowns-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "2.2.3";
+const VERSION = "2.2.5";
 
 /*
  * The grid shows the NORMAL condition, not the exception: a cell is green when
@@ -302,6 +302,9 @@ const SAMPLE_BANNER = {
 
 const DASH = "–"; // en dash, for 07:00-10:00
 const MDASH = "—";
+// How old a read of DTEK's popup may be before the card stops showing it as
+// current. Same limit as binary_sensor.dtek_emergency_shutdowns' availability.
+const BANNER_MAX_AGE_MIN = 20;
 const MIDDOT = "·";
 
 // --- small helpers ---------------------------------------------------------
@@ -752,7 +755,19 @@ class DtekShutdownsCard extends HTMLElement {
       banner = SAMPLE_BANNER[dbgBanner === "pending" ? "emergency" : dbgBanner];
       emergencyOn = dbgBanner === "emergency";
     }
-    if (banner) {
+    // A banner older than the emergency entity's own 20-minute limit is not
+    // shown as today's: DTEK may have replaced it since. On 03.11.2026 the
+    // site started refusing the poller's page GET (HTTP 403) at 06:55 and the
+    // morning "екстрені" text stayed up under a popup that by then said
+    // "стабілізаційні". An entity that is on was fresh by definition.
+    const checkedAt = a.banner_checked_at ? new Date(a.banner_checked_at) : null;
+    const bannerOld = !dbgBanner && !emergencyOn && (a.banner_text || a.banner_error)
+      && (!checkedAt || isNaN(checkedAt) || now - checkedAt > BANNER_MAX_AGE_MIN * 60000);
+    // Hidden outright, at the user's request: the live schedule line already
+    // says which regime DTEK applies to this address.
+    if (bannerOld) {
+      banner = null;
+    } else if (banner) {
       banner = Object.assign({}, banner, {
         emergency: emergencyOn,
         lines: String(banner.text).split("\n").filter((l) => l.trim()),
@@ -1628,8 +1643,7 @@ a:hover { text-decoration: underline; }
   border-color: color-mix(in srgb, var(--ds-bad) 70%, var(--ds-line));
   background: color-mix(in srgb, var(--ds-bad) 14%, var(--ds-inner));
 }
-.banner.emerg .k { color: var(--ds-bad-hi); }
-.banner.emerg p:first-of-type { color: var(--ds-text); font-weight: 500; }
+.banner.emerg .k { color: var(--ds-bad-hi); }.banner.emerg p:first-of-type { color: var(--ds-text); font-weight: 500; }
 .reason.sub .v { font-family: var(--ds-mono); }
 
 .clock { grid-area: clock; width: clamp(180px, 26cqi, 232px); align-self: center; }

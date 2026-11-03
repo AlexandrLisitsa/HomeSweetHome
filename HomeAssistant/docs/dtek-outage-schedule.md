@@ -261,6 +261,13 @@ on purpose: those trigger captures, and a flaky GET would rotate the real ones
 out. Captures do fire when the banner text changes, with the banner in
 `_meta`, so real wordings pile up to test against.
 
+The card never shows a kept banner as the current one. Once `banner_checked_at`
+is more than 20 minutes old (the emergency sensor's limit), it hides the
+announcement box. The live schedule line still says which regime applies. On 03.11.2026 the site started
+answering the page GET with HTTP 403 (an Imperva bot check) at 06:55, while
+the AJAX endpoint kept working. The morning "екстрені" text then stayed up
+under a popup that already said "стабілізаційні".
+
 ### Built to miss rather than cry wolf
 
 An alert hangs off this, so a false "on" costs more than a late one. The text

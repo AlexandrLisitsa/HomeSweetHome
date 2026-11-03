@@ -166,6 +166,19 @@ eq("a notice about elsewhere says so", r.text(".banner .k"), "DTEK announcement 
 r = render("10:00", noSched, { states: { [EMERG]: S("off") } });
 eq("no banner: no strip", r.root.querySelector(".banner"), null);
 
+// 03.11.2026: the page GET 403'd from 06:55 and the morning "екстрені" text
+// stayed up under a popup that said "стабілізаційні". Past 20 minutes the card
+// hides the banner altogether.
+const OLD = Object.assign({}, BANNER, { banner_emergency: true, banner_error: "HTTPError: HTTP Error 403: Forbidden" });
+r = render("10:15", Object.assign({}, noSched, OLD), { states: { [EMERG]: S("unavailable") } });
+eq("15 min old: still shown", [r.root.querySelector(".banner").getAttribute("class"),
+  r.text(".banner .k")], ["banner", "DTEK announcement"]);
+r = render("10:25", Object.assign({}, noSched, OLD), { states: { [EMERG]: S("unavailable") } });
+eq("25 min old: no banner", r.root.querySelector(".banner"), null);
+eq("...and the page stays green", r.wrap.classList.contains("k-ok"), true);
+r = render("12:15", Object.assign({}, noSched, OLD, { banner_checked_at: null }), { states: { [EMERG]: S("unavailable") } });
+eq("never read: no banner", r.root.querySelector(".banner"), null);
+
 console.log("debug_banner, for the Playground");
 r = render("10:00", noSched, { config: { debug_banner: "emergency" } });
 eq("emergency sample, entity ignored", [r.text(".banner .k"), r.text(".pill .lbl")],
