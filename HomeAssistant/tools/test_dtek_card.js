@@ -139,6 +139,12 @@ eq("next window: schedules don't apply", r.tile("Next window")[1], "schedules do
 r = render("13:39", Object.assign({}, BANNER), { states: { [EMERG]: S("on") } });
 eq("a window DTEK has off stays red inside the amber",
   r.root.querySelectorAll(".arc").map((a) => a.getAttribute("class")).filter((c) => /out/.test(c)).length, 7);
+{
+  const hour = (i) => r.root.querySelectorAll(".arc")[i].getAttribute("data-tip").split("\n")[0];
+  eq("...its tooltip names the schedule and the emergency", [
+    /Ukrenergo emergency outages too$/.test(hour(28)), /^14:00–15:00 — /.test(hour(28)),
+    hour(20)], [true, true, "10:00–11:00 — possible outage, Ukrenergo emergency outages"]);
+}
 
 r = render("10:00", Object.assign({}, noSched, BANNER),
   { gridDown: true, states: { [EMERG]: S("on"), "binary_sensor.grid_outage_unscheduled": S("on") } });

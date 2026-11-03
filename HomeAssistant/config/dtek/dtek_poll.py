@@ -147,8 +147,21 @@ EMERGENCY_SUB_TYPE = ("Екстренні відключення (Аварійн
 # two, any case ending -- the sub_type above spells it with two.
 EMERGENCY_RE = re.compile(r"екстрен\w*\s+відключен", re.IGNORECASE)
 # The region this distributor covers. A region-wide announcement covers the
-# city too; a country-wide one is not about this address and must not count.
+# city too.
 REGION_RE = re.compile(r"дніпропетровськ\w*|дніпропетровщин\w*", re.IGNORECASE)
+# The whole country, which covers this address as well: "по всій Україні".
+COUNTRY_RE = re.compile(r"україн|країн|по\s+всій|всіх\s+регіон", re.IGNORECASE)
+# Somewhere that is neither: "у Києві та Київській області", "в Харкові". A
+# preposition followed by a capitalised name, or any oblast. Checked after the
+# three above, so "у Дніпрі" and "в Україні" never get this far. Case matters
+# for the name -- that is what tells "у Києві" from "у вашій оселі" -- so only
+# the prepositions are case-blind. A sentence that names no place at all is
+# DTEK's own popup speaking about its own area, and counts as country-wide:
+# "За наказом НЕК Укренерго введені екстрені відключення електроенергії."
+# (03.11.2026) names nothing and was about us.
+OTHER_PLACE_RE = re.compile(
+    r"(?i:област)|(?<!\w)(?i:у|в|на|по|до|із|з)\s+"
+    r"(?:(?i:місту|місті|міста|м\.)\s*)?[А-ЯІЇЄҐ]")
 # The banner raises an alert, so a sentence counts only when it says the
 # outages are on NOW: an in-force verb, and none of the words that turn the
 # same phrase into advice, history or an all-clear -- "щоб уникнути екстрених
@@ -783,7 +796,10 @@ class _BannerText(HTMLParser):
 
 
 def banner_scope(text, city):
-    """Which part of the country the banner names: city, region, or other.
+    """Which place the banner names: city, region, country, or other.
+
+    "country" is the whole of Ukraine, or no place at all (see OTHER_PLACE_RE);
+    "other" is a named place that is not ours. Only "other" is not about us.
 
     The city comes from secrets.yaml ("м. Дніпро" or "Дніпро"), matched with at
     most a two-letter case ending: Дніпро, Дніпра, Дніпрі and Дніпром, but not
@@ -799,6 +815,8 @@ def banner_scope(text, city):
             return "city"
     if REGION_RE.search(text):
         return "region"
+    if COUNTRY_RE.search(text) or not OTHER_PLACE_RE.search(text):
+        return "country"
     return "other"
 
 
@@ -806,11 +824,13 @@ def banner_emergency(text, city):
     """(scope, emergency) for a banner, judged one sentence at a time.
 
     A sentence raises the flag only if it has the outage words, an in-force
-    verb, none of the not-now words, AND names our city or region itself --
-    "Шановні дніпряни! ... екстрені відключення по всій Україні" names the
-    city in one sentence and the country in the other, and is not about us.
-    Leaning towards a missed flag over a false one is deliberate: the text is
-    on the dashboard either way, and the flag is what an alert would hang off.
+    verb, none of the not-now words, AND is about a place that includes us:
+    our city, our region, the whole country, or no place named. A sentence
+    that names somewhere else ("у Києві") never does, even when another
+    sentence names our city -- the place is read off the sentence that says
+    the outages are on. Leaning towards a missed flag over a false one is
+    deliberate: the text is on the dashboard either way, and the flag is what
+    an alert hangs off.
     """
     for sentence in re.split(r"(?<=[.!?])\s+|\n", text):
         if (EMERGENCY_RE.search(sentence) and BANNER_ACTIVE_RE.search(sentence)

@@ -160,7 +160,7 @@ command_line:
         # that was withdrawn.
         - windows
         # The home page's announcement popup: DTEK's title and text verbatim,
-        # which part of the country it names (city, region, other), and
+        # which place it names (city, region, country, other), and
         # whether it says Ukrenergo's emergency outages are on here now. See
         # binary_sensor.dtek_emergency_shutdowns for what that flag is worth.
         - banner_title
@@ -228,7 +228,8 @@ template:
           error: "{{ state_attr('sensor.dtek_shutdowns', 'error') }}"
           last_poll: "{{ state_attr('sensor.dtek_shutdowns', 'fetched_at') }}"
 
-      # Ukrenergo's emergency outages, announced for this city or region.
+      # Ukrenergo's emergency outages, announced for this city, this region or
+      # the whole country.
       #
       # DTEK announces these ONLY in the home page's popup, which no AJAX
       # answer carries, and they leave this address's own record blank: on
@@ -237,9 +238,10 @@ template:
       #
       # Built to miss rather than to cry wolf, because an alert hangs off it:
       #   * dtek_poll.py's banner_emergency() counts a sentence only when it
-      #     names this city or region, says the outages are on now, and has
-      #     none of the advice/history/all-clear words. A country-wide notice
-      #     shows on the dashboard and never turns this on.
+      #     is about a place that includes us (city, region, the whole
+      #     country, or no place named), says the outages are on now, and has
+      #     none of the advice/history/all-clear words. A notice naming
+      #     somewhere else shows on the dashboard and never turns this on.
       #   * delay_on: two polls in a row must agree. One odd read is not news.
       #   * unavailable, not on, once the banner has not been read for 20
       #     minutes: a stale "on" from a fetch that keeps failing is exactly
@@ -780,7 +782,7 @@ automation:
           title: '📅 DTEK schedule changed'
           message: "{{ message }}"
 
-  # Ukrenergo's emergency outages, announced for this city or region in DTEK's
+  # Ukrenergo's emergency outages, announced for this city, region or country in DTEK's
   # home-page popup -- see binary_sensor.dtek_emergency_shutdowns. Same two
   # channels and the same shape as the DTEK outage pair above, one tag, so the
   # "lifted" push replaces the "announced" one on the lock screen.

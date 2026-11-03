@@ -208,7 +208,7 @@ again afterwards.
 
 `debug_banner: emergency | pending | notice | none` does the same for the
 popup: DTEK's 01.11.2026 text in red, the same text grey (`pending`, the
-sensor still debouncing), a country-wide notice in grey, or nothing. For a
+sensor still debouncing), another area's notice in grey, or nothing. For a
 page you can click through, `debug_state_entity` and `debug_banner_entity`
 name an `input_select` each, whose options are those values plus `live`; the
 card follows them as they change. That is how the Playground for this feature
@@ -250,7 +250,7 @@ sensor publishes:
 | attribute | |
 | --- | --- |
 | `banner_title`, `banner_text` | DTEK's words, verbatim, one line per paragraph |
-| `banner_scope` | `city`, `region` or `other`: which place the popup names |
+| `banner_scope` | `city`, `region`, `country` (all of Ukraine, or no place named) or `other` (somewhere else): which place the popup names |
 | `banner_emergency` | whether it announces emergency outages here, now |
 | `banner_checked_at` | when the popup was last read successfully |
 | `banner_error` | why the latest read failed, else null |
@@ -274,14 +274,20 @@ is on the dashboard whatever the flag says.
    - none of the not-now words: скасовано, завершено, припинено, не діють,
      більше не, вчора, минул…, запобігання, уникнути, можливі, загроза,
      ризик;
-   - this city or region named **in that same sentence**. The city comes
+   - a place that includes us, read off **that same sentence**: this city,
+     this region, the whole country, or no place at all. The city comes
      from `dtek_city` with at most a two-letter case ending (Дніпро, Дніпра,
      Дніпрі), so neither Дніпропетровській nor DTEK's own name, Дніпровські
      електромережі, counts as the city. The region is
-     Дніпропетровськ… / Дніпропетровщин….
+     Дніпропетровськ… / Дніпропетровщин…. The country is Україн…, країн…,
+     по всій, всіх регіонах. A sentence naming no place is DTEK's own
+     popup speaking about its own area: on 03.11.2026 "За наказом НЕК
+     Укренерго введені екстрені відключення електроенергії." named nothing
+     and was about us.
 
-   A country-wide notice, another city's, advice to save power, or an
-   all-clear is shown in grey and never raises the flag.
+   A notice naming somewhere else (a preposition and a capitalised name,
+   "у Києві", "в Харкові", or any oblast but ours), advice to save power,
+   or an all-clear is shown in grey and never raises the flag.
 2. **Two polls must agree.** `binary_sensor.dtek_emergency_shutdowns` has
    `delay_on: 10 min`.
 3. **Fresh or nothing.** The sensor goes `unavailable`, not `on`, once the
