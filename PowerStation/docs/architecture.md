@@ -73,7 +73,7 @@ The script picks one of these three target modes — **Utility First**, **Solar 
 | # | Condition | Action | Why |
 | --- | --- | --- | --- |
 | 1 | `Auto Grid Protection` ON **and** grid is bad | Force **SBU Battery** | Protect loads from a sick grid. Bypasses NTP entirely — works during a complete network outage. |
-| 1b | (else) outage pre-charge active (§11) | **Utility First** | HA asked for a full pack before a scheduled DTEK outage. Beats the tariff, which would spend the battery by day; loses to rule 1. |
+| 1b | (else) outage pre-charge active (§11) | **Utility First** | HA asked for a full pack before a scheduled DTEK outage, or for full current while a DTEK emergency is on record. Beats the tariff, which would spend the battery by day; loses to rule 1. |
 | 2 | (else) `Auto Tariff Mode` ON, NTP failed | **Utility First** | Without trustworthy time we can't know the tariff window, so play it safe by using the grid. |
 | 3 | (else) `Auto Tariff Mode` ON, night (23:00 ≤ hour < 07:00) | **Utility First** | Night electricity is cheap — use the grid, save the battery. |
 | 4 | (else) `Auto Tariff Mode` ON, day (07:00 ≤ hour < 23:00) | **SBU Battery** | Day electricity is expensive — discharge the battery (and solar, when present). |
@@ -379,7 +379,7 @@ Without the interval, a write lost at a tariff boundary would persist for up to 
 
 ## 11. Outage pre-charge
 
-The one rule that comes from outside the ESP. Home Assistant knows when DTEK has scheduled the power off; the firmware does not. When a window is coming and the pack would not be full in time, HA asks for a pre-charge, and the firmware puts the inverter on the grid and opens the charger until the outage starts. The planning, including how many amps, is HA's — see [`HomeAssistant/docs/outage-precharge.md`](../../HomeAssistant/docs/outage-precharge.md). This section covers only what the firmware does with the request.
+The one rule that comes from outside the ESP. Home Assistant knows when DTEK has scheduled the power off, or has an emergency outage on record; the firmware does not. When a window is coming and the pack would not be full in time, HA asks for a pre-charge, and the firmware puts the inverter on the grid and opens the charger until the outage starts. During an emergency HA asks for the full 60 A whenever mains is up, until DTEK's record ends. The planning, including how many amps, is HA's — see [`HomeAssistant/docs/outage-precharge.md`](../../HomeAssistant/docs/outage-precharge.md). This section covers only what the firmware does with the request.
 
 **The interface is two entities.**
 
