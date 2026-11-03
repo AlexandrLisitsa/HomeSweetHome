@@ -79,7 +79,7 @@ import { cardTip } from "./card-tip.js?v=1.0.0";
 import { fxConfig, fxOn, fxSetup, FX_CSS } from "./card-fx.js?v=1.1.0";
 import { ramp, rampCss } from "./card-ramp.js?v=1.0.0";
 
-const VERSION = "2.14.2";
+const VERSION = "2.14.3";
 
 /*
  * Brand colours stay literal: they identify a leg of the diagram (amber =
@@ -1118,7 +1118,9 @@ class PowmrInverterConsoleCard extends HTMLElement {
     el.fxDot.hidden = !last;
     if (last) {
       el.fxDot.style.left = (last[0] / CH_W * 100).toFixed(3) + "%";
-      el.fxDot.style.top = (last[1] / CH_H * 100).toFixed(3) + "%";
+      // px, not %: .plot also holds the x-axis row, so it is taller than the
+      // CH_H-px chart and a percentage of it lands the dot too low.
+      el.fxDot.style.top = Math.max(0, Math.min(CH_H, last[1])).toFixed(1) + "px";
       el.fxDot.style.setProperty("--fxc", col);
     }
   }
