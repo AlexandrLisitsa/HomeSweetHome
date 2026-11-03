@@ -1433,7 +1433,9 @@ async function batterySuite() {
     eq("30 min", h("0.5"), { text: "30m", known: true });
     eq("59.94 min rounds to 1h 0m", h("0.999"), { text: "1h 0m", known: true });
     eq("2.5 h", h("2.5"), { text: "2h 30m", known: true });
-    eq("200 h", h("200"), { text: "200h 0m", known: true });
+    eq("98.9 h is still an estimate", h("98.9"), { text: "98h 54m", known: true });
+    eq("99 h is the sensor's cap: 99h+", h("99"), { text: "99h+", known: true, capped: true });
+    eq("200 h (an unclamped sensor) is 99h+ too", h("200"), { text: "99h+", known: true, capped: true });
     eq("negative reads as 0m", h("-1"), { text: "0m", known: true });
     c._hass = mkHass({});
     eq("missing sensor is 'unknown'", c._hours("sensor.h"), { text: "unknown", known: false });
@@ -1591,6 +1593,10 @@ async function batterySuite() {
     eq("runtime clock hidden while charging", el.rtlAt.textContent, "");
     eq("rate: 60 A gains 1% every 2m 48s", el.ttfRate.textContent, "+1% every 2m 48s");
     eq("rate: no drain line while charging", el.rtlRate.textContent, "");
+    rerender(r, (s) => { s[E.ttf] = S("99"); });
+    eq("capped time to full reads 99h+, still green", [el.ttf.textContent, el.ttf.style.color], ["99h+", OK]);
+    eq("capped time to full has no clock", el.ttfAt.textContent, "");
+    rerender(r, (s) => { s[E.ttf] = S("3"); });
     check("rate: in the time-to-full tooltip", el.ttfTile.dataset.tip.includes("+1% every 2m 48s"),
       el.ttfTile.dataset.tip.split("\n")[0]);
     eq("charge chip lit", el.dot0.classList.contains("live"), true);
