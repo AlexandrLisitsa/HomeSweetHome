@@ -79,7 +79,7 @@ import { cardTip } from "./card-tip.js?v=1.0.0";
 import { fxConfig, fxOn, fxSetup, FX_CSS } from "./card-fx.js?v=1.1.0";
 import { ramp, rampCss } from "./card-ramp.js?v=1.0.0";
 
-const VERSION = "2.14.3";
+const VERSION = "2.14.4";
 
 /*
  * Brand colours stay literal: they identify a leg of the diagram (amber =
@@ -243,8 +243,9 @@ const HELP = {
   adaptive_charge: "Charges at night at the lowest current that still fills the pack by 06:30."
     + "\nE.g. half full at 23:00 needs ~21 A, so 30 A, not 60 A; re-sized every 10 min."
     + "\nNeeds Auto with the charger on, or Night only; an outage pauses it until it is over.",
-  chip_precharge: "Arms a full pack before each scheduled DTEK outage; idle until DTEK publishes one."
-    + "\nE.g. outage at 10:00: fills overnight at night rates, or by day at the amps it needs.",
+  chip_precharge: "Fills the pack before DTEK outages: gently on schedule, as fast as it can in an emergency."
+    + "\nE.g. 10:00 outage: fills overnight at night rates; emergency: 60 A whenever mains is up."
+    + "\nDTEK \"stabilisation\" outages are the schedule; other emergencies get 60 A. Planned don't.",
   adaptive_plan: "What adaptive night charge is doing: the current it set and when the charge ends."
     + "\nE.g. 20 A → 07:00 at night, tonight by day, full within 1 % of a full pack.",
   precharge_plan: "What pre-charge is doing for the next DTEK outage: the amps and the outage start."
