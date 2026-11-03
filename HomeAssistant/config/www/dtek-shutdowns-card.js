@@ -45,7 +45,7 @@
 const CARD = "dtek-shutdowns-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "2.2.2";
+const VERSION = "2.2.3";
 
 /*
  * The grid shows the NORMAL condition, not the exception: a cell is green when
@@ -741,7 +741,7 @@ class DtekShutdownsCard extends HTMLElement {
 
     // The announcement popup. Its text is shown whatever it says -- DTEK
     // writes it by hand -- but it turns the page red only through the
-    // emergency entity, which has already refused a country-wide notice, a
+    // emergency entity, which has already refused another area's notice, a
     // single odd read and a banner nobody has fetched for 20 minutes.
     let banner = a.banner_text
       ? { title: a.banner_title, text: a.banner_text, scope: a.banner_scope } : null;
@@ -1261,8 +1261,13 @@ class DtekShutdownsCard extends HTMLElement {
     for (let h = 0; h < 24; h++) {
       const letter = row ? row[h] : null;
       const st = letter ? STATE[letter] || STATE["?"] : null;
+      // Under the emergency an hour the schedule has off still says so: the
+      // ring shows both, and so must the words.
+      const schedOff = st && CERTAIN.indexOf(letter) >= 0 && (halfDark(letter, 0) || halfDark(letter, 1));
       const t = tip(pad2(h) + ":00" + DASH + pad2(h + 1) + ":00",
-                    d.emergencyOn ? "possible outage, Ukrenergo emergency outages"
+                    d.emergencyOn
+                      ? (schedOff ? st.label + ", " + d.todayRow.source + "; Ukrenergo emergency outages too"
+                        : "possible outage, Ukrenergo emergency outages")
                       : st ? st.label + ", " + d.todayRow.source : "no schedule published", "clock_hour");
       for (const half of [0, 1]) {
         // Under Ukrenergo's emergency outages no hour is safe, whatever the

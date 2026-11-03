@@ -459,8 +459,9 @@ check("DST day: wall clock, offsets as they fall", r["windows"],
 # --- 14. the announcement banner ------------------------------------------
 # Ukrenergo's city-wide emergency outages exist only in the home page's
 # #modal-attention popup; on 01.11.2026 every house entry was blank under one.
-# The fixture is that day's modal, verbatim. The flag must be about THIS city
-# or region: a country-wide notice is shown, never flagged.
+# The fixtures are those days' modals, verbatim. The flag must be about a
+# place that includes us -- city, region, the whole country, or no place named
+# -- never about somewhere else.
 print("\n14. announcement banner")
 FIX = Path(__file__).resolve().parent / "fixtures"
 REAL = (FIX / "dtek_banner_20261101.html").read_text(encoding="utf-8")
@@ -477,6 +478,11 @@ check("the city without the м. prefix", p.parse_banner(REAL, "Дніпро")["e
 check("no modal on the page = no banner", p.parse_banner("<div class='x'>екстрені відключення</div>", "Дніпро"), None)
 check("an empty modal = no banner",
       p.parse_banner('<div id="modal-attention"><div class="m-attention__text"><p> </p></div></div>', "Дніпро"), None)
+# 03.11.2026: Ukrenergo's order, no place named. Missed before; must alert.
+NIGHT = p.parse_banner((FIX / "dtek_banner_20261103.html").read_text(encoding="utf-8"), "м. Дніпро")
+check("03.11.2026 first line", NIGHT["text"].split("\n")[0],
+      "За наказом НЕК Укренерго введені екстрені відключення електроенергії.")
+check("03.11.2026 is country-wide and counts", (NIGHT["scope"], NIGHT["emergency"]), ("country", True))
 
 
 def said(text, city="м. Дніпро"):
@@ -490,12 +496,21 @@ for text, want in [
     ("Екстренні відключення світла в Дніпрі тривають.", ("city", True)),
     ("Діють екстрені відключення по Дніпропетровській області.", ("region", True)),
     ("На Дніпропетровщині застосовано екстрені відключення.", ("region", True)),
-    ("Екстрені відключення по всій Україні.", ("other", False)),
+    # Country-wide, or no place named: DTEK's own popup, so it includes us.
+    ("Діють екстрені відключення по всій Україні.", ("country", True)),
+    ("В Україні запроваджено екстрені відключення.", ("country", True)),
+    ("За наказом Укренерго застосовано екстрені відключення.", ("country", True)),
+    ("Екстрені відключення по всій Україні.", ("country", False)),
+    # Somewhere else named: shown, never flagged.
     ("Екстрені відключення у Києві та Київській області.", ("other", False)),
+    ("У Києві діють екстрені відключення.", ("other", False)),
+    ("В Харкові запроваджено екстрені відключення.", ("other", False)),
+    ("По Київській області застосовано екстрені відключення.", ("other", False)),
+    ("Діють екстрені відключення на Одещині.", ("other", False)),
     # DTEK's own name starts with the city's stem and must not count as it.
-    ("ДТЕК Дніпровські електромережі: екстрені відключення в Україні.", ("other", False)),
+    ("ДТЕК Дніпровські електромережі: екстрені відключення в Україні.", ("country", False)),
     ("Графіки стабілізаційних відключень у Дніпрі скасовано.", ("city", False)),
-    ("Шановні клієнти! Оновлено сайт.", ("other", False)),
+    ("Шановні клієнти! Оновлено сайт.", ("country", False)),
     # False positives: the words are there, the outages are not on now.
     ("Щоб уникнути екстрених відключень у Дніпрі, економте світло.", ("city", False)),
     ("Для запобігання екстреним відключенням у Дніпрі вимикайте бойлери.", ("city", False)),
@@ -505,9 +520,10 @@ for text, want in [
     ("У Дніпрі більше не діють екстрені відключення.", ("city", False)),
     ("Можливі екстрені відключення у Дніпрі через атаки.", ("city", False)),
     ("Екстрені відключення у Дніпрі.", ("city", False)),
-    # City and outage words in different sentences: not about this city.
+    # The place is read off the sentence that says it is on: the country here.
     ("Шановні дніпряни! Шановні клієнти Дніпра! Діють екстрені відключення по всій Україні.",
-     ("city", False)),
+     ("country", True)),
+    ("Шановні клієнти Дніпра! У Києві діють екстрені відключення.", ("city", False)),
     # ...but our city named in the sentence that says it is on, with the
     # all-clear about somewhere else in another sentence, still counts.
     ("У Києві екстрені відключення скасовано. У Дніпрі діють екстрені відключення.",
