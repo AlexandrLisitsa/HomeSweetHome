@@ -91,7 +91,7 @@ import { cardTip } from "./card-tip.js?v=1.0.0";
 import { ramp, rampCss } from "./card-ramp.js?v=1.0.0";
 import { fxConfig, fxOn, fxSetup, FX_CSS } from "./card-fx.js?v=1.1.0";
 
-const VERSION = "1.8.3";
+const VERSION = "1.8.4";
 
 /*
  * The design's palette, literal. Names are what the design calls them: two
@@ -316,10 +316,10 @@ const HELP = {
     + "Past 10 mV the Balancer chip's dot lights: it has work to do.",
   ttf: "Hours until 280 Ah at the current charge rate (every 30 s); below, 1% at the live current.\n"
     + "E.g. 140 Ah short at 20 A: 7h 0m, the clock time, and +1% every 8m 24s.\n"
-    + "Unknown while discharging, idle or under 0.2 A; capped at 99 h.",
+    + "Unknown while discharging, idle or under 0.2 A; 99 h or more reads 99h+, with no clock.",
   rtl: "Hours until flat at the current draw (every 30 s); below, 1% at the live current.\n"
     + "E.g. 140 Ah left at a 10 A draw: 14h 0m, the clock time, and −1% every 16m 48s.\n"
-    + "Unknown while charging, idle or under 0.2 A; capped at 99 h.",
+    + "Unknown while charging, idle or under 0.2 A; 99 h or more reads 99h+, with no clock.",
   temp: "A BMS temperature probe on the pack; the bar runs 0–60 °C.\n"
     + "E.g. 25 °C is green; amber under 10 °C or over 40 °C, red under 0 °C or over 50 °C.\n"
     + "Charging a LiFePO4 pack below 0 °C damages it.",
@@ -1198,6 +1198,10 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
     const h = this._num(id);
     if (h === null) return { text: "—", known: false };
     if (h < 1 / 60) return { text: "0m", known: true };
+    // battery_runtime.yaml clamps both sensors at 99 h so a quiet night does
+    // not flatten their history graph. 99 there means "99 h or more", and
+    // "99h 0m" would read as an estimate it is not.
+    if (h >= 99) return { text: "99h+", known: true, capped: true };
     const mins = Math.round(h * 60);
     return {
       text: mins < 60 ? mins + "m" : Math.floor(mins / 60) + "h " + (mins % 60) + "m",
@@ -2083,9 +2087,10 @@ class JkbmsBatteryConsoleCard extends HTMLElement {
       // No "full"/"empty" prefix: the tile's own label already says which
       // event this is, and on one line the word only pushed the time away
       // from the edge it is aligned to.
-      const when = (on, ent) => (on ? this._clockAfter(this._num(ent)) : "");
-      if (el.ttfAt) el.ttfAt.textContent = when(charging, c.time_to_full);
-      if (el.rtlAt) el.rtlAt.textContent = when(draining, c.runtime_left);
+      // A capped value has no clock time either: "in 99 h or more" lands nowhere.
+      const when = (on, ent, v) => (on && !v.capped ? this._clockAfter(this._num(ent)) : "");
+      if (el.ttfAt) el.ttfAt.textContent = when(charging, c.time_to_full, f);
+      if (el.rtlAt) el.rtlAt.textContent = when(draining, c.runtime_left, r);
       // The rate follows the live current, not the 30 s sensors, so it also
       // shows at the top of a charge where time to full reads unknown.
       const rate = this._perPercent(amps);
