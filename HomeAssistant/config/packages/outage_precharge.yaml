@@ -52,7 +52,11 @@
 #
 # The one exception is an EMERGENCY outage DTEK records against the address
 # (sensor.dtek_shutdowns state `outage_emergency`, outage_type 2; a planned
-# one is type 1 and does not count). It is published after the lights are
+# one is type 1 and does not count). DTEK files its schedule outages as type 2
+# as well, with the reason "Стабілізаційне відключення (Згідно графіку
+# погодинних відключень)" (17.10, 03.11); those are the schedule, so they get
+# the gentle plan above, not this. Two rules: on schedule charge gently, in an
+# emergency as fast as possible. An emergency is published after the lights are
 # already out, so there is nothing to plan for -- but while it stays on record
 # the grid comes and goes (31 Oct: back at 180 V at 09:26 with the record
 # running to 21:00), and every minute of mains is a minute to fill the pack.
@@ -100,12 +104,15 @@ template:
             {% set s = states('sensor.dtek_next_outage_start') %}
             {% set start = as_datetime(s) if s not in ['unknown', 'unavailable', 'none', ''] else none %}
             {% set cap = states('sensor.jkbms_gateway_bms_capacity_remaining') %}
-            {# An emergency on record; a stale or failed poll re-serves the last one. #}
+            {# An emergency on record; a stale or failed poll re-serves the last one.
+               A stabilisation record is the schedule itself, not an emergency. #}
             {% set dtek = states('sensor.dtek_shutdowns') %}
-            {% set emergency = dtek == 'outage_emergency'
+            {% set emergency = (dtek == 'outage_emergency'
                or (dtek in ['stale', 'error']
                    and state_attr('sensor.dtek_shutdowns', 'outage_active') is true
-                   and state_attr('sensor.dtek_shutdowns', 'outage_type') | string == '2') %}
+                   and state_attr('sensor.dtek_shutdowns', 'outage_type') | string == '2'))
+               and 'стабілізаційн' not in (state_attr('sensor.dtek_shutdowns', 'outage_reason')
+                                           or '') | lower %}
             {% set out = namespace(state='idle', reason='', current=none, need_ah=none,
                                    hours_left=none, night_hours=none, until=none,
                                    emergency=false) %}

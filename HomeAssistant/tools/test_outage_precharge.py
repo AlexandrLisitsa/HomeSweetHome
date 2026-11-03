@@ -338,6 +338,22 @@ check("stale poll, outage over -> idle",
       em_plan(dtek="stale", outage_active=False)["state"], "idle")
 check("no outage on record -> idle", em_plan(dtek="ok", outage_active=False,
                                              outage_type=None)["state"], "idle")
+STAB = "Стабілізаційне відключення (Згідно графіку погодинних відключень)"
+p = em_plan(outage_reason=STAB)
+check("03 Nov: type 2 but stabilisation (the schedule) -> not an emergency, idle",
+      (p["state"], p["emergency"]), ("idle", False))
+p = em_plan(outage_reason=STAB, start_state=at(2, "20:00").isoformat())
+check("... window 8 h out -> the gentle sized plan (193 Ah / 7.5 h -> 30 A), not 60 A",
+      (p["state"], p["current"], p["emergency"]), ("charging", 30, False))
+check("stale poll re-serving a stabilisation record -> idle",
+      em_plan(dtek="stale", outage_type="2", outage_reason=STAB)["state"], "idle")
+p = em_plan(outage_reason="Аварійні ремонтні роботи")
+check("31 Oct: repair works -> emergency, 60 A",
+      (p["state"], p["current"], p["emergency"]), ("charging", 60, True))
+p = em_plan(outage_reason="Екстренні відключення (Аварійне без застосування "
+                          "графіку погодинних відключень)")
+check("emergency 'without the schedule' -> emergency, 60 A",
+      (p["state"], p["current"], p["emergency"]), ("charging", 60, True))
 check("Pre-charge switched off -> off, the emergency does not override it",
       em_plan(switch="off")["state"], "off")
 p = em_plan(dtek="ok", outage_active=False, outage_type=None,

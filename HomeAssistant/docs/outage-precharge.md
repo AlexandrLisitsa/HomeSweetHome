@@ -41,6 +41,14 @@ minute to fill the pack. So while the record is up:
   "DTEK emergency outage on record until 21:00". If mains is gone when the
   message goes out, it says the charge starts when mains comes back.
 
+The rule is two lines: **on schedule, charge gently; in an emergency, as fast
+as possible.** DTEK files its schedule outages as type 2 as well, with the
+reason `Стабілізаційне відключення (Згідно графіку погодинних відключень)`
+(17.10 and 03.11.2026). That record is the schedule, so it gets the normal
+sized plan below, not 60 A. Every other type-2 reason counts as an
+emergency: `Аварійні ремонтні роботи` (31 Oct), `Екстренні відключення…`, and
+any new reason DTEK adds.
+
 A **planned** outage on record (`outage_planned`, type 1) does not count.
 Neither does the published schedule. Those keep the normal plan. A stale or
 failed poll re-serves the last emergency, so the charge holds through a missed
