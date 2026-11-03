@@ -434,7 +434,7 @@ automation:
   # now() re-renders this every minute, and the false->true edge means it fires
   # once per window rather than once a minute for fifteen minutes.
   - id: dtek_outage_starting_soon
-    alias: '❌ Alert: Scheduled outage in 15 min'
+    alias: '⚠️ Alert: Scheduled outage in 15 min'
     mode: single
     trigger:
       - platform: template
@@ -458,7 +458,7 @@ automation:
             DTEK queue {{ states('sensor.dtek_queue') }} is scheduled off {{ window_line }}. {{ battery_line }}
       - service: notify.household
         data:
-          title: '❌ Alert: Scheduled outage in 15 min'
+          title: '⚠️ Alert: Scheduled outage in 15 min'
           message: "{{ message }}"
           data:
             ttl: 0
@@ -466,7 +466,7 @@ automation:
             channel: DTEK emergency starts
       - service: notify.persistent_notification
         data:
-          title: '❌ Alert: Scheduled outage in 15 min'
+          title: '⚠️ Alert: Scheduled outage in 15 min'
           message: "{{ message }}"
 
   # Fifteen minutes of warning before the power comes back.
