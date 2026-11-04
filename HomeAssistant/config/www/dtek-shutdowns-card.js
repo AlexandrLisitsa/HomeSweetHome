@@ -45,7 +45,7 @@
 const CARD = "dtek-shutdowns-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "2.2.5";
+const VERSION = "2.3.0";
 
 /*
  * The grid shows the NORMAL condition, not the exception: a cell is green when
@@ -174,6 +174,8 @@ const WILL_RETURN = ["plan_off", "table_off", "empty_preset",
 const HELP = {
   banner: "DTEK's home-page popup, word for word: where it announces Ukrenergo's emergency outages.\n"
     + "E.g. red on 01.11.2026, outages in Dnipro; grey for a notice about elsewhere.",
+  yasno: "YASNO's public outage status for this queue, read every five minutes.\n"
+    + "E.g. EmergencyShutdowns: Ukrenergo's emergency outages, no schedule applies.",
   now: "The pill and the glow: red without mains, amber for a DTEK claim or a window soon.\n"
     + "E.g. green: mains present and nothing scheduled within the hour.",
   clock_hour: "One hour of today on the clock: the applied schedule, else the weekly table.\n"
@@ -288,8 +290,9 @@ const DEBUG_STATES = ["on", "outage", "dtek", "unscheduled", "stale"];
 // emergency text is DTEK's own of 01.11.2026; the notice is a country-wide
 // one, which the poller shows but never flags -- this is how it looks.
 // "pending" is the emergency text read but the entity not on yet: the ten
-// minutes of delay_on, or a banner older than twenty minutes.
-const DEBUG_BANNERS = ["emergency", "pending", "notice", "none"];
+// minutes of delay_on, or a banner older than twenty minutes. "yasno" is the
+// entity on from YASNO's queue status with no fresh popup to quote.
+const DEBUG_BANNERS = ["emergency", "pending", "notice", "yasno", "none"];
 const SAMPLE_BANNER = {
   emergency: { title: "Шановні клієнти!", scope: "city", text:
     "За рішенням Укренерго запроваджено екстрені відключення по місту Дніпро.\n"
@@ -751,6 +754,8 @@ class DtekShutdownsCard extends HTMLElement {
     let emergencyOn = this._state(cfg.emergency_entity) === "on";
     if (dbgBanner === "none") {
       banner = null; emergencyOn = false;
+    } else if (dbgBanner === "yasno") {
+      banner = null; emergencyOn = true;
     } else if (dbgBanner) {
       banner = SAMPLE_BANNER[dbgBanner === "pending" ? "emergency" : dbgBanner];
       emergencyOn = dbgBanner === "emergency";
@@ -759,23 +764,33 @@ class DtekShutdownsCard extends HTMLElement {
     // shown as today's: DTEK may have replaced it since. On 03.11.2026 the
     // site started refusing the poller's page GET (HTTP 403) at 06:55 and the
     // morning "екстрені" text stayed up under a popup that by then said
-    // "стабілізаційні". An entity that is on was fresh by definition.
+    // "стабілізаційні". The entity being on no longer vouches for the banner:
+    // YASNO's queue status can turn it on while the popup stays unreadable.
     const checkedAt = a.banner_checked_at ? new Date(a.banner_checked_at) : null;
-    const bannerOld = !dbgBanner && !emergencyOn && (a.banner_text || a.banner_error)
+    const bannerOld = !dbgBanner && (a.banner_text || a.banner_error)
       && (!checkedAt || isNaN(checkedAt) || now - checkedAt > BANNER_MAX_AGE_MIN * 60000);
     // Hidden outright, at the user's request: the live schedule line already
     // says which regime DTEK applies to this address.
-    if (bannerOld) {
-      banner = null;
-    } else if (banner) {
+    if (bannerOld) banner = null;
+    if (banner) {
       banner = Object.assign({}, banner, {
         emergency: emergencyOn,
+        help: "banner",
         lines: String(banner.text).split("\n").filter((l) => l.trim()),
         checked: dbgBanner ? "preview" : fmtClock(a.banner_checked_at) || "unknown",
         label: emergencyOn ? "Ukrenergo emergency outages"
           : banner.scope === "other" ? "DTEK announcement · not for this area"
           : "DTEK announcement",
       });
+    } else if (emergencyOn) {
+      // On from YASNO alone: no DTEK words to quote, so say whose status it is.
+      banner = {
+        emergency: true, help: "yasno", title: null,
+        lines: ["YASNO marks queue " + (a.queue || "?")
+          + " as under emergency outages: no schedule applies, no end time."],
+        checked: dbgBanner ? "preview" : fmtClock(a.yasno_checked_at) || "unknown",
+        label: "Ukrenergo emergency outages · YASNO",
+      };
     }
 
     // The badges that used to carry the queue chip are gone, so the identity
@@ -1247,7 +1262,7 @@ class DtekShutdownsCard extends HTMLElement {
   _banner(b) {
     if (!b) return "";
     return '<div class="banner' + (b.emergency ? " emerg" : "") + '"'
-      + tip(b.label, (b.title ? b.title + " " : "") + "checked " + b.checked, "banner") + ">"
+      + tip(b.label, (b.title ? b.title + " " : "") + "checked " + b.checked, b.help || "banner") + ">"
       + '<span class="k">' + esc(b.label) + "</span>"
       + b.lines.map((l) => "<p>" + esc(l) + "</p>").join("")
       + "</div>";

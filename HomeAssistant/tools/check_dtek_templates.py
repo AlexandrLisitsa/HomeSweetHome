@@ -148,7 +148,13 @@ def base_attrs(**over):
             "error": None, "banner_title": None, "banner_text": None,
             "banner_scope": None, "banner_emergency": False,
             "banner_checked_at": "2026-09-01T12:00:00+03:00",
-            "banner_error": None}
+            "banner_error": None,
+            "yasno_status_today": "ScheduleApplies",
+            "yasno_status_tomorrow": "WaitingForSchedule",
+            "yasno_emergency": False, "yasno_emergency_queues": [],
+            "yasno_updated_on": "2026-09-01T08:00:00+00:00",
+            "yasno_checked_at": "2026-09-01T12:00:00+03:00",
+            "yasno_error": None}
     data.update(over)
     return {(SENSOR, k): v for k, v in data.items()}
 
@@ -246,13 +252,35 @@ check("emergency banner -> on", render(emerg["state"], {SENSOR: "ok"}, on, NOON)
 check("no banner -> off", render(emerg["state"], {SENSOR: "ok"}, base_attrs(), NOON), "False")
 check("a missing flag reads off, never on",
       render(emerg["state"], {SENSOR: "ok"}, base_attrs(banner_emergency=None), NOON), "False")
+check("a stale banner's on does not count",
+      render(emerg["state"], {SENSOR: "ok"}, base_attrs(
+          banner_emergency=True, banner_checked_at="2026-09-01T11:30:00+03:00"), NOON), "False")
+# YASNO's per-queue status, the main source while the banner is unreadable.
+y_on = base_attrs(yasno_emergency=True, yasno_status_today="EmergencyShutdowns",
+                  banner_checked_at="2026-08-30T12:00:00+03:00")
+check("YASNO emergency, banner unread for days -> on",
+      render(emerg["state"], {SENSOR: "ok"}, y_on, NOON), "True")
+check("a stale YASNO on does not count",
+      render(emerg["state"], {SENSOR: "ok"}, base_attrs(
+          yasno_emergency=True, yasno_checked_at="2026-09-01T11:30:00+03:00"), NOON), "False")
+check("a missing YASNO flag reads off",
+      render(emerg["state"], {SENSOR: "ok"}, base_attrs(yasno_emergency=None), NOON), "False")
+src = emerg["attributes"]["source"]
+check("source: yasno", render(src, {SENSOR: "ok"}, y_on, NOON), "yasno")
+check("source: banner", render(src, {SENSOR: "ok"}, on, NOON), "banner")
+check("source: both", render(src, {SENSOR: "ok"}, base_attrs(
+    yasno_emergency=True, banner_emergency=True), NOON), "both")
+check("source: none", render(src, {SENSOR: "ok"}, base_attrs(), NOON), "none")
 avail = emerg["availability"]
 check("read 5 min ago -> available",
       render(avail, {SENSOR: "ok"}, on, NOON + timedelta(minutes=5)), "True")
-check("not read for 25 min -> unavailable, not a stale on",
+check("neither read for 25 min -> unavailable, not a stale on",
       render(avail, {SENSOR: "ok"}, on, NOON + timedelta(minutes=25)), "False")
+check("banner unread but YASNO fresh -> available",
+      render(avail, {SENSOR: "ok"}, y_on, NOON), "True")
 check("never read -> unavailable",
-      render(avail, {SENSOR: "ok"}, base_attrs(banner_checked_at=None), NOON), "False")
+      render(avail, {SENSOR: "ok"}, base_attrs(banner_checked_at=None,
+                                               yasno_checked_at=None), NOON), "False")
 check("sensor itself down -> unavailable",
       render(avail, {SENSOR: "unavailable"}, on, NOON), "False")
 check("two polls must agree before it turns on", emerg.get("delay_on"), {"minutes": 10})
@@ -545,22 +573,31 @@ for aid, frm, to in [("dtek_emergency_announced", "off", "on"),
     check("%s replaces the other on the lock screen" % aid,
           {x["data"]["data"]["tag"] for x in autos[aid]["action"]
            if x.get("service") in PHONES}, {"dtek_emergency_banner"})
+EMS = "binary_sensor.dtek_emergency_shutdowns"
 BAN = dict(GOLD)
 BAN.update(base_attrs(banner_text="За рішенням Укренерго запроваджено екстрені відключення "
                                   "по місту Дніпро.\nЯкщо у вашій оселі є світло – споживайте "
                                   "його свідомо та ощадливо."))
+BAN[(EMS, "source")] = "banner"
 v = fire(autos["dtek_emergency_announced"], rstates, BAN, {})
-check("announced: DTEK's first line, then what it means",
+check("announced from the banner: DTEK's first line, then what it means",
       v["message"],
       "За рішенням Укренерго запроваджено екстрені відключення по місту Дніпро. "
       "No schedule applies and DTEK gives no end time. The inverter still sees mains. "
       "Battery 87.0%, about 9.4 h left at the current draw.")
+# From YASNO, with an old banner still cached: the old text must not be quoted.
+YAS = dict(BAN)
+YAS[(EMS, "source")] = "yasno"
+v = fire(autos["dtek_emergency_announced"], rstates, YAS, {})
+check("announced from YASNO: names the queue, not the old banner",
+      v["message"].startswith("YASNO marks queue 3.2 as under emergency outages. "
+                              "No schedule applies"), True)
 v = fire(autos["dtek_emergency_announced"], rstates, base_attrs(banner_text=None), {})
-check("announced with the text gone already: still a sentence",
-      v["message"].startswith("No schedule applies"), True)
+check("announced with no source attribute yet: still a sentence",
+      v["message"].startswith("YASNO marks queue 3.2"), True)
 v = fire(autos["dtek_emergency_lifted"], dict(rstates, **{GRID: "on"}), BAN, {})
 check("lifted", v["message"],
-      "DTEK no longer announces emergency outages here; schedules apply again where "
+      "Emergency outages are no longer in force here; schedules apply again where "
       "published. The inverter still sees no mains.")
 
 # --- 5e. the estimate passing ----------------------------------------------
@@ -760,6 +797,12 @@ _probe.update(address=None, status="ok", fetched_at=None, stale=False,
               error=None, banner_title=None, banner_text=None,
               banner_scope=None, banner_emergency=False,
               banner_checked_at=None, banner_error=None)
+# Written by main() for every run, from the real function.
+_saved = (dtek_poll.fetch_yasno, dtek_poll.save_yasno_capture)
+dtek_poll.fetch_yasno = lambda: {"3.2": {"today": {"status": "NoOutages"}}}
+dtek_poll.save_yasno_capture = lambda raw, verdict, now: None
+dtek_poll.apply_yasno(_probe, {}, NOON)
+dtek_poll.fetch_yasno, dtek_poll.save_yasno_capture = _saved
 _listed = set()
 for _block in pkg.get("command_line") or []:
     for _item in _block.values():

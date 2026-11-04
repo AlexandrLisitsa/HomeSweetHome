@@ -5,9 +5,10 @@ distributor's own view of this address — the queue it sits in, whether DTEK ha
 an outage recorded against it, and the hourly stabilisation schedule for today
 and tomorrow — off the AJAX endpoint behind
 [the shutdowns page](https://www.dtek-dnem.com.ua/ua/shutdowns). The same run
-also reads the popup on DTEK's home page, the only place Ukrenergo's
-emergency outages are announced ([below](#ukrenergos-emergency-outages)). A
-`command_line:` sensor runs the script every five minutes.
+also reads YASNO's public per-queue status and the popup on DTEK's home page,
+the two places Ukrenergo's emergency outages show up
+([below](#ukrenergos-emergency-outages)). A `command_line:` sensor runs the
+script every five minutes.
 
 The point is not to know that the power is out; the inverter already knows that
 within five seconds. It is to tell a scheduled four-hour window apart from the
@@ -39,12 +40,17 @@ python config/dtek/dtek_poll.py --find "<city>" --street "<first letters of the 
 DTEK_CITY="<city>" DTEK_STREET="<street>" DTEK_HOUSE="<house>" python config/dtek/dtek_poll.py --verbose
 ```
 
-The endpoint is undocumented and can change. Two failures are worth
+The endpoint is undocumented and can change. Three failures are worth
 recognising: `Bad Request (#400)` is a dead session or CSRF token, which the
 script re-establishes by itself, and `{"result":false,"text":"Error"}` means
 either the address is misspelt or the form encoding regressed — the bracket
 parameter names have to be percent-encoded, and that is the first thing to
-check. `dtek_poll.py`'s docstring is the protocol manual.
+check. The third is an answer that is not JSON at all, as on 04.11.2026
+21:53–22:58, an hour of them that cleared up on DTEK's side. The script waits
+10 s and asks once more. If the second answer isn't JSON either, the poll goes
+stale with an error that names what came back (`DTEK answered 200 text/html, …
+not JSON: <page title>`). The body is kept as `captures/nonjson_*.txt` (last
+10). `dtek_poll.py`'s docstring is the protocol manual.
 
 ## DTEK decides what gets drawn, and says so
 
@@ -206,9 +212,10 @@ to see the outage layout would be to set
 which fires `❌ Alert: Grid Outage!` and pushes to both phones. Take it out
 again afterwards.
 
-`debug_banner: emergency | pending | notice | none` does the same for the
-popup: DTEK's 01.11.2026 text in red, the same text grey (`pending`, the
-sensor still debouncing), another area's notice in grey, or nothing. For a
+`debug_banner: emergency | pending | notice | yasno | none` does the same for
+the popup: DTEK's 01.11.2026 text in red, the same text grey (`pending`, the
+sensor still debouncing), another area's notice in grey, the one-line red
+notice the card draws when YASNO alone turned the sensor on, or nothing. For a
 page you can click through, `debug_state_entity` and `debug_banner_entity`
 name an `input_select` each, whose options are those values plus `live`; the
 card follows them as they change. That is how the Playground for this feature
@@ -266,7 +273,48 @@ is more than 20 minutes old (the emergency sensor's limit), it hides the
 announcement box. The live schedule line still says which regime applies. On 03.11.2026 the site started
 answering the page GET with HTTP 403 (an Imperva bot check) at 06:55, while
 the AJAX endpoint kept working. The morning "екстрені" text then stayed up
-under a popup that already said "стабілізаційні".
+under a popup that already said "стабілізаційні". The bot check has stayed, so
+the popup is now usually unread and YASNO's status (next) carries the flag.
+
+### YASNO's queue status
+
+YASNO's own site and app read a public JSON feed:
+`https://app.yasno.ua/api/blackout-service/public/shutdowns/regions/3/dsos/301/planned-outages`
+(region 3 is Dnipro, dso 301 is DTEK Dnipro Grids). It answers a plain GET:
+no cookies, no challenge, about 6 KB. For every queue, `1.1` to `6.2`, it
+gives `today` and `tomorrow`, each with a `date` and a `status`:
+`ScheduleApplies`, `WaitingForSchedule`, `NoOutages`, or `EmergencyShutdowns`
+during Ukrenergo's emergency outages. The open-source
+[ha-yasno-outages](https://github.com/denysdovhan/ha-yasno-outages)
+integration reads the same feed, and its users report `EmergencyShutdowns`
+during real emergencies.
+
+Each run reads it after the DTEK poll, whether or not that poll worked:
+`fetch_yasno()`, `yasno_verdict()` and `apply_yasno()` in `dtek_poll.py`. Found
+on 04.11.2026, when every other source was closed: the popup is in the
+bot-checked HTML only (no AJAX method returns it), ua.energy and
+`api.yasno.com.ua` answer scripts with a WAF page, and no Telegram channel
+posts both the start and the end. The sensor publishes:
+
+| attribute | |
+| --- | --- |
+| `yasno_status_today`, `yasno_status_tomorrow` | YASNO's status for our queue |
+| `yasno_emergency` | whether YASNO puts us under emergency outages today |
+| `yasno_emergency_queues` | every queue it puts under them today |
+| `yasno_updated_on` | when YASNO last changed our queue |
+| `yasno_checked_at` | when the feed was last read successfully |
+| `yasno_error` | why the latest read failed, else null |
+
+`yasno_emergency` is strict in the same way as the popup rules below. It needs
+the exact `EmergencyShutdowns`, on a `today` block whose date really is today,
+for one of **our** queues: an emergency can cover only part of the city, and
+YASNO marks it per queue. With no queue known (DTEK unread), it needs every
+queue under emergency outages. An unknown status goes into `warnings`, which
+turns on `binary_sensor.dtek_format_drift`, and never raises the flag. A
+failed read keeps the last verdict, the same way the banner does. When our
+status changes, the raw answer is saved as `captures/yasno_*.json`.
+Section 15 of `test_dtek_schedule.py` covers all of it, starting from the real
+answer of 04.11.2026 (`tools/fixtures/yasno_planned_20261104.json`).
 
 ### Built to miss rather than cry wolf
 
@@ -297,11 +345,16 @@ is on the dashboard whatever the flag says.
    or an all-clear is shown in grey and never raises the flag.
 2. **Two polls must agree.** `binary_sensor.dtek_emergency_shutdowns` has
    `delay_on: 10 min`.
-3. **Fresh or nothing.** The sensor goes `unavailable`, not `on`, once the
-   popup has not been read for 20 minutes.
+3. **Fresh or nothing.** The sensor is on when a source read in the last 20
+   minutes says so: YASNO's `yasno_emergency` or the popup's
+   `banner_emergency`. With neither read for 20 minutes it goes
+   `unavailable`, not `on`. Its `source` attribute says which one is behind
+   an `on`: `yasno`, `banner` or `both`.
 
 The card turns red and amber from that binary sensor, never from the raw
-attribute. Section 14 of `test_dtek_schedule.py` replays the real popup and
+attribute. When the sensor is on and there is no fresh popup to quote, the
+card shows one line instead: "YASNO marks queue 3.2 as under emergency
+outages". It never brings back a kept popup as today's. Section 14 of `test_dtek_schedule.py` replays the real popup and
 the false-positive sentences; section 5h of `check_dtek_templates.py` covers
 the sensor and the alerts.
 
@@ -315,6 +368,10 @@ the same two channels as the DTEK outage pair and with one tag,
 > За рішенням Укренерго запроваджено екстрені відключення по місту Дніпро. No
 > schedule applies and DTEK gives no end time. The inverter still sees mains.
 > Battery 100%.
+
+DTEK's line is quoted only when the popup is a source of this `on`. When YASNO
+alone turned it on, the message starts "YASNO marks queue 3.2 as under
+emergency outages." instead, so an old popup is never sent as news.
 
 Edges out of `unknown` (a restart) or `unavailable` (an unread popup) fire
 nothing. That includes the sensor's first `on` after it is created, so an
