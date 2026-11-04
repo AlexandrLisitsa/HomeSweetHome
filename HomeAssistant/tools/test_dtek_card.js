@@ -192,6 +192,30 @@ eq("pending: the text, grey, while the entity debounces",
   [r.root.querySelector(".banner").getAttribute("class"), r.text(".banner .k")],
   ["banner", "DTEK announcement"]);
 
+console.log("emergency from YASNO, with no fresh popup");
+const YAS = { queue: "3.2", yasno_emergency: true, yasno_status_today: "EmergencyShutdowns",
+  yasno_checked_at: new Date(2026, 9, 17, 10, 0).toISOString() };
+r = render("10:05", Object.assign({}, noSched, YAS), { states: { [EMERG]: S("on") } });
+eq("red strip naming YASNO and the queue",
+  [r.root.querySelector(".banner").getAttribute("class"), r.text(".banner .k"), r.text(".banner p")],
+  ["banner emerg", "Ukrenergo emergency outages · YASNO",
+    "YASNO marks queue 3.2 as under emergency outages: no schedule applies, no end time."]);
+eq("its tooltip explains YASNO's status",
+  r.root.querySelector(".banner").getAttribute("data-tip").split("\n")[1].startsWith("YASNO's public"), true);
+// The 03.11.2026 case: the morning's "екстрені" banner stuck in the cache for
+// days. YASNO turning the entity on must not bring that text back as current.
+r = render("10:05", Object.assign({}, noSched, BANNER, YAS,
+  { banner_checked_at: new Date(2026, 9, 15, 7, 0).toISOString() }), { states: { [EMERG]: S("on") } });
+eq("a days-old banner is not quoted", r.text(".banner p"),
+  "YASNO marks queue 3.2 as under emergency outages: no schedule applies, no end time.");
+r = render("10:05", Object.assign({}, noSched, BANNER, YAS), { states: { [EMERG]: S("on") } });
+eq("a fresh banner still wins: DTEK's own words", r.text(".banner .k"), "Ukrenergo emergency outages");
+r = render("10:05", Object.assign({}, noSched, YAS), { states: { [EMERG]: S("off") } });
+eq("entity off (delay_on): no strip", r.root.querySelector(".banner"), null);
+r = render("10:00", noSched, { config: { debug_banner: "yasno" } });
+eq("debug_banner yasno", [r.text(".banner .k"), r.text(".pill .lbl")],
+  ["Ukrenergo emergency outages · YASNO", "Emergency outages"]);
+
 console.log("the Playground's switches: the mock read from entities");
 const PB = "input_select.playground_dtek_banner";
 const PS = "input_select.playground_dtek_power";

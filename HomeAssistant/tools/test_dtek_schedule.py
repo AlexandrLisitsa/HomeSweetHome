@@ -577,5 +577,165 @@ with tempfile.TemporaryDirectory() as tmp:
 p.Session, p.read_secrets, p.fetch_banner, p.save_cache, p.save_capture = saved
 
 
+# --- 15. YASNO's per-queue status ----------------------------------------
+#
+# The real answer of 04.11.2026 (stabilisation schedules, every queue
+# ScheduleApplies), then the same answer bent into the cases that matter.
+
+print("\n15. YASNO status")
+YASNO = json.loads((FIX / "yasno_planned_20261104.json").read_text(encoding="utf-8"))
+Y_DAY = date(2026, 11, 4)
+
+
+def bent(statuses, day="2026-11-04"):
+    data = copy.deepcopy(YASNO)
+    for q, s in statuses.items():
+        data[q]["today"]["status"] = s
+        data[q]["today"]["date"] = day + "T00:00:00+02:00"
+    return data
+
+
+v = p.yasno_verdict(YASNO, ["GPV3.1"], Y_DAY)
+check("real answer: no emergency", (v["yasno_emergency"], v["yasno_status_today"],
+                                     v["yasno_emergency_queues"], v["yasno_warnings"]),
+      (False, "ScheduleApplies", [], []))
+check("real answer: tomorrow and updatedOn ride along",
+      (v["yasno_status_tomorrow"], v["yasno_updated_on"] is not None), ("WaitingForSchedule", True))
+check("our queue in emergency",
+      p.yasno_verdict(bent({"3.1": "EmergencyShutdowns"}), ["GPV3.1"], Y_DAY)["yasno_emergency"], True)
+check("only another queue in emergency",
+      p.yasno_verdict(bent({"5.2": "EmergencyShutdowns"}), ["GPV3.1"], Y_DAY)["yasno_emergency"], False)
+check("a two-line house: either line counts",
+      p.yasno_verdict(bent({"4.1": "EmergencyShutdowns"}), ["GPV3.1", "GPV4.1"], Y_DAY)["yasno_emergency"], True)
+ALL = {q: "EmergencyShutdowns" for q in YASNO}
+check("no queue known: every queue in emergency counts",
+      p.yasno_verdict(bent(ALL), [], Y_DAY)["yasno_emergency"], True)
+check("no queue known: some queues are not enough",
+      p.yasno_verdict(bent({"3.1": "EmergencyShutdowns"}), [], Y_DAY)["yasno_emergency"], False)
+check("yesterday's emergency is not today's",
+      p.yasno_verdict(bent({"3.1": "EmergencyShutdowns"}, day="2026-11-03"), ["GPV3.1"], Y_DAY)["yasno_emergency"], False)
+odd = p.yasno_verdict(bent({"3.1": "Blackout"}), ["GPV3.1"], Y_DAY)
+check("an unknown status is a warning, not the flag",
+      (odd["yasno_emergency"], len(odd["yasno_warnings"])), (False, 1))
+check("our queue missing from the answer is a warning",
+      len(p.yasno_verdict(YASNO, ["GPV9.9"], Y_DAY)["yasno_warnings"]), 1)
+for bad in ({}, [], "<html>"):
+    try:
+        p.yasno_verdict(bad, ["GPV3.1"], Y_DAY)
+        check("%r raises" % (bad,), "no error", "ValueError")
+    except ValueError:
+        check("%r raises" % (bad,), "ValueError", "ValueError")
+
+# apply_yasno: publishes the verdict, keeps it through a failed read, and adds
+# its warnings to `warnings` without repeating them.
+saved_y = (p.fetch_yasno, p.save_yasno_capture)
+y_caps = []
+p.save_yasno_capture = lambda raw, verdict, now: y_caps.append(verdict["yasno_status_today"])
+NOW = datetime(2026, 11, 4, 12, 0, tzinfo=p.KYIV)
+y_cache = {}
+p.fetch_yasno = lambda: bent({"3.1": "EmergencyShutdowns"})
+on = p.apply_yasno({"queues": ["GPV3.1"], "warnings": []}, y_cache, NOW)
+check("published", (on["yasno_emergency"], on["yasno_status_today"], on["yasno_error"]),
+      (True, "EmergencyShutdowns", None))
+check("checked_at is the read's time", on["yasno_checked_at"], NOW.isoformat())
+
+
+def y_boom():
+    raise OSError("timed out")
+
+
+p.fetch_yasno = y_boom
+later = p.apply_yasno({"queues": ["GPV3.1"], "warnings": []}, y_cache,
+                      NOW + timedelta(minutes=5))
+check("a failed read keeps the last verdict", later["yasno_emergency"], True)
+check("...says why", later["yasno_error"], "OSError: timed out")
+check("...and keeps the old checked_at", later["yasno_checked_at"], NOW.isoformat())
+p.fetch_yasno = lambda: bent({"3.1": "Blackout"})
+w = p.apply_yasno({"queues": ["GPV3.1"], "warnings": ["dtek: x"]}, y_cache, NOW)
+check("its warnings join DTEK's", w["warnings"][0] == "dtek: x" and len(w["warnings"]) == 2, True)
+check("one capture per status change", y_caps, ["EmergencyShutdowns", "Blackout"])
+p.fetch_yasno = lambda: YASNO
+cleared = p.apply_yasno({"queues": ["GPV3.1"], "warnings": list(w["warnings"])}, y_cache, NOW)
+check("a resolved YASNO warning goes away, DTEK's stays", cleared["warnings"], ["dtek: x"])
+
+# A lasting YASNO warning must not make poll() capture DTEK's answer every run.
+saved = (p.Session, p.read_secrets, p.fetch_banner, p.save_cache, p.save_capture)
+d_caps = []
+p.Session, p.save_cache = _Fake, lambda c: None
+p.save_capture = lambda a, payload, s, h: d_caps.append(1)
+p.read_secrets = lambda: ("м. Дніпро", "вул. Тестова", "1")
+p.fetch_banner = lambda s, c: None
+p.fetch_yasno = lambda: bent({"3.1": "Blackout", "3.2": "Blackout"})
+d_cache = {}
+for _ in range(3):
+    p.apply_yasno(p.poll(d_cache), d_cache, NOW)
+check("a lasting YASNO warning: one DTEK capture, not one per run", len(d_caps), 1)
+p.Session, p.read_secrets, p.fetch_banner, p.save_cache, p.save_capture = saved
+p.fetch_yasno, p.save_yasno_capture = saved_y
+
+
+# --- 16. a non-JSON answer from the AJAX endpoint --------------------------
+print("\n16. non-JSON answers")
+
+
+class _Resp:
+    def __init__(self, body, status=200, ctype="text/html; charset=UTF-8"):
+        self.body, self.status, self.headers = body, status, {"Content-Type": ctype}
+
+    def read(self):
+        return self.body
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    p.CAPTURE_DIR = Path(tmp) / "captures"
+    nj_session = p.Session({})
+    queue = []
+    nj_session._open = lambda req: queue.pop(0)
+
+    queue.append(_Resp(b"<html><head><title>Please wait</title></head></html>"))
+    try:
+        nj_session.post([("method", "getHomeNum")])
+        got = None
+    except p.NotJson as exc:
+        got = str(exc)
+    check("an HTML page names itself", got,
+          "DTEK answered 200 text/html, 52 bytes, not JSON: Please wait")
+    caps = sorted(p.CAPTURE_DIR.glob("nonjson_*.txt"))
+    check("...and its body is kept",
+          len(caps) == 1 and caps[0].name.endswith("_getHomeNum.txt"), True)
+    check("...behind the error line",
+          caps[0].read_bytes().split(b"\n", 1)[1][:6] if caps else None, b"<html>")
+
+    queue.append(_Resp(b"", ctype=None))
+    try:
+        nj_session.post([("method", "checkDisconUpdate")])
+        got = None
+    except ValueError as exc:            # still a ValueError, for refresh_schedule()
+        got = str(exc)
+    check("an empty body says so", got, "DTEK answered 200 no type, 0 bytes, not JSON")
+
+    for i in range(p.NONJSON_KEEP + 3):
+        p.save_nonjson_capture(b"x", "m", "e", datetime(2026, 11, 4, 22, i, tzinfo=KYIV))
+    check("keeps the last %d" % p.NONJSON_KEEP,
+          len(list(p.CAPTURE_DIR.glob("nonjson_*.txt"))), p.NONJSON_KEEP)
+    check("...apart from DTEK's own captures", list(p.CAPTURE_DIR.glob("*.json")), [])
+
+    sleeps, saved_sleep = [], p.time.sleep
+    p.time.sleep = sleeps.append
+    good = json.dumps({"result": True, "data": {"1": entry(["GPV3.1"])}}).encode()
+    queue[:] = [_Resp(b"<html></html>"), _Resp(good, ctype="application/json")]
+    e, _ = p.fetch_entry(nj_session, "c", "s", "1")
+    check("one non-JSON answer: retried and read", e["sub_type_reason"], ["GPV3.1"])
+    check("...after the pause", sleeps, [p.RETRY_PAUSE])
+    queue[:] = [_Resp(b"<html></html>"), _Resp(b"<html></html>")]
+    try:
+        p.fetch_entry(nj_session, "c", "s", "1")
+        got = None
+    except p.NotJson:
+        got = "NotJson"
+    check("two in a row: the poll fails, no third try", (got, queue), ("NotJson", []))
+    p.time.sleep = saved_sleep
+
+
 print("\n%s" % ("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed"))
 sys.exit(1 if FAILED else 0)

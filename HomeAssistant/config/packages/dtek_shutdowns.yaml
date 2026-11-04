@@ -171,6 +171,18 @@ command_line:
         # failed read keeps the last banner, so these two say how old it is.
         - banner_checked_at
         - banner_error
+        # YASNO's public status for our queue (ScheduleApplies,
+        # WaitingForSchedule, NoOutages, EmergencyShutdowns), today and
+        # tomorrow, whether it means emergency outages here now, which queues
+        # it puts under them, and when YASNO / this poll last updated it. Read
+        # even when the DTEK poll fails. See yasno_verdict() in dtek_poll.py.
+        - yasno_status_today
+        - yasno_status_tomorrow
+        - yasno_emergency
+        - yasno_emergency_queues
+        - yasno_updated_on
+        - yasno_checked_at
+        - yasno_error
         - fetched_at
         - stale
         - error
@@ -228,39 +240,67 @@ template:
           error: "{{ state_attr('sensor.dtek_shutdowns', 'error') }}"
           last_poll: "{{ state_attr('sensor.dtek_shutdowns', 'fetched_at') }}"
 
-      # Ukrenergo's emergency outages, announced for this city, this region or
-      # the whole country.
+      # Ukrenergo's emergency outages, in force for this address now.
       #
-      # DTEK announces these ONLY in the home page's popup, which no AJAX
-      # answer carries, and they leave this address's own record blank: on
-      # 01.11.2026 the city was under them while dtek_outage_now said off. So
-      # this is the one place that says "the schedule does not apply now".
+      # They leave this address's own DTEK record blank (on 01.11.2026 the
+      # city was under them while dtek_outage_now said off), so two other
+      # sources decide, either one enough:
+      #   * YASNO's public per-queue status (yasno_emergency): our queue's
+      #     today.status is exactly EmergencyShutdowns. The main source since
+      #     DTEK's CDN started answering the home page with a bot check
+      #     (03.11.2026).
+      #   * DTEK's home-page popup (banner_emergency), when it can be read:
+      #     banner_emergency() counts a sentence only when it is about a place
+      #     that includes us, says the outages are on now, and has none of the
+      #     advice/history/all-clear words.
       #
       # Built to miss rather than to cry wolf, because an alert hangs off it:
-      #   * dtek_poll.py's banner_emergency() counts a sentence only when it
-      #     is about a place that includes us (city, region, the whole
-      #     country, or no place named), says the outages are on now, and has
-      #     none of the advice/history/all-clear words. A notice naming
-      #     somewhere else shows on the dashboard and never turns this on.
+      #   * each source counts only while it was read in the last 20 minutes;
+      #     with neither fresh this is unavailable, not on. A stale "on" from a
+      #     fetch that keeps failing is exactly the false alarm to avoid.
+      #     yasno_error / banner_error say why.
       #   * delay_on: two polls in a row must agree. One odd read is not news.
-      #   * unavailable, not on, once the banner has not been read for 20
-      #     minutes: a stale "on" from a fetch that keeps failing is exactly
-      #     the false alarm this is guarding against. dtek_data_stale and
-      #     banner_error say why.
       - name: "DTEK emergency shutdowns"
         unique_id: dtek_emergency_shutdowns
         device_class: problem
         icon: mdi:flash-alert-outline
         availability: >-
-          {% set t = state_attr('sensor.dtek_shutdowns', 'banner_checked_at') %}
-          {{ states('sensor.dtek_shutdowns') not in ['unknown', 'unavailable']
-             and t is not none and as_datetime(t) is not none
-             and now() - as_datetime(t) < timedelta(minutes=20) }}
+          {% set ns = namespace(fresh=false) %}
+          {% for k in ['yasno_checked_at', 'banner_checked_at'] %}
+            {% set t = state_attr('sensor.dtek_shutdowns', k) %}
+            {% if t is not none and as_datetime(t) is not none
+                  and now() - as_datetime(t) < timedelta(minutes=20) %}
+              {% set ns.fresh = true %}
+            {% endif %}
+          {% endfor %}
+          {{ states('sensor.dtek_shutdowns') not in ['unknown', 'unavailable'] and ns.fresh }}
         state: >-
-          {{ state_attr('sensor.dtek_shutdowns', 'banner_emergency') | bool(false) }}
+          {% set y = state_attr('sensor.dtek_shutdowns', 'yasno_checked_at') %}
+          {% set b = state_attr('sensor.dtek_shutdowns', 'banner_checked_at') %}
+          {% set y_fresh = y is not none and as_datetime(y) is not none
+                           and now() - as_datetime(y) < timedelta(minutes=20) %}
+          {% set b_fresh = b is not none and as_datetime(b) is not none
+                           and now() - as_datetime(b) < timedelta(minutes=20) %}
+          {{ (y_fresh and state_attr('sensor.dtek_shutdowns', 'yasno_emergency') | bool(false))
+             or (b_fresh and state_attr('sensor.dtek_shutdowns', 'banner_emergency') | bool(false)) }}
         delay_on:
           minutes: 10
         attributes:
+          # Which fresh source says so: yasno, banner, both, or none.
+          source: >-
+            {% set ns = namespace(out=[]) %}
+            {% for src, k in [('yasno', 'yasno'), ('banner', 'banner')] %}
+              {% set t = state_attr('sensor.dtek_shutdowns', k ~ '_checked_at') %}
+              {% if t is not none and as_datetime(t) is not none
+                    and now() - as_datetime(t) < timedelta(minutes=20)
+                    and state_attr('sensor.dtek_shutdowns', k ~ '_emergency') | bool(false) %}
+                {% set ns.out = ns.out + [src] %}
+              {% endif %}
+            {% endfor %}
+            {{ 'both' if ns.out | length == 2 else (ns.out | first if ns.out else 'none') }}
+          queue: "{{ state_attr('sensor.dtek_shutdowns', 'queue') }}"
+          yasno_status: "{{ state_attr('sensor.dtek_shutdowns', 'yasno_status_today') }}"
+          yasno_checked_at: "{{ state_attr('sensor.dtek_shutdowns', 'yasno_checked_at') }}"
           scope: "{{ state_attr('sensor.dtek_shutdowns', 'banner_scope') }}"
           title: "{{ state_attr('sensor.dtek_shutdowns', 'banner_title') }}"
           text: "{{ state_attr('sensor.dtek_shutdowns', 'banner_text') }}"
@@ -782,8 +822,8 @@ automation:
           title: '📅 DTEK schedule changed'
           message: "{{ message }}"
 
-  # Ukrenergo's emergency outages, announced for this city, region or country in DTEK's
-  # home-page popup -- see binary_sensor.dtek_emergency_shutdowns. Same two
+  # Ukrenergo's emergency outages in force here, from YASNO's per-queue status or
+  # DTEK's home-page popup -- see binary_sensor.dtek_emergency_shutdowns. Same two
   # channels and the same shape as the DTEK outage pair above, one tag, so the
   # "lifted" push replaces the "announced" one on the lock screen.
   #
@@ -801,10 +841,14 @@ automation:
         to: 'on'
     action:
       - variables:
-          # DTEK's own first line, verbatim: it names the place and the cause.
+          # DTEK's own first line, verbatim, when the popup is one of the
+          # sources (it names the place and the cause). Otherwise YASNO's
+          # status: the cached banner can be days old.
           dtek_line: >-
+            {% set src = state_attr('binary_sensor.dtek_emergency_shutdowns', 'source') %}
             {% set t = state_attr('sensor.dtek_shutdowns', 'banner_text') or '' %}
-            {{ (t.split('\n') | first)[:200] }}
+            {% if src in ['banner', 'both'] and t %}{{ (t.split('\n') | first)[:200] }}
+            {%- else %}YASNO marks queue {{ state_attr('sensor.dtek_shutdowns', 'queue') or '?' }} as under emergency outages.{% endif %}
           grid_line: >-
             {% if is_state('binary_sensor.grid_down', 'on') %}The inverter sees no mains.{% else %}The inverter still sees mains.{% endif %}
           battery_line: >-
@@ -840,7 +884,7 @@ automation:
           grid_line: >-
             {% if is_state('binary_sensor.grid_down', 'on') %}The inverter still sees no mains.{% else %}The inverter sees mains.{% endif %}
           message: >-
-            DTEK no longer announces emergency outages here; schedules apply again where published. {{ grid_line }}
+            Emergency outages are no longer in force here; schedules apply again where published. {{ grid_line }}
       - service: notify.household
         data:
           title: '✅ Alert: Ukrenergo emergency outages lifted'

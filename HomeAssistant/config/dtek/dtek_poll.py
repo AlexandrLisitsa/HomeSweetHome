@@ -40,7 +40,13 @@ Plus one GET of the home page, ~72 KB gzipped, for the announcement banner:
 Ukrenergo's city-wide emergency outages ("екстрені відключення по місту
 Дніпро") are announced ONLY there, in a hand-written <div id="modal-attention">
 that no AJAX answer mentions, and that leaves every house entry blank. See
-fetch_banner().
+fetch_banner(). Since 03.11.2026 the CDN answers that GET with a bot check, so
+the banner is usually unread.
+
+Plus one GET of YASNO's public planned-outages JSON (~6 KB, no cookies, no
+challenge), whose per-queue `today.status` turns to "EmergencyShutdowns" when
+emergency outages hit that queue. That is what raises the emergency flag now;
+the banner is a second source if it ever comes back. See yasno_verdict().
 
 THE OTHER THING THAT IS NOT OBVIOUS: the getHomeNum answer carries six booleans
 next to `data` -- showCurOutageParam, showCurSchedule, showTableSchedule,
@@ -63,6 +69,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, time as dtime, timedelta
@@ -76,6 +83,16 @@ SHUTDOWNS_URL = BASE + "/ua/shutdowns"
 AJAX_URL = BASE + "/ua/ajax"
 # The home page, for the announcement banner only. See fetch_banner().
 BANNER_URL = BASE + "/ua"
+# YASNO's public outage feed for Dnipro (region 3) and DTEK Dnipro Grids
+# (dso 301): the per-queue status YASNO's own site and app show. Read for
+# EmergencyShutdowns only. See yasno_verdict().
+YASNO_URL = ("https://app.yasno.ua/api/blackout-service/public/shutdowns/"
+             "regions/3/dsos/301/planned-outages")
+# Every status YASNO has been seen to use. Anything else is reported in
+# `warnings` and never raises the flag.
+YASNO_STATUSES = frozenset(("ScheduleApplies", "WaitingForSchedule",
+                            "NoOutages", "EmergencyShutdowns"))
+YASNO_EMERGENCY = "EmergencyShutdowns"
 KYIV = ZoneInfo("Europe/Kyiv")
 TIMEOUT = 15
 
@@ -92,6 +109,12 @@ CACHE_PATH = Path(os.environ.get("DTEK_CACHE") or HERE / ".cache.json")
 # ha_pull.sh and .gitignore: promoting one to tools/fixtures/ is a decision.
 CAPTURE_DIR = Path(os.environ.get("DTEK_CAPTURES") or HERE / "captures")
 CAPTURE_KEEP = 30
+# Non-JSON answers from the AJAX endpoint (see NotJson), kept apart and fewer:
+# a long blip writes one per attempt.
+NONJSON_KEEP = 10
+# How long fetch_entry() waits before its one retry after a non-JSON answer.
+# Well inside the sensor's 60 s command_timeout.
+RETRY_PAUSE = 10
 SECRETS_PATH = Path(os.environ.get("DTEK_SECRETS") or HERE.parent / "secrets.yaml")
 
 # The seven states DTEK uses, from preset.time_type, compressed to one character
@@ -287,6 +310,8 @@ class Session:
         self.bootstrapped = True
 
     def post(self, fields):
+        """One AJAX call. A body that is not JSON raises NotJson, after the
+        body is kept in captures/ so the next blip can be looked at."""
         req = urllib.request.Request(
             AJAX_URL, data=encode_form(fields).encode("ascii"), method="POST")
         req.add_header("Content-Type",
@@ -294,8 +319,48 @@ class Session:
         req.add_header("X-Requested-With", "XMLHttpRequest")
         req.add_header("X-CSRF-Token", self.csrf or "")
         req.add_header("Referer", SHUTDOWNS_URL)
-        log("POST %s method=%s" % (AJAX_URL, dict(fields).get("method")))
-        return json.loads(self._open(req).read().decode("utf-8"))
+        method = dict(fields).get("method")
+        log("POST %s method=%s" % (AJAX_URL, method))
+        resp = self._open(req)
+        raw = resp.read()
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except ValueError:
+            err = NotJson(resp.status, resp.headers.get("Content-Type"), raw)
+            save_nonjson_capture(raw, method, err, datetime.now(KYIV))
+            raise err from None
+
+
+class NotJson(ValueError):
+    """The AJAX endpoint answered, but not with JSON.
+
+    Seen 04.11.2026 21:53-22:58: an hour of these, then JSON again with nothing
+    changed on our side. The body was thrown away, so all the dashboard had was
+    "JSONDecodeError: Expecting value". This names what came back instead, and
+    stays a ValueError so refresh_schedule() still shrugs it off.
+    """
+
+    def __init__(self, status, ctype, raw):
+        text = raw.decode("utf-8", "replace")
+        m = re.search(r"<title[^>]*>(.*?)</title>", text, re.I | re.S)
+        hint = " ".join((m.group(1) if m else text).split())[:80]
+        super().__init__("DTEK answered %s %s, %d bytes, not JSON%s" % (
+            status, (ctype or "no type").split(";")[0], len(raw),
+            ": %s" % hint if hint else ""))
+
+
+def save_nonjson_capture(raw, method, err, now):
+    """The raw body of a non-JSON answer. Best effort, like save_capture()."""
+    stamp = now.isoformat()[:19].replace(":", "").replace("-", "")
+    try:
+        CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+        path = CAPTURE_DIR / ("nonjson_%s_%s.txt" % (stamp, method or "none"))
+        path.write_bytes(("# %s\n" % err).encode("utf-8") + raw)
+        log("captured %s" % path.name)
+        for old in sorted(CAPTURE_DIR.glob("nonjson_*.txt"))[:-NONJSON_KEEP]:
+            old.unlink()
+    except OSError as exc:
+        log("non-JSON capture not written: %s" % exc)
 
 
 def encode_form(fields):
@@ -688,11 +753,19 @@ def fetch_entry(session, city, street, house):
     """getHomeNum -> (entry, answer), re-establishing a stale session once.
 
     Exactly one retry. A tight loop against a CDN is how a five-minute poll
-    turns into a block, and nothing here is worth that.
+    turns into a block, and nothing here is worth that. A non-JSON answer gets
+    that retry too, RETRY_PAUSE later; the page it would take to re-bootstrap
+    is bot-checked, so waiting is all there is.
     """
     for attempt in (1, 2):
         try:
             answer = session.post(address_fields(city, street, house))
+        except NotJson as exc:
+            if attempt == 2:
+                raise
+            log("%s -- retrying in %d s" % (exc, RETRY_PAUSE))
+            time.sleep(RETRY_PAUSE)
+            continue
         except urllib.error.HTTPError as exc:
             if exc.code != 400 or attempt == 2:
                 raise
@@ -885,6 +958,121 @@ def fetch_banner(session, city):
     return parse_banner(html, city)
 
 
+# --- YASNO's per-queue status ------------------------------------------------
+
+def yasno_verdict(data, queues, today):
+    """Whether YASNO says emergency outages are on for this address today.
+
+    `data` is the planned-outages answer: {"3.1": {"today": {"date": ...,
+    "status": ...}, "tomorrow": {...}, "updatedOn": ...}, ...}. `queues` are
+    ours as DTEK names them ("GPV3.1"), possibly empty when DTEK is unread.
+    `today` is the Kyiv date.
+
+    Strict on purpose, like banner_emergency(): the flag needs the exact
+    status, on a `today` block that really is today, for one of our queues.
+    With no queue known it needs EVERY queue in emergency -- a city-wide
+    order -- because an emergency can cover only part of the city (YASNO marks
+    it per queue). An unknown status is a warning, never the flag.
+    """
+    if not isinstance(data, dict) or not data:
+        raise ValueError("YASNO answer is not a non-empty object")
+    ours = [q.replace("GPV", "") for q in queues or []]
+    warnings = []
+    per_queue = {}
+    for name, block in data.items():
+        day = (block or {}).get("today") or {}
+        status = day.get("status")
+        if status not in YASNO_STATUSES:
+            warnings.append("yasno: unknown status %r for queue %s" % (status, name))
+        dated = str(day.get("date") or "")[:10] == today.isoformat()
+        per_queue[name] = status if dated else None
+    if ours and not any(q in data for q in ours):
+        warnings.append("yasno: our queue %s is not in the answer" % "/".join(ours))
+
+    emergency_queues = sorted(q for q, s in per_queue.items() if s == YASNO_EMERGENCY)
+    if ours:
+        emergency = any(per_queue.get(q) == YASNO_EMERGENCY for q in ours)
+    else:
+        emergency = bool(per_queue) and len(emergency_queues) == len(per_queue)
+    mine = data.get(ours[0]) if ours else None
+    return {
+        "yasno_status_today": ((mine or {}).get("today") or {}).get("status"),
+        "yasno_status_tomorrow": ((mine or {}).get("tomorrow") or {}).get("status"),
+        "yasno_updated_on": (mine or {}).get("updatedOn"),
+        "yasno_emergency": emergency,
+        "yasno_emergency_queues": emergency_queues,
+        "yasno_warnings": warnings,
+    }
+
+
+def fetch_yasno():
+    """GET the planned-outages JSON. One attempt; a page that is not JSON (an
+    error page, a challenge) raises rather than reading as "no emergency"."""
+    log("GET %s" % YASNO_URL)
+    req = urllib.request.Request(YASNO_URL)
+    req.add_header("Accept", "application/json")
+    req.add_header("User-Agent", USER_AGENT)
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+YASNO_FIELDS = ("yasno_status_today", "yasno_status_tomorrow", "yasno_updated_on",
+                "yasno_emergency", "yasno_emergency_queues")
+
+
+def apply_yasno(payload, cache, now):
+    """Read YASNO and publish its verdict on `payload`, whether the DTEK poll
+    worked or not -- the two sources fail independently.
+
+    A failed read keeps the last verdict, with yasno_checked_at saying how old
+    it is; the binary sensor stops trusting it after 20 minutes. A change of
+    status keeps the raw answer next to DTEK's captures.
+    """
+    try:
+        raw = fetch_yasno()
+        verdict = yasno_verdict(raw, payload.get("queues") or [], now.date())
+        prev = (cache.get("yasno") or {}).get("yasno_status_today")
+        prev_em = (cache.get("yasno") or {}).get("yasno_emergency")
+        cache["yasno"] = verdict
+        cache["yasno_checked_at"] = now.isoformat()
+        payload["yasno_error"] = None
+        if (prev, prev_em) != (verdict["yasno_status_today"], verdict["yasno_emergency"]):
+            save_yasno_capture(raw, verdict, now)
+    except Exception as exc:                      # noqa: BLE001 - see poll()
+        log("yasno not read: %r" % exc)
+        payload["yasno_error"] = "%s: %s" % (type(exc).__name__, exc)
+    verdict = cache.get("yasno") or {}
+    for key in YASNO_FIELDS:
+        payload[key] = verdict.get(key)
+    payload["yasno_emergency"] = bool(verdict.get("yasno_emergency"))
+    payload["yasno_checked_at"] = cache.get("yasno_checked_at")
+    # Replace, never accumulate: a stale payload is last run's, YASNO's old
+    # warnings included.
+    payload["warnings"] = [w for w in payload.get("warnings") or []
+                           if not w.startswith("yasno:")] + list(
+                               verdict.get("yasno_warnings") or [])
+    return payload
+
+
+def save_yasno_capture(raw, verdict, now):
+    """The raw YASNO answer whenever our status changes. Best effort. Named so
+    it sorts after DTEK's captures and survives their rotation."""
+    stamp = now.isoformat()[:19].replace(":", "").replace("-", "")
+    try:
+        CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+        path = CAPTURE_DIR / ("yasno_%s_%s.json" % (
+            stamp, verdict.get("yasno_status_today") or "none"))
+        path.write_text(json.dumps({"_meta": {"captured_at": now.isoformat(),
+                                              "verdict": verdict},
+                                    "planned_outages": raw},
+                                   ensure_ascii=False, indent=1), encoding="utf-8")
+        log("captured %s" % path.name)
+        for old in sorted(CAPTURE_DIR.glob("yasno_*.json"))[:-CAPTURE_KEEP]:
+            old.unlink()
+    except OSError as exc:
+        log("yasno capture not written: %s" % exc)
+
+
 def status_for(payload):
     if not payload.get("outage_active"):
         return "ok"
@@ -966,7 +1154,11 @@ def poll(cache):
                    banner_checked_at=cache.get("banner_checked_at"))
 
     prev = cache.get("last_good") or {}
-    if ((prev.get("status"), prev.get("warnings"), prev.get("banner_text"))
+    # last_good also carries YASNO's warnings (apply_yasno() adds them after
+    # this); they have their own captures, so they must not trigger DTEK's.
+    prev_warnings = [w for w in prev.get("warnings") or []
+                     if not w.startswith("yasno:")]
+    if ((prev.get("status"), prev_warnings, prev.get("banner_text"))
             != (payload["status"], payload["warnings"], payload["banner_text"])):
         save_capture(answer, payload, session, house)
 
@@ -1037,6 +1229,10 @@ def main(argv=None):
         payload["stale"] = True
         payload["error"] = "%s: %s" % (type(exc).__name__, exc)
         payload.setdefault("fetched_at", None)
+
+    # YASNO after both branches: its emergency flag must not depend on DTEK.
+    apply_yasno(payload, cache, datetime.now(KYIV).replace(microsecond=0))
+    save_cache(cache)
 
     print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
     return 0
