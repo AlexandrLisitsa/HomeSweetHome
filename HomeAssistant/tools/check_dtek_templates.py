@@ -528,8 +528,46 @@ check("revision gate: status changed too -> the status message covers it",
                  outage_end="2026-09-29T15:25:00+03:00"),
                  "to_state": REV["to_state"]}), "False")
 
+# A stabilisation record is the schedule: silent, except a change of kind.
+# 05.11.2026 01:08 pinged "DTEK emergency outage" an hour into a window.
+STAB_REASON = "Стабілізаційне відключення (Згідно графіку погодинних відключень)"
+STAB = st("outage_emergency", outage_active=True, outage_type="2",
+          outage_reason=STAB_REASON, outage_end="2026-11-05T02:30:00+02:00")
+REAL = st("outage_emergency", outage_active=True, outage_type="2",
+          outage_reason="Аварійні ремонтні роботи",
+          outage_end="2026-11-05T02:30:00+02:00")
+STALE_STAB = st("stale", outage_active=True, outage_type="2", outage_reason=STAB_REASON)
+for label, trig, want in [
+        ("ok -> stabilisation record", status(OK, STAB), "False"),
+        ("ok -> stale -> stabilisation record", status(STALE_OK, STAB), "False"),
+        ("stabilisation -> real emergency (reason only)", status(STAB, REAL), "True"),
+        ("real emergency -> stabilisation (reason only)", status(REAL, STAB), "True"),
+        ("planned -> stabilisation", status(PLANNED, STAB), "True"),
+        ("stabilisation, stale, stabilisation", status(STALE_STAB, STAB), "False"),
+        ("stabilisation, stale, real emergency", status(STALE_STAB, REAL), "True"),
+        ("stabilisation -> stabilisation (end moved)", status(STAB, st(
+            "outage_emergency", outage_active=True, outage_type="2",
+            outage_reason=STAB_REASON, outage_end="2026-11-05T03:00:00+02:00")), "False"),
+        ("restart: unavailable -> stabilisation", status(st("unavailable"), STAB), "False")]:
+    check("status gate: " + label, gate(rep, trig), want)
+STAB_LATER = st("outage_emergency", outage_reason=STAB_REASON,
+                outage_end="2026-11-05T03:00:00+02:00")
+check("revision gate: stabilisation estimate moved -> silent",
+      gate(rep, {"id": "revised", "from_state": STAB, "to_state": STAB_LATER}), "False")
+check("revision gate: kind changed too -> the status message covers it",
+      gate(rep, {"id": "revised", "from_state": REAL, "to_state": STAB_LATER}), "False")
+check("emergency -> stabilisation title",
+      fire(rep, rstates, {**GOLD, (SENSOR, "outage_reason"): STAB_REASON},
+           status(REAL, STAB))["title"],
+      "📅 DTEK: back to the schedule, no longer an emergency")
+check("stabilisation -> emergency title",
+      fire(rep, rstates, GOLD, status(STAB, REAL))["title"],
+      "⚠️ Alert: DTEK emergency outage")
+
 clr = autos["dtek_outage_cleared"]
-for label, frm, want in [("emergency -> ok", EMERG, "True"),
+for label, frm, want in [("stabilisation record -> ok: silent", STAB, "False"),
+                         ("stabilisation, stale, then ok: silent", STALE_STAB, "False"),
+                         ("emergency -> ok", EMERG, "True"),
                          ("planned -> ok", PLANNED, "True"),
                          ("outage, stale, then ok", STALE_OUT, "True"),
                          ("stale -> ok, no outage before", STALE_OK, "False"),
@@ -613,6 +651,9 @@ for label, active, end, at, want in [
         ("no estimate published", True, None, AT.replace(hour=15, minute=26), "False")]:
     check(label, render(otrig, {}, {**GOLD, (SENSOR, "outage_active"): active,
                                     (SENSOR, "outage_end"): end}, at), want)
+check("stabilisation record past its estimate -> silent",
+      render(otrig, {}, {**GOLD, (SENSOR, "outage_reason"): STAB_REASON},
+             AT.replace(hour=15, minute=26)), "False")
 check("message", fire(over, rstates, GOLD, {})["message"],
       "DTEK's 15:25 estimate has passed and the outage is still on record "
       "(Аварійні ремонтні роботи, queue 1.1). The inverter still sees mains.")

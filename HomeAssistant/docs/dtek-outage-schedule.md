@@ -162,6 +162,18 @@ the same thing. Inside an applied window the alert says "On DTEK's schedule
 because DTEK never records a stabilisation window as an outage. A restore
 inside the window says "Back early".
 
+DTEK does sometimes record a schedule window against the address, an hour or
+so into it: type 2 (the emergency code) with the reason `Стабілізаційне
+відключення (Згідно графіку погодинних відключень)`. That record is the
+schedule, which the 15-minute warning already announced, so the DTEK record
+alerts stay silent for it: no "DTEK emergency outage", no "restore time
+revised", no "estimate passed", no "outage cleared". The only record
+messages are a change of kind: a stabilisation record turning into a real
+emergency (`⚠️ Alert: DTEK emergency outage`), and an emergency DTEK
+reclassifies as the schedule (`📅 DTEK: back to the schedule, no longer an
+emergency`). Before 05.11.2026 the record pinged "DTEK emergency outage" at
+01:08, in the middle of a window.
+
 Note what is deliberately *not* there: the raw entity values. The second design
 iteration dropped the Entities list, and the tile grids went with the first, so
 `sensor.dtek_next_outage_start` and friends are now only in the badges, the
