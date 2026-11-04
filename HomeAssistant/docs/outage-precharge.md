@@ -37,9 +37,9 @@ minute to fill the pack. So while the record is up:
 - `until` is DTEK's `outage_end`; with no end, or once it has passed with the
   record still up, it rolls an hour ahead on every render, so the ESP's own
   deadline still ends the override within an hour of HA going quiet;
-- the plan's `emergency` attribute is `true`, and the start message says
-  "DTEK emergency outage on record until 21:00". If mains is gone when the
-  message goes out, it says the charge starts when mains comes back.
+- the plan's `emergency` attribute is `true`. When mains comes back, the
+  message says "Mains is back with a DTEK emergency outage on record until
+  21:00".
 
 The rule is two lines: **on schedule, charge gently; in an emergency, as fast
 as possible.** DTEK files its schedule outages as type 2 as well, with the
@@ -145,10 +145,16 @@ notification says so. It comes back on by itself once the outage is over. If you
 it off while a pre-charge is charging, adaptive waits to hand back your own
 current until the pre-charge is over.
 
-When a pre-charge starts, `notify.household` sends one message on the
-`Outage pre-charge` channel, with the time and the amps. A day-rate charge is
-never a surprise. Re-targets after that, and the swaps between `charging` and
-`holding`, are silent.
+There is one message, on the `Outage pre-charge` channel of
+`notify.household`: when mains comes back after an outage and the plan is
+`charging`. It gives the outage time, the amps and the battery. "Outage" means
+at least 20 s with no mains, the same rule as ✅ Power Restored, so blips stay
+quiet.
+
+The plan going to `charging` sends nothing. With a schedule running, it does
+that in the dark after every window, as soon as the pack drains under 99 %.
+On 05.11 that pinged at 00:43 with no mains to charge from. `holding`,
+re-targets and the swaps between `charging` and `holding` are silent too.
 
 ## Testing
 

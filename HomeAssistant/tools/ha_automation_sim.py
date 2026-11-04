@@ -113,6 +113,8 @@ class State:
     entity_id: str
     state: str
     attributes: dict = field(default_factory=dict)
+    # When the state value last changed (House.now then); not compared.
+    last_changed: datetime = field(default=None, compare=False)
 
     @property
     def domain(self):
@@ -152,7 +154,7 @@ class House:
 
     def set(self, entity_id, state, **attrs):
         """Set a state without an event (the house as it already is)."""
-        self.entities[entity_id] = State(entity_id, str(state), dict(attrs))
+        self.entities[entity_id] = State(entity_id, str(state), dict(attrs), self.now)
 
     def get(self, entity_id):
         return self.entities.get(entity_id)
@@ -172,6 +174,8 @@ class House:
         base.update(attrs)
         new = State(entity_id, str(state) if state is not None else
                     (old.state if old else "unknown"), base)
+        # As HA: last_changed moves with the state value, not with attributes.
+        new.last_changed = old.last_changed if old and old.state == new.state else self.now
         self.entities[entity_id] = new
         return StateChanged(entity_id, old, new)
 
