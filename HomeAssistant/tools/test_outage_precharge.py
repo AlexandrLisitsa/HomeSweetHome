@@ -489,11 +489,16 @@ check("charging -> idle with both attributes cleared -> 3 runs (max 3)", len(run
 check("... released once", writes(runs, SET), [{"datetime": "2000-01-01 00:00:00"}])
 
 print("started")
+GRID = "binary_sensor.grid_down"  # on = no mains
 
 
-def started_house(state="idle", soc="40.4"):
-    h = House(NOON)
-    h.set(PLAN, state, current=None, until=None, reason="")
+def started_house(state="charging", soc="40.4", **attrs):
+    """Mains has been gone since 11:00; the plan is `state`. Clock at noon."""
+    h = House(at(2, "11:00"))
+    h.set(GRID, "on")
+    h.now = NOON
+    h.set(PLAN, state, **(attrs or (CHARGING if state == "charging" else
+                                    dict(current=None, until=None, reason=""))))
     h.set(SOC, soc)
     return h
 
@@ -506,56 +511,56 @@ def start_msgs(h, event):
             for n in r.notifications]
 
 
+def mains_back(h, after=timedelta(0)):
+    h.now = h.now + after
+    return start_msgs(h, h.change(GRID, "off"))
+
+
 h = started_house()
-runs = Simulator(h, [STARTED]).fire(h.change(PLAN, "charging", **CHARGING))
-check("idle -> charging: one line, with time, amps, battery and reason",
+runs = Simulator(h, [STARTED]).fire(h.change(GRID, "off"))
+check("mains back after an hour, charging: one line, with time, amps, battery and reason",
       [n.data["message"] for r in runs for n in r.notifications],
-      ["Charging for the 14:00 DTEK outage at 60 A "
+      ["Mains is back: charging for the 14:00 DTEK outage at 60 A "
        "(battery 40%, night tariff too short or past, charging now)."])
 check("... title and channel",
       [(n.data["title"], n.data["data"]) for r in runs for n in r.notifications],
-      [("\U0001f50b Outage pre-charge started", {"channel": "Outage pre-charge"})])
-h = started_house(state="waiting_night")
-check("waiting_night -> charging -> notifies",
-      len(start_msgs(h, h.change(PLAN, "charging", **CHARGING))), 1)
-h = started_house(state="charging")
-h.change(PLAN, **CHARGING)
-check("charging -> charging (re-target) -> nothing",
-      start_msgs(h, h.change(PLAN, current=40, until=at(2, "13:00").isoformat())), [])
+      [("🔋 Outage pre-charge started", {"channel": "Outage pre-charge"})])
+# 05.11 00:43: the pack drained under 99 % in the dark and the plan went
+# full -> charging, which pinged at night with no mains to charge from.
+for frm in ("full", "idle", "waiting_night", "unknown"):
+    h = started_house(state=frm)
+    check("%s -> charging in the dark -> nothing" % frm,
+          start_msgs(h, h.change(PLAN, "charging", **CHARGING)), [])
+    h = started_house(state=frm)
+    h.change(GRID, "off")
+    check("%s -> charging with mains on -> nothing (only mains back pings)" % frm,
+          start_msgs(h, h.change(PLAN, "charging", **CHARGING)), [])
+for st in ("holding", "full", "idle", "waiting_night", "off"):
+    check("mains back, plan %s -> nothing" % st, mains_back(started_house(state=st)), [])
 h = House(NOON)
-check("entity appears already charging (no from_state) -> nothing",
-      start_msgs(h, h.change(PLAN, "charging", **CHARGING)), [])
-h = started_house(state="unknown")
-check("unknown -> charging (e.g. after a reload) -> notifies",
-      len(start_msgs(h, h.change(PLAN, "charging", **CHARGING))), 1)
+h.set(GRID, "on")
+h.set(PLAN, "charging", **CHARGING)
+check("a 10 s blip -> nothing", mains_back(h, timedelta(seconds=10)), [])
+h = House(NOON)
+h.set(GRID, "on")
+h.set(PLAN, "charging", **CHARGING)
+check("exactly 20 s -> one line", len(mains_back(h, timedelta(seconds=20))), 1)
 h = started_house()
+h.change(GRID, "unavailable")
+check("unavailable -> off (an ESP reconnect) -> nothing", mains_back(h), [])
+h = started_house()
+check("plan re-targets in the dark -> nothing",
+      start_msgs(h, h.change(PLAN, current=40, until=at(2, "13:00").isoformat())), [])
 check("until in UTC -> the local 14:00",
-      start_msgs(h, h.change(PLAN, "charging",
-                             **dict(CHARGING, until="2026-11-02T12:00:00+00:00")))[0][:22],
-      "Charging for the 14:00")
-h = started_house(soc="unavailable")
+      mains_back(started_house(**dict(CHARGING, until="2026-11-02T12:00:00+00:00")))[0][:42],
+      "Mains is back: charging for the 14:00 DTEK")
 check("SOC unavailable -> the line says 'battery 0%' (float(0) default)",
-      "(battery 0%," in start_msgs(h, h.change(PLAN, "charging", **CHARGING))[0], True)
-h = started_house()
-check("idle -> full -> nothing", start_msgs(h, h.change(PLAN, "full")), [])
-h = started_house(state="holding")
-check("holding -> charging (dipped below 95%) -> nothing",
-      start_msgs(h, h.change(PLAN, "charging", **CHARGING)), [])
-h = started_house(state="charging")
-check("charging -> holding -> nothing", start_msgs(h, h.change(PLAN, "holding")), [])
-
-h = started_house()
+      "(battery 0%," in mains_back(started_house(soc="unavailable"))[0], True)
 check("emergency: says so, with DTEK's end and the amps",
-      start_msgs(h, h.change(PLAN, "charging", **dict(CHARGING, emergency=True,
-                                                     until=at(2, "21:00").isoformat()))),
-      ["DTEK emergency outage on record until 21:00: on grid, charging at 60 A (battery 40%)."])
-h = started_house()
-h.set("binary_sensor.grid_down", "on")
-check("emergency posted with the lights out: does not claim the grid",
-      start_msgs(h, h.change(PLAN, "charging", **dict(CHARGING, emergency=True,
-                                                     until=at(2, "21:00").isoformat()))),
-      ["DTEK emergency outage on record until 21:00: no mains now, the inverter charges "
-       "at 60 A the moment it is back (battery 40%)."])
+      mains_back(started_house(**dict(CHARGING, emergency=True,
+                                      until=at(2, "21:00").isoformat()))),
+      ["Mains is back with a DTEK emergency outage on record until 21:00: "
+       "charging at 60 A (battery 40%)."])
 
 print("DST nights (were known bugs, fixed 2026-10-02)")
 # The plan adds and subtracts datetimes that share now()'s ZoneInfo, which

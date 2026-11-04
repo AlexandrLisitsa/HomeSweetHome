@@ -283,26 +283,34 @@ automation:
             data:
               option: "{{ '%02d' | format(amps | int) }}"
 
-  # One line on the phones when a pre-charge starts, so a day-rate charge is
-  # never a surprise on the bill. Not on re-targets — those are just the
-  # schedule moving, and the dashboard chip shows the current plan.
+  # One line on the phones when mains comes back after an outage and the
+  # pre-charge is about to fill the pack. Only then: a plan that goes
+  # `charging` is silent, because with a schedule running it does that in the
+  # dark after every window (the pack drains under 99 %, 05.11 00:43), and a
+  # charge that cannot happen is not news. An outage is one long enough for
+  # the Grid Outage alert (20 s), the same rule as Power Restored, so blips do
+  # not ping. `holding` is silent too: the pack is within 5 % and just floats.
   - id: outage_precharge_started
     alias: '🔋 Outage pre-charge started'
     mode: single
     trigger:
       - platform: state
-        entity_id: sensor.outage_pre_charge_plan
-        to: 'charging'
+        entity_id: binary_sensor.grid_down
+        from: 'on'
+        to: 'off'
     condition:
       - condition: template
-        value_template: "{{ trigger.from_state is not none and trigger.from_state.state not in ['charging', 'holding'] }}"
+        value_template: '{{ (trigger.to_state.last_changed - trigger.from_state.last_changed).total_seconds() >= 20 }}'
+      - condition: state
+        entity_id: sensor.outage_pre_charge_plan
+        state: 'charging'
     action:
       - variables:
           at: >-
             {{ as_datetime(state_attr('sensor.outage_pre_charge_plan', 'until')) | as_local | as_timestamp | timestamp_custom('%H:%M') }}
           message: >-
-            {% if state_attr('sensor.outage_pre_charge_plan', 'emergency') is true %}DTEK emergency outage on record until {{ at }}: {{ 'no mains now, the inverter charges' if is_state('binary_sensor.grid_down', 'on') else 'on grid, charging' }} at {{ state_attr('sensor.outage_pre_charge_plan', 'current') }} A{{ ' the moment it is back' if is_state('binary_sensor.grid_down', 'on') }}
-            (battery {{ states('sensor.jkbms_gateway_bms_state_of_charge') | float(0) | round(0) }}%).{% else %}Charging for the {{ at }} DTEK outage at {{ state_attr('sensor.outage_pre_charge_plan', 'current') }} A
+            {% if state_attr('sensor.outage_pre_charge_plan', 'emergency') is true %}Mains is back with a DTEK emergency outage on record until {{ at }}: charging at {{ state_attr('sensor.outage_pre_charge_plan', 'current') }} A
+            (battery {{ states('sensor.jkbms_gateway_bms_state_of_charge') | float(0) | round(0) }}%).{% else %}Mains is back: charging for the {{ at }} DTEK outage at {{ state_attr('sensor.outage_pre_charge_plan', 'current') }} A
             (battery {{ states('sensor.jkbms_gateway_bms_state_of_charge') | float(0) | round(0) }}%, {{ state_attr('sensor.outage_pre_charge_plan', 'reason') }}).{% endif %}
       - service: notify.household
         data:
