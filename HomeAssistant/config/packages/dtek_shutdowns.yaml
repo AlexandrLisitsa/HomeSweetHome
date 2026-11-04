@@ -583,6 +583,17 @@ automation:
   # would announce the same outage twice, and one just before it would hide
   # it. unknown/unavailable (a restart) have no attributes and never fire.
   #
+  # A STABILISATION record is the schedule, not news. DTEK files the hourly
+  # schedule's own windows as type 2 (the emergency code) with the reason
+  # "Стабілізаційне відключення (Згідно графіку погодинних відключень)"
+  # (17.10, 03.11, 05.11 01:08, which pinged "DTEK emergency outage" an hour
+  # into a window the 15-min warning had already announced). Such a record is
+  # its own kind, `schedule`, and is silent: appearing, its estimate moving,
+  # passing (dtek_outage_overdue) or clearing (dtek_outage_cleared). Only a
+  # change of KIND is a message -- a stabilisation record turning into a real
+  # emergency, or an emergency DTEK reclassifies as the schedule. The status
+  # trigger has no from/to, so it also fires on a reason-only change.
+  #
   # The second trigger is DTEK moving its restore estimate while the status
   # holds, which it does routinely. Same `tag` throughout, so a revised
   # estimate replaces the earlier notification rather than stacking under it.
@@ -601,24 +612,31 @@ automation:
       - condition: template
         value_template: >-
           {% set outages = ['outage', 'outage_planned', 'outage_emergency'] %}
+          {% set stab = 'стабілізаційн' %}
           {% set f = trigger.from_state %}
           {% set t = trigger.to_state.state if trigger.to_state else none %}
+          {% set t_kind = 'schedule' if t in outages
+                and stab in (trigger.to_state.attributes.get('outage_reason') or '') | lower else t %}
+          {% set fa = f.attributes.get('outage_active') if f else none %}
+          {% set was = f.state if f and f.state in ['ok'] + outages
+                else none if fa is none
+                else 'ok' if not fa
+                else {'1': 'outage_planned', '2': 'outage_emergency'}.get(f.attributes.get('outage_type') | string, 'outage') %}
+          {% set f_kind = 'schedule' if was in outages
+                and stab in (f.attributes.get('outage_reason') or '') | lower else was %}
           {% if trigger.id == 'revised' %}
-            {{ t in outages and f is not none and f.state == t
+            {{ t in outages and t_kind != 'schedule' and f is not none and f.state == t
+               and f_kind == t_kind
                and f.attributes.get('outage_end') is not none
                and trigger.to_state.attributes.get('outage_end') is not none }}
           {% else %}
-            {% set fa = f.attributes.get('outage_active') if f else none %}
-            {% set was = f.state if f and f.state in ['ok'] + outages
-                  else none if fa is none
-                  else 'ok' if not fa
-                  else {'1': 'outage_planned', '2': 'outage_emergency'}.get(f.attributes.get('outage_type') | string, 'outage') %}
-            {{ t in outages and was is not none and was != t }}
+            {{ t in outages and f_kind is not none and f_kind != t_kind
+               and not (t_kind == 'schedule' and f_kind == 'ok') }}
           {% endif %}
     action:
       - variables:
           title: >-
-            {% if trigger.id == 'revised' %}⚠️ DTEK: restore time revised{% else %}⚠️ Alert: {{ {'outage_emergency': 'DTEK emergency outage', 'outage_planned': 'DTEK planned outage'}.get(trigger.to_state.state, 'DTEK reports an outage') }}{% endif %}
+            {% if trigger.id == 'revised' %}⚠️ DTEK: restore time revised{% elif 'стабілізаційн' in (trigger.to_state.attributes.get('outage_reason') or '') | lower %}📅 DTEK: back to the schedule, no longer an emergency{% else %}⚠️ Alert: {{ {'outage_emergency': 'DTEK emergency outage', 'outage_planned': 'DTEK planned outage'}.get(trigger.to_state.state, 'DTEK reports an outage') }}{% endif %}
           reason_line: >-
             {{ state_attr('sensor.dtek_shutdowns', 'outage_reason') or 'Outage' }}
           window_line: >-
@@ -673,7 +691,8 @@ automation:
         value_template: >-
           {% set f = trigger.from_state %}
           {{ f is not none and (f.state in ['outage', 'outage_planned', 'outage_emergency']
-             or (f.state in ['stale', 'error'] and f.attributes.get('outage_active') is true)) }}
+             or (f.state in ['stale', 'error'] and f.attributes.get('outage_active') is true))
+             and 'стабілізаційн' not in (f.attributes.get('outage_reason') or '') | lower }}
     action:
       - variables:
           grid_line: >-
@@ -711,6 +730,7 @@ automation:
           {% set e = state_attr('sensor.dtek_shutdowns', 'outage_end') %}
           {% set d = as_datetime(e) if e else none %}
           {{ state_attr('sensor.dtek_shutdowns', 'outage_active') == true
+             and 'стабілізаційн' not in (state_attr('sensor.dtek_shutdowns', 'outage_reason') or '') | lower
              and d is not none and d < now() }}
     action:
       - variables:
