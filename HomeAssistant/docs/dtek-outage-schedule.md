@@ -113,9 +113,19 @@ timeline, week]` and `[source]`.
   midnight, made only while the card is on screen: again when one of them
   changes, and at most every 5 minutes otherwise. Without an answer it says so
   and still draws the schedule. It replaced the stock `history-graph`.
-- `week`: DTEK's recurring weekly table, a column per day with the hours down
-  the side. While a schedule is applied (`today` / `tomorrow`, from `fact`),
-  today's and tomorrow's columns show it instead, and their tooltips say so; an
+- `week`: DTEK's recurring weekly table, a row of 24 light bulbs per day,
+  hanging base-up, with the hour written on each. A lit bulb is power on, a
+  cracked dark one an outage, dim amber a possible outage, a flickering one
+  power for only half the hour (it cuts in and out like a dying bulb; its
+  tooltip says which half), a dashed outline an hour DTEK has not published. A
+  white ring pulses round the current hour. Both loops stop while the card is
+  off screen; the flicker jumps between states (`steps()`), so it repaints
+  only at each cut, holds still on hours already past, and becomes a steady
+  dim bulb under reduced motion. On a phone (card under 640 px) each day
+  wraps into two rows of 12. `week_style: grid` brings back the older column of
+  bars per day; the bulbs replaced it in 2.5, after a Playground on
+  05.11.2026. While a schedule is applied (`today` / `tomorrow`, from `fact`),
+  today's and tomorrow's rows show it instead, and their tooltips say so; an
   unpublished tomorrow keeps the recurring row. When DTEK withholds the table,
   the reason takes its place, followed by just today and tomorrow when a
   schedule is applied, because `plan_off` only withdraws the weekly table.
@@ -213,7 +223,7 @@ python tools/ha_dashboard.py --card dtek-shutdowns-card.js
 The card carries its own copy of the schedule alphabet, because it draws a
 colour per letter and `dtek_poll.py` cannot reach into a browser.
 `tools/check_dtek_templates.py` section 8 asserts the two agree — a letter the
-card has never seen renders as a hatched "unknown" cell *and* drops out of the
+card has never seen renders as an "unknown" hour (an empty bulb outline) *and* drops out of the
 hour totals, which is a silent undercount on a dashboard that otherwise looks
 fine.
 
@@ -247,7 +257,7 @@ schedule-shaped read `unknown`. That is the right answer whenever it happens
 again, not a fault. The weekly table is still withheld (`hidden_reason:
 plan_off`), so the week block shows the reason and then today and tomorrow,
 while the alerts run on `fact`. If the weekly table comes back, its cells are
-mostly `maybe`. The grid draws those as amber hatching, not red, and counts a
+mostly `maybe`. The card draws those as dim amber bulbs, not dark ones, and counts a
 possible outage as off, the same way `OFF_HALVES` and the alerts already do.
 
 ## Ukrenergo's emergency outages

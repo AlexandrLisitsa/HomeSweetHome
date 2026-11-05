@@ -42,7 +42,9 @@ function render(at, attrs, opts) {
   const [hh, mm] = at.split(":").map(Number);
   const L = loadCard(FILE, { Date: pinnedDate(hh, mm) });
   const card = new L.Card();
-  card.setConfig(Object.assign({ blocks: opts.blocks || ["hero", "days"] }, opts.config || {}));
+  // The checks below were written against the bars; the bulbs have their own section.
+  card.setConfig(Object.assign({ blocks: opts.blocks || ["hero", "days"], week_style: "grid" },
+    opts.config || {}));
   const asked = [];
   card.hass = mkHass(Object.assign({
     "sensor.dtek_shutdowns": S("ok", Object.assign({
@@ -337,6 +339,53 @@ WEEK[4] = "nnnnnnnnnnnnyyyyyyyyyyyy"; // Friday the 16th: 12 h off
     x.root.querySelectorAll(".week .day").map((c) => c.querySelector(".dname").textContent), ["Today", "Tomorrow"]);
   x = render("13:39", { week: null, schedule_in_effect: false, today: null }, { blocks: ["week"] });
   eq("nothing at all: the note alone", [x.root.querySelectorAll(".day").length, !!x.text(".note")], [0, true]);
+}
+
+console.log("the bulbs: a row of 24 per day, the hour on the glass");
+{
+  // The default look: no week_style at all.
+  const bulbs = (attrs, config) => render("13:39", Object.assign({}, attrs),
+    { blocks: ["week"], config: Object.assign({ week_style: undefined }, config || {}) });
+  let x = bulbs({ week: WEEK, week_in_effect: false, hidden_reason: "plan_off" });
+  const rows = x.root.querySelectorAll(".week .brow");
+  eq("bulbs by default, no bars", [rows.length > 0, x.root.querySelectorAll(".week .c").length], [true, 0]);
+  eq("two rows: today and tomorrow", rows.map((b) => b.querySelector(".dname").textContent), ["Today", "Tomorrow"]);
+  eq("24 drawn bulbs each", rows.map((b) => b.querySelectorAll(".bulb svg").length), [24, 24]);
+  eq("the hour on every glass", rows[0].querySelectorAll(".t").map((t) => t.textContent).join(" "),
+    Array.from({ length: 24 }, (_, h) => String(h).padStart(2, "0")).join(" "));
+  const bc = (i) => rows[0].querySelectorAll(".bulb")[i].getAttribute("class");
+  eq("13:00 is half lit, and now", bc(13), "bulb out-2 now");
+  eq("14:00 is dark", bc(14), "bulb out");
+  eq("12:00 is lit, and past", bc(12), "bulb on past");
+  eq("tomorrow is an empty outline", rows[1].querySelectorAll(".bulb")[0].getAttribute("class"), "bulb unknown");
+  eq("today's total", rows[0].querySelector(".dtot").textContent, "3.5h");
+  eq("the pulsing ring is on the current bulb only",
+    rows[0].querySelectorAll(".bulb").map((b, i) => (b.querySelector(".ring") ? i : -1)).filter((i) => i >= 0), [13]);
+  eq("... and tomorrow has none", rows[1].querySelectorAll(".ring").length, 0);
+  eq("cracked glass on the outage hours only (14:00-16:59)",
+    rows[0].querySelectorAll(".bulb").map((b, i) => (b.querySelector(".crack") ? i : -1)).filter((i) => i >= 0),
+    [14, 15, 16]);
+  eq("the flickering glass on the half-hour bulb only (13:00)",
+    rows[0].querySelectorAll(".bulb").map((b, i) => (b.querySelector(".g2") ? i : -1)).filter((i) => i >= 0), [13]);
+  eq("the bulb hangs: drawn upright, turned over, hour outside the turn",
+    [rows[0].querySelector(".bulb svg g").getAttribute("transform"),
+     String(rows[0].querySelector(".bulb .t").parentNode.tagName).toLowerCase()], ["rotate(180 20 32)", "svg"]);
+  eq("the legend's outage bulb is cracked too",
+    x.root.querySelectorAll(".legend .bulb.mini").map((b) => !!b.querySelector(".crack")),
+    [false, true, false, false, false, false]);
+  eq("the legend draws bulbs without hours", [x.root.querySelectorAll(".legend .bulb.mini svg").length,
+    x.root.querySelectorAll(".legend .t").length], [6, 0]);
+  x = bulbs({ week: WEEK, week_in_effect: true, hidden_reason: null });
+  eq("a live table: seven rows", x.root.querySelectorAll(".week .brow").length, 7);
+  x = render("13:39", {}, { blocks: ["days"], config: { week_style: undefined } });
+  eq("the days block draws bulbs too", x.root.querySelectorAll(".days .brow").length, 2);
+  x = bulbs({ week: WEEK, week_in_effect: true, hidden_reason: null }, { week_style: "grid" });
+  eq("week_style grid: the bars", [x.root.querySelectorAll(".brow").length, x.root.querySelectorAll(".week .day").length], [0, 7]);
+
+  const L = loadCard(FILE, {});
+  let err = null;
+  try { new L.Card().setConfig({ week_style: "neon" }); } catch (e) { err = e.message; }
+  eq("unknown week_style refused", /week_style must be one of classic, grid/.test(err || ""), true);
 }
 
 console.log("the hero: pill, glow and clock");

@@ -67,7 +67,7 @@ const READ_ONLY = {
   "climate-console-card.js": [".badge", ".tile", ".well", ".row", ".fval", ".zone", ".vbox",
     ".st-v", ".ch-name", ".win", ".dial", ".dial-v", ".rmark", ".fine", "#bed-fan-fine",
     ".cost-c", ".feat-l"],
-  "dtek-shutdowns-card.js": [".eyebrow", ".ident", ".banner", "h1", ".reason", ".tile", ".c", ".dtot",
+  "dtek-shutdowns-card.js": [".eyebrow", ".ident", ".banner", "h1", ".reason", ".tile", ".c", ".bulb", ".dtot",
     ".legend span", ".stamp", ".kv div", ".arc", ".ctr", ".tlname", ".blk"],
   "floorplan-card.js": [".badge", ".row .value", ".pct"],
 };
