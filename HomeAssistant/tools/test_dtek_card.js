@@ -106,10 +106,14 @@ eq("headline", r.text("h1"), "The power is on.");
 
 console.log("a window across midnight");
 r = render("23:40", { today: "yyyyyyyyyyyyyyyyyyyyyynnn".slice(0, 24), tomorrow: "nnyyyyyyyyyyyyyyyyyyyyyy" });
-eq("headline carries +1", r.text("h1"), "Scheduled outage until 02:00+1.");
+eq("headline: plain end time, no +1", r.text("h1"), "Scheduled outage until 02:00.");
 r = render("23:40", { today: "yyyyyyyyyyyyyyyyyyyyyynn", tomorrow: null }, { gridDown: true });
 eq("tomorrow unpublished: no false end time", r.text(".lede"),
-  "The inverter sees no mains, as DTEK's schedule for (1.1) has it: off 22:00–00:00+1, back by midnight unless tomorrow's table extends it.");
+  "The inverter sees no mains, as DTEK's schedule for (1.1) has it: off 22:00–00:00, back by midnight unless tomorrow's table extends it.");
+
+// 05.11.2026, queue 1.1: dark 19:30 to midnight, tomorrow lit until 06:00.
+r = render("22:56", { today: "nnfyyyyyynnnnyyyyyysnnnn", tomorrow: "yyyyyynnnnnnnfyysnnnfyyy" });
+eq("a window ending at midnight: no +1", r.tile("Next window"), ["19:30–00:00", "now, ends in 1h 4m"]);
 
 console.log("possible outage hours");
 r = render("10:15", { today: "yyyyyyyyyymmyyyyyyyyyyyy" });

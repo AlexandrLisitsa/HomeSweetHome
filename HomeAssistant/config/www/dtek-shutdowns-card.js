@@ -46,7 +46,7 @@
 const CARD = "dtek-shutdowns-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "2.7.1";
+const VERSION = "2.7.2";
 
 /*
  * The grid shows the NORMAL condition, not the exception: a cell is green when
@@ -205,7 +205,7 @@ const HELP = {
   updated: "DTEK's own “information updated” stamp, normally only minutes old.\n"
     + "E.g. 14:01 29.09.2026, during the emergency that had started at 11:05.",
   next: "The next dark stretch: DTEK's applied schedule if any, else the weekly table.\n"
-    + "E.g. 19:30–02:30+1 runs from 19:30 until 02:30 the next day.\n"
+    + "E.g. 19:30–02:30 runs from 19:30 until 02:30 the next morning.\n"
     + "A dash: DTEK publishes no table to forecast from.",
   week_off: "Dark hours in this week's recurring table, possible outages counted as off.\n"
     + "E.g. 16 dark hours every day come to 112h, 67% of the 168-hour week.\n"
@@ -937,7 +937,7 @@ class DtekShutdownsCard extends HTMLElement {
     const schedNow = inEffect && dbg !== "on"
       ? scheduleWindow(a.today, a.tomorrow, now) : null;
     const schedEnd = schedNow
-      ? fmtClock(schedNow.end.toISOString()) + (schedNow.end.getDate() !== now.getDate() ? "+1" : "")
+      ? fmtClock(schedNow.end.toISOString())
       : null;
     const schedSpan = schedNow
       ? fmtClock(schedNow.start.toISOString()) + DASH + schedEnd : null;
@@ -1001,14 +1001,10 @@ class DtekShutdownsCard extends HTMLElement {
                                now.getHours() + (w.start - nowAbs),
                                w.startHalf ? 30 : 0);
         const when = this._whenPhrase(now, start);
-        // A run of dark cells does not stop at midnight, and "19:30-02:30"
-        // reads as a window that ended seventeen hours ago without the +1.
-        const lastCell = w.endHalf ? w.end : w.end + 1;
-        const crosses = Math.floor(lastCell / 24) - Math.floor(w.start / 24);
+        // A run past midnight reads plainly, 19:30-02:30: no "+1" marker.
         win = {
           label: clock(w.start, w.startHalf) + DASH
-            + (w.endHalf ? clock(w.end, true) : clock(w.end + 1, false))
-            + (crosses > 0 ? "+" + crosses : ""),
+            + (w.endHalf ? clock(w.end, true) : clock(w.end + 1, false)),
           at: clock(w.start, w.startHalf),
           when: when.long, whenShort: when.short, certain: w.certain, start,
         };
