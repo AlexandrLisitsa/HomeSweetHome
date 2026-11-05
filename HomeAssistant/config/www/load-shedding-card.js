@@ -41,7 +41,7 @@ const CARD = "load-shedding-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 import { fxConfig, fxOn, fxSetup, FX_CSS } from "./card-fx.js?v=1.1.0";
 
-const VERSION = "4.2.2";
+const VERSION = "4.3.0";
 
 // Text colours, so the bright variants: they must read at 4.5:1 on the panels.
 const RED = "var(--ls-bad-hi)";
@@ -87,6 +87,10 @@ const DEFAULTS = {
   runtime: "sensor.battery_runtime_remaining",
   // on = the grid has put the house on the pack (packages/grid_state.yaml)
   on_battery: "binary_sensor.house_on_battery",
+  // What the mains itself is doing, for the Grid tile only; arming stays on
+  // on_battery. grid_down on = under 150 V; grid_in_range on = 185-250 V.
+  grid_down: "binary_sensor.grid_down",
+  grid_in_range: "binary_sensor.powmr_inverter_grid_voltage_in_range",
   save_script: "load_shedding_save_config",
   hold_script: "load_shedding_hold",
   release_script: "load_shedding_release",
@@ -151,8 +155,9 @@ const HELP = {
     + "E.g. on, in an outage: the hall A/C goes off when the battery reaches 80 %.",
   tile_soc: "The pack's charge from the BMS; each step applies when it falls to the step's %.\n"
     + "E.g. at 50 % in an outage, LED ambient is switched off.",
-  tile_grid: "Whether the inverter reports the grid as unsafe; only then do the steps apply.\n"
-    + "E.g. down in a brownout too, because the inverter is on battery then.",
+  tile_grid: "The mains at the inverter: down (none), unsafe (out of 185-250 V), returning, or up.\n"
+    + "E.g. returning for 5 minutes after an outage: mains is back, the house still on battery.\n"
+    + "The steps apply while the house is on battery: down, unsafe or returning.",
   tile_runtime: "How long the battery lasts at the current draw.\n"
     + "E.g. about 7 h with an A/C running, a day and a half at idle.",
   tile_shed: "Devices stepped down or held this outage, out of all in the rules.\n"
@@ -456,7 +461,7 @@ class LoadSheddingCard extends HTMLElement {
   _fingerprint() {
     const c = this._config;
     const rules = this._rules();
-    const ids = [c.config, c.state, c.master, c.soc, c.runtime, c.on_battery];
+    const ids = [c.config, c.state, c.master, c.soc, c.runtime, c.on_battery, c.grid_down, c.grid_in_range];
     const parts = ids.map((id) => {
       const st = this._obj(id);
       return st ? st.state + JSON.stringify(st.attributes) : "-";
@@ -742,10 +747,27 @@ class LoadSheddingCard extends HTMLElement {
     return out.sort((a, b) => b.soc - a.soc);
   }
 
+  /**
+   * What the mains is doing, apart from whether the house is on battery.
+   * down: no mains. unsafe: mains out of 185-250 V and protection has put the
+   * house on battery. returning: back in range, the inverter's 5 steady
+   * minutes still running. up: the house runs on the grid (a low grid with
+   * protection off included). A grid_down that is missing or unavailable
+   * while on battery reads down, as the card did before it knew grid_down.
+   */
+  _gridWord() {
+    const c = this._config;
+    if (this._state(c.on_battery) !== "on") return { word: "up", tone: "z-ok" };
+    if (this._state(c.grid_down) !== "off") return { word: "down", tone: "z-bad" };
+    if (this._state(c.grid_in_range) === "on") return { word: "returning", tone: "z-warn" };
+    return { word: "unsafe", tone: "z-warn" };
+  }
+
   _heroHTML() {
     const c = this._config;
     const master = this._state(c.master) === "on";
     const gridDown = this._state(c.on_battery) === "on";
+    const grid = this._gridWord();
     const soc = this._num(c.soc);
     const runtime = this._num(c.runtime);
     const shed = this._shed();
@@ -762,7 +784,12 @@ class LoadSheddingCard extends HTMLElement {
     } else if (gridDown) {
       kind = "bad";
       word = "Armed";
-      lede = "The grid is down and the house is on battery. Devices step down as the battery passes their %.";
+      lede = (grid.word === "returning"
+        ? "Mains is back, but the inverter keeps the house on battery until it has been steady for 5 minutes."
+        : grid.word === "unsafe"
+          ? "Mains is out of the safe range, so the inverter keeps the house on battery."
+          : "The grid is down and the house is on battery.")
+        + " Devices step down as the battery passes their %.";
     } else {
       kind = "ok";
       word = "Standing by";
@@ -817,8 +844,8 @@ class LoadSheddingCard extends HTMLElement {
             <div class="tile"${this._tip("Battery", soc === null ? "unknown" : Math.round(soc) + " %", "tile_soc")}>
               <span class="k">Battery</span>
               <span class="v z-${zone}">${soc === null ? "—" : Math.round(soc) + "%"}</span></div>
-            <div class="tile"${this._tip("Grid", gridDown ? "down" : "up", "tile_grid")}><span class="k">Grid</span>
-              <span class="v ${gridDown ? "z-bad" : "z-ok"}">${gridDown ? "down" : "up"}</span></div>
+            <div class="tile"${this._tip("Grid", grid.word, "tile_grid")}><span class="k">Grid</span>
+              <span class="v ${grid.tone}">${grid.word}</span></div>
             <div class="tile"${this._tip("Runtime left", runtime === null ? "unknown" : runtime.toFixed(1) + " h",
               "tile_runtime")}><span class="k">Runtime left</span>
               <span class="v ${runtime === null ? "dim" : ""}">${runtime === null ? "—" : runtime.toFixed(1) + " h"}</span>

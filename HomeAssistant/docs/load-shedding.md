@@ -26,8 +26,13 @@ it reads the same under the light theme; `tools/test_power_cards.js` holds every
 text colour to 4.5:1.
 
 The hero's pill and glow say the state: grey **Off**, green **Standing by**
-(grid up, so nothing will fire), red **Armed** (grid down, on battery). Under it,
-the battery bar shows the battery against the steps:
+(grid up, so nothing will fire), red **Armed** (the house on battery). Arming
+follows `binary_sensor.house_on_battery`; the **Grid** tile says what the mains
+itself is doing, from `binary_sensor.grid_down` and the inverter's
+`grid_voltage_in_range`: red **down** (no mains), amber **unsafe** (mains outside
+185–250 V under protection), amber **returning** (back in range, the inverter's
+5 steady minutes still running), green **up**. Under it, the battery bar shows
+the battery against the steps:
 
 - the **fill** is green above every step, amber between the highest and the
   lowest, red at or below the lowest; a white marker gives the level;

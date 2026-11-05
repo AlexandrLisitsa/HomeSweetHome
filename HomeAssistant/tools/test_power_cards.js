@@ -1833,6 +1833,8 @@ async function loadSheddingSuite() {
     soc: "sensor.jkbms_gateway_bms_state_of_charge",
     rt: "sensor.battery_runtime_remaining",
     grid: "binary_sensor.house_on_battery",
+    down: "binary_sensor.grid_down",
+    range: "binary_sensor.powmr_inverter_grid_voltage_in_range",
   };
   const AC = "climate.hall_ac";
   const BOILER = "switch.boiler";
@@ -1889,6 +1891,8 @@ async function loadSheddingSuite() {
       [E.soc]: S(o.soc === undefined ? "60" : o.soc),
       [E.rt]: S(o.rt === undefined ? "2.5" : o.rt),
       [E.grid]: S(o.grid || "off"),
+      [E.down]: S(o.down || (o.grid === "on" ? "on" : "off")),
+      [E.range]: S(o.range || (o.grid === "on" ? "off" : "on")),
       [AC]: S("cool", { friendly_name: "Hall A/C", temperature: 24, hvac_modes: ["off", "cool", "heat", "fan_only"],
         fan_modes: ["auto", "low"] }),
       [BOILER]: S("on", { friendly_name: "Boiler" }),
@@ -2136,6 +2140,25 @@ async function loadSheddingSuite() {
     r = mk(states({ grid: "on" }), { blocks: ["hero"] });
     eq("grid down: armed", r.q("h1").textContent, "Armed");
     eq("grid tile", r.qa(".tile .v")[1].textContent, "down");
+    check("grid tile: red", r.qa(".tile .v")[1].classList.contains("z-bad"));
+    // Mains back in range, the inverter's 5 steady minutes still running:
+    // armed (the house is on the pack), but the tile does not say down.
+    r = mk(states({ grid: "on", down: "off", range: "on" }), { blocks: ["hero"] });
+    eq("returning: still armed", r.q("h1").textContent, "Armed");
+    eq("returning: grid tile", r.qa(".tile .v")[1].textContent, "returning");
+    check("returning: amber", r.qa(".tile .v")[1].classList.contains("z-warn"));
+    check("returning: lede says mains is back", r.q(".lede").textContent.indexOf("Mains is back") === 0);
+    // Mains present but out of range under protection.
+    r = mk(states({ grid: "on", down: "off", range: "off" }), { blocks: ["hero"] });
+    eq("unsafe: still armed", r.q("h1").textContent, "Armed");
+    eq("unsafe: grid tile", r.qa(".tile .v")[1].textContent, "unsafe");
+    check("unsafe: lede", r.q(".lede").textContent.indexOf("out of the safe range") > 0);
+    // A low grid with protection off: the house runs on it, so up.
+    r = mk(states({ grid: "off", down: "off", range: "off" }), { blocks: ["hero"] });
+    eq("low, on grid: up", r.qa(".tile .v")[1].textContent, "up");
+    // No grid_down entity at all: on battery reads down, as before.
+    r = mk(states({ grid: "on", extra: { "binary_sensor.grid_down": undefined } }), { blocks: ["hero"] });
+    eq("no grid_down: down", r.qa(".tile .v")[1].textContent, "down");
     r = mk(states({ grid: "off", devices: [dev("ac", AC, [{ soc: 80, action: "x" }]), dev("lamp", LAMP, [{ soc: 40, action: "x" }])],
       loads: { ac: { step_soc: 80 } } }), { blocks: ["hero"] });
     eq("grid up: standing by", r.q("h1").textContent, "Standing by");
