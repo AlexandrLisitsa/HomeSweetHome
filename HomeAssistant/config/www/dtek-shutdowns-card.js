@@ -36,8 +36,9 @@
  *             notice, the schedule, and outages nobody announced. The past
  *             comes from the recorder (history/history_during_period),
  *             fetched only while the card is on screen;
- *   week      DTEK's recurring table, a column per day; while a schedule is
- *             applied, today's and tomorrow's columns show it instead;
+ *   week      DTEK's recurring table, a row of 24 hanging bulbs per day (lit =
+ *             power on, cracked = off, the current hour ringed); while a schedule is applied,
+ *             today's and tomorrow's rows show it instead;
  *   days      the applied today and tomorrow alone (kept for old configs);
  *   source    where the data comes from.
  */
@@ -45,7 +46,7 @@
 const CARD = "dtek-shutdowns-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "2.3.0";
+const VERSION = "2.7.1";
 
 /*
  * The grid shows the NORMAL condition, not the exception: a cell is green when
@@ -213,26 +214,26 @@ const HELP = {
     + "E.g. Stale: the last poll failed, so the card shows the last good answer.\n"
     + "Drift: DTEK answered, but sent a field or format the poller cannot read.",
   cell: "One hour of DTEK's recurring weekly table; it repeats until DTEK publishes anew.\n"
-    + "E.g. grey on top, green below: a possible outage until :30, then power.",
+    + "E.g. a flickering bulb: power for half the hour; its tooltip says which half.",
   day_total: "Dark hours that day in the weekly table, possible outages counted as off.\n"
     + "E.g. 16 grey hours plus two half-hour splits make 17h.",
   sched_cell: "One hour of the stabilisation schedule DTEK has applied to this day.\n"
-    + "E.g. 17.10.2026 13:00: green on top, red below -- power until 13:30, then off.",
+    + "E.g. 17.10.2026 13:00 flickering: power until 13:30, then off.",
   sched_total: "Dark hours that day in the applied schedule, possible outages counted as off.\n"
     + "E.g. 17.10.2026: 13:30-17:00 off makes 3.5h.\n"
     + "A dash: DTEK has not published that day yet.",
   legend_on: "DTEK says the power stays on for the whole hour.\n"
-    + "E.g. Mo 07:00 green: no outage of any kind is planned 07:00–08:00.",
+    + "E.g. Mo 07:00 lit: no outage of any kind is planned 07:00–08:00.",
   legend_maybe: "DTEK may cut the power that hour; the totals and the alerts count it as off.\n"
     + "E.g. most of this queue's week is grey: DTEK hedges rather than commits.",
-  legend_out: "DTEK commits to the power being off for the whole hour.\n"
-    + "E.g. red at Mo 19:00: no grid from 19:00 to 20:00, for certain.",
-  legend_half: "A split cell: the green half is the half hour DTEK says the power is on.\n"
-    + "E.g. green on top, grey below: power until :30, then a possible outage.",
+  legend_out: "A cracked bulb: DTEK commits to the power being off for the whole hour.\n"
+    + "E.g. cracked at Mo 19:00: no grid from 19:00 to 20:00, for certain.",
+  legend_half: "A flickering bulb: DTEK has the power on for only half of that hour.\n"
+    + "E.g. 19:00 flickering: power until 19:30, then off; the tooltip says which half.",
   legend_unsched: "Off while DTEK's schedule and its notices both said the power would be on.\n"
     + "E.g. 10:15–11:00 amber: the inverter lost the grid and nobody had announced it.",
-  legend_now: "The outlined cell is the current hour, in today's highlighted column.\n"
-    + "E.g. at 14:20 on a Monday the Mo 14:00 cell is outlined.",
+  legend_now: "The bulb with the pulsing ring is the current hour, in today's highlighted row.\n"
+    + "E.g. at 14:20 on a Monday the Mo 14:00 bulb is ringed.",
   last_poll: "When the poller last got a good answer from DTEK; it asks every 5 minutes.\n"
     + "E.g. 14:05 still shown at 14:30 means five polls in a row have failed.",
   drift: "Something in DTEK's answer the poller could not read, shown as DTEK wrote it.\n"
@@ -272,6 +273,9 @@ const DEFAULTS = {
   // switch them from the page. Null on every real dashboard.
   debug_state_entity: null,
   debug_banner_entity: null,
+  // How the week and days blocks draw an hour: "classic", a row of light
+  // bulbs per day, or "grid", the older column of bars per day.
+  week_style: "classic",
   // Which of the three blocks this instance draws, in the order given.
   //
   // It exists so the provenance block can sit BELOW the claim-against-
@@ -285,6 +289,61 @@ const BLOCKS = ["hero", "timeline", "days", "week", "source"];
 const HISTORY_TTL = 5 * 60000;
 
 const DEBUG_STATES = ["on", "outage", "dtek", "unscheduled", "stale"];
+
+const WEEK_STYLES = ["classic", "grid"];
+
+/*
+ * The bulb: a standard A-shape bulb hanging base-up, drawn once per hour in a
+ * 40x64 box. It is drawn upright and turned over as a group, so the ribbed
+ * screw base and its dark tip sit on top and the globe hangs below; the hour
+ * and the glass highlight are drawn after the turn so they stay upright.
+ * Colours come from the state class through CSS (the gradients are in
+ * CLASSIC_DEFS); the halo round a lit bulb is a plain radial background, not
+ * a blur filter, so 168 of them stay cheap to paint. An hour without power
+ * is a broken bulb: dark glass with cracks across it.
+ */
+const CLASSIC_GLASS = "M13.5 41 C13.5 34 4 29.5 4 18 A16 16 0 0 1 36 18 C36 29.5 26.5 34 26.5 41 Z";
+// Two cracks running in from the rim, clear of the hour in the middle.
+const CLASSIC_CRACK = "M5.2 12 L9.5 14.2 L8.6 18 L12 20.4 M9.5 14.2 L12.6 11.2 L12.2 8.4 "
+  + "M34.6 23 L30.4 24.4 L31 28.2 L27.4 30.6 M30.4 24.4 L28 21.6";
+const classicBulb = (hour, now, broken, half) => '<svg viewBox="0 0 40 64" aria-hidden="true">'
+  + '<g transform="rotate(180 20 32)">'
+  // The current hour: an outline that pulses round the glass, so "where we
+  // are" reads from across the room.
+  + (now ? '<path class="ring" d="' + CLASSIC_GLASS + '"/>' : "")
+  + '<path class="g" d="' + CLASSIC_GLASS + '"/>'
+  + '<path class="fil" d="M17.5 41 L17.5 33 L14.5 28 M22.5 41 L22.5 33 L25.5 28 '
+  + 'M14.5 28 l1.5 -1.4 l1.5 1.4 l1.5 -1.4 l1.5 1.4 l1.5 -1.4 l1.5 1.4 l1.5 -1.4 l1.5 1.4"/>'
+  // Power for only half the hour: a lit bulb with dark glass over it that
+  // cuts in and out, like a bulb about to die.
+  + (half ? '<path class="g2" d="' + CLASSIC_GLASS + '"/>' : "")
+  + (broken ? '<path class="crack" d="' + CLASSIC_CRACK + '"/>' : "")
+  + '<rect class="cap" x="13" y="41" width="14" height="2.6" rx="1"/>'
+  + '<rect class="cap" x="13.4" y="44" width="13.2" height="2.4" rx="1.2"/>'
+  + '<rect class="cap" x="13.4" y="47" width="13.2" height="2.4" rx="1.2"/>'
+  + '<rect class="cap" x="13.4" y="50" width="13.2" height="2.4" rx="1.2"/>'
+  + '<path class="tip" d="M15 53 L25 53 L22.5 57 L17.5 57 Z"/>'
+  + "</g>"
+  + '<ellipse class="hl" cx="13" cy="40" rx="3.6" ry="6" transform="rotate(28 13 40)"/>'
+  + (hour === null ? "" : '<text class="t" x="20" y="49.5" text-anchor="middle">' + hour + "</text>")
+  + "</svg>";
+const CLASSIC_DEFS = '<svg class="defs" width="0" height="0" aria-hidden="true"><defs>'
+  + '<radialGradient id="cb-on" cx="50%" cy="38%" r="60%"><stop offset="0" stop-color="#fffef2"/>'
+  + '<stop offset=".45" stop-color="#fff07a"/><stop offset="1" stop-color="#f4c20d"/></radialGradient>'
+  + '<radialGradient id="cb-off" cx="40%" cy="32%" r="70%"><stop offset="0" stop-color="#3a3f49"/>'
+  + '<stop offset="1" stop-color="#14161a"/></radialGradient>'
+  + '<radialGradient id="cb-maybe" cx="50%" cy="38%" r="65%"><stop offset="0" stop-color="#8a6a2a"/>'
+  + '<stop offset="1" stop-color="#2e2416"/></radialGradient>'
+  // Half an hour of power: the lit glass at half brightness, under the flicker.
+  + '<radialGradient id="cb-half" cx="50%" cy="38%" r="60%"><stop offset="0" stop-color="#c9bd7a"/>'
+  + '<stop offset=".45" stop-color="#b3a13a"/><stop offset="1" stop-color="#8a7008"/></radialGradient>'
+  // ... and the dark glass the flicker cuts to.
+  + '<radialGradient id="cb-dim" cx="50%" cy="38%" r="62%"><stop offset="0" stop-color="#7a6626"/>'
+  + '<stop offset=".5" stop-color="#4a3e16"/><stop offset="1" stop-color="#2a230d"/></radialGradient>'
+  + '<linearGradient id="cb-metal"><stop offset="0" stop-color="#6d7178"/><stop offset=".35" stop-color="#e9ebee"/>'
+  + '<stop offset=".7" stop-color="#9ba0a8"/><stop offset="1" stop-color="#585c63"/></linearGradient>'
+  + "</defs></svg>";
+
 
 // debug_banner: the announcement popup, render only, like debug_state. The
 // emergency text is DTEK's own of 01.11.2026; the notice is a country-wide
@@ -523,6 +582,11 @@ class DtekShutdownsCard extends HTMLElement {
     if (cfg.debug_banner && DEBUG_BANNERS.indexOf(cfg.debug_banner) < 0) {
       throw new Error(CARD + ": debug_banner must be one of " + DEBUG_BANNERS.join(", "));
     }
+    // A bare `week_style:` in YAML arrives as null: the default, not an error.
+    if (cfg.week_style === null || cfg.week_style === undefined) cfg.week_style = DEFAULTS.week_style;
+    if (WEEK_STYLES.indexOf(cfg.week_style) < 0) {
+      throw new Error(CARD + ": week_style must be one of " + WEEK_STYLES.join(", "));
+    }
     if (!Array.isArray(cfg.blocks) || !cfg.blocks.length) {
       throw new Error(CARD + ": blocks must be a non-empty list of "
         + BLOCKS.join(", "));
@@ -619,7 +683,7 @@ class DtekShutdownsCard extends HTMLElement {
       main ? main.attributes : null,
       watched.map((id) => this._state(id)),
       now.getDay(), now.getHours(), now.getMinutes(),
-      cfg.debug_state, cfg.debug_banner,
+      cfg.debug_state, cfg.debug_banner, cfg.week_style,
       this._hist && [this._hist.at, this._hist.note],
     ]);
   }
@@ -683,12 +747,12 @@ class DtekShutdownsCard extends HTMLElement {
 
     // innerHTML is replaced wholesale, which would otherwise scroll a
     // horizontally panned grid back to Monday once a minute.
-    const previous = this.shadowRoot.querySelector(".grid");
+    const previous = this.shadowRoot.querySelector(".grid, .bulbs");
     const scrollLeft = previous ? previous.scrollLeft : 0;
 
     this.shadowRoot.innerHTML = "<style>" + STYLE + "</style>" + this._body(now);
 
-    const grid = this.shadowRoot.querySelector(".grid");
+    const grid = this.shadowRoot.querySelector(".grid, .bulbs");
     if (grid && scrollLeft) grid.scrollLeft = scrollLeft;
   }
 
@@ -1150,7 +1214,7 @@ class DtekShutdownsCard extends HTMLElement {
     }
 
     return {
-      kind, pill, todayRow, center, nowH, emergency,
+      kind, pill, todayRow, center, nowH, emergency, weekStyle: cfg.week_style,
       // Orange when only DTEK says it is off: a claim, not a measurement.
       accent: gridDown ? RED : dtekOutage || schedNow || emergencyOn ? ORANGE : GREEN,
       // The accent in words, for the eyebrow's tooltip.
@@ -1464,11 +1528,58 @@ class DtekShutdownsCard extends HTMLElement {
       + "</div>";
   }
 
+  /** The bars or the bulbs, as week_style says. */
+  _hours(d, cols, totalKey, withUnknown) {
+    return d.weekStyle === "classic"
+      ? this._bulbs(cols, totalKey, withUnknown)
+      : this._grid(cols, totalKey, withUnknown);
+  }
+
+  /**
+   * A row of 24 hanging bulbs per day, the hour on the glass: lit = power on,
+   * cracked = outage, a dim amber glass = possible outage, flickering = power
+   * for half the hour, a pulsing ring = now. On a phone each row wraps to two of 12. Time runs left to right, so the left half is the first half hour.
+   * Same column objects, tooltips and totals as _grid().
+   */
+  _bulbs(cols, totalKey, withUnknown) {
+    let rows = "";
+    cols.forEach((day) => {
+      let bulbs = "";
+      day.cells.forEach((c, h) => {
+        bulbs += '<div class="bulb ' + c.cls + '"' + tip(c.name, c.label, c.key) + ">"
+          + classicBulb(pad2(h), /(^| )now( |$)/.test(c.cls), /^out( |$)/.test(c.cls),
+            /^(out|maybe)-[12]( |$)/.test(c.cls)) + "</div>";
+      });
+      rows += '<div class="brow ' + day.cls + (day.applied ? " applied" : "") + '">'
+        + '<div class="blabel"><span class="dname">' + esc(day.name) + "</span>"
+        + '<span class="dsub">' + esc(day.sub) + "</span></div>"
+        + '<div class="wire">' + bulbs + "</div>"
+        + '<div class="dtot' + (day.heavy ? " heavy" : "") + '"'
+        + tip(day.name + " total", day.published === false ? "not published" : day.total + " off",
+              day.applied || totalKey === "sched_total" ? "sched_total" : totalKey)
+        + ">" + esc(day.total) + "</div></div>";
+    });
+    const item = (cls, text, key) => "<span" + tip(text, null, key) + ">"
+      + '<span class="bulb mini ' + cls + '">'
+      + classicBulb(null, /(^| )now( |$)/.test(cls), /^out( |$)/.test(cls),
+        /^(out|maybe)-[12]( |$)/.test(cls)) + "</span>" + esc(text) + "</span>";
+    return '<div class="bulbwrap">' + CLASSIC_DEFS
+      + '<div class="bulbs">' + rows + "</div>"
+      + '<div class="legend">'
+      + item("on", "Power on", "legend_on")
+      + item("out", "Scheduled outage", "legend_out")
+      + item("maybe", "Possible outage", "legend_maybe")
+      + item("out-2", "Off for half the hour", "legend_half")
+      + (withUnknown ? item("unknown", "Not published", "sched_total") : "")
+      + item("on now", "Now", "legend_now")
+      + "</div></div>";
+  }
+
   _daysCard(d) {
     // What DTEK has actually applied, which is what the site shows under
     // "Графік відключень": the week's grid, two columns.
     const inner = d.inEffect && d.applied.length
-      ? this._grid(d.applied, "sched_total", true)
+      ? this._hours(d, d.applied, "sched_total", true)
       : '<p class="note">No stabilisation schedule is in force, so DTEK '
         + "has applied nothing to today or tomorrow.</p>";
     return '<ha-card class="week days"><div class="pad">'
@@ -1489,7 +1600,7 @@ class DtekShutdownsCard extends HTMLElement {
     // there is to draw.
     const appliedOnly = d.inEffect && d.applied.length
       ? '<p class="blurb">DTEK has applied a schedule to today and tomorrow:</p>'
-        + this._grid(d.applied, "sched_total", true) : "";
+        + this._hours(d, d.applied, "sched_total", true) : "";
     if (!d.week) {
       inner = '<p class="note">DTEK publishes no recurring table for this '
         + "address.</p>" + appliedOnly;
@@ -1503,7 +1614,7 @@ class DtekShutdownsCard extends HTMLElement {
           ? " and show the schedule DTEK applied to them" : "")
         + "; every other column repeats weekly until a new schedule arrives. Possible "
         + "outages count as off in the totals, the same call the alerts make.";
-      inner = this._grid(d.days, "day_total", false);
+      inner = this._hours(d, d.days, "day_total", false);
     }
     return '<ha-card class="week"><div class="pad">'
       + '<div class="head"><h2>Recurring weekly schedule</h2>'
@@ -1774,6 +1885,123 @@ a:hover { text-decoration: underline; }
 .sw { width: 12px; height: 12px; border-radius: 3px; flex: 0 0 auto; }
 .sw.warn { background: var(--ds-warn); }
 .sw.nowsw { box-shadow: 0 0 0 1.5px var(--ds-text); }
+
+/*
+ * The week as bulbs: a row per day, a classic A-shape bulb per hour, the hour
+ * on the glass. The halo behind a lit bulb is a radial background, not a blur
+ * filter, so 168 of them stay cheap to paint. The one thing that moves is the
+ * ring round the current hour, and it holds while the card is off screen.
+ */
+.bulbwrap { display: flex; flex-direction: column; gap: 12px; }
+.bulbwrap .defs { position: absolute; width: 0; height: 0; }
+.bulbs { display: flex; flex-direction: column; gap: 8px; padding: 4px 2px 6px; width: 100%; }
+.brow {
+  display: grid; grid-template-columns: 74px minmax(0, 1fr) 44px; align-items: center; gap: 10px;
+  padding: 6px 8px; border-radius: 10px;
+}
+.brow.today {
+  background: color-mix(in srgb, var(--ds-ok) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ds-ok) 35%, transparent);
+}
+.brow.tmrw { background: rgba(255, 255, 255, .03); box-shadow: inset 0 0 0 1px var(--ds-line2); }
+.blabel { display: flex; flex-direction: column; gap: 2px; }
+.brow.today .dname, .brow.today .dsub { color: var(--ds-ok-hi); }
+.brow .dtot { height: auto; align-items: center; }
+.wire { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 2px; justify-items: center; }
+.bulb { position: relative; display: flex; justify-content: center; min-width: 0; width: 100%; }
+/* The grid's .on/.out/.now paint whatever carries them; on a bulb only the glass shows the state. */
+.bulbwrap .bulb { background: none; box-shadow: none; }
+.bulb svg { position: relative; display: block; width: 100%; max-width: 46px; height: auto; overflow: visible; }
+.bulb .g { fill: url(#cb-off); stroke: #3a3f49; stroke-width: .8; }
+.bulb .hl { fill: #fff; opacity: .12; }
+.bulb .fil { fill: none; stroke: #5b616b; stroke-width: .7; stroke-linejoin: round; }
+.bulb .cap { fill: url(#cb-metal); stroke: #4a4e55; stroke-width: .3; }
+.bulb .tip { fill: #2b2d31; }
+.bulb .t { font: 600 9px var(--ds-mono); fill: var(--ds-muted); }
+.bulb .crack { fill: none; stroke: #cfd5de; stroke-width: .65; stroke-linejoin: miter; opacity: .8; }
+/* Lit: yellow glass, a big soft halo round the globe, which hangs below the base. */
+.bulb.on::before, .bulb.out-1::before, .bulb.out-2::before, .bulb.maybe-1::before, .bulb.maybe-2::before {
+  content: ""; position: absolute; left: 50%; top: 70%; width: 170%; aspect-ratio: 1;
+  transform: translate(-50%, -50%); pointer-events: none;
+  background: radial-gradient(closest-side, rgba(255, 228, 60, .55), rgba(255, 210, 0, .16) 55%, transparent);
+}
+.bulb.on .g { fill: url(#cb-on); stroke: #f0c419; }
+.bulb.on .hl { opacity: .7; }
+.bulb.on .fil { stroke: #c79a00; }
+.bulb.on .t { fill: #5a4300; }
+/* Off for certain: a broken bulb, dark cracked glass, the filament a dead red. */
+.bulb.out .g { stroke: color-mix(in srgb, var(--ds-bad) 55%, #3a3f49); }
+.bulb.out .fil { stroke: var(--ds-bad); }
+.bulb.out .t { fill: var(--ds-bad-hi); }
+/* Possible outage: a dim amber glass. */
+.bulb.maybe .g { fill: url(#cb-maybe); stroke: #7a5e28; }
+.bulb.maybe .fil { stroke: #a8823a; }
+.bulb.maybe .t { fill: var(--ds-warn-hi); }
+/*
+ * Power for half the hour: a dying bulb. Lit underneath; dark glass (.g2) and
+ * the halo cut in and out on an irregular beat, like a horror-film light about
+ * to go. steps() makes every change a jump, so the browser repaints only at
+ * the cuts, not every frame. Each bulb runs on its own offset (--fd), a past
+ * hour holds still, and like every loop here it stops while the card is off
+ * screen. Which half of the hour has power is in the tooltip.
+ */
+.bulb.out-1 .g, .bulb.out-2 .g, .bulb.maybe-1 .g, .bulb.maybe-2 .g { fill: url(#cb-half); stroke: #8f7a1c; }
+.bulb.out-1 .fil, .bulb.out-2 .fil, .bulb.maybe-1 .fil, .bulb.maybe-2 .fil { stroke: #7d650e; }
+.bulb.out-1 .hl, .bulb.out-2 .hl, .bulb.maybe-1 .hl, .bulb.maybe-2 .hl { opacity: .35; }
+.bulb.out-1 .t, .bulb.out-2 .t, .bulb.maybe-1 .t, .bulb.maybe-2 .t { fill: #fff6cf; stroke: #3a2c06; stroke-width: 1.8; paint-order: stroke; }
+.bulb .g2 { fill: url(#cb-dim); stroke: #5a4b1c; stroke-width: .8; opacity: 0; animation: bulbdie 3.7s steps(1, end) infinite; animation-delay: var(--fd, 0s); }
+.bulb.out-1::before, .bulb.out-2::before, .bulb.maybe-1::before, .bulb.maybe-2::before {
+  animation: halodie 3.7s steps(1, end) infinite; animation-delay: var(--fd, 0s);
+}
+.wire .bulb:nth-child(3n+1) { --fd: -1.3s; }
+.wire .bulb:nth-child(3n+2) { --fd: -2.6s; }
+.wire .bulb:nth-child(4n) { --fd: -0.7s; }
+@keyframes bulbdie {
+  0% { opacity: 0; } 9% { opacity: 1; } 11% { opacity: 0; } 14% { opacity: .9; } 16% { opacity: 0; }
+  43% { opacity: .55; } 45% { opacity: 0; }
+  64% { opacity: 1; } 66% { opacity: .2; } 68% { opacity: 1; } 79% { opacity: 0; } 100% { opacity: 0; }
+}
+@keyframes halodie {
+  0% { opacity: .27; } 9% { opacity: .02; } 11% { opacity: .27; } 14% { opacity: .04; } 16% { opacity: .27; }
+  43% { opacity: .12; } 45% { opacity: .27; }
+  64% { opacity: .02; } 66% { opacity: .2; } 68% { opacity: .02; } 79% { opacity: .27; } 100% { opacity: .27; }
+}
+.bulb.past .g2, .bulb.past::before { animation: none; }
+.bulb.past .g2 { opacity: .6; }
+@media (prefers-reduced-motion: reduce) {
+  .bulb .g2, .bulb.out-1::before, .bulb.out-2::before, .bulb.maybe-1::before, .bulb.maybe-2::before { animation: none; }
+  .bulb .g2 { opacity: .6; }
+}
+/* Not published: just the outline of a bulb. */
+.bulb.unknown .g { fill: none; stroke: rgba(169, 181, 195, .45); stroke-dasharray: 2 2; }
+.bulb.unknown .fil, .bulb.unknown .hl { display: none; }
+.bulb.unknown .cap, .bulb.unknown .tip { opacity: .3; }
+.bulb.past { opacity: .32; }
+.bulb.now .g { stroke: var(--ds-text); stroke-width: 1.4; }
+/* Where we are: a white contour round the current bulb, breathing outwards. */
+.bulb .ring {
+  fill: none; stroke: #fff; stroke-width: 2.2; transform-box: fill-box; transform-origin: 50% 55%;
+  animation: bulbring 1.8s ease-in-out infinite;
+}
+@keyframes bulbring {
+  0%, 100% { opacity: .95; transform: scale(1.06); }
+  50% { opacity: .2; transform: scale(1.22); }
+}
+.bulb:hover svg { filter: brightness(1.15); }
+/* The legend's bulbs. */
+.bulb.mini { display: inline-flex; width: 12px; flex: 0 0 auto; }
+.bulb.mini svg { width: 12px; }
+.bulb.mini::before { width: 200%; }
+.bulb.mini .ring { animation: none; }
+@media (prefers-reduced-motion: reduce) { .bulb .ring { animation: none; transform: scale(1.08); } }
+/* A phone: the day's name above, its 24 hours in two rows of 12, the hour larger. */
+@container (max-width: 640px) {
+  .brow { grid-template-columns: minmax(0, 1fr) auto; gap: 6px 8px; padding: 6px; }
+  .blabel { flex-direction: row; align-items: baseline; gap: 8px; }
+  .brow .wire { grid-column: 1 / -1; grid-template-columns: repeat(12, minmax(0, 1fr)); row-gap: 6px; }
+  .brow .dtot { grid-row: 1; grid-column: 2; }
+  .bulb .t { font-size: 12px; }
+}
 
 /* --- where it comes from --- */
 .kv { display: flex; flex-direction: column; gap: 7px; font-size: 13px; }
