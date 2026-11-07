@@ -71,6 +71,8 @@ APPLY4 = script_vars("load_shed_apply", "service")
 # Measured beats believed, checked again right before a step, and before a restore.
 APPLY_ON = script_check("load_shed_apply", "meter")
 RESTORE_OK = script_check("load_shed_restore_one", "meter")
+# ...and a device that reports off takes only an off step.
+APPLY_OFF = script_check("load_shed_apply", "turns_off or")
 SEED = PACKAGE["script"]["load_shedding_seed"]["sequence"][0]["data"]["config"]
 
 
@@ -201,8 +203,29 @@ check("device with no steps -> skipped",
 
 print("devices that are off")
 check("A/C off and not running -> left alone", due(soc=78, ac="off", running="off"), [])
-check("A/C 'off' but its guard says running (IR missed) -> still due",
-      due(soc=78, ac="off", running="on"), [{"id": "ac", "soc": 80.0}])
+AC_OFF80 = ac_dev(steps=((80, "climate.set_hvac_mode", {"hvac_mode": "off"}),))
+check("A/C 'off' but its guard says running (IR missed) -> the off step is still due",
+      due(soc=78, ac="off", running="on", devices=[AC_OFF80]), [{"id": "ac", "soc": 80.0}])
+check("...a turn_off step too",
+      due(soc=78, ac="off", running="on", devices=[ac_dev(steps=((80, "climate.turn_off", {}),))]),
+      [{"id": "ac", "soc": 80.0}])
+FAN100 = ac_dev(steps=((100, "climate.set_hvac_mode", {"hvac_mode": "fan_only"}),
+                       (99, "climate.set_hvac_mode", {"hvac_mode": "off"})))
+check("7 Nov: A/C off, standby pulse reads running, fan_only step -> NOT due",
+      due(soc=100, ac="off", running="on", devices=[FAN100]), [])
+check("...and no warning for it either",
+      decide(soc=100.5, ac="off", running="on", devices=[FAN100])["warn"], [])
+check("...but at 99 its off step is (harmless: it says off already)",
+      due(soc=99, ac="off", running="on", devices=[FAN100]), [{"id": "ac", "soc": 99.0}])
+check("A/C off, meter on, set_temperature step -> not due",
+      due(soc=78, ac="off", running="on"), [])
+check("panel's climate.fan_only on an off A/C, meter on -> not due",
+      due(soc=78, ac="off", running="on", devices=[ac_dev(steps=((80, "climate.fan_only", {}),))]), [])
+check("the same fan_only step on a running A/C -> due",
+      due(soc=100, ac="cool", running="on", devices=[FAN100]), [{"id": "ac", "soc": 100.0}])
+check("held, believed off, meter on, past the hold -> its off step (60) is due",
+      due(soc=50, ac="off", running="on", devices=[ac_dev()],
+          shed={"ac": rec(80, applied=AC_APPLIED, override_soc=78)}), [{"id": "ac", "soc": 60.0}])
 check("LED off -> left alone", [d for d in due(soc=30, led="off") if d["id"] == "led"], [])
 
 print("measured beats believed")
@@ -383,6 +406,15 @@ check("right before a step: meter on -> go", still_on(ac_dev(), {AC: "cool", RUN
 check("right before a step: believed 'cool', meter off -> stop", still_on(ac_dev(), {AC: "cool", RUN: "off"}), False)
 check("right before a step: no meter, lamp off -> stop", still_on(led_dev(), {LED: "off"}), False)
 check("right before a step: no meter, lamp on -> go", still_on(led_dev(), {LED: "on"}), True)
+
+
+def off_ok(state, turns_off):
+    return render(APPLY_OFF, {AC: state}, {}, e=AC, turns_off=turns_off)
+
+
+check("right before a step: entity 'off', fan_only (not an off step) -> stop", off_ok("off", False), False)
+check("right before a step: entity 'off', an off step -> go", off_ok("off", True), True)
+check("right before a step: entity 'cool', fan_only -> go", off_ok("cool", False), True)
 
 print("stores and restore")
 
