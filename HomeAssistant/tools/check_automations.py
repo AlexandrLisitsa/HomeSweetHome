@@ -501,7 +501,10 @@ check("no sensor: nothing", used(None, 1), {})
 check("a job with no grams is skipped", used_a["condition"][0]["value_template"], "{{ used | count > 0 }}")
 setv = used_a["action"][0]["repeat"]["sequence"][0]
 left = lambda have, took: render(setv["data"]["value"], states={"input_number.p2s_filament_a1": have},  # noqa: E731
-                                 repeat={"item": "a1"}, used={"a1": took})
+                                 repeat={"item": "a1"}, used={"a1": took},
+                                 counters=uv["counters"])
+check("A1's counter", render(setv["target"]["entity_id"], counters=uv["counters"], repeat={"item": "a1"}),
+      "input_number.p2s_filament_a1")
 check("984 - 11.7", left("984", 11.7), "972.3")
 check("never below zero", left("5", 11.7), "0")
 loaded = pa["p2s_spool_loaded"]

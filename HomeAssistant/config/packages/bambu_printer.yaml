@@ -90,6 +90,13 @@ automation:
         from: [running, pause, prepare]
         to: [finish, failed]
     variables:
+      # Whole ids, so tools that check entity references can see them.
+      counters:
+        a1: input_number.p2s_filament_a1
+        a2: input_number.p2s_filament_a2
+        a3: input_number.p2s_filament_a3
+        a4: input_number.p2s_filament_a4
+        ext: input_number.p2s_filament_ext
       share: >-
         {{ 1 if trigger.to_state.state == 'finish'
            else ([[states('sensor.p2s_print_progress') | float(0), 0] | max, 100] | min / 100) | round(3) }}
@@ -114,10 +121,10 @@ automation:
           sequence:
             - service: input_number.set_value
               target:
-                entity_id: "input_number.p2s_filament_{{ repeat.item }}"
+                entity_id: "{{ counters[repeat.item] }}"
               data:
                 value: >-
-                  {{ [states('input_number.p2s_filament_' ~ repeat.item) | float(0) - used[repeat.item], 0]
+                  {{ [states(counters[repeat.item]) | float(0) - used[repeat.item], 0]
                      | max | round(1) }}
 
   # A spool going into an empty slot is a new spool. Putting a half-used one
@@ -140,8 +147,11 @@ automation:
       - service: input_number.set_value
         target:
           entity_id: >-
-            {{ 'input_number.p2s_filament_ext' if trigger.entity_id == 'sensor.p2s_external_spool'
-               else 'input_number.p2s_filament_a' ~ trigger.entity_id[-1] }}
+            {{ {'sensor.p2s_ams_1_tray_1': 'input_number.p2s_filament_a1',
+                'sensor.p2s_ams_1_tray_2': 'input_number.p2s_filament_a2',
+                'sensor.p2s_ams_1_tray_3': 'input_number.p2s_filament_a3',
+                'sensor.p2s_ams_1_tray_4': 'input_number.p2s_filament_a4',
+                'sensor.p2s_external_spool': 'input_number.p2s_filament_ext'}[trigger.entity_id] }}
         data:
           value: "{{ states('input_number.p2s_spool_size') | float(1000) }}"
 
