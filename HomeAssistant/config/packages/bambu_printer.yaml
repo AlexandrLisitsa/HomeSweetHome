@@ -1,0 +1,228 @@
+# ---------------------------------------------------------------------------
+# Bambu Lab P2S: print done / failed / HMS error, to the household's phones
+#
+# The printer comes in through ha-bambulab (greghesp/ha-bambulab, installed
+# from the Marketplace), a config entry: none of its entities are defined in
+# this repo. The device is "P2S" and every entity id starts with p2s_.
+#
+# Each alert carries the job's cover image (the sliced plate), fetched by the
+# companion app through HA's image proxy. They share one tag, so a "failed"
+# replaces the "done" of the same job on the phone instead of stacking.
+#
+# The from: lists keep a restart from firing them: after a restart the status
+# comes back from unknown/offline straight to finish or failed, which is a
+# job that already ended, not one that just did.
+#
+# Filament left: the P2S reports what is left only on RFID Bambu spools
+# (`remain` %, -1 otherwise). For everything else HA keeps its own count per
+# slot below: a finished job takes its sliced grams off the slot(s) it used,
+# a failed one its share up to where it stopped, and loading a spool into an
+# empty slot starts it at a full spool. Correct a counter by hand from the
+# card (tap the slot) or here in its helper.
+#
+# Write-up: docs/bambu-printer.md.
+# ---------------------------------------------------------------------------
+
+# input_number is a dict domain: packages merge it by key, so every key here
+# is p2s_-prefixed. No `initial:`, so HA restores the count after a restart.
+input_number:
+  p2s_filament_a1:
+    name: "P2S filament left A1"
+    icon: mdi:printer-3d-nozzle
+    min: 0
+    max: 3000
+    step: 0.1
+    unit_of_measurement: "g"
+    mode: box
+  p2s_filament_a2:
+    name: "P2S filament left A2"
+    icon: mdi:printer-3d-nozzle
+    min: 0
+    max: 3000
+    step: 0.1
+    unit_of_measurement: "g"
+    mode: box
+  p2s_filament_a3:
+    name: "P2S filament left A3"
+    icon: mdi:printer-3d-nozzle
+    min: 0
+    max: 3000
+    step: 0.1
+    unit_of_measurement: "g"
+    mode: box
+  p2s_filament_a4:
+    name: "P2S filament left A4"
+    icon: mdi:printer-3d-nozzle
+    min: 0
+    max: 3000
+    step: 0.1
+    unit_of_measurement: "g"
+    mode: box
+  p2s_filament_ext:
+    name: "P2S filament left external"
+    icon: mdi:printer-3d-nozzle
+    min: 0
+    max: 3000
+    step: 0.1
+    unit_of_measurement: "g"
+    mode: box
+  # What a freshly loaded spool is counted as. 1 kg is what this house buys.
+  p2s_spool_size:
+    name: "P2S fresh spool size"
+    icon: mdi:printer-3d-nozzle-outline
+    min: 100
+    max: 3000
+    step: 1
+    unit_of_measurement: "g"
+    mode: box
+
+automation:
+  # sensor.p2s_print_weight carries the job's sliced grams per slot as
+  # attributes ("AMS 1 Tray 1": 11.7, verified 07.11.2026). The external
+  # spool's key has not been seen yet; anything mentioning "xternal" is it.
+  # Same from: guard as the alerts, so a restart cannot count a job twice.
+  - id: p2s_filament_used
+    alias: '3D printer: filament used'
+    mode: queued
+    trigger:
+      - platform: state
+        entity_id: sensor.p2s_print_status
+        from: [running, pause, prepare]
+        to: [finish, failed]
+    variables:
+      # Whole ids, so tools that check entity references can see them.
+      counters:
+        a1: input_number.p2s_filament_a1
+        a2: input_number.p2s_filament_a2
+        a3: input_number.p2s_filament_a3
+        a4: input_number.p2s_filament_a4
+        ext: input_number.p2s_filament_ext
+      share: >-
+        {{ 1 if trigger.to_state.state == 'finish'
+           else ([[states('sensor.p2s_print_progress') | float(0), 0] | max, 100] | min / 100) | round(3) }}
+      used: >-
+        {% set w = states.sensor.p2s_print_weight %}
+        {% set ns = namespace(out={}) %}
+        {% for k, v in (w.attributes.items() if w else []) %}
+          {% set g = v | float(0) %}
+          {% if g > 0 and k.startswith('AMS 1 Tray ') %}
+            {% set ns.out = dict(ns.out, **{'a' ~ k[-1]: (g * share) | round(1)}) %}
+          {% elif g > 0 and 'xternal' in k %}
+            {% set ns.out = dict(ns.out, ext=(g * share) | round(1)) %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.out }}
+    condition:
+      - condition: template
+        value_template: "{{ used | count > 0 }}"
+    action:
+      - repeat:
+          for_each: "{{ used.keys() | list }}"
+          sequence:
+            - service: input_number.set_value
+              target:
+                entity_id: "{{ counters[repeat.item] }}"
+              data:
+                value: >-
+                  {{ [states(counters[repeat.item]) | float(0) - used[repeat.item], 0]
+                     | max | round(1) }}
+
+  # A spool going into an empty slot is a new spool. Putting a half-used one
+  # back is the case this gets wrong: tap the slot on the card and correct it.
+  - id: p2s_spool_loaded
+    alias: '3D printer: spool loaded'
+    mode: queued
+    trigger:
+      - platform: state
+        entity_id:
+          - sensor.p2s_ams_1_tray_1
+          - sensor.p2s_ams_1_tray_2
+          - sensor.p2s_ams_1_tray_3
+          - sensor.p2s_ams_1_tray_4
+          - sensor.p2s_external_spool
+        attribute: empty
+        from: true
+        to: false
+    action:
+      - service: input_number.set_value
+        target:
+          entity_id: >-
+            {{ {'sensor.p2s_ams_1_tray_1': 'input_number.p2s_filament_a1',
+                'sensor.p2s_ams_1_tray_2': 'input_number.p2s_filament_a2',
+                'sensor.p2s_ams_1_tray_3': 'input_number.p2s_filament_a3',
+                'sensor.p2s_ams_1_tray_4': 'input_number.p2s_filament_a4',
+                'sensor.p2s_external_spool': 'input_number.p2s_filament_ext'}[trigger.entity_id] }}
+        data:
+          value: "{{ states('input_number.p2s_spool_size') | float(1000) }}"
+
+  - id: p2s_print_finished
+    alias: '3D printer: print done'
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: sensor.p2s_print_status
+        from: [running, pause, prepare]
+        to: finish
+    action:
+      - service: notify.household
+        data:
+          title: '🖨️ Print done'
+          message: >-
+            {% set task = states('sensor.p2s_task_name') %}
+            {% set weight = states('sensor.p2s_print_weight') %}
+            {{ task if task not in ['unknown', 'unavailable', ''] else 'The print' }} is ready on the P2S
+            {%- if is_number(weight) and weight | float > 0 %} ({{ weight | float | round(0) | int }} g){% endif %}.
+          data:
+            channel: 3D printer
+            tag: p2s_print
+            image: /api/image_proxy/image.p2s_cover_image
+
+  - id: p2s_print_failed
+    alias: '3D printer: print failed'
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: sensor.p2s_print_status
+        from: [running, pause, prepare]
+        to: failed
+    action:
+      - service: notify.household
+        data:
+          title: '🖨️ Print failed'
+          message: >-
+            {% set task = states('sensor.p2s_task_name') %}
+            {% set err = state_attr('binary_sensor.p2s_print_error', 'error') %}
+            {{ task if task not in ['unknown', 'unavailable', ''] else 'The print' }} stopped on the P2S
+            {%- if err %}: {{ err | string | truncate(300) }}{% else %}.{% endif %}
+          data:
+            channel: 3D printer
+            tag: p2s_print
+            image: /api/image_proxy/image.p2s_cover_image
+
+  # HMS is the printer's health system: clogs, AMS feed problems, a door
+  # open mid-print, a fan that stopped. The attributes are numbered from 1:
+  # "1-Error", "1-Severity", ... and "Count".
+  - id: p2s_hms_error
+    alias: '3D printer: HMS error'
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.p2s_hms_errors
+        from: 'off'
+        to: 'on'
+    action:
+      - service: notify.household
+        data:
+          title: '🖨️ P2S needs attention'
+          message: >-
+            {% set a = trigger.to_state.attributes %}
+            {% set n = a.get('Count', 0) | int(0) %}
+            {% set ns = namespace(lines=[]) %}
+            {% for i in range(1, n + 1) %}
+              {% set ns.lines = ns.lines + [(a.get(i ~ '-Severity', '') | string | capitalize)
+                                            ~ ': ' ~ a.get(i ~ '-Error', '')] %}
+            {% endfor %}
+            {{ ns.lines | join('\n') if ns.lines else 'The printer reported a problem. Check its screen.' }}
+          data:
+            channel: 3D printer
+            tag: p2s_hms

@@ -83,6 +83,7 @@ ex="$ex --exclude=./.cloud"
 ex="$ex --exclude=./backups"
 ex="$ex --exclude=./image"
 ex="$ex --exclude=./media"
+ex="$ex --exclude=./www/media/ha-bambulab" # ha-bambulab's cache: cover images, models, timelapses
 ex="$ex --exclude='*.db'"
 ex="$ex --exclude='*.db-shm'"
 ex="$ex --exclude='*.db-wal'"

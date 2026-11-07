@@ -447,5 +447,75 @@ check("the message names water and the hours",
       "No accepted cold-water reading for 6.6 h." in " ".join(render(notify["data"]["message"], hours=hours).split()),
       True)
 
+print("\n14. P2S filament: a job's grams come off the slots it used, a new spool starts full")
+pkg = yaml.load((CONFIG / "packages" / "bambu_printer.yaml").read_text(encoding="utf-8"), HaLoader)
+pa = {a["id"]: a for a in pkg["automation"]}
+check("ids are unique", len(pa), len(pkg["automation"]))
+check("six helpers, all p2s_-prefixed",
+      sorted(pkg["input_number"]), ["p2s_filament_a1", "p2s_filament_a2", "p2s_filament_a3",
+                                    "p2s_filament_a4", "p2s_filament_ext", "p2s_spool_size"])
+check("no initial: the counts survive a restart",
+      [k for k, v in pkg["input_number"].items() if "initial" in v], [])
+used_a = pa["p2s_filament_used"]
+check("only a job that ended counts, never a restart",
+      [(t["from"], t["to"]) for t in used_a["trigger"]],
+      [(["running", "pause", "prepare"], ["finish", "failed"])])
+
+
+class _Obj:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+def render_p2s(tpl, attrs, progress="0", **context):
+    """HA's `states` is both callable and an attribute tree; enough of that here."""
+    env = jinja2.Environment(undefined=jinja2.StrictUndefined)
+
+    class States:
+        sensor = _Obj(p2s_print_weight=_Obj(attributes=attrs) if attrs is not None else None)
+
+        def __call__(self, e):
+            return {"sensor.p2s_print_progress": progress}.get(e, "unknown")
+
+    env.globals.update(states=States())
+    return env.from_string(tpl).render(**context).strip()
+
+
+import ast  # noqa: E402
+
+LIVE = {"state_class": "measurement", "AMS 1 Tray 1": 11.7, "unit_of_measurement": "g",
+        "device_class": "weight", "friendly_name": "P2S Print weight"}
+uv = used_a["variables"]
+done = lambda state: _Obj(to_state=_Obj(state=state))  # noqa: E731
+share_f = render_p2s(uv["share"], LIVE, progress="23", trigger=done("finish"))
+share_x = render_p2s(uv["share"], LIVE, progress="23", trigger=done("failed"))
+check("finished: the whole job", share_f, "1")
+check("failed at 23 %: 23 % of it", share_x, "0.23")
+used = lambda attrs, share: ast.literal_eval(render_p2s(uv["used"], attrs, share=float(share)))  # noqa: E731
+check("the live attributes: 11.7 g off A1", used(LIVE, share_f), {"a1": 11.7})
+check("a failed job takes its share", used(LIVE, share_x), {"a1": 2.7})
+check("two slots and the external spool",
+      used({"AMS 1 Tray 1": 20, "AMS 1 Tray 3": "5.5", "External spool": 8, "friendly_name": "x"}, 1),
+      {"a1": 20.0, "a3": 5.5, "ext": 8.0})
+check("no sensor: nothing", used(None, 1), {})
+check("a job with no grams is skipped", used_a["condition"][0]["value_template"], "{{ used | count > 0 }}")
+setv = used_a["action"][0]["repeat"]["sequence"][0]
+left = lambda have, took: render(setv["data"]["value"], states={"input_number.p2s_filament_a1": have},  # noqa: E731
+                                 repeat={"item": "a1"}, used={"a1": took},
+                                 counters=uv["counters"])
+check("A1's counter", render(setv["target"]["entity_id"], counters=uv["counters"], repeat={"item": "a1"}),
+      "input_number.p2s_filament_a1")
+check("984 - 11.7", left("984", 11.7), "972.3")
+check("never below zero", left("5", 11.7), "0")
+loaded = pa["p2s_spool_loaded"]
+check("a slot going from empty to loaded",
+      [(t["attribute"], t["from"], t["to"], len(t["entity_id"])) for t in loaded["trigger"]],
+      [("empty", True, False, 5)])
+target = loaded["action"][0]["target"]["entity_id"]
+check("tray 3 resets A3", render(target, trigger={"entity_id": "sensor.p2s_ams_1_tray_3"}),
+      "input_number.p2s_filament_a3")
+check("the external spool resets ext", render(target, trigger={"entity_id": "sensor.p2s_external_spool"}),
+      "input_number.p2s_filament_ext")
+
 print("\n%s" % ("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed"))
 sys.exit(1 if FAILED else 0)

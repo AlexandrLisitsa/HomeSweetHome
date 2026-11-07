@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "minor_version": 1,
+  "key": "lovelace.dashboard_printer",
+  "data": {
+    "config": {
+      "views": [
+        {
+          "type": "panel",
+          "title": "P2S",
+          "path": "p2s",
+          "icon": "mdi:printer-3d-nozzle",
+          "cards": [
+            {
+              "type": "custom:p2s-printer-console-card"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -179,6 +179,11 @@ EXTERNAL_PREFIXES = (
     "sensor.153931629566331_",
     "switch.153931629566331_",
     "number.153931629566331_",
+    # The Bambu Lab P2S, via ha-bambulab -- a config entry; the entities were
+    # renamed from p2s_<serial>_* to p2s_* (docs/bambu-printer.md).
+    "sensor.p2s_",
+    "binary_sensor.p2s_",
+    "image.p2s_",
     "binary_sensor.0x",               # zigbee2mqtt names entities by IEEE address
     "switch.0x",
     "sensor.0x",

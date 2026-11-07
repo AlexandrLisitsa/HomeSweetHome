@@ -55,6 +55,7 @@ const FILES = {
   "custom:jkbms-battery-console-card": "jkbms-battery-console-card.js",
   "custom:dtek-shutdowns-card": "dtek-shutdowns-card.js",
   "custom:load-shedding-card": "load-shedding-card.js",
+  "custom:p2s-printer-console-card": "p2s-printer-console-card.js",
 };
 
 const INTERACTIVE = "[data-more], [data-act], [role=button], [role=switch], button, select, input, textarea";
@@ -70,6 +71,7 @@ const READ_ONLY = {
   "dtek-shutdowns-card.js": [".eyebrow", ".ident", ".banner", "h1", ".reason", ".tile", ".c", ".bulb", ".dtot",
     ".legend span", ".stamp", ".kv div", ".arc", ".ctr", ".tlname", ".blk"],
   "floorplan-card.js": [".badge", ".row .value", ".pct"],
+  "p2s-printer-console-card.js": [".pill", ".doorchip", ".kv", ".slot", ".tag", ".vpbox", ".cambox", ".pct", ".pbar"],
 };
 
 /** Selectors that are in scope by the rules above but exempt by the standard. */
@@ -80,6 +82,7 @@ const EXEMPT = {
   "climate-console-card.js": [],
   "dtek-shutdowns-card.js": [],
   "floorplan-card.js": [],
+  "p2s-printer-console-card.js": [],
 };
 
 /**
@@ -105,6 +108,17 @@ const FIXTURES = {
     };
   },
   "jkbms-battery-console-card.js": () => ({}),
+  // Mid-print: the camera, every HUD tag and the feeding slot draw.
+  "p2s-printer-console-card.js": () => ({
+    "sensor.p2s_print_status": S("running"),
+    "sensor.p2s_print_progress": S("46"),
+    "sensor.p2s_task_name": S("Cable clips x8"),
+    "sensor.p2s_current_layer": S("66"),
+    "sensor.p2s_total_layer_count": S("142"),
+    "sensor.p2s_ams_1_tray_1": S("Generic PLA", { active: true, color: "#898989FF", empty: false,
+      name: "Generic PLA", type: "PLA", remain: -1 }),
+    "camera.p2s_camera": S("streaming", { entity_picture: "/api/camera_proxy/camera.p2s_camera?token=x" }),
+  }),
   // The seeded rules (packages/load_shedding.yaml), with the hall A/C's +3°
   // step from docs/load-shedding.md, mid-outage at 61 %: the hall A/C stepped
   // down, the bedroom A/C about to, LED ambient held.
