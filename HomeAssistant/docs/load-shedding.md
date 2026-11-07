@@ -100,6 +100,14 @@ protection off does not count: the house still runs on it. The master switch is
   engine checks this when it decides, and again right before it acts. The
   editor says so under every device ("Applies only while it is on…"), and a
   step that would switch an off device on carries an "only while on" note.
+- **A meter can only add an "off".** The other half of the rule: when the
+  device itself reports `off` but its meter reads running (an IR "off" that did
+  not take), only a step that switches it off (`turn_off`, or HVAC mode off)
+  runs. Fan only, a setpoint or a dim on a device that reports off would switch
+  it on, so they never run — in the decision, and again right before acting.
+  On 7 Nov the bedroom A/C was off, its plug's 6–7 W standby pulse (above the
+  5 W standby threshold) read as "running" at the minute the outage was
+  evaluated, and a 100 % fan-only test step woke it up.
 
 Rules live in `sensor.load_shedding_config`, a trigger-based template sensor
 that HA restores across restarts. The panel writes them only through

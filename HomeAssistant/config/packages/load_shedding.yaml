@@ -58,6 +58,13 @@
 # the grid returns, a device that is off is put back only if a step switched
 # it off; one you switched off during the outage stays off.
 #
+# The other way round, a meter can only make an "off" device eligible for a
+# step that switches it OFF (*.turn_off, or hvac_mode off) -- the IR A/C whose
+# "off" did not take. Any other step on a device that reports off would switch
+# it on, so it never runs. On 7 Nov the bedroom A/C was off, its plug's 6-7 W
+# standby pulse read as "running" at the minute the outage was evaluated, and
+# a fan-only step woke it up.
+#
 # Two of the panel's own actions only ever reduce: `light.dim_to`
 # {brightness_pct} lowers the brightness to at most that (never brightens),
 # and `climate.fan_only` is fan-only mode for a unit that is running.
@@ -406,6 +413,10 @@ script:
                 'plug': prev.plug if prev is mapping else none,
                 'plug_cut': prev.plug_cut if prev is mapping else false,
                 'override_soc': none} }}
+      - condition: template
+        # A device that reports off takes only a step that switches it off,
+        # whatever its meter says: anything else would switch it on.
+        value_template: "{{ turns_off or states(e) != 'off' }}"
       - event: load_shedding_set
         event_data:
           id: "{{ id }}"
@@ -619,15 +630,21 @@ automation:
               {% set soc = soc_s | float %}
               {% set rows = namespace(list=[]) %}
               {% for d in devices if d is mapping and d.enabled | default(true) and d.steps is defined %}
-                {% set st = namespace(top=0, target=none) %}
+                {% set st = namespace(top=0, target=none, offs=[]) %}
                 {% for s in d.steps if s.soc | is_number %}
                   {% if s.soc | float > st.top %}{% set st.top = s.soc | float %}{% endif %}
                   {% if soc <= s.soc | float and (st.target is none or s.soc | float < st.target) %}
                     {% set st.target = s.soc | float %}
                   {% endif %}
+                  {# The steps that switch the device off, by their %. #}
+                  {% set sd = s.data if s.data is mapping else {} %}
+                  {% if (s.action | string).endswith('.turn_off')
+                        or (s.action == 'climate.set_hvac_mode' and sd.hvac_mode | default('') == 'off') %}
+                    {% set st.offs = st.offs + [s.soc | float] %}
+                  {% endif %}
                 {% endfor %}
                 {% if st.top > 0 %}
-                  {% set rows.list = rows.list + [{'d': d, 'top': st.top, 'target': st.target}] %}
+                  {% set rows.list = rows.list + [{'d': d, 'top': st.top, 'target': st.target, 'offs': st.offs}] %}
                 {% endif %}
               {% endfor %}
               {% for r in rows.list | sort(attribute='top', reverse=true) %}
@@ -640,6 +657,12 @@ automation:
                 {% set meter = states(g.running) if g.running is defined and g.running else 'none' %}
                 {% set on = (meter == 'on') if meter in ['on', 'off']
                             else states(e) not in ['off', 'unavailable', 'unknown'] %}
+                {# ...but a meter only ever lets an "off" device be switched
+                   OFF. Any other step on a device that reports off would
+                   switch it on: a standby pulse is not a running unit. #}
+                {% set believed_off = states(e) == 'off' %}
+                {% set go = on and r.target is not none
+                            and (not believed_off or r.target in r.offs) %}
                 {% set rec = shed.get(d.id) %}
                 {# Where it fires next: a hold waits for override_step lower,
                    otherwise the highest step below the battery that is deeper
@@ -653,11 +676,12 @@ automation:
                     {% if nx.at is none or s.soc | float > nx.at %}{% set nx.at = s.soc | float %}{% endif %}
                   {% endfor %}
                 {% endif %}
-                {% if on and nx.at is not none and margin > 0 and nx.at < soc <= nx.at + margin %}
+                {% if on and nx.at is not none and (not believed_off or nx.at in r.offs)
+                      and margin > 0 and nx.at < soc <= nx.at + margin %}
                   {% set out.warn = out.warn + [{'id': d.id, 'at': nx.at, 'key': d.id ~ '@' ~ (nx.at | round(1))}] %}
                 {% endif %}
                 {% if rec is not mapping %}
-                  {% if on and r.target is not none %}
+                  {% if go %}
                     {% set out.due = out.due + [{'id': d.id, 'soc': r.target}] %}
                   {% endif %}
                 {% elif rec.override_soc is none %}
@@ -678,11 +702,11 @@ automation:
                   {% endif %}
                   {% if ch.changed and age > 180 %}
                     {% set out.over = out.over + [d.id] %}
-                  {% elif on and r.target is not none and r.target < rec.step_soc | float(101) %}
+                  {% elif go and r.target < rec.step_soc | float(101) %}
                     {# A deeper step has been reached. #}
                     {% set out.due = out.due + [{'id': d.id, 'soc': r.target}] %}
                   {% endif %}
-                {% elif on and r.target is not none and soc <= rec.override_soc | float - ostep %}
+                {% elif go and soc <= rec.override_soc | float - ostep %}
                   {% set out.due = out.due + [{'id': d.id, 'soc': r.target}] %}
                 {% endif %}
               {% endfor %}
