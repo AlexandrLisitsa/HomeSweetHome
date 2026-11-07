@@ -1,0 +1,90 @@
+# ---------------------------------------------------------------------------
+# Bambu Lab P2S: print done / failed / HMS error, to the household's phones
+#
+# The printer comes in through ha-bambulab (greghesp/ha-bambulab, installed
+# from the Marketplace), a config entry: none of its entities are defined in
+# this repo. The device is "P2S" and every entity id starts with p2s_.
+#
+# Each alert carries the job's cover image (the sliced plate), fetched by the
+# companion app through HA's image proxy. They share one tag, so a "failed"
+# replaces the "done" of the same job on the phone instead of stacking.
+#
+# The from: lists keep a restart from firing them: after a restart the status
+# comes back from unknown/offline straight to finish or failed, which is a
+# job that already ended, not one that just did.
+#
+# Write-up: docs/bambu-printer.md.
+# ---------------------------------------------------------------------------
+
+automation:
+  - id: p2s_print_finished
+    alias: '3D printer: print done'
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: sensor.p2s_print_status
+        from: [running, pause, prepare]
+        to: finish
+    action:
+      - service: notify.household
+        data:
+          title: '🖨️ Print done'
+          message: >-
+            {% set task = states('sensor.p2s_task_name') %}
+            {% set weight = states('sensor.p2s_print_weight') %}
+            {{ task if task not in ['unknown', 'unavailable', ''] else 'The print' }} is ready on the P2S
+            {%- if is_number(weight) and weight | float > 0 %} ({{ weight | float | round(0) | int }} g){% endif %}.
+          data:
+            channel: 3D printer
+            tag: p2s_print
+            image: /api/image_proxy/image.p2s_cover_image
+
+  - id: p2s_print_failed
+    alias: '3D printer: print failed'
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: sensor.p2s_print_status
+        from: [running, pause, prepare]
+        to: failed
+    action:
+      - service: notify.household
+        data:
+          title: '🖨️ Print failed'
+          message: >-
+            {% set task = states('sensor.p2s_task_name') %}
+            {% set err = state_attr('binary_sensor.p2s_print_error', 'error') %}
+            {{ task if task not in ['unknown', 'unavailable', ''] else 'The print' }} stopped on the P2S
+            {%- if err %}: {{ err | string | truncate(300) }}{% else %}.{% endif %}
+          data:
+            channel: 3D printer
+            tag: p2s_print
+            image: /api/image_proxy/image.p2s_cover_image
+
+  # HMS is the printer's health system: clogs, AMS feed problems, a door
+  # open mid-print, a fan that stopped. The attributes are numbered from 1:
+  # "1-Error", "1-Severity", ... and "Count".
+  - id: p2s_hms_error
+    alias: '3D printer: HMS error'
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.p2s_hms_errors
+        from: 'off'
+        to: 'on'
+    action:
+      - service: notify.household
+        data:
+          title: '🖨️ P2S needs attention'
+          message: >-
+            {% set a = trigger.to_state.attributes %}
+            {% set n = a.get('Count', 0) | int(0) %}
+            {% set ns = namespace(lines=[]) %}
+            {% for i in range(1, n + 1) %}
+              {% set ns.lines = ns.lines + [(a.get(i ~ '-Severity', '') | string | capitalize)
+                                            ~ ': ' ~ a.get(i ~ '-Error', '')] %}
+            {% endfor %}
+            {{ ns.lines | join('\n') if ns.lines else 'The printer reported a problem. Check its screen.' }}
+          data:
+            channel: 3D printer
+            tag: p2s_hms

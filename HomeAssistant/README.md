@@ -61,6 +61,10 @@ read before it goes live, and a `git revert` if it was wrong.
 - **TV power-on**: the Samsung TV can't be woken over its own API, so
   `packages/tv_wake.yaml` turns it on with a wake-on-LAN packet. That is what
   lets a tap on the floor plan, or Google, switch it on.
+- **3D printer**: the Bambu Lab P2S with its AMS, over local MQTT through
+  ha-bambulab. The phones hear when a print is done or failed, or when the
+  printer reports a problem, and a **3D printer** dashboard shows the job,
+  camera, temperatures and filament ([`docs/bambu-printer.md`](docs/bambu-printer.md)).
 - **Google Home and Gemini**: entities exposed through the Google Assistant
   integration, with the spoken names kept in a git-ignored file
   ([`docs/private-files.md`](docs/private-files.md)). Google reaches the box
@@ -235,5 +239,6 @@ job or a nearly full Drive to `notify.household`.
 | [`docs/climate-dashboard.md`](docs/climate-dashboard.md) | the climate dashboard and its checker |
 | [`docs/dashboard-tooltips.md`](docs/dashboard-tooltips.md) | the tooltip standard every custom card follows: format, scope, examples, the CI check |
 | [`docs/ac-features.md`](docs/ac-features.md) | the inventory of both A/C units' features the climate card is built from |
+| [`docs/bambu-printer.md`](docs/bambu-printer.md) | the Bambu Lab P2S: how it is connected, its entities, the print alerts and its dashboard |
 | [`docs/renaming-entities.md`](docs/renaming-entities.md) | renaming entity ids across the registry, dashboards and YAML |
 | [`docs/remote-access-security.md`](docs/remote-access-security.md) | how HA is reached from the internet: the traffic flow, and how each request is accepted or denied |
