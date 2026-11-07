@@ -1,5 +1,6 @@
 # ---------------------------------------------------------------------------
-# Bambu Lab P2S: print done / failed / HMS error, to the household's phones
+# Bambu Lab P2S: print done / plate cool / failed / HMS error, to the
+# household's phones
 #
 # The printer comes in through ha-bambulab (greghesp/ha-bambulab, installed
 # from the Marketplace), a config entry: none of its entities are defined in
@@ -7,7 +8,8 @@
 #
 # Each alert carries the job's cover image (the sliced plate), fetched by the
 # companion app through HA's image proxy. They share one tag, so a "failed"
-# replaces the "done" of the same job on the phone instead of stacking.
+# or "plate cool" replaces the "done" of the same job on the phone instead of
+# stacking.
 #
 # The from: lists keep a restart from firing them: after a restart the status
 # comes back from unknown/offline straight to finish or failed, which is a
@@ -172,6 +174,40 @@ automation:
             {% set weight = states('sensor.p2s_print_weight') %}
             {{ task if task not in ['unknown', 'unavailable', ''] else 'The print' }} is ready on the P2S
             {%- if is_number(weight) and weight | float > 0 %} ({{ weight | float | round(0) | int }} g){% endif %}.
+          data:
+            channel: 3D printer
+            tag: p2s_print
+            image: /api/image_proxy/image.p2s_cover_image
+
+  # Prints come off the plate cleanly once it has cooled: the plastic shrinks
+  # off the PEI by itself. 40 °C suits every filament (PLA, PETG, ABS), so the
+  # bed temperature decides, not a fixed delay. Same tag as "done", so this
+  # replaces it on the phone. A new job starting first cancels it; an hour
+  # without a cool reading (sensor gone) sends it anyway. Failed jobs get no
+  # follow-up, so their error text stays on the phone.
+  - id: p2s_plate_cool
+    alias: '3D printer: plate cool, take the print off'
+    mode: restart
+    trigger:
+      - platform: state
+        entity_id: sensor.p2s_print_status
+        from: [running, pause, prepare]
+        to: finish
+    action:
+      - wait_template: >-
+          {{ states('sensor.p2s_bed_temperature') | float(99) < 40
+             or states('sensor.p2s_print_status') != 'finish' }}
+        timeout: '01:00:00'
+        continue_on_timeout: true
+      - condition: state
+        entity_id: sensor.p2s_print_status
+        state: finish
+      - service: notify.household
+        data:
+          title: '🧊 Plate is cool'
+          message: >-
+            {% set task = states('sensor.p2s_task_name') %}
+            {{ task if task not in ['unknown', 'unavailable', ''] else 'The print' }} is ready to take off the P2S.
           data:
             channel: 3D printer
             tag: p2s_print

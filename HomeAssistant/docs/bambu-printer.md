@@ -43,6 +43,7 @@ this repo uses:
 | `sensor.p2s_print_status` | `idle`, `prepare`, `running`, `pause`, `finish`, `failed`, `offline` |
 | `sensor.p2s_print_progress`, `sensor.p2s_remaining_time`, `sensor.p2s_end_time` | progress, hours left, finish time |
 | `sensor.p2s_task_name`, `image.p2s_cover_image` | the job and its sliced plate |
+| `sensor.p2s_bed_temperature` | the bed, °C |
 | `binary_sensor.p2s_hms_errors` | the printer's health system; attributes `1-Error`, `1-Severity`, … and `Count` |
 | `binary_sensor.p2s_print_error` | the print error; attributes `code`, `error` |
 | `sensor.p2s_ams_1_tray_1` … `_4`, `sensor.p2s_external_spool` | filament per slot; `type`, `color`, `empty` and `remain` (RFID %, else -1) in the attributes |
@@ -58,11 +59,18 @@ and `image.p2s_` as external, like the other config-entry devices.
 | Automation | When | Says |
 | --- | --- | --- |
 | `p2s_print_finished` | status goes from running/pause/prepare to `finish` | the job name and weight, with the plate image |
+| `p2s_plate_cool` | after `finish`, once the bed is below 40 °C (at most an hour) | the print is ready to take off, with the plate image |
 | `p2s_print_failed` | the same, to `failed` | the job name and the printer's error text, with the plate image |
 | `p2s_hms_error` | `binary_sensor.p2s_hms_errors` turns on | each HMS error with its severity |
 
-Done and failed share the tag `p2s_print`, so one replaces the other on the
-phone. The `from:` states keep a restart from firing them: after a restart
+Done, plate cool and failed share the tag `p2s_print`, so each replaces the
+last on the phone.
+
+Plate cool waits on the bed rather than a timer because prints release from
+the PEI once the plastic has shrunk on cooling: 40 °C is right for PETG, a few
+minutes conservative for PLA and safe for ABS, so one threshold covers every
+filament. A new job starting cancels it; a failed job gets none, so its error
+text stays. The `from:` states keep a restart from firing them: after a restart
 the status comes back from `unknown` straight to the last job's end state.
 
 ## Filament left
