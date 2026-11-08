@@ -49,6 +49,28 @@ sized plan below, not 60 A. Every other type-2 reason counts as an
 emergency: `Аварійні ремонтні роботи` (31 Oct), `Екстренні відключення…`, and
 any new reason DTEK adds.
 
+**Ukrenergo's emergency outages** count the same way, and they are the common
+case. They leave the address record blank, so `sensor.dtek_shutdowns` stays
+`ok`, and DTEK says "Графіки не діють". They come from
+`binary_sensor.dtek_emergency_shutdowns`, the flag behind the ⚠️ Ukrenergo
+alert. It is on when YASNO marks our queue `EmergencyShutdowns` or the DTEK
+banner says so, confirmed over 10 minutes
+([dtek-outage-schedule.md](dtek-outage-schedule.md)). Ukrenergo gives no end
+time, so `until` rolls an hour ahead. The plan's `emergency_source` says which
+source drives it: `dtek_record`, `yasno`, `banner` or `both`.
+
+**An emergency outranks the schedule.** On 08.11 the flag was on all evening,
+but the plan only read the address record. It sat `idle` when mains came back
+at 23:51. At 00:25 DTEK published a 07:30 window, and the plan charged at the
+night tariff's 20 A. The drive put that back over a hand-set 60 A every five
+minutes. Now an emergency from any source means 60 A, window or not.
+
+The flag drops for a poll when YASNO rolls over to the new day (00:00–00:15 on
+09.11, including the 10-minute confirmation). So an emergency holds for 30
+minutes after the last render that saw a live source (`emergency_seen`). A held
+render does not restart the 30 minutes. After that the schedule's own plan
+takes over.
+
 A **planned** outage on record (`outage_planned`, type 1) does not count.
 Neither does the published schedule. Those keep the normal plan. A stale or
 failed poll re-serves the last emergency, so the charge holds through a missed

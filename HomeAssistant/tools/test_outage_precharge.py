@@ -58,11 +58,11 @@ def make_env(states, now):
     def _states(eid):
         return str(states.get(eid, "unknown"))
 
-    def _as_datetime(value):
+    def _as_datetime(value, default=None):
         try:
             return datetime.fromisoformat(str(value))
         except (TypeError, ValueError):
-            return None
+            return default
 
     def _as_timestamp(value, default=None):
         # HA reads a naive time as local, and returns real (UTC) seconds.
@@ -72,6 +72,7 @@ def make_env(states, now):
         return (d if d.tzinfo else d.replace(tzinfo=KYIV)).timestamp()
 
     env.globals.update(states=_states, is_state=lambda e, v: _states(e) == v,
+                       state_attr=lambda e, a: None,
                        now=lambda: now, as_datetime=_as_datetime,
                        as_timestamp=_as_timestamp, timedelta=timedelta)
     env.filters["is_number"] = is_number
@@ -361,6 +362,75 @@ p = em_plan(dtek="ok", outage_active=False, outage_type=None,
 check("schedules keep their own plan, not flagged emergency",
       (p["state"], p["emergency"]), ("charging", False))
 
+print("Ukrenergo emergency (YASNO / banner): outranks the schedule")
+EMS = "binary_sensor.dtek_emergency_shutdowns"
+PLAN_ID = "sensor.outage_pre_charge_plan"
+NIGHT = at(9, "00:35")          # 09.11: mains back at 23:51, window for 07:30
+W0730 = at(9, "07:30").isoformat()
+
+
+def uk_plan(now=NIGHT, ems="on", source="yasno", cap=218, start_state=W0730,
+            switch="on", prev="idle", seen=None, prev_source=None):
+    h = House(now)
+    h.set(SWITCH, switch)
+    h.set(START, start_state)
+    h.set(CAP, cap)
+    h.set(DTEK, "ok", outage_active=False, outage_type=None)
+    h.set(EMS, ems, source=source)
+    h.set(PLAN_ID, prev, emergency_seen=seen, emergency_source=prev_source)
+    return render(TEMPLATE, h)
+
+
+p = uk_plan()
+check("09.11: YASNO emergency + a 07:30 window -> 60 A, not the night's 20 A",
+      (p["state"], p["current"], p["emergency"], p["emergency_source"]),
+      ("charging", 60, True, "yasno"))
+check("... until rolls an hour ahead (Ukrenergo gives no end)",
+      p["until"], (NIGHT + timedelta(hours=1)).isoformat())
+check("... and the hold is stamped now", p["emergency_seen"], NIGHT.isoformat())
+check("same, without the emergency -> the gentle 20 A it chose that night",
+      state_current(uk_plan(ems="off")), ("charging", 20))
+check("YASNO emergency, no window at all -> 60 A",
+      state_current(uk_plan(start_state="unknown")), ("charging", 60))
+check("by day, window tonight -> 60 A now, not waiting for the night",
+      state_current(uk_plan(now=at(9, "12:00"), start_state=at(10, "07:30").isoformat())),
+      ("charging", 60))
+check("banner only -> 60 A, source banner",
+      (uk_plan(source="banner")["current"], uk_plan(source="banner")["emergency_source"]),
+      (60, "banner"))
+p = uk_plan(cap=279)
+check("full -> holding on grid", (p["state"], p["current"], p["emergency"]),
+      ("holding", None, True))
+check("Pre-charge switched off -> off", uk_plan(switch="off")["state"], "off")
+check("sensor unavailable (stale), nothing seen -> the schedule plan",
+      (uk_plan(ems="unavailable")["emergency"]), False)
+p = uk_plan(now=at(9, "00:15"), ems="off", prev="charging",
+            seen=at(9, "00:00").isoformat(), prev_source="yasno")
+check("midnight gap: off 15 min after the last emergency -> still 60 A",
+      (p["state"], p["current"], p["emergency"], p["emergency_source"]),
+      ("charging", 60, True, "yasno"))
+check("... a held render does not restart the hold",
+      p["emergency_seen"], at(9, "00:00").isoformat())
+p = uk_plan(now=at(9, "00:31"), ems="off", prev="charging",
+            seen=at(9, "00:00").isoformat(), prev_source="yasno")
+check("off 31 min -> back to the schedule plan (latched charging, gentle)",
+      (p["state"], p["current"], p["emergency"], p["emergency_seen"]),
+      ("charging", 20, False, None))
+p = uk_plan(now=at(9, "00:20"), ems="unavailable", prev="charging",
+            seen=at(9, "00:00").isoformat(), prev_source="both")
+check("sensor unavailable inside the hold -> still 60 A",
+      (p["current"], p["emergency_source"]), (60, "both"))
+h = House(NIGHT)
+h.set(SWITCH, "on")
+h.set(START, W0730)
+h.set(CAP, 218)
+h.set(DTEK, "outage_emergency", outage_active=True, outage_type=2,
+      outage_end=at(9, "06:00").isoformat())
+h.set(EMS, "on", source="yasno")
+p = render(TEMPLATE, h)
+check("both an address record and YASNO -> the record's end, source dtek_record",
+      (p["until"], p["emergency_source"]), (at(9, "06:00").isoformat(), "dtek_record"))
+
 print("drive")
 KNOWN = []
 
@@ -560,6 +630,11 @@ check("emergency: says so, with DTEK's end and the amps",
       mains_back(started_house(**dict(CHARGING, emergency=True,
                                       until=at(2, "21:00").isoformat()))),
       ["Mains is back with a DTEK emergency outage on record until 21:00: "
+       "charging at 60 A (battery 40%)."])
+check("Ukrenergo emergency: says so, no made-up end time",
+      mains_back(started_house(**dict(CHARGING, emergency=True,
+                                      emergency_source="yasno"))),
+      ["Mains is back during Ukrenergo emergency outages: "
        "charging at 60 A (battery 40%)."])
 
 print("DST nights (were known bugs, fixed 2026-10-02)")
