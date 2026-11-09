@@ -33,7 +33,7 @@ at 180 V at 09:26 and the record ran to 21:00. Every minute of mains is a
 minute to fill the pack. So while the record is up:
 
 - the plan reads `charging` at the full 60 A, whatever the tariff and the hour,
-  or `holding` (on grid, Utility First) once the pack is full;
+  or `holding` (on grid, Utility First, still 60 A) once the pack is full;
 - `until` is DTEK's `outage_end`; with no end, or once it has passed with the
   record still up, it rolls an hour ahead on every render, so the ESP's own
   deadline still ends the override within an hour of HA going quiet;
@@ -117,7 +117,15 @@ night. If it disappears, the override is released straight away.
 | `full` | the pack is within 1 % of full |
 | `waiting_night` | it is daytime, and the night tariff before the outage can fill the pack at 60 A |
 | `charging` | the override is on: `current` amps until `until` |
-| `holding` | charged after a `charging` start: still on grid (Utility First) until `until`, no current change |
+| `holding` | charged after a `charging` start: still on grid (Utility First) at `current` amps until `until` |
+
+**The current follows two rules, and nothing else.** While the plan has the
+inverter on grid (`charging` or `holding`), an emergency means 60 A, and a
+scheduled window means the gentle sizing below. `holding` writes its current
+too. On 10.11 at 00:00 the plan went from `charging` to `holding` in the same
+second. `holding` wrote no current, so a 99 % pack took the 60 A that had been
+set by hand that evening. Now a scheduled `holding` sizes its current like
+`charging`, which near full is the 10 A floor.
 
 The arithmetic, using the same 280 Ah pack constant as `battery_runtime.yaml`:
 
@@ -136,9 +144,19 @@ night    = hours of 23:00–07:00 between now and the deadline
   `current = need ÷ hours to the deadline`.
 
 The current is rounded up to the next inverter step (10, 20 … 60 A). It is never
-below 10 A, and it is 60 A when the deadline is under 15 minutes away. The ESP
+below 10 A. Once the deadline is under 15 minutes away, it is sized to the
+window start itself, with at least 15 minutes assumed, so a nearly full pack
+gets 10 A rather than a burst of 60 A just before the outage. The ESP
 holds the override until the outage start itself, so the 30-minute buffer only
 affects the sizing.
+
+The gentle current still has the pack full before the next window. It is
+rounded up, it carries the 15 % margin, and it is re-sized every 5 minutes from
+what is still missing and the time left. A charge that lags therefore asks for
+more amps as the deadline nears, up to 60 A in the last 15 minutes.
+`test_outage_precharge.py` steps the plan every 5 minutes against a pack that
+takes only 87 % of the current, and then only 70 %. It checks that every case
+60 A could reach is at 99 % or more when the window starts.
 
 ### Once it starts, it holds
 
@@ -152,8 +170,8 @@ So the plan reads its own previous state. Once it is `charging` or `holding`,
 it is committed until the window starts or the switch goes off:
 
 - within 5 % of full, it is `holding`. The deadline stays armed, so the ESP
-  keeps Utility First and the charger on. The pack floats on grid and the
-  house runs from the grid.
+  keeps Utility First and the charger on, at the gentle current (60 A in an
+  emergency). The pack floats on grid and the house runs from the grid.
 - more than 5 % short, it is `charging` again, silently. It never goes back
   to `waiting_night` by day.
 
