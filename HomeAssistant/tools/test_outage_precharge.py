@@ -54,7 +54,13 @@ def is_number(value):
 
 def make_env(states, now):
     env = ImmutableSandboxedEnvironment()
+    env.globals.update(template_globals(states, now))
+    env.filters["is_number"] = is_number
+    env.tests["is_number"] = is_number
+    return env
 
+
+def template_globals(states, now):
     def _states(eid):
         return str(states.get(eid, "unknown"))
 
@@ -71,13 +77,10 @@ def make_env(states, now):
             return default
         return (d if d.tzinfo else d.replace(tzinfo=KYIV)).timestamp()
 
-    env.globals.update(states=_states, is_state=lambda e, v: _states(e) == v,
-                       state_attr=lambda e, a: None,
-                       now=lambda: now, as_datetime=_as_datetime,
-                       as_timestamp=_as_timestamp, timedelta=timedelta)
-    env.filters["is_number"] = is_number
-    env.tests["is_number"] = is_number
-    return env
+    return dict(states=_states, is_state=lambda e, v: _states(e) == v,
+                state_attr=lambda e, a: None,
+                now=lambda: now, as_datetime=_as_datetime,
+                as_timestamp=_as_timestamp, timedelta=timedelta)
 
 
 def plan_template():
@@ -87,6 +90,7 @@ def plan_template():
 
 
 TEMPLATE = plan_template()
+COMPILED = make_env({}, None).from_string(TEMPLATE)
 
 
 def plan(now, start, cap, enabled=True, prev="idle"):
@@ -94,7 +98,9 @@ def plan(now, start, cap, enabled=True, prev="idle"):
     states = {SWITCH: "on" if enabled else "off", CAP: cap,
               START: start.isoformat() if start else "unknown",
               "sensor.outage_pre_charge_plan": prev}
-    out = make_env(states, now).from_string(TEMPLATE).render().strip()
+    # Compiled once: the fill simulation below renders it thousands of times.
+    # The fake states and clock go in as render variables, which shadow globals.
+    out = COMPILED.render(**template_globals(states, now)).strip()
     # HA parses a rendered variable back into a native dict the same way.
     return ast.literal_eval(out)
 
@@ -129,9 +135,14 @@ check("battery at 279 of 280 Ah -> full",
       plan(at(2, "12:00"), at(2, "14:00"), 279)["state"], "full")
 
 print("latched once charging (17.10: 20 flips charging <-> full)")
-check("charging, 279 Ah -> holding, no current",
+check("charging, 279 Ah -> holding at the gentle 10 A, never the select's value",
       state_current(plan(at(2, "12:00"), at(2, "14:00"), 279, prev="charging")),
-      ("holding", None))
+      ("holding", 10))
+# 10.11 00:00: the 04:30 window appeared, the plan went charging -> holding in
+# one second, and holding wrote no current -- the pack took a hand-set 60 A at 99 %.
+check("10.11 00:00 replay: holding at night for 04:30 -> gentle 10 A",
+      state_current(plan(at(10, "00:00"), at(10, "04:30"), 277.2, prev="charging")),
+      ("holding", 10))
 check("... until is still the outage start",
       plan(at(2, "12:00"), at(2, "14:00"), 279, prev="charging")["until"],
       at(2, "14:00").isoformat())
@@ -169,6 +180,43 @@ check("outage in 10 min -> 60 A until it starts",
 check("deadline is the outage start, not start - buffer",
       plan(at(2, "12:00"), at(2, "14:00"), 112)["until"], at(2, "14:00").isoformat())
 
+print("gentle charge still fills the pack before the next window")
+
+
+def fill(now, start, cap, eff=1.0, step_min=5):
+    """Step the plan every 5 min as HA does; the pack takes current x eff while
+    on grid. Returns (capacity when the window starts, the highest current)."""
+    prev, peak = "idle", 0
+    while now < start:
+        p = plan(now, start, cap, prev=prev)
+        prev = p["state"]
+        amps = p["current"] if prev in ("charging", "holding") else 0
+        peak = max(peak, amps or 0)
+        cap = min(280.0, cap + (amps or 0) * eff * step_min / 60)
+        now += timedelta(minutes=step_min)
+    return cap, peak
+
+
+FULL = 280 * 0.99
+cases = [(at(2, h), at(2, w)) for h, w in (("08:00", "12:00"), ("12:00", "14:00"),
+                                           ("12:00", "20:00"), ("14:00", "23:00"),
+                                           ("21:00", "23:30"))]
+cases += [(at(2, h), at(3, w)) for h, w in (("23:00", "04:30"), ("23:00", "07:00"),
+                                            ("14:00", "10:00"), ("20:00", "01:00"))]
+bad = []
+for now0, start in cases:
+    for cap0 in (30, 100, 180, 250, 270):
+        # eff 0.87 = exactly the 15 % margin the plan budgets for taper and losses.
+        cap, peak = fill(now0, start, cap0, eff=0.87)
+        need_h = (280 - cap0) / 60 / 0.87          # time at 60 A
+        if cap < FULL and need_h < (start - now0).total_seconds() / 3600 - 0.5:
+            bad.append((now0.strftime("%d %H:%M"), start.strftime("%d %H:%M"), cap0, round(cap, 1)))
+check("every reachable case is >= 99 % when the window starts", bad, [])
+check("gentle is gentle: 250 Ah, 8 h ahead -> never above 10 A",
+      fill(at(2, "12:00"), at(2, "20:00"), 250, eff=0.87)[1], 10)
+check("lagging charger (70 % of the current lands) -> re-sizing still fills it",
+      fill(at(2, "12:00"), at(2, "20:00"), 100, eff=0.7)[0] >= FULL, True)
+
 print("night tariff first")
 check("10:00 outage seen at 14:00 the day before -> waiting_night",
       state_current(plan(at(2, "14:00"), at(3, "10:00"), 140)), ("waiting_night", None))
@@ -200,8 +248,11 @@ check("window in 1 min (deadline already past) -> charging, 60 A",
 check("window in exactly 30 min -> hours_left 0, 60 A",
       (plan(at(2, "12:00"), at(2, "12:30"), 252)["hours_left"],
        plan(at(2, "12:00"), at(2, "12:30"), 252)["current"]), (0.0, 60))
-check("0.25 h to the deadline is not > 0.25 -> 60 A even when nearly full",
-      state_current(plan(at(2, "12:00"), at(2, "12:45"), 275)), ("charging", 60))
+check("0.25 h to the deadline -> sized to the window: 5.75 Ah / 0.75 h -> 10 A",
+      state_current(plan(at(2, "12:00"), at(2, "12:45"), 275)), ("charging", 10))
+check("holding 99 %, 10 min before the window -> still gentle, 10 A",
+      state_current(plan(at(10, "04:20"), at(10, "04:30"), 278, prev="holding")),
+      ("holding", 10))
 check("0.27 h -> sized: 5.75 Ah / 0.27 h = 21.6 A -> 30",
       state_current(plan(at(2, "12:00"), at(2, "12:46"), 275)), ("charging", 30))
 check("capacity 280 -> full", plan(at(2, "12:00"), at(2, "14:00"), 280)["state"], "full")
@@ -319,8 +370,8 @@ check("... until DTEK's end", p["until"], EM_END)
 check("... at night too, same full current",
       state_current(em_plan(now=at(2, "02:00"))), ("charging", 60))
 p = em_plan(cap=279)
-check("full (279 Ah) -> holding on grid, still the emergency's",
-      (p["state"], p["current"], p["emergency"]), ("holding", None, True))
+check("full (279 Ah) -> holding on grid, still the emergency's 60 A",
+      (p["state"], p["current"], p["emergency"]), ("holding", 60, True))
 check("capacity unknown -> still charging (nothing to plan, just fill)",
       state_current(em_plan(cap="unavailable")), ("charging", 60))
 check("end in the past, record still up -> rolls an hour ahead",
@@ -399,8 +450,8 @@ check("banner only -> 60 A, source banner",
       (uk_plan(source="banner")["current"], uk_plan(source="banner")["emergency_source"]),
       (60, "banner"))
 p = uk_plan(cap=279)
-check("full -> holding on grid", (p["state"], p["current"], p["emergency"]),
-      ("holding", None, True))
+check("full -> holding on grid at 60 A", (p["state"], p["current"], p["emergency"]),
+      ("holding", 60, True))
 check("Pre-charge switched off -> off", uk_plan(switch="off")["state"], "off")
 check("sensor unavailable (stale), nothing seen -> the schedule plan",
       (uk_plan(ems="unavailable")["emergency"]), False)
@@ -535,12 +586,13 @@ check("charging, current as a string '60' -> treated as 60",
 check("charging, no current -> no select write", writes(drive(amps=None)[0], OPT), [])
 check("select 'unavailable' -> still tried (HA logs the failed call)",
       writes(drive(select="unavailable")[0], OPT), [{"option": 60}])
-runs, h = drive(state="holding", amps=None, select="10")
-check("holding -> deadline armed, select left alone",
-      calls(runs), [(SET, {"datetime": "2026-11-02T12:00:00+00:00"})])
-check("charging -> holding with the deadline set -> nothing",
-      calls(drive(state="holding", amps=None, have="2026-11-02T12:00:00+00:00")[0]), [])
-for st in ("full", "waiting_night", "idle", "off", "holding"):
+runs, h = drive(state="holding", amps=10, select="60")
+check("holding 10 A over a hand-set 60 -> deadline armed, select set to '10'",
+      calls(runs), [(SET, {"datetime": "2026-11-02T12:00:00+00:00"}), (OPT, {"option": 10})])
+check("charging -> holding, deadline and current already set -> nothing",
+      calls(drive(state="holding", amps=10, select="10",
+                  have="2026-11-02T12:00:00+00:00")[0]), [])
+for st in ("full", "waiting_night", "idle", "off"):
     check("%s -> never touches the select" % st,
           writes(drive(state=st, amps=None, until=None)[0], OPT), [])
 for bad in ("unavailable", "unknown"):
