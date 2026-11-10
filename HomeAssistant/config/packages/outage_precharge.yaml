@@ -74,8 +74,9 @@
 #
 # Ukrenergo's emergency outages count the same way, and they are the common
 # case: they leave the address record blank (sensor.dtek_shutdowns stays `ok`)
-# and say "Графіки не діють". They come from binary_sensor.dtek_emergency_
-# shutdowns (YASNO's queue status or DTEK's banner, confirmed over 10 min). On
+# and say "Графіки не діють". They come from
+# binary_sensor.dtek_emergency_shutdowns (YASNO's queue status or DTEK's
+# banner, confirmed over 10 min). On
 # 08.11 it was on all evening while the plan sat `idle` through the 23:51
 # return of mains, then charged at 20 A for a 07:30 window DTEK published at
 # 00:25 -- overwriting a hand-set 60 A every five minutes. An emergency outranks
