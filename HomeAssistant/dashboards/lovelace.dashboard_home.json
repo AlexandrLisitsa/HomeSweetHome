@@ -253,7 +253,15 @@
                   "name": "Climate",
                   "x": 71.2,
                   "y": 31.6,
-                  "room": "kitchen"
+                  "room": "kitchen",
+                  "panel": "climate-console-card",
+                  "panel_config": {
+                    "tab": "rooms",
+                    "fx": [
+                      "tinted_rooms"
+                    ]
+                  },
+                  "dashboard": "/dashboard-climate/rooms"
                 },
                 {
                   "entities": [
@@ -263,7 +271,15 @@
                   "name": "Climate",
                   "x": 45.9,
                   "y": 41.9,
-                  "room": "bedroom"
+                  "room": "bedroom",
+                  "panel": "climate-console-card",
+                  "panel_config": {
+                    "tab": "rooms",
+                    "fx": [
+                      "tinted_rooms"
+                    ]
+                  },
+                  "dashboard": "/dashboard-climate/rooms"
                 },
                 {
                   "entities": [
@@ -273,7 +289,15 @@
                   "name": "Climate",
                   "x": 13.3,
                   "y": 32.9,
-                  "room": "living"
+                  "room": "living",
+                  "panel": "climate-console-card",
+                  "panel_config": {
+                    "tab": "rooms",
+                    "fx": [
+                      "tinted_rooms"
+                    ]
+                  },
+                  "dashboard": "/dashboard-climate/rooms"
                 }
               ],
               "presence": [

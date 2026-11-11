@@ -288,7 +288,8 @@ for item in ITEMS:
     elif item["kind"] == "presence":
         card["presence"].append({"entity": item["entity"], "name": item["name"], "icon": item["icon"], **common})
     else:
-        card["badges"].append({"entities": item["entities"], "name": item.get("name", "Climate"), **common})
+        card["badges"].append({"entities": item["entities"], "name": item.get("name", "Climate"), **common,
+                               **panel_keys(item)})
 
 # What the inverter feeds: every lamp, plug and screen, each by its own path. A sensor
 # is not a load, and an A/C draws through its plug, so the plug carries its stream.
