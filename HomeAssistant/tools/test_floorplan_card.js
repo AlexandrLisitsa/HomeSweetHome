@@ -668,6 +668,7 @@ group = "printer: ";
     eq("…and no entity dialog", seen, []);
     const consoleEl = dlg && dlg.querySelector(PR.panel);
     check("the modal holds the console card, configured", !!consoleEl && consoleEl.configs.length === 1);
+    check("the printer's modal is a fixed box its console fills", dlg.classList.contains("fill"));
     check("the console gets hass", !!consoleEl && consoleEl.hass === m.card._hass);
     const h2 = mkHass(house(printer(PR, { status: "running" })));
     m.card.hass = h2;
@@ -680,6 +681,14 @@ group = "printer: ";
     m.tap(m.R.btn);
     m.tap(m.R.btn);
     eq("a second tap still leaves one modal", m.card.shadowRoot.querySelectorAll("dialog.panel").length, 1);
+    // The browser fires a dialog's close a task after close(): the first modal's late event
+    // must not close the second.
+    const second = m.dialog();
+    m.card._closePanel();
+    m.tap(m.R.btn);
+    const third = m.dialog();
+    fire(second, "close");
+    check("a closed modal's late close event leaves the new one open", !!m.dialog() && m.dialog() === third);
     fire(m.dialog().querySelector(".panel-body"), "click");
     check("a click inside keeps it open", !!m.dialog());
     fire(m.dialog(), "click");
@@ -717,6 +726,71 @@ group = "printer: ";
     fire(chip.$(".status"), "click");
     eq("the printer chip opens the HMS errors", opened, [PR.hms]);
   }
+}
+
+/* --- each A/C opens its climate console ------------------------------------ */
+
+group = "A/C console: ";
+{
+  const ACS = CFG.devices.filter((d) => d.entity.startsWith("climate."));
+  eq("both A/Cs have a console", ACS.map((d) => [d.panel, d.panel_config && d.panel_config.tab, d.dashboard]),
+    [["climate-console-card", "bedroom", "/dashboard-climate/bedroom"],
+      ["climate-console-card", "hall", "/dashboard-climate/living-room"]]);
+  check("only the A/Cs have one", CFG.devices.filter((d) => d.panel).length === ACS.length);
+
+  // A fresh card per press (see the lamp's): a tap's cancelled hold timer still fires on a flush.
+  const mount = () => {
+    const L = loadCard("floorplan-card.js");
+    L.sandbox.window.customElements = { get: (t) => (t === "climate-console-card" ? class {} : undefined) };
+    L.sandbox.document.createElement = ((make) => (t) => {
+      const e = make(t);
+      if (t === "climate-console-card") { e.configs = []; e.setConfig = function (c) { this.configs.push(c); }; }
+      return e;
+    })(L.sandbox.document.createElement);
+    const card = new L.Card();
+    card.setConfig(JSON.parse(JSON.stringify(CFG)));
+    card.hass = mkHass(house());
+    L.flushTimers();
+    const seen = [];
+    card.addEventListener("hass-more-info", (e) => seen.push(e.detail.entityId));
+    return { L, card, seen, dialog: () => card.shadowRoot.querySelector("dialog.panel") };
+  };
+  for (const ac of ACS) {
+    const tab = ac.panel_config.tab;
+    let m = mount();
+    let D = m.card._devices.find((x) => x.cfg.entity === ac.entity);
+    fire(D.btn, "pointerdown", { button: 0 });
+    fire(D.btn, "pointerup");
+    const dlg = m.dialog();
+    const el = dlg && dlg.querySelector("climate-console-card");
+    eq(tab + ": a tap opens its console with its tab", el && el.configs, [ac.panel_config]);
+    check(tab + ": the console gets hass", !!el && el.hass === m.card._hass);
+    check(tab + ": the modal sizes to the console (not a fixed box)", !dlg.classList.contains("fill"));
+    eq(tab + ": …and no entity dialog or service call", [m.seen, m.card._hass.calls.length], [[], 0]);
+    fire(dlg, "close");
+    check(tab + ": closing removes it", !m.dialog());
+
+    m = mount();
+    D = m.card._devices.find((x) => x.cfg.entity === ac.entity);
+    fire(D.btn, "pointerdown", { button: 0 });
+    m.L.flushTimers();
+    fire(D.btn, "pointerup");
+    eq(tab + ": a hold still opens its dialog, no modal", [m.seen, !!m.dialog()], [[ac.entity], false]);
+
+    m = mount();
+    D = m.card._devices.find((x) => x.cfg.entity === ac.entity);
+    fire(D.rowLamp, "pointerdown", { button: 0 });
+    fire(D.rowLamp, "pointerup");
+    check(tab + ": its phone row's icon opens it too", !!m.dialog());
+  }
+
+  // A plug is not an A/C: its tap still toggles it.
+  const m = mount();
+  const plug = m.card._devices.find((x) => x.cfg.entity.startsWith("switch."));
+  fire(plug.btn, "pointerdown", { button: 0 });
+  fire(plug.btn, "pointerup");
+  eq("a plug's tap still toggles it", [m.card._hass.calls.map((c) => c[1] + " " + c[2].entity_id), !!m.dialog()],
+    [["toggle " + plug.cfg.entity], false]);
 }
 
 /* --- report ---------------------------------------------------------------- */

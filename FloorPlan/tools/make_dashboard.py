@@ -62,6 +62,14 @@ REACH, STREAMS, STEPS, FAN = 180.0, 7, 24, 70.0
 PRINTER_FLOW = {"reach": 40.0, "fan": 40.0, "streams": 4, "lift": 35.0, "top": 0.75}
 
 
+PANEL_KEYS = ("panel", "panel_config", "panel_fill", "dashboard")
+
+
+def panel_keys(item):
+    """The card a tap opens in a modal over the plan, as rooms.py names it."""
+    return {k: item[k] for k in PANEL_KEYS if k in item}
+
+
 def flow(piece, room, reach=REACH, fan=FAN, streams=STREAMS, lift=-25.0, top=0.0):
     tag = re.search(rf"<pieceOfFurniture [^>]*name='{re.escape(piece)}'[^>]*>", xml).group(0)
     get = lambda k, d="0": float((re.search(rf" {k}='([^']*)'", tag) or [0, d])[1])
@@ -270,11 +278,12 @@ for item in ITEMS:
             entry["value"] = item["value"]
         if item.get("flow"):
             entry["flow"] = flow(item["flow"], item["room"])
+        entry.update(panel_keys(item))
         card["devices"].append(entry)
     elif item["kind"] == "printer":
         card["printers"].append({"entity": item["entity"], "name": item["name"], "icon": item["icon"],
                                  "overlay": url(item["overlay"]), **item["printer"],
-                                 **{k: item[k] for k in ("panel", "dashboard") if k in item},
+                                 **panel_keys(item),
                                  "flow": flow(item["flow"], item["room"], **PRINTER_FLOW), **common})
     elif item["kind"] == "presence":
         card["presence"].append({"entity": item["entity"], "name": item["name"], "icon": item["icon"], **common})

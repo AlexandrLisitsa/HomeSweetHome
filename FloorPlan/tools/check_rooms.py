@@ -98,8 +98,11 @@ check("printers", [(who(p), {k: p.get(k) for k in i["printer"]}, bool(p.get("flo
                    for p, i in zip(card.get("printers", []), by_kind("printer"))]
       == [(who(i), i["printer"], True) for i in by_kind("printer")]
       and len(card.get("printers", [])) == len(by_kind("printer")))
-check("printer panels", [(p.get("panel"), p.get("dashboard")) for p in card.get("printers", [])]
-      == [(i.get("panel"), i.get("dashboard")) for i in by_kind("printer")])
+PANEL = ("panel", "panel_config", "panel_fill", "dashboard")
+check("printer panels", [[p.get(k) for k in PANEL] for p in card.get("printers", [])]
+      == [[i.get(k) for k in PANEL] for i in by_kind("printer")])
+check("device panels", [[d.get(k) for k in PANEL] for d in card["devices"]]
+      == [[i.get(k) for k in PANEL] for i in by_kind("device")])
 check("printer overlays", [re.sub(r"\.png\?.*", "", p["overlay"].rsplit("/", 1)[1]) for p in card.get("printers", [])]
       == [i["overlay"] for i in by_kind("printer")])
 check("day image and sun", (card.get("day_image", "").startswith("/local/floorplan/%s.png?" % DAY["image"]),

@@ -33,7 +33,9 @@
  * An A/C with a `flow` (streamlines in pixels of the image, from make_dashboard.py)
  * shows its air leaving the unit while it runs, in the colour of its mode.
  * Tapping toggles what can be toggled (lights, switches, the TV) and opens the
- * dialog for the rest; holding always opens the dialog.
+ * dialog for the rest; holding always opens the dialog. A device with a `panel`
+ * (each A/C: its tab of climate-console-card, set up by `panel_config`) opens
+ * that card in a modal over the plan instead, as the printer does.
  *
  * ROOM TINT
  * ---------
@@ -120,7 +122,9 @@
  *         x: 76.2, y: 21.6, room: kitchen, name: Ceiling, icon: mdi:ceiling-light }
  *   devices:           # everything else; `value` is an entity shown as the reading
  *     - { entity: climate.kitchen_ac, x: 80, y: 30, room: kitchen,
- *         flow: ["M 740 330 L 712 368 L 690 401", ...] }
+ *         flow: ["M 740 330 L 712 368 L 690 401", ...],
+ *         panel: climate-console-card, panel_config: { tab: bedroom },
+ *         dashboard: /dashboard-climate/bedroom }
  *     - { entity: switch.ac_plug, value: sensor.ac_plug_power, x: 82, y: 40, room: kitchen }
  *   badges:
  *     - { entities: [sensor.kitchen_temperature, sensor.kitchen_humidity],
@@ -132,7 +136,7 @@
  *         room: bedroom, overlay: /local/floorplan/p2s_chamber.png?v=1, flow: ["M ..."],
  *         progress, remaining, stage, bed, bed_target, nozzle, nozzle_target,
  *         door, light, error, hms, camera,
- *         panel: p2s-printer-console-card, dashboard: /dashboard-printer }
+ *         panel: p2s-printer-console-card, panel_fill: true, dashboard: /dashboard-printer }
  *   day_image: /local/floorplan/base_day.png?v=1    # optional, with sun
  *   sun: sun.sun
  *
@@ -153,7 +157,7 @@
 const CARD = "floorplan-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "1.16.0";
+const VERSION = "1.17.1";
 
 // Glow colour for a lamp that reports none: the warm white it was rendered in.
 const WARM = [255, 180, 107];
@@ -254,8 +258,8 @@ const HELP = {
   switch: "Switches it on or off, the same as a tap on its icon.\n"
     + "E.g. off on a lamp darkens its room on the plan; off on an A/C plug cuts that A/C.",
   ac: "The room's A/C: its mode and target; while it runs, air streams out in the mode's colour.\n"
-    + "E.g. Cool 23°: cooling to 23 °C in blue streams; Heat is orange, Off is grey and still.\n"
-    + "The living room unit is infrared: its mode is what was last sent, not read back.",
+    + "E.g. Cool 23°: blue streams, Heat orange; the living room unit shows its last sent mode.\n"
+    + "Tap: opens its climate console over the plan. Hold it for 500 ms: opens its dialog.",
   plug: "A switched device; with a meter on it, the power it draws right now.\n"
     + "E.g. an A/C plug at 25–60 W: the A/C's fan alone; from about 150 W, its compressor.\n"
     + PRESS,
@@ -728,7 +732,7 @@ class FloorplanCard extends HTMLElement {
       return;
     }
     this._closePanel();
-    const dialog = this._el("dialog", "panel", this.shadowRoot);
+    const dialog = this._el("dialog", p.panel_fill ? "panel fill" : "panel", this.shadowRoot);
     dialog.setAttribute("aria-label", p.name || "3D printer");
     const close = this._el("button", "panel-close", dialog);
     close.setAttribute("aria-label", "Close");
@@ -741,8 +745,12 @@ class FloorplanCard extends HTMLElement {
     body.appendChild(card);
     // A click on the backdrop lands on the dialog itself; one inside lands on the body.
     dialog.addEventListener("click", (ev) => { if (ev.target === dialog) this._closePanel(); });
-    // Esc closes a modal dialog by itself; the card still has to go.
-    dialog.addEventListener("close", () => this._closePanel());
+    // Esc closes a modal dialog by itself; the card still has to go. The event comes a
+    // task later, also after _closePanel's own close(): by then another modal may be
+    // open, so it only ever closes its own.
+    dialog.addEventListener("close", () => {
+      if (this._panel && this._panel.dialog === dialog) this._closePanel();
+    });
     this._panel = { dialog, card };
     if (typeof dialog.showModal === "function") dialog.showModal();
     else dialog.setAttribute("open", "");
@@ -1005,11 +1013,12 @@ class FloorplanCard extends HTMLElement {
       spot.style.left = d.x + "%";
       spot.style.top = d.y + "%";
       spot.dataset.room = d.room || "";
-      const b = this._button(d.entity, false);
+      const open = d.panel ? () => this._openPanel(d) : undefined;
+      const b = this._button(d.entity, false, open);
       b.btn.classList.add("device");
       spot.appendChild(b.btn);
       const label = this._el("div", "pct", spot);
-      const r = this._row(d, TOGGLES.indexOf(this._domain(d.entity)) >= 0);
+      const r = this._row(d, TOGGLES.indexOf(this._domain(d.entity)) >= 0, open);
       r.rowLamp.classList.add("device");
       group(d.room).appendChild(r.row);
       return Object.assign({ cfg: d, spot, btn: b.btn, icon: b.icon, label, flow }, r);
@@ -1628,27 +1637,32 @@ ha-card { display: block; overflow: hidden; background: var(--fp-surface); color
   .stream path.current { animation: none; }
 }
 .narrow:not(.zoomed) .flow path { stroke-width: 4; }
-/* A printer's console over the plan. The console card fills the box it is given:
-   --p2s-height sets its height, and its width follows the body. */
+/* A console over the plan. By default the dialog is as tall as its card, up to 90% of
+   the screen, and scrolls past that (the climate console). A .fill one is a fixed box
+   its card fills: --p2s-height sets the printer console's height. */
 dialog.panel {
   position: fixed; inset: 0; margin: auto;
-  width: min(1280px, 94vw); height: min(820px, 90dvh);
-  max-width: none; max-height: none; padding: 0; border: 0; border-radius: 16px;
+  width: min(1280px, 94vw); height: fit-content; max-height: 90dvh;
+  max-width: none; padding: 0; border: 0; border-radius: 16px;
   overflow: hidden; background: var(--fp-surface); color: var(--fp-text);
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
 }
+dialog.panel[open] { display: flex; flex-direction: column; }
+dialog.panel.fill { height: min(820px, 90dvh); max-height: none; }
 dialog.panel::backdrop { background: rgba(0, 0, 0, 0.62); }
-.panel-body { width: 100%; height: 100%; --p2s-height: 100%; }
-.panel-body > * { display: block; height: 100%; }
+.panel-body { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.panel-body > * { display: block; }
+.fill .panel-body { --p2s-height: 100%; overflow: hidden; }
+.fill .panel-body > * { height: 100%; }
 .panel-close {
-  position: absolute; top: 8px; right: 8px; z-index: 1;
+  position: absolute; top: 8px; right: 20px; z-index: 1; /* clear of a scrollbar */
   width: 36px; height: 36px; border-radius: 50%; border: 0; cursor: pointer;
   display: flex; align-items: center; justify-content: center;
   background: var(--fp-pill); color: var(--fp-on-plan);
 }
 .panel-close:focus-visible { outline: 2px solid var(--fp-on-plan); outline-offset: 2px; }
 @media (max-width: 600px) {
-  dialog.panel { width: 100vw; height: 100dvh; border-radius: 0; }
+  dialog.panel, dialog.panel.fill { width: 100vw; height: 100dvh; max-height: none; border-radius: 0; }
 }
 .spot, .row {
   --level: 0;
