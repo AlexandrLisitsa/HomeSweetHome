@@ -229,6 +229,14 @@ const FIXTURES = {
     });
     // Someone in the hallway, so a presence sensor's "Detected" tooltip is checked.
     (cfg.presence || []).forEach((p, i) => { out[p.entity] = S(i ? "off" : "on", {}); });
+    // The printer mid-job with its door open and its light on, so every note shows.
+    (cfg.printers || []).forEach((p) => {
+      Object.assign(out, {
+        [p.entity]: S("running", {}), [p.online]: S("on", {}), [p.door]: S("on", {}), [p.light]: S("on", {}),
+        [p.progress]: S("42", { unit_of_measurement: "%" }), [p.remaining]: S("1.2", { unit_of_measurement: "h" }),
+        [p.bed]: S("65", { unit_of_measurement: "°C" }), [p.nozzle]: S("220", { unit_of_measurement: "°C" }),
+      });
+    });
     if (cfg.sun) out[cfg.sun] = S("above_horizon", { elevation: 25 });
     // An outage: on battery with hours left, the LED strip stepped down and an
     // A/C plug cut by load shedding, so every outage tooltip is checked.

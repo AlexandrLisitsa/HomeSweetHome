@@ -56,6 +56,21 @@ more with every degree: a warm wash from 26 °C, at its fullest by 34 °C, a coo
 one from 20 °C, at its fullest by 14 °C. Even at its fullest it stays a soft
 wash, never a red alarm; a comfortable room stays untinted.
 
+The 3D printer (the P2S on the black cabinet in the bedroom) is one icon that reads
+all its entities. Switched off (`binary_sensor.p2s_online` off) it is a grey, faded
+icon saying *Off* and nothing else moves. On, its colour says what it does: green
+*Ready*; amber and breathing while it heats, the ring filling towards the target; blue
+and pulsing while it prints, the ring filling with the job and the label saying
+`42% · 1 h 10 m`; amber *Paused*; ice-blue *Cooling* while the plate is still 40 °C or
+more after a job, then green *Take it off* with a check for two hours (the same 40 °C
+as the `p2s_plate_cool` alert); red *Error* on a failed job or an HMS error, with a red
+chip on the plan unless an outage outranks it. Its chamber light has a rendered overlay
+like a lamp's. An open door puts a door pip on the icon (amber while it prints or
+heats), and while the printer is warm its heat drifts out of the front, the A/C's
+airflow drawn in amber (`flow` names the piece). Tap opens its camera, hold its status;
+on a phone its row has a switch for the chamber light. It has no smart plug, so no
+power wire runs to it.
+
 Everything in the flat runs through the inverter, and the plan shows how: a
 stream from the grid's entry to it and one between it and the pack (backwards
 while the pack charges), then one along the tops of the walls to
@@ -168,7 +183,8 @@ picture and the sun entity.
 Adding a lamp is: the lamp in the model, a shot in `render.sh`, a `LIGHTS` entry,
 a spot and an item in `rooms.py`, then the loop from step 2. A device without a
 light is only the spot and the item; so is a presence sensor (`"kind": "presence"`,
-a `binary_sensor`), which ripples on the plan while it sees someone.
+a `binary_sensor`), which ripples on the plan while it sees someone. A printer (`"kind": "printer"`)
+is a spot, the item with its entities, and a shot for its chamber light.
 
 ## Docs
 

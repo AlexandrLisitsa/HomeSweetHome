@@ -55,9 +55,13 @@ for i, item in enumerate(ITEMS):
     check(where + ": spot", item["spot"] in SPOTS, item["spot"])
     if item["kind"] == "light":
         check(where + ": overlay", item.get("overlay") in LIGHTS, str(item.get("overlay")))
+    if item["kind"] == "printer":
+        check(where + ": overlay", item.get("overlay") in LIGHTS, str(item.get("overlay")))
+        check(where + ": names its online sensor and status", "online" in item.get("printer", {})
+              and item["entity"].startswith("sensor."), str(item.get("printer")))
     if item["kind"] == "presence":
         check(where + ": a binary_sensor", item["entity"].startswith("binary_sensor."), item["entity"])
-    check(where + ": kind", item["kind"] in ("light", "device", "badge", "presence"), item["kind"])
+    check(where + ": kind", item["kind"] in ("light", "device", "badge", "presence", "printer"), item["kind"])
 for name, light in LIGHTS.items():
     check("light %s: room" % name, light["room"] in ROOMS, light["room"])
 for key in ("hub", "grid_in", "battery"):
@@ -66,7 +70,7 @@ for key in ("hub", "grid_in", "battery"):
 print("images")
 doc = json.loads(DASHBOARD.read_text(encoding="utf-8"))
 card = next(c for c in doc["data"]["config"]["views"][0]["cards"] if c.get("type") == "custom:floorplan-card")
-urls = [card["image"], card.get("day_image", "")] + [l["overlay"] for l in card["lights"]] + [r["tint"] for r in card["rooms"] if "tint" in r]
+urls = [card["image"], card.get("day_image", "")] + [l["overlay"] for l in card["lights"]] + [p["overlay"] for p in card.get("printers", [])] + [r["tint"] for r in card["rooms"] if "tint" in r]
 for url in urls:
     m = re.fullmatch(r"/local/floorplan/([\w-]+\.png)\?v=([0-9a-f]{8})", url)
     if not m:
@@ -90,6 +94,12 @@ check("A/C airflow", [bool(d.get("flow")) for d in card["devices"]] == [bool(i.g
 check("badges", [b["entities"] for b in card["badges"]] == [i["entities"] for i in by_kind("badge")])
 badge_rooms = {i["room"]: i["entities"][0] for i in by_kind("badge")}
 check("presence", [who(p) for p in card.get("presence", [])] == [who(i) for i in by_kind("presence")])
+check("printers", [(who(p), {k: p.get(k) for k in i["printer"]}, bool(p.get("flow")))
+                   for p, i in zip(card.get("printers", []), by_kind("printer"))]
+      == [(who(i), i["printer"], True) for i in by_kind("printer")]
+      and len(card.get("printers", [])) == len(by_kind("printer")))
+check("printer overlays", [re.sub(r"\.png\?.*", "", p["overlay"].rsplit("/", 1)[1]) for p in card.get("printers", [])]
+      == [i["overlay"] for i in by_kind("printer")])
 check("day image and sun", (card.get("day_image", "").startswith("/local/floorplan/%s.png?" % DAY["image"]),
                             card.get("sun")) == (True, DAY["sun"]))
 check("tints", {r["id"]: r.get("temperature") for r in card["rooms"] if "tint" in r} == badge_rooms)
@@ -108,6 +118,7 @@ for i in ITEMS:
     entities.update([i["entity"]] if "entity" in i else [])
     entities.update(i.get("entities", []))
     entities.update([i["value"]] if "value" in i else [])
+    entities.update(i.get("printer", {}).values())
 entities.update(v for k, v in POWER.items() if "." in str(v))
 # DAY["sun"] is left out: sun.sun has no unique id, so it is never in the registry.
 if REGISTRY.is_file():

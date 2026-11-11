@@ -21,6 +21,8 @@
          shed=<entity>[:cut][,...]  what load shedding stepped down, or whose plug it cut
          sun=<°>    the sun's elevation (default -30: night); 0 is half day, 6 and up is noon
          seen=all|none|<entity,...>  which presence sensors see someone (default none)
+         p2s=off|ready|heating|printing|paused|cooling|done|error  the 3D printer (default off),
+            with door=open for its door and light=on for its chamber light
          theme=light  HA's light theme text colours on :root, to prove the card ignores them
          selftest=1 taps, holds, drags and switches rooms, and prints what came out.
   Every entity the config names gets a plausible state: an A/C cooling to 22,
@@ -69,6 +71,7 @@
   card.image = local(card.image);
   if (card.day_image) card.day_image = local(card.day_image);
   card.lights.forEach((l) => { l.overlay = local(l.overlay); });
+  (card.printers || []).forEach((p) => { if (p.overlay) p.overlay = local(p.overlay); });
   card.rooms.forEach((r) => { if (r.tint) r.tint = local(r.tint); });
   const temps = (q.get("temp") || "24.26").split(",");
 
@@ -102,6 +105,33 @@
     put(p.entity, seen === "all" || (seen !== "none" && seen.split(",").includes(p.entity)) ? "on" : "off");
   }
   if (card.sun) put(card.sun, "x", { elevation: Number(q.get("sun") || -30) });
+
+  // The printer: each preset as the integration reports it.
+  const P2S = {
+    off:      { online: "off", status: "offline" },
+    ready:    { status: "idle" },
+    heating:  { status: "prepare", bed: "48", bed_target: "65" },
+    printing: { status: "running", progress: "42", remaining: "1.1667", bed: "65", bed_target: "65", nozzle: "220", nozzle_target: "220" },
+    paused:   { status: "pause", progress: "42", bed: "65", bed_target: "65", nozzle: "220", nozzle_target: "220" },
+    cooling:  { status: "finish", progress: "100", bed: "55" },
+    done:     { status: "finish", progress: "100", bed: "34" },
+    error:    { status: "running", progress: "42", hms: "on", bed: "65", nozzle: "220" },
+  };
+  for (const p of card.printers || []) {
+    const v = Object.assign({ online: "on", status: "idle", progress: "0", remaining: "0", bed: "22", bed_target: "0",
+      nozzle: "24", nozzle_target: "0", hms: "off" }, P2S[q.get("p2s") || "off"]);
+    const C = { unit_of_measurement: "°C" };
+    put(p.entity, v.status);
+    states[p.entity].last_changed = new Date().toISOString();
+    put(p.online, v.online);
+    put(p.progress, v.progress, { unit_of_measurement: "%" });
+    put(p.remaining, v.remaining, { unit_of_measurement: "h" });
+    for (const k of ["bed", "bed_target", "nozzle", "nozzle_target"]) put(p[k], v[k], C);
+    put(p.door, q.get("door") === "open" ? "on" : "off");
+    put(p.light, q.get("light") === "on" ? "on" : "off", { friendly_name: "P2S Chamber light" });
+    put(p.error, "off");
+    put(p.hms, v.hms);
+  }
 
   if (card.power) {
     const P = card.power;
