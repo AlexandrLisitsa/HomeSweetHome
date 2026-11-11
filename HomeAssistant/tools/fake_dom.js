@@ -52,6 +52,13 @@ class Node0 {
     this.childNodes.push(n);
     return n;
   }
+  insertBefore(n, ref) {
+    if (!ref) return this.appendChild(n);
+    if (n.parentNode) n.parentNode.removeChild(n);
+    n.parentNode = this;
+    this.childNodes.splice(this.childNodes.indexOf(ref), 0, n);
+    return n;
+  }
   removeChild(n) {
     const i = this.childNodes.indexOf(n);
     if (i >= 0) this.childNodes.splice(i, 1);

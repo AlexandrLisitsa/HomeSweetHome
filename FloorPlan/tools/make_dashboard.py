@@ -57,7 +57,12 @@ for name, (x, y, z) in SPOTS.items():
 REACH, STREAMS, STEPS, FAN = 180.0, 7, 24, 70.0
 
 
-def flow(piece, room):
+# A printer's heat, while its door is open: a few short wisps out of the top of its front,
+# rising as they go (lift > 0) instead of sinking like an A/C's air.
+PRINTER_FLOW = {"reach": 40.0, "fan": 40.0, "streams": 4, "lift": 35.0, "top": 0.75}
+
+
+def flow(piece, room, reach=REACH, fan=FAN, streams=STREAMS, lift=-25.0, top=0.0):
     tag = re.search(rf"<pieceOfFurniture [^>]*name='{re.escape(piece)}'[^>]*>", xml).group(0)
     get = lambda k, d="0": float((re.search(rf" {k}='([^']*)'", tag) or [0, d])[1])
     mask = Image.open(ROOT / "build" / f"mask_{room}.png").convert("L")
@@ -66,21 +71,21 @@ def flow(piece, room):
     fx, fy = -math.sin(a), math.cos(a)      # forward on the plan
     sx, sy = fy, -fx                        # along the unit's width
     ox, oy = get("x") + fx * get("depth") / 2, get("y") + fy * get("depth") / 2
-    z0 = get("elevation") + 3
+    z0 = get("elevation") + 3 + top * get("height")
     paths = []
-    for i in range(STREAMS):
-        f = i / (STREAMS - 1) - 0.5
+    for i in range(streams):
+        f = i / (streams - 1) - 0.5
         lateral = f * get("width") * 0.7
-        turn = math.radians(f * FAN)
+        turn = math.radians(f * fan)
         dx, dy = fx * math.cos(turn) + sx * math.sin(turn), fy * math.cos(turn) + sy * math.sin(turn)
         runs, run = [], []
         for k in range(STEPS + 1):
             t = k / STEPS
-            d = 15 + REACH * t
+            d = 15 + reach * t
             wave = 6 * math.sin(t * math.pi * 2 + i * 1.3) * t
             x = ox + sx * (lateral + wave) + dx * d
             y = oy + sy * (lateral + wave) + dy * d
-            u, v = pct(x, y, z0 - 25 * t * t)
+            u, v = pct(x, y, z0 + lift * t * t)
             if seen(u, v):
                 run.append((u, v))
             elif run:
@@ -249,7 +254,7 @@ for rid, room in ROOMS.items():
 
 card = {"type": "custom:floorplan-card", "image": url("base"),
         "day_image": url(DAY["image"]), "sun": DAY["sun"], "rooms": rooms,
-        "lights": [], "devices": [], "badges": [], "presence": []}
+        "lights": [], "devices": [], "badges": [], "presence": [], "printers": []}
 for item in ITEMS:
     x, y = pos[item["spot"]]
     common = {"x": x, "y": y, "room": item["room"]}
@@ -266,6 +271,10 @@ for item in ITEMS:
         if item.get("flow"):
             entry["flow"] = flow(item["flow"], item["room"])
         card["devices"].append(entry)
+    elif item["kind"] == "printer":
+        card["printers"].append({"entity": item["entity"], "name": item["name"], "icon": item["icon"],
+                                 "overlay": url(item["overlay"]), **item["printer"],
+                                 "flow": flow(item["flow"], item["room"], **PRINTER_FLOW), **common})
     elif item["kind"] == "presence":
         card["presence"].append({"entity": item["entity"], "name": item["name"], "icon": item["icon"], **common})
     else:
@@ -295,7 +304,7 @@ at = next(i for i, c in enumerate(cards) if c.get("type") == "custom:floorplan-c
 cards[at] = card
 DASHBOARD.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
 print(f"{DASHBOARD.name}: {len(rooms)} rooms, {len(card['lights'])} lights, "
-      f"{len(card['devices'])} devices, {len(card['badges'])} badges")
+      f"{len(card['devices'])} devices, {len(card['badges'])} badges, {len(card['printers'])} printers")
 
 im = Image.open(ROOT / "build" / "preview_all_on.png").convert("RGB")
 d = ImageDraw.Draw(im)
@@ -307,7 +316,7 @@ for name, (px, py) in pos.items():
     cx, cy = px / 100 * w, py / 100 * h
     d.ellipse((cx - 7, cy - 7, cx + 7, cy + 7), outline=(255, 0, 80), width=3)
     d.text((cx + 9, cy - 6), name, fill=(255, 0, 80))
-for dev in card["devices"]:
+for dev in card["devices"] + card["printers"]:
     for path in dev.get("flow", []):
         d.line([tuple(map(float, p.split())) for p in path[1:].split(" L")], fill=(80, 255, 160), width=2)
 for path, colour in ([(l["path"], (110, 168, 254)) for l in loads]

@@ -29,7 +29,7 @@ mkdir -p "$build"
 # The lamp name prefixes each photo switches on. Keys are LIGHTS in rooms.py.
 shots=""
 # base_day is the lights-off shot at 12:00 Kyiv (09:00 UTC) on the night shots' date, 2026-09-22.
-for s in ${*:-base base_day kitchen_led kitchen_ceiling hallway bathroom living_tv}; do
+for s in ${*:-base base_day kitchen_led kitchen_ceiling hallway bathroom living_tv p2s_chamber}; do
     case $s in
         base) shots="$shots|base=" ;;
         base_day) shots="$shots|base_day@1790067600000=" ;;
@@ -38,6 +38,7 @@ for s in ${*:-base base_day kitchen_led kitchen_ceiling hallway bathroom living_
         hallway) shots="$shots|hallway=Hallway light" ;;
         bathroom) shots="$shots|bathroom=Bathroom light" ;;
         living_tv) shots="$shots|living_tv=TV screen" ;;
+        p2s_chamber) shots="$shots|p2s_chamber=3D printer chamber light" ;;
         *) echo "unknown shot $s" >&2; exit 2 ;;
     esac
 done

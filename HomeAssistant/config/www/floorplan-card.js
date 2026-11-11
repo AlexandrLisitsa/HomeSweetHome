@@ -70,6 +70,19 @@
  * twilight. Lamps look weaker by day, as real ones do, so their overlays are
  * added at half strength at full day; the ring round the icon still says on.
  *
+ * 3D PRINTER
+ * ----------
+ * One icon reads the printer's many entities. Off (its `online` sensor off) is a grey,
+ * dimmed icon and nothing else. On, its colour says what it does: green Ready; amber
+ * breathing while it heats, the ring filling towards the target; blue pulsing while it
+ * prints, the ring filling with the job and the label "42% · 1 h 10 m"; amber Paused;
+ * ice-blue Cooling while the plate is 40 °C or more after a job (the ring drains as it
+ * cools), then green "Take it off" for two hours; red Error, with a red chip on the plan
+ * when nothing outranks it. Its chamber light has an overlay like a lamp's. An open
+ * door puts a door pip on the icon (amber while it prints or heats), and while the
+ * printer is warm its heat drifts out of the front (`flow`, like an A/C's air). Tap:
+ * its camera. Hold: its status.
+ *
  * PRESENCE
  * --------
  * A `presence` sensor (a binary_sensor) sits where it hangs; while it sees
@@ -110,6 +123,11 @@
  *         x: 70.8, y: 29.6, room: kitchen }
  *   presence:
  *     - { entity: binary_sensor.hallway_motion, x: 30, y: 40, room: hallway, name: Motion }
+ *   printers:          # entity is its print status; every other entity is optional but online
+ *     - { entity: sensor.p2s_print_status, online: binary_sensor.p2s_online, x: 40, y: 30,
+ *         room: bedroom, overlay: /local/floorplan/p2s_chamber.png?v=1, flow: ["M ..."],
+ *         progress, remaining, stage, bed, bed_target, nozzle, nozzle_target,
+ *         door, light, error, hms, camera }
  *   day_image: /local/floorplan/base_day.png?v=1    # optional, with sun
  *   sun: sun.sun
  *
@@ -130,7 +148,7 @@
 const CARD = "floorplan-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "1.14.0";
+const VERSION = "1.15.0";
 
 // Glow colour for a lamp that reports none: the warm white it was rendered in.
 const WARM = [255, 180, 107];
@@ -186,6 +204,19 @@ const MEDIA = [186, 104, 200];
 const NEUTRAL = [144, 164, 174];
 // A presence sensor's ripple: a mint no lamp, A/C mode or wire uses.
 const PRESENCE_C = [77, 220, 190];
+// The 3D printer: a blue for printing, the house amber for heat and pauses, ice for a
+// plate cooling down, green when it is ready or the print can come off, red for a fault.
+const PRINT_C = {
+  printing: [100, 170, 255], heating: [255, 167, 38], paused: [255, 167, 38],
+  cooling: [150, 210, 245], done: [102, 187, 106], ready: [102, 187, 106],
+  error: [229, 83, 75], off: [144, 164, 174],
+};
+// Below this the print comes off the plate cleanly: p2s_plate_cool in bambu_printer.yaml.
+const PLATE_COOL_C = 40;
+// A nozzle this hot (or a plate at PLATE_COOL_C) still gives off heat through an open door.
+const HOT_NOZZLE_C = 60;
+// How long after a job "Take it off" shows; then the printer is just Ready.
+const DONE_MS = 2 * 3600 * 1000;
 // Sun elevation (°) at which the noon picture starts to show, and is all there is.
 const DAWN = [-6, 6];
 // A lamp's overlay at full day, as a share of its night strength.
@@ -241,11 +272,19 @@ const HELP = {
     + "E.g. a flicker during the wait starts it again; the house stays on the pack meanwhile.",
   dtek: "DTEK's schedule says the power will be off then; the plan turns red if it really goes.\n"
     + "E.g. 14:00–18:00: the pack is charged up beforehand so the house rides it out.",
+  printer: "The 3D printer: its colour says what it does; the ring fills with heat or the print.\n"
+    + "E.g. blue 42% · 1 h 10 m: printing; amber: heating; ice-blue: cooling; green: Take it off.\n"
+    + "Tap: opens its camera. Hold it for 500 ms: opens its status.",
+  chamber: "Switches the light inside the 3D printer; the corner round it lights up on the plan.\n"
+    + "E.g. on to look at a print through the door or on the camera; it uses a couple of watts.",
+  printer_error: "The 3D printer reports a fault: a failed print or an HMS error.\n"
+    + "E.g. a filament runout or a clogged nozzle; the message is on the printer's screen.\n"
+    + "Tap: opens the HMS error's dialog.",
   chip: "Zooms the plan to this room and lists only its controls below it.\n"
-    + "E.g. Bedroom: its A/C, the A/C plug, the router and the room's climate.\n"
+    + "E.g. Bedroom: its A/C and plug, the router, the 3D printer and the room's climate.\n"
     + "This phone remembers the choice.",
   all: "Shows the whole flat, with every control listed below under its room.\n"
-    + "E.g. 5 lights and 7 devices across six rooms, each room under its own heading.\n"
+    + "E.g. 5 lights and 8 devices across six rooms, each room under its own heading.\n"
     + "This phone remembers the choice.",
 };
 
@@ -275,6 +314,7 @@ class FloorplanCard extends HTMLElement {
     const devices = config.devices || [];
     const badges = config.badges || [];
     const presence = config.presence || [];
+    const printers = config.printers || [];
     const rooms = (config.rooms || []).slice();
     for (const l of lights) {
       if (!l.entity || !l.overlay || l.x == null || l.y == null) {
@@ -296,6 +336,11 @@ class FloorplanCard extends HTMLElement {
         throw new Error(CARD + ": every presence sensor needs entity, x and y");
       }
     }
+    for (const p of printers) {
+      if (!p.entity || !p.online || p.x == null || p.y == null) {
+        throw new Error(CARD + ": every printer needs entity, online, x and y");
+      }
+    }
     if (!!config.day_image !== !!config.sun) {
       throw new Error(CARD + ": day_image and sun go together");
     }
@@ -312,7 +357,7 @@ class FloorplanCard extends HTMLElement {
       throw new Error(CARD + ": power needs loads, each with entity and path");
     }
     this._config = {
-      image: config.image, rooms, lights, devices, badges, presence, power,
+      image: config.image, rooms, lights, devices, badges, presence, printers, power,
       dayImage: config.day_image || null, sun: config.sun || null,
     };
     if (this._room !== "all" && !rooms.some((r) => r.id === this._room)) this._room = "all";
@@ -442,6 +487,75 @@ class FloorplanCard extends HTMLElement {
     return { text: this._number(value || st), active: true, rgb: NEUTRAL };
   }
 
+  /** What is heating, {what, now, target}, or null: the plate first, then the nozzle. */
+  _heating(c) {
+    for (const [what, nowId, targetId] of [["Plate", c.bed, c.bed_target], ["Nozzle", c.nozzle, c.nozzle_target]]) {
+      const now = this._num(nowId);
+      const target = this._num(targetId);
+      if (now != null && target != null && target > 0 && target - now > 5) return { what, now, target };
+    }
+    return null;
+  }
+
+  /** The job finished less than DONE_MS ago. */
+  _recentFinish(c) {
+    const st = this._stateObj(c.entity);
+    if (!st || st.state !== "finish") return false;
+    const since = Date.parse(st.last_changed);
+    return !isNaN(since) && Date.now() - since < DONE_MS;
+  }
+
+  /**
+   * What the printer's icon shows: `state` (off, ready, heating, printing, paused,
+   * cooling, done, error), its label, colour, ring `level` and motion; whether its door
+   * is open (`pip`, amber while `busy`), its heat drifts out (`puffs`), its light is on.
+   */
+  _printerLook(c) {
+    const on = (id) => {
+      const st = id && this._stateObj(id);
+      return !!st && st.state === "on";
+    };
+    const st = this._stateObj(c.entity);
+    const status = st ? st.state : "unavailable";
+    const light = on(c.light);
+    if (!on(c.online) || ["offline", "unavailable", "unknown"].indexOf(status) >= 0) {
+      return { state: "off", text: "Off", rgb: PRINT_C.off, level: 0, motion: "", pip: "", busy: false, puffs: false, light };
+    }
+    const bed = this._num(c.bed);
+    const nozzle = this._num(c.nozzle);
+    const progress = this._num(c.progress);
+    const pct = progress != null ? Math.max(0, Math.min(100, Math.round(progress))) : null;
+    const heat = this._heating(c);
+    let look;
+    if (on(c.error) || on(c.hms) || status === "failed") {
+      look = { state: "error", text: status === "failed" ? "Failed" : "Error", level: 1, motion: "alert" };
+    } else if (status === "pause") {
+      look = { state: "paused", text: "Paused" + (pct != null ? " " + pct + "%" : ""), level: (pct || 0) / 100, motion: "" };
+    } else if (heat) {
+      look = { state: "heating", text: "Heating " + Math.round(heat.now) + "→" + Math.round(heat.target) + "°",
+        level: Math.max(0, Math.min(1, heat.now / heat.target)), motion: "breathe", heat };
+    } else if (status === "prepare") {
+      look = { state: "heating", text: "Preparing", level: 0, motion: "breathe" };
+    } else if (status === "running") {
+      const left = hoursText(this._num(c.remaining));
+      look = { state: "printing", text: [pct != null ? pct + "%" : null, left].filter(Boolean).join(" · ") || "Printing",
+        level: (pct || 0) / 100, motion: "pulse" };
+    } else if (status === "finish" && bed != null && bed >= PLATE_COOL_C) {
+      look = { state: "cooling", text: "Cooling " + Math.round(bed) + "°",
+        level: Math.max(0.05, Math.min(1, (bed - PLATE_COOL_C) / 30)), motion: "halo" };
+    } else if (this._recentFinish(c)) {
+      look = { state: "done", text: "Take it off", level: 1, motion: "" };
+    } else {
+      look = { state: "ready", text: "Ready", level: 1, motion: "" };
+    }
+    look.rgb = PRINT_C[look.state];
+    look.busy = ["printing", "heating", "paused"].indexOf(look.state) >= 0;
+    look.pip = on(c.door) ? "door" : look.state === "done" ? "done" : "";
+    look.puffs = on(c.door) && ((bed != null && bed >= PLATE_COOL_C) || (nozzle != null && nozzle >= HOT_NOZZLE_C));
+    look.light = light;
+    return look;
+  }
+
   /** The COMFORT band a temperature entity is in, or null: comfortable, or no reading. */
   _comfort(id) {
     const st = id && this._stateObj(id);
@@ -566,6 +680,10 @@ class FloorplanCard extends HTMLElement {
       cfg.badges.map((b) => b.entities.map(s)),
       cfg.rooms.map((r) => s(r.temperature)),
       cfg.presence.map((p) => s(p.entity)),
+      cfg.printers.map((p) => [p.entity, p.online, p.stage, p.progress, p.door, p.light, p.error, p.hms,
+        p.bed_target, p.nozzle_target].map(s)
+        .concat([p.bed, p.nozzle].map((id) => Math.round(this._num(id) || 0)),
+          Math.round((this._num(p.remaining) || 0) * 60), this._recentFinish(p))),
       // The sun to the degree: the picture fades over twelve of them.
       cfg.sun && Math.round(Number((this._stateObj(cfg.sun) || { attributes: {} }).attributes.elevation)),
       // Power to the nearest 10 W, so the streams do not restyle on every watt.
@@ -601,7 +719,8 @@ class FloorplanCard extends HTMLElement {
   }
 
   /** Tap acts, hold opens the dialog. One pointer path for mouse and touch. */
-  _bindPress(el, entityId) {
+  _bindPress(el, entityId, onTap) {
+    const tap = onTap || (() => this._tap(entityId));
     let timer = null;
     let held = false;
     const cancel = () => { if (timer) window.clearTimeout(timer); timer = null; };
@@ -614,7 +733,7 @@ class FloorplanCard extends HTMLElement {
     el.addEventListener("pointerup", () => {
       const wasTap = timer !== null && !held;
       cancel();
-      if (wasTap) this._tap(entityId);
+      if (wasTap) tap();
     });
     el.addEventListener("pointerleave", cancel);
     el.addEventListener("pointercancel", cancel);
@@ -622,7 +741,7 @@ class FloorplanCard extends HTMLElement {
     el.addEventListener("keydown", (ev) => {
       if (ev.key === "Enter" || ev.key === " ") {
         ev.preventDefault();
-        this._tap(entityId);
+        tap();
       }
     });
   }
@@ -669,22 +788,22 @@ class FloorplanCard extends HTMLElement {
     return e;
   }
 
-  /** An icon button, on the plan (`small` false) or in a row. */
-  _button(entityId, small) {
+  /** An icon button, on the plan (`small` false) or in a row; `onTap` replaces the toggle. */
+  _button(entityId, small, onTap) {
     const btn = this._el("div", small ? "lamp small" : "lamp");
     btn.tabIndex = 0;
     btn.setAttribute("role", "button");
     const icon = this._el("ha-icon", null, btn);
-    this._bindPress(btn, entityId);
+    this._bindPress(btn, entityId, onTap);
     return { btn, icon };
   }
 
   /** A phone row: icon, name, value, and a switch when the thing can be toggled. */
-  _row(item, withSwitch) {
+  _row(item, withSwitch, onTap) {
     const row = this._el("div", "row");
     row.dataset.room = item.room || "";
     const head = this._el("div", "head", row);
-    const b = this._button(item.entity, true);
+    const b = this._button(item.entity, true, onTap);
     head.appendChild(b.btn);
     const name = this._el("div", "name", head);
     name.addEventListener("click", () => this._moreInfo(item.entity));
@@ -808,7 +927,7 @@ class FloorplanCard extends HTMLElement {
       this._status.setAttribute("role", "button");
       this._status.addEventListener("click", () => {
         const s = this._status.dataset.kind;
-        this._moreInfo(s === "dtek" ? P.dtek_start : s ? P.runtime : P.down);
+        this._moreInfo(s === "printer_error" ? this._printerChip : s === "dtek" ? P.dtek_start : s ? P.runtime : P.down);
       });
     }
 
@@ -877,6 +996,57 @@ class FloorplanCard extends HTMLElement {
       r.row.style.setProperty("--glow", `rgb(${PRESENCE_C.join(", ")})`);
       group(p.room).appendChild(r.row);
       return Object.assign({ cfg: p, spot, btn: b.btn, icon: b.icon }, r);
+    });
+
+    // The 3D printer: its chamber light's overlay goes in with the lamps' (under the air and
+    // every icon), its heat wisps into the air, then one icon with a pip for the door.
+    this._printers = cfg.printers.map((p) => {
+      let overlay = null;
+      if (p.overlay) {
+        overlay = this._el("img", "overlay");
+        overlay.src = p.overlay;
+        overlay.alt = "";
+        plane.insertBefore(overlay, air);
+      }
+      let flow = null;
+      if (Array.isArray(p.flow) && p.flow.length) {
+        flow = document.createElementNS(SVG, "g");
+        flow.setAttribute("class", "flow heat");
+        flow.dataset.room = p.room || "";
+        flow.style.setProperty("--glow", `rgb(${PRINT_C.heating.join(", ")})`);
+        p.flow.forEach((path, i) => {
+          for (const half of [0, 0.5]) {
+            const el = document.createElementNS(SVG, "path");
+            el.setAttribute("d", path);
+            el.setAttribute("pathLength", "100");
+            el.style.animationDelay = -((i * 0.37 + half) % 1) * BLOW_S + "s";
+            flow.appendChild(el);
+          }
+        });
+        air.appendChild(flow);
+      }
+      const camera = () => this._moreInfo(p.camera || p.entity);
+      const spot = this._el("div", "spot printer", plane);
+      spot.style.left = p.x + "%";
+      spot.style.top = p.y + "%";
+      spot.dataset.room = p.room || "";
+      const b = this._button(p.entity, false, camera);
+      b.btn.classList.add("device");
+      spot.appendChild(b.btn);
+      const pip = this._el("span", "pip", b.btn);
+      const pipIcon = this._el("ha-icon", null, pip);
+      const label = this._el("div", "pct", spot);
+      const r = this._row(p, false, camera);
+      r.rowLamp.classList.add("device");
+      r.row.classList.add("printer");
+      let sw = null;
+      if (p.light) {
+        sw = this._el("button", "switch", r.head);
+        sw.setAttribute("role", "switch");
+        sw.addEventListener("click", () => this._call("homeassistant", "toggle", { entity_id: p.light }));
+      }
+      group(p.room).appendChild(r.row);
+      return Object.assign({ cfg: p, overlay, flow, spot, btn: b.btn, icon: b.icon, pip, pipIcon, label, look: null }, r, { sw });
     });
 
     this._card = card;
@@ -1092,7 +1262,57 @@ class FloorplanCard extends HTMLElement {
       X.btn.dataset.tip = X.head.dataset.tip = name + " — " + text + "\n" + HELP.presence;
     });
 
+    this._printers.forEach((R) => this._paintPrinter(R));
+
     if (this._streams) this._renderPower();
+  }
+
+  /** The printer's icon, ring, label, pip, light, heat and row, from _printerLook. */
+  _paintPrinter(R) {
+    const c = R.cfg;
+    const look = this._printerLook(c);
+    R.look = look;
+    const name = this._name(c, c.entity);
+    const icon = c.icon || "mdi:printer-3d-nozzle";
+    const rgb = `rgb(${look.rgb.join(", ")})`;
+    R.icon.setAttribute("icon", icon);
+    R.rowIcon.setAttribute("icon", icon);
+    R.name.textContent = name;
+    for (const el of [R.spot, R.row]) {
+      el.style.setProperty("--level", String(+look.level.toFixed(3)));
+      el.style.setProperty("--glow", rgb);
+      el.dataset.state = look.state;
+      for (const m of ["pulse", "breathe", "alert", "halo"]) el.classList.toggle(m, look.motion === m);
+    }
+    for (const el of [R.btn, R.rowLamp]) {
+      el.setAttribute("aria-label", name);
+      el.classList.toggle("on", look.state !== "off");
+      el.classList.toggle("off", look.state === "off");
+    }
+    R.label.textContent = look.text;
+    R.value.textContent = look.text;
+    R.pip.hidden = !look.pip;
+    R.pip.classList.toggle("amber", look.pip === "door" && look.busy);
+    R.pip.classList.toggle("done", look.pip === "done");
+    R.pipIcon.setAttribute("icon", look.pip === "done" ? "mdi:check-bold" : "mdi:door-open");
+    if (R.overlay) {
+      // The chamber LED is a relay: on is the rendered strength, a little less by day.
+      R.overlay.style.opacity = look.light ? String(+(1 - (1 - DAY_LAMP) * this._day).toFixed(3)) : "0";
+    }
+    if (R.flow) R.flow.classList.toggle("on", look.puffs);
+    const notes = [];
+    if (look.pip === "door") notes.push(look.busy ? "door open while it works" : "door open");
+    if (look.puffs) notes.push("warm air drifting out");
+    if (look.light) notes.push("chamber light on");
+    const first = name + " — " + spaced(look.text) + (notes.length ? " · " + notes.join(" · ") : "");
+    R.btn.dataset.tip = R.label.dataset.tip = R.head.dataset.tip = first + "\n" + HELP.printer;
+    if (R.sw) {
+      const lightName = this._name({}, c.light);
+      R.sw.classList.toggle("on", look.light);
+      R.sw.setAttribute("aria-checked", look.light ? "true" : "false");
+      R.sw.setAttribute("aria-label", lightName);
+      R.sw.dataset.tip = lightName + " — " + (look.light ? "On" : "Off") + "\n" + HELP.chamber;
+    }
   }
 
   /** The power path, the inverter's label, and what an outage changes. */
@@ -1158,6 +1378,14 @@ class FloorplanCard extends HTMLElement {
       const span = hhmm(S.dtek.start) + "–" + hhmm(S.dtek.end);
       status = { kind: "dtek", text: "Outage " + span, tip: "DTEK outage — today " + span };
     }
+    // A printer fault, when nothing about the house's power outranks it.
+    const faulty = this._printers.find((R) => R.look && R.look.state === "error");
+    this._printerChip = faulty ? faulty.cfg.hms || faulty.cfg.error || faulty.cfg.entity : null;
+    if (!status && faulty) {
+      const name = this._name(faulty.cfg, faulty.cfg.entity);
+      status = { kind: "printer_error", text: name + ": " + faulty.look.text.toLowerCase(),
+        tip: name + " — " + faulty.look.text };
+    }
     this._status.hidden = !status;
     this._status.dataset.kind = status ? status.kind : "";
     this._status.className = "status" + (status ? " " + status.kind : "");
@@ -1208,6 +1436,13 @@ function reducedMotion() {
 function watt(w) {
   const a = Math.abs(w);
   return a >= 1000 ? (a / 1000).toFixed(1) + " kW" : Math.round(a) + " W";
+}
+
+/** 1.17 h → "1 h 10 m", 0.4 h → "24 min"; nothing for none left. */
+function hoursText(h) {
+  if (h == null || !(h > 0)) return "";
+  const m = Math.round(h * 60);
+  return m >= 60 ? Math.floor(m / 60) + " h " + (m % 60) + " m" : m + " min";
 }
 
 /** "48%" as the tooltips write it, "48 %"; the plan keeps the tighter form. */
@@ -1285,6 +1520,7 @@ ha-card { display: block; overflow: hidden; background: var(--fp-surface); color
 .status[hidden] { display: none; }
 .status.down { --status: var(--error-color, #db4437); }
 .status.returning, .status.dtek { --status: var(--warning-color, #ffa600); }
+.status.printer_error { --status: var(--error-color, #db4437); }
 .narrow .status { left: 6px; top: 6px; padding: 2px 10px; font-size: 12px; }
 .air {
   position: absolute; inset: 0; width: 100%; height: 100%;
@@ -1403,8 +1639,39 @@ ha-card { display: block; overflow: hidden; background: var(--fp-surface); color
   .spot.presence.on .ripple { animation: none; opacity: 0.6; transform: scale(1.7); }
   .spot.presence.on .ripple + .ripple { opacity: 0; }
   .spot.blooming .bloom { animation: none; }
+  .spot.printer.pulse .lamp, .spot.printer.breathe .lamp, .spot.printer.alert .lamp {
+    animation: none; box-shadow: 0 0 12px 3px var(--glow);
+  }
 }
 .lamp.unavailable, .row.unavailable { opacity: 0.4; }
+/* The 3D printer. Off: grey and faded, so it reads as switched off at a glance. On: its
+   state's colour in the ring, and a glow that pulses while it prints, breathes while it
+   heats, blinks on a fault and holds while the plate cools. */
+.lamp.off { filter: grayscale(1); color: rgba(255, 255, 255, 0.35); }
+.spot.printer.pulse .lamp { animation: printer-glow 3s ease-in-out infinite; }
+.spot.printer.breathe .lamp { animation: printer-glow 1.6s ease-in-out infinite; }
+.spot.printer.alert .lamp { animation: printer-glow 0.9s ease-in-out infinite; }
+.spot.printer.halo .lamp { box-shadow: 0 0 calc(6px + var(--level) * 14px) calc(1px + var(--level) * 4px) var(--glow); }
+@keyframes printer-glow {
+  0%, 100% { box-shadow: 0 0 4px 0 var(--glow); }
+  50%      { box-shadow: 0 0 18px 5px var(--glow); }
+}
+.pip {
+  position: absolute; right: -5px; top: -5px;
+  width: 17px; height: 17px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: #e8e8e8; color: #1a1a1a;
+  box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+}
+.pip[hidden] { display: none; }
+.pip ha-icon { --mdc-icon-size: 11px; }
+.pip.amber { background: var(--warning-color, #ffa600); color: #1a1a1a; }
+.pip.done { background: rgb(102, 187, 106); color: #10240f; }
+.narrow:not(.zoomed) .pip { width: 12px; height: 12px; right: -4px; top: -4px; }
+.narrow:not(.zoomed) .pip ha-icon { --mdc-icon-size: 8px; }
+/* A printer's heat: fewer, slower, softer wisps than an A/C's air. */
+.flow.heat path { stroke-width: 2.5; animation-duration: 3.4s; }
 /* The inverter's label goes beside its icon: the pack's icon sits just below-left. */
 .spot.side .pct {
   position: absolute; left: calc(100% + 6px); top: 50%;

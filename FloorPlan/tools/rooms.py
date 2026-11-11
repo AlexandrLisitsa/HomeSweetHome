@@ -6,6 +6,9 @@ LIGHTS are the lamps that get a light-only overlay: the photo each is lit in
 re-render. SPOTS are the plan points (x, y, height) where dashboard icons go.
 An A/C's `flow` names its piece in the model: the card draws its air leaving the unit.
 POWER names the inverter's entities; the power path runs from its spot along the wall tops.
+A printer is one icon reading many entities (`printer`): its state, progress, heat, door,
+chamber light and errors; its `overlay` is the chamber light's, its `flow` the piece its
+heat drifts out of while the door is open.
 """
 
 ROOMS = {
@@ -24,6 +27,7 @@ LIGHTS = {
     "hallway":         {"room": "hallway",  "gain": 0.83},  # are specks in the render copy, and
     "bathroom":        {"room": "bathroom", "gain": 0.83},  # no longer block ~20% of their light
     "living_tv":       {"room": "living",   "gain": 1.0},   # the screen's glow
+    "p2s_chamber":     {"room": "bedroom",  "gain": 1.0},   # the P2S's chamber LED
 }
 
 # Icons float at the height given: a point on a floor the walls hide would land on the
@@ -43,7 +47,9 @@ SPOTS = {
     "bedroom_ac":        (842.0, 760.0, 150.0),
     "bedroom_ac_plug":   (842.0, 700.0, 110.0),
     "bedroom_router":    (860.0, 640.0, 90.0),
-    "bedroom_climate":   (600.0, 686.0, 130.0),
+    "bedroom_climate":   (620.0, 745.0, 130.0),   # clear of the printer's heat
+    # Over the P2S on its cabinet by the north wall, pulled a little into the room.
+    "bedroom_printer":   (572.0, 600.0, 130.0),
     "living_ac":         (725.0, 870.0, 150.0),
     "living_ac_plug":    (680.0, 935.0, 110.0),
     "living_tv":         (713.0, 1110.0, 133.0),
@@ -111,6 +117,24 @@ ITEMS = [
      "name": "Router", "icon": "mdi:router-wireless"},
     {"kind": "badge", "room": "bedroom", "spot": "bedroom_climate",
      "entities": ["sensor.0xa4c138437ae3f5a6_temperature", "sensor.0xa4c138437ae3f5a6_humidity"]},
+    # The 3D printer: no plug, so no power wire. Off is p2s_online off.
+    {"kind": "printer", "room": "bedroom", "spot": "bedroom_printer", "entity": "sensor.p2s_print_status",
+     "name": "3D printer", "icon": "mdi:printer-3d-nozzle", "overlay": "p2s_chamber", "flow": "3D printer P2S",
+     "printer": {
+         "online": "binary_sensor.p2s_online",
+         "stage": "sensor.p2s_current_stage",
+         "progress": "sensor.p2s_print_progress",
+         "remaining": "sensor.p2s_remaining_time",
+         "bed": "sensor.p2s_bed_temperature",
+         "bed_target": "sensor.p2s_bed_target_temperature",
+         "nozzle": "sensor.p2s_nozzle_temperature",
+         "nozzle_target": "sensor.p2s_nozzle_target_temperature",
+         "door": "binary_sensor.p2s_door",
+         "light": "light.p2s_chamber_light",
+         "error": "binary_sensor.p2s_print_error",
+         "hms": "binary_sensor.p2s_hms_errors",
+         "camera": "camera.p2s_camera",
+     }},
     # Living room. Its ceiling lamp is not in HA, so it is only furniture in the model.
     {"kind": "device", "room": "living", "spot": "living_ac",
      "entity": "climate.daewoo_a_c", "name": "A/C", "icon": "mdi:air-conditioner",

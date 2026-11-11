@@ -66,6 +66,8 @@ function house(over) {
     if (b.entities[1]) st[b.entities[1]] = S("48", { unit_of_measurement: "%" });
   }
   for (const p of CFG.presence) st[p.entity] = S("off", { device_class: "occupancy" });
+  // The 3D printer switched off, as it mostly is.
+  for (const p of CFG.printers || []) Object.assign(st, printer(p, { online: "off", status: "offline" }));
   // Night: the noon picture hidden.
   st[CFG.sun] = S("below_horizon", { elevation: -30 });
   Object.assign(st, {
@@ -116,6 +118,28 @@ const spotOf = (r, entity) => {
   return r.card._lights[CFG.lights.findIndex((l) => l.entity === entity)].spot;
 };
 const labelOf = (r, entity) => r.card._devices.find((D) => D.cfg.entity === entity).label.textContent;
+
+/**
+ * The printer's entities: `o` names a state by its key in the printer's config
+ * (online, status, bed, ...); everything else idle, cold, closed and dark.
+ */
+function printer(p, o) {
+  const C = { unit_of_measurement: "°C" };
+  const v = Object.assign({ online: "on", status: "idle", progress: "0", remaining: "0", stage: "idle",
+    bed: "22", bed_target: "0", nozzle: "24", nozzle_target: "0",
+    door: "off", light: "off", error: "off", hms: "off", camera: "idle" }, o);
+  const st = {
+    [p.entity]: S(v.status, {}, o.since ? { last_changed: o.since } : {}),
+    [p.online]: S(v.online, {}),
+  };
+  const units = { progress: { unit_of_measurement: "%" }, remaining: { unit_of_measurement: "h" },
+    bed: C, bed_target: C, nozzle: C, nozzle_target: C };
+  for (const k of ["progress", "remaining", "stage", "bed", "bed_target", "nozzle", "nozzle_target",
+    "door", "light", "error", "hms", "camera"]) {
+    if (p[k]) st[p[k]] = S(v[k], units[k] || {});
+  }
+  return st;
+}
 
 /* --- the rooms' tint ------------------------------------------------------- */
 
@@ -510,6 +534,119 @@ group = "pause: ";
   L.sandbox.document.hidden = false;
   L.sandbox.onVis();
   check("tab back: moving", !paused());
+}
+
+/* --- the 3D printer -------------------------------------------------------- */
+
+group = "printer: ";
+{
+  const PR = (CFG.printers || [])[0];
+  check("the dashboard has the printer", !!PR);
+  if (PR) {
+    const at = (o) => {
+      const r = render(printer(PR, o));
+      const R = r.card._printers[0];
+      return {
+        r, R,
+        state: R.spot.dataset.state,
+        text: R.label.textContent,
+        level: Number(R.spot.style.getPropertyValue("--level")),
+        glow: R.spot.style.getPropertyValue("--glow"),
+        motion: ["pulse", "breathe", "alert", "halo"].filter((m) => R.spot.classList.contains(m)),
+        on: R.btn.classList.contains("on"),
+        off: R.btn.classList.contains("off"),
+        pip: R.pip.hidden ? "" : R.pip.classList.contains("amber") ? "amber" : R.pip.classList.contains("done") ? "done" : "door",
+        puffs: !!R.flow && on(R.flow),
+        light: R.overlay ? Number(R.overlay.style.opacity) : null,
+        chip: r.$(".status").hidden ? null : r.$(".status").textContent,
+      };
+    };
+
+    const off = at({ online: "off", status: "offline", door: "on", light: "off" });
+    eq("off: grey, dimmed, no ring, no glow, says Off", [off.state, off.text, off.level, off.motion, off.on, off.off],
+      ["off", "Off", 0, [], false, true]);
+    eq("off: no door pip from a stale sensor, no heat", [off.pip, off.puffs], ["", false]);
+    const lost = at({ online: "on", status: "unavailable" });
+    eq("status lost: off too", lost.state, "off");
+
+    const ready = at({});
+    eq("on, idle: green Ready, full ring, still", [ready.state, ready.text, ready.level, ready.motion, ready.on, ready.off],
+      ["ready", "Ready", 1, [], true, false]);
+    check("on and off look different", ready.glow !== off.glow && ready.level !== off.level);
+
+    const heating = at({ status: "prepare", bed: "48", bed_target: "65" });
+    eq("heating: amber breathing, ring towards the target", [heating.state, heating.text, heating.motion],
+      ["heating", "Heating 48→65°", ["breathe"]]);
+    check("heating: ring 48/65", Math.abs(heating.level - 48 / 65) < 0.01, String(heating.level));
+    const nozzle = at({ status: "running", bed: "65", bed_target: "65", nozzle: "150", nozzle_target: "220" });
+    eq("heating the nozzle at the start of a job", nozzle.text, "Heating 150→220°");
+    eq("preparing with nothing to heat yet", at({ status: "prepare" }).text, "Preparing");
+
+    const printing = at({ status: "running", progress: "42", remaining: "1.1667", bed: "65", bed_target: "65",
+      nozzle: "220", nozzle_target: "220" });
+    eq("printing: blue pulse, ring = progress, % and time left",
+      [printing.state, printing.text, printing.level, printing.motion], ["printing", "42% · 1 h 10 m", 0.42, ["pulse"]]);
+    eq("printing: under an hour left", at({ status: "running", progress: "90", remaining: "0.4" }).text, "90% · 24 min");
+
+    const paused = at({ status: "pause", progress: "42" });
+    eq("paused: amber, ring held, still", [paused.state, paused.text, paused.level, paused.motion],
+      ["paused", "Paused 42%", 0.42, []]);
+
+    const cooling = at({ status: "finish", progress: "100", bed: "55" });
+    eq("finished, plate warm: ice-blue Cooling, steady halo", [cooling.state, cooling.text, cooling.motion],
+      ["cooling", "Cooling 55°", ["halo"]]);
+    check("cooling: the ring drains as the plate cools",
+      at({ status: "finish", bed: "45" }).level < cooling.level);
+    const done = at({ status: "finish", progress: "100", bed: "35" });
+    eq("plate cool: green Take it off with a check", [done.state, done.text, done.pip], ["done", "Take it off", "done"]);
+    const old = at({ status: "finish", bed: "22", since: new Date(Date.now() - 3 * 3600 * 1000).toISOString() });
+    eq("hours later it is just Ready", [old.state, old.pip], ["ready", ""]);
+
+    const err = at({ status: "running", progress: "42", hms: "on" });
+    eq("an HMS error: red, blinking, Error", [err.state, err.text, err.motion], ["error", "Error", ["alert"]]);
+    eq("an error puts a chip on the plan", err.chip, "3D printer: error");
+    eq("a failed job", at({ status: "failed" }).text, "Failed");
+    const outage = render(Object.assign(printer(PR, { hms: "on" }), { [P.down]: S("on", {}), [P.runtime]: S("3.4", {}) }));
+    check("an outage outranks the printer's chip", /Grid down/.test(outage.$(".status").textContent));
+
+    const doorIdle = at({ door: "on" });
+    eq("door open, idle and cold: a plain pip, no heat", [doorIdle.pip, doorIdle.puffs], ["door", false]);
+    const doorPrinting = at({ status: "running", progress: "10", door: "on", bed: "65", nozzle: "220" });
+    eq("door open while printing: amber pip, heat drifts out", [doorPrinting.pip, doorPrinting.puffs], ["amber", true]);
+    const doorCooling = at({ status: "finish", door: "on", bed: "50", nozzle: "40" });
+    eq("door open on a warm plate after a job: heat, plain pip", [doorCooling.pip, doorCooling.puffs], ["door", true]);
+    eq("door shut while printing: no pip, no heat",
+      [printing.pip, printing.puffs], ["", false]);
+    check("door: said in the tooltip", /door open while it works/.test(doorPrinting.R.btn.dataset.tip));
+
+    eq("chamber light off: no overlay", ready.light, 0);
+    const lit = at({ light: "on" });
+    eq("chamber light on: its overlay at full strength by night", lit.light, 1);
+    check("chamber light: the row switch says On", lit.R.sw.classList.contains("on"));
+
+    // Tap opens the camera, hold opens the status; the row switch toggles the light.
+    const press = (hold) => {
+      const r = render(printer(PR, {}));
+      const R = r.card._printers[0];
+      const seen = [];
+      r.card.addEventListener("hass-more-info", (e) => seen.push(e.detail.entityId));
+      fire(R.btn, "pointerdown", { button: 0 });
+      if (hold) r.L.flushTimers();
+      fire(R.btn, "pointerup");
+      return [r.hass.calls.length, seen];
+    };
+    eq("a tap opens its camera", press(false), [0, [PR.camera]]);
+    eq("a hold opens its status", press(true), [0, [PR.entity]]);
+    const r = render(printer(PR, {}));
+    fire(r.card._printers[0].sw, "click");
+    eq("the row switch toggles the chamber light", r.hass.calls.map((c) => c[1] + " " + c[2].entity_id),
+      ["toggle " + PR.light]);
+    const chip = render(printer(PR, { error: "on" }));
+    const opened = [];
+    chip.card.addEventListener("hass-more-info", (e) => opened.push(e.detail.entityId));
+    fire(chip.$(".status"), "click");
+    eq("the printer chip opens the HMS errors", opened, [PR.hms]);
+  }
 }
 
 /* --- report ---------------------------------------------------------------- */

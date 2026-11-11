@@ -13,8 +13,8 @@
           "cards": [
             {
               "type": "custom:floorplan-card",
-              "image": "/local/floorplan/base.png?v=316dcf34",
-              "day_image": "/local/floorplan/base_day.png?v=93289230",
+              "image": "/local/floorplan/base.png?v=22fca4ee",
+              "day_image": "/local/floorplan/base_day.png?v=7bf4b705",
               "sun": "sun.sun",
               "rooms": [
                 {
@@ -48,7 +48,7 @@
                     "x1": 80.6,
                     "y1": 74.0
                   },
-                  "tint": "/local/floorplan/tint_bedroom.png?v=195d0da7",
+                  "tint": "/local/floorplan/tint_bedroom.png?v=586b5c14",
                   "temperature": "sensor.0xa4c138437ae3f5a6_temperature"
                 },
                 {
@@ -87,7 +87,7 @@
               "lights": [
                 {
                   "entity": "light.kitchen_relay",
-                  "overlay": "/local/floorplan/kitchen_ceiling.png?v=e4c5cb3f",
+                  "overlay": "/local/floorplan/kitchen_ceiling.png?v=5bd45519",
                   "name": "Ceiling",
                   "icon": "mdi:ceiling-light",
                   "x": 76.6,
@@ -96,7 +96,7 @@
                 },
                 {
                   "entity": "light.led_ambient",
-                  "overlay": "/local/floorplan/kitchen_led.png?v=9acd8325",
+                  "overlay": "/local/floorplan/kitchen_led.png?v=3a3a07e2",
                   "name": "LED strip",
                   "icon": "mdi:led-strip-variant",
                   "x": 81.0,
@@ -105,7 +105,7 @@
                 },
                 {
                   "entity": "light.hallway_relay",
-                  "overlay": "/local/floorplan/hallway.png?v=ffaaea74",
+                  "overlay": "/local/floorplan/hallway.png?v=a4d1ff16",
                   "name": "Light",
                   "icon": "mdi:lightbulb",
                   "x": 48.8,
@@ -114,7 +114,7 @@
                 },
                 {
                   "entity": "light.bathroom_relay",
-                  "overlay": "/local/floorplan/bathroom.png?v=0f1e3e72",
+                  "overlay": "/local/floorplan/bathroom.png?v=0dcf0773",
                   "name": "Light",
                   "icon": "mdi:lightbulb-group",
                   "x": 69.1,
@@ -123,7 +123,7 @@
                 },
                 {
                   "entity": "media_player.samsung_7_series_43_ue43nu7090",
-                  "overlay": "/local/floorplan/living_tv.png?v=0dbcda90",
+                  "overlay": "/local/floorplan/living_tv.png?v=ad10e7ea",
                   "name": "TV",
                   "icon": "mdi:television",
                   "x": 8.3,
@@ -224,8 +224,8 @@
                     "sensor.0xa4c138437ae3f5a6_humidity"
                   ],
                   "name": "Climate",
-                  "x": 51.0,
-                  "y": 39.1,
+                  "x": 45.9,
+                  "y": 41.9,
                   "room": "bedroom"
                 },
                 {
@@ -255,6 +255,36 @@
                   "x": 66.8,
                   "y": 21.8,
                   "room": "bathroom"
+                }
+              ],
+              "printers": [
+                {
+                  "entity": "sensor.p2s_print_status",
+                  "name": "3D printer",
+                  "icon": "mdi:printer-3d-nozzle",
+                  "overlay": "/local/floorplan/p2s_chamber.png?v=5f00f0db",
+                  "online": "binary_sensor.p2s_online",
+                  "stage": "sensor.p2s_current_stage",
+                  "progress": "sensor.p2s_print_progress",
+                  "remaining": "sensor.p2s_remaining_time",
+                  "bed": "sensor.p2s_bed_temperature",
+                  "bed_target": "sensor.p2s_bed_target_temperature",
+                  "nozzle": "sensor.p2s_nozzle_temperature",
+                  "nozzle_target": "sensor.p2s_nozzle_target_temperature",
+                  "door": "binary_sensor.p2s_door",
+                  "light": "light.p2s_chamber_light",
+                  "error": "binary_sensor.p2s_print_error",
+                  "hms": "binary_sensor.p2s_hms_errors",
+                  "camera": "camera.p2s_camera",
+                  "flow": [
+                    "M680.8 324.6 L678.8 324.6 L677.0 324.4 L675.0 324.2 L673.2 323.9 L671.4 323.5 L669.5 322.9 L667.7 322.1 L665.7 321.2 L663.8 320.0 L661.7 318.6 L659.5 316.9 L657.3 314.9 L654.9 312.8 L652.6 310.6 L650.4 308.2 L648.1 305.8 L645.9 303.2 L643.8 300.8 L641.8 298.3 L640.0 295.9 L638.3 293.6 L636.8 291.3 L635.3 289.1 L634.0 287.0",
+                    "M685.1 332.0 L683.2 332.2 L681.4 332.3 L679.6 332.3 L677.6 332.1 L675.6 331.6 L673.7 331.0 L671.6 330.1 L669.4 329.0 L667.3 327.8 L665.1 326.4 L662.9 324.9 L660.8 323.4 L658.7 321.8 L656.8 320.1 L654.9 318.6 L653.2 317.0 L651.6 315.5 L650.0 313.9 L648.6 312.4 L647.2 310.9 L645.9 309.2 L644.4 307.4 L642.9 305.3 L641.4 302.9",
+                    "M690.4 339.2 L688.6 339.6 L686.8 339.8 L685.0 339.8 L683.0 339.6 L681.0 339.2 L679.1 338.7 L677.1 338.0 L675.3 337.3 L673.4 336.5 L671.6 335.8 L670.0 334.9 L668.4 334.2 L666.9 333.3 L665.5 332.5 L664.1 331.6 L662.8 330.7 L661.4 329.5 L660.1 328.3 L658.6 326.7 L657.0 324.9 L655.3 322.7 L653.3 320.2 L651.4 317.2 L649.2 314.0",
+                    "M696.6 346.5 L694.9 346.9 L693.3 347.1 L691.6 347.3 L690.0 347.4 L688.4 347.3 L686.9 347.3 L685.5 347.1 L684.1 347.1 L682.8 346.9 L681.5 346.7 L680.3 346.4 L679.2 346.1 L678.0 345.5 L676.6 344.7 L675.4 343.7 L673.9 342.4 L672.3 340.8 L670.6 338.9 L668.8 336.7 L666.8 334.2 L664.7 331.4 L662.7 328.3 L660.6 325.1 L658.5 321.9"
+                  ],
+                  "x": 58.1,
+                  "y": 35.3,
+                  "room": "bedroom"
                 }
               ],
               "power": {
