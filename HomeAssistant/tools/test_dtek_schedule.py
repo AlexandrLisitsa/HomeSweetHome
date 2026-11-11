@@ -628,9 +628,11 @@ for bad in ({}, [], "<html>"):
 
 # apply_yasno: publishes the verdict, keeps it through a failed read, and adds
 # its warnings to `warnings` without repeating them.
-saved_y = (p.fetch_yasno, p.save_yasno_capture)
+saved_y = (p.fetch_yasno, p.save_yasno_capture, p.fetch_yasno_notice)
 y_caps = []
-p.save_yasno_capture = lambda raw, verdict, now: y_caps.append(verdict["yasno_status_today"])
+p.save_yasno_capture = lambda raw, verdict, now, label=None: (
+    None if label else y_caps.append(verdict["yasno_status_today"]))
+p.fetch_yasno_notice = lambda: ""            # no network; the notice has its own section
 NOW = datetime(2026, 11, 4, 12, 0, tzinfo=p.KYIV)
 y_cache = {}
 p.fetch_yasno = lambda: bent({"3.1": "EmergencyShutdowns"})
@@ -671,7 +673,70 @@ for _ in range(3):
     p.apply_yasno(p.poll(d_cache), d_cache, NOW)
 check("a lasting YASNO warning: one DTEK capture, not one per run", len(d_caps), 1)
 p.Session, p.read_secrets, p.fetch_banner, p.save_cache, p.save_capture = saved
-p.fetch_yasno, p.save_yasno_capture = saved_y
+
+# --- 15b. YASNO's notice (settings.startupModalMessage) ---------------------
+# 11.11.2026: every queue read ScheduleApplies while this said Dnipro was under
+# emergency outages. Judged by banner_emergency(), the banner's own rules.
+print("\n15b. YASNO notice")
+CITY = "м. Дніпро"
+NOTICE_HTML = ("<p>У&nbsp;м.&nbsp;Дніпро&nbsp;застосовуються&nbsp;екстрені&nbsp;"
+               "відключення&nbsp;електроенергії.&nbsp;Тут&nbsp;графіки&nbsp;не&nbsp;"
+               "діють.</p><p>У&nbsp;Дніпропетровській&nbsp;області&nbsp;діють&nbsp;"
+               "графіки&nbsp;стабілізаційних&nbsp;відключень.</p>")
+NOTICE = p.yasno_notice_text(NOTICE_HTML)
+check("HTML -> one line per paragraph, nbsp gone", NOTICE,
+      "У м. Дніпро застосовуються екстрені відключення електроенергії. Тут графіки не діють."
+      "\nУ Дніпропетровській області діють графіки стабілізаційних відключень.")
+check("tags, <br> and entities", p.yasno_notice_text("<div>a&amp;b<br/>c</div>"), "a&b\nc")
+check("empty -> ''", p.yasno_notice_text(""), "")
+check("11.11 notice -> city, emergency", p.banner_emergency(NOTICE, CITY), ("city", True))
+for label, text in [
+        ("region runs schedules only", "У Дніпропетровській області діють графіки "
+                                       "стабілізаційних відключень."),
+        # Was a flag: the splitter cut after "м.", leaving a placeless sentence.
+        ("Kyiv's emergency", "У м. Київ застосовуються екстрені відключення електроенергії."),
+        ("Lviv, the banner's wording", "За наказом НЕК Укренерго в м. Львів введені "
+                                       "екстрені відключення."),
+        ("advice", "Щоб уникнути екстрених відключень, економте електроенергію."),
+        ("all-clear", "У м. Дніпро екстрені відключення скасовано.")]:
+    check("%s -> no flag" % label, p.banner_emergency(text, CITY)[1], False)
+
+n_caps = []
+p.save_yasno_capture = lambda raw, verdict, now, label=None: (
+    n_caps.append(label) if label else None)
+p.fetch_yasno = lambda: YASNO
+p.fetch_yasno_notice = lambda: NOTICE
+n_cache = {}
+on = p.apply_yasno({"queues": ["GPV1.1"], "warnings": []}, n_cache, NOW, CITY)
+check("published", (on["yasno_notice_emergency"], on["yasno_notice_scope"],
+                    on["yasno_notice_error"], on["yasno_emergency"]),
+      (True, "city", None, False))
+check("text and checked_at", (on["yasno_notice_text"], on["yasno_notice_checked_at"]),
+      (NOTICE, NOW.isoformat()))
+p.fetch_yasno_notice = y_boom
+later = p.apply_yasno({"queues": ["GPV1.1"], "warnings": []}, n_cache,
+                      NOW + timedelta(minutes=5), CITY)
+check("a failed read keeps the notice, says why, old checked_at",
+      (later["yasno_notice_emergency"], later["yasno_notice_error"],
+       later["yasno_notice_checked_at"]), (True, "OSError: timed out", NOW.isoformat()))
+check("...and the queue status still reads fresh on its own",
+      later["yasno_checked_at"], (NOW + timedelta(minutes=5)).isoformat())
+p.fetch_yasno_notice = lambda: ""
+off = p.apply_yasno({"queues": ["GPV1.1"], "warnings": []}, n_cache, NOW, CITY)
+check("YASNO shows no notice -> no flag, no text",
+      (off["yasno_notice_emergency"], off["yasno_notice_text"]), (False, None))
+check("one capture per notice change", n_caps, ["notice", "notice"])
+
+
+def no_key():
+    raise ValueError("YASNO settings carry no startupModalMessage")
+
+
+p.fetch_yasno_notice = no_key
+bad = p.apply_yasno({"queues": ["GPV1.1"], "warnings": []}, n_cache, NOW, CITY)
+check("an answer without the key is an error, not 'no notice'",
+      bad["yasno_notice_error"].startswith("ValueError"), True)
+p.fetch_yasno, p.save_yasno_capture, p.fetch_yasno_notice = saved_y
 
 
 # --- 16. a non-JSON answer from the AJAX endpoint --------------------------

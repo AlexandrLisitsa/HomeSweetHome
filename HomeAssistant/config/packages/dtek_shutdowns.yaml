@@ -183,6 +183,15 @@ command_line:
         - yasno_updated_on
         - yasno_checked_at
         - yasno_error
+        # YASNO's notice for the area (settings.startupModalMessage): the
+        # popup its Dnipro outage page opens with, verbatim, judged by the
+        # banner's rules. It carries city-only emergencies the per-queue
+        # status above does not (11.11.2026). Own checked_at and error.
+        - yasno_notice_text
+        - yasno_notice_scope
+        - yasno_notice_emergency
+        - yasno_notice_checked_at
+        - yasno_notice_error
         - fetched_at
         - stale
         - error
@@ -243,12 +252,18 @@ template:
       # Ukrenergo's emergency outages, in force for this address now.
       #
       # They leave this address's own DTEK record blank (on 01.11.2026 the
-      # city was under them while dtek_outage_now said off), so two other
-      # sources decide, either one enough:
+      # city was under them while dtek_outage_now said off), so three other
+      # sources decide, any one enough:
       #   * YASNO's public per-queue status (yasno_emergency): our queue's
       #     today.status is exactly EmergencyShutdowns. The main source since
       #     DTEK's CDN started answering the home page with a bot check
       #     (03.11.2026).
+      #   * YASNO's notice (yasno_notice_emergency), the popup its Dnipro
+      #     outage page opens with, judged by the banner's rules below. On
+      #     11.11.2026 it said "У м. Дніпро застосовуються екстрені
+      #     відключення" while every queue read ScheduleApplies: the status
+      #     covers the whole region, which still ran schedules. Reported as
+      #     source `yasno` too.
       #   * DTEK's home-page popup (banner_emergency), when it can be read:
       #     banner_emergency() counts a sentence only when it is about a place
       #     that includes us, says the outages are on now, and has none of the
@@ -258,7 +273,7 @@ template:
       #   * each source counts only while it was read in the last 20 minutes;
       #     with neither fresh this is unavailable, not on. A stale "on" from a
       #     fetch that keeps failing is exactly the false alarm to avoid.
-      #     yasno_error / banner_error say why.
+      #     yasno_error / yasno_notice_error / banner_error say why.
       #   * delay_on: two polls in a row must agree. One odd read is not news.
       - name: "DTEK emergency shutdowns"
         unique_id: dtek_emergency_shutdowns
@@ -266,7 +281,7 @@ template:
         icon: mdi:flash-alert-outline
         availability: >-
           {% set ns = namespace(fresh=false) %}
-          {% for k in ['yasno_checked_at', 'banner_checked_at'] %}
+          {% for k in ['yasno_checked_at', 'yasno_notice_checked_at', 'banner_checked_at'] %}
             {% set t = state_attr('sensor.dtek_shutdowns', k) %}
             {% if t is not none and as_datetime(t) is not none
                   and now() - as_datetime(t) < timedelta(minutes=20) %}
@@ -275,23 +290,26 @@ template:
           {% endfor %}
           {{ states('sensor.dtek_shutdowns') not in ['unknown', 'unavailable'] and ns.fresh }}
         state: >-
-          {% set y = state_attr('sensor.dtek_shutdowns', 'yasno_checked_at') %}
-          {% set b = state_attr('sensor.dtek_shutdowns', 'banner_checked_at') %}
-          {% set y_fresh = y is not none and as_datetime(y) is not none
-                           and now() - as_datetime(y) < timedelta(minutes=20) %}
-          {% set b_fresh = b is not none and as_datetime(b) is not none
-                           and now() - as_datetime(b) < timedelta(minutes=20) %}
-          {{ (y_fresh and state_attr('sensor.dtek_shutdowns', 'yasno_emergency') | bool(false))
-             or (b_fresh and state_attr('sensor.dtek_shutdowns', 'banner_emergency') | bool(false)) }}
+          {% set ns = namespace(on=false) %}
+          {% for k in ['yasno', 'yasno_notice', 'banner'] %}
+            {% set t = state_attr('sensor.dtek_shutdowns', k ~ '_checked_at') %}
+            {% if t is not none and as_datetime(t) is not none
+                  and now() - as_datetime(t) < timedelta(minutes=20)
+                  and state_attr('sensor.dtek_shutdowns', k ~ '_emergency') | bool(false) %}
+              {% set ns.on = true %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.on }}
         delay_on:
           minutes: 10
         attributes:
-          # Which fresh source says so: yasno, banner, both, or none.
+          # Which fresh source says so: yasno (its queue status or its
+          # notice), banner, both, or none.
           source: >-
             {% set ns = namespace(out=[]) %}
-            {% for src, k in [('yasno', 'yasno'), ('banner', 'banner')] %}
+            {% for src, k in [('yasno', 'yasno'), ('yasno', 'yasno_notice'), ('banner', 'banner')] %}
               {% set t = state_attr('sensor.dtek_shutdowns', k ~ '_checked_at') %}
-              {% if t is not none and as_datetime(t) is not none
+              {% if src not in ns.out and t is not none and as_datetime(t) is not none
                     and now() - as_datetime(t) < timedelta(minutes=20)
                     and state_attr('sensor.dtek_shutdowns', k ~ '_emergency') | bool(false) %}
                 {% set ns.out = ns.out + [src] %}
@@ -862,12 +880,15 @@ automation:
     action:
       - variables:
           # DTEK's own first line, verbatim, when the popup is one of the
-          # sources (it names the place and the cause). Otherwise YASNO's
-          # status: the cached banner can be days old.
+          # sources (it names the place and the cause). Then YASNO's notice
+          # when it is the one saying so, else YASNO's status. Cached texts
+          # can be days old, so each counts only when it is a source now.
           dtek_line: >-
             {% set src = state_attr('binary_sensor.dtek_emergency_shutdowns', 'source') %}
             {% set t = state_attr('sensor.dtek_shutdowns', 'banner_text') or '' %}
+            {% set n = state_attr('sensor.dtek_shutdowns', 'yasno_notice_text') or '' %}
             {% if src in ['banner', 'both'] and t %}{{ (t.split('\n') | first)[:200] }}
+            {%- elif src in ['yasno', 'both'] and n and state_attr('sensor.dtek_shutdowns', 'yasno_notice_emergency') | bool(false) %}{{ (n.split('\n') | first)[:200] }}
             {%- else %}YASNO marks queue {{ state_attr('sensor.dtek_shutdowns', 'queue') or '?' }} as under emergency outages.{% endif %}
           grid_line: >-
             {% if is_state('binary_sensor.grid_down', 'on') %}The inverter sees no mains.{% else %}The inverter still sees mains.{% endif %}

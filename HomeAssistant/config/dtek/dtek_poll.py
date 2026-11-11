@@ -48,6 +48,15 @@ challenge), whose per-queue `today.status` turns to "EmergencyShutdowns" when
 emergency outages hit that queue. That is what raises the emergency flag now;
 the banner is a second source if it ever comes back. See yasno_verdict().
 
+Plus one GET of YASNO's `settings` for the same region and dso (~0.5 KB): its
+`startupModalMessage` is the popup static.yasno.ua/dnipro/outages opens with,
+and it is YASNO's copy of DTEK's banner. On 11.11.2026 it said "У м. Дніпро
+застосовуються екстрені відключення електроенергії. Тут графіки не діють."
+while every queue above read ScheduleApplies -- the feed covers the whole
+region, which still ran schedules, so it never marks a city-only emergency.
+The notice is judged by banner_emergency(), the banner's own strict rules.
+See apply_yasno().
+
 THE OTHER THING THAT IS NOT OBVIOUS: the getHomeNum answer carries six booleans
 next to `data` -- showCurOutageParam, showCurSchedule, showTableSchedule,
 showTablePlan, showTableFact, showUserGroup -- and DTEK's own page draws nothing
@@ -65,6 +74,7 @@ valid grid -- that is this same bug inverted, and harder to notice.
 """
 import argparse
 import gzip
+import html as htmllib
 import json
 import os
 import re
@@ -88,6 +98,10 @@ BANNER_URL = BASE + "/ua"
 # EmergencyShutdowns only. See yasno_verdict().
 YASNO_URL = ("https://app.yasno.ua/api/blackout-service/public/shutdowns/"
              "regions/3/dsos/301/planned-outages")
+# The same area's settings: {"startupModalMessage": "<p>...</p>"}, the notice
+# YASNO's outage page opens with. See apply_yasno().
+YASNO_SETTINGS_URL = ("https://app.yasno.ua/api/blackout-service/public/shutdowns/"
+                      "regions/3/dsos/301/settings")
 # Every status YASNO has been seen to use. Anything else is reported in
 # `warnings` and never raises the flag.
 YASNO_STATUSES = frozenset(("ScheduleApplies", "WaitingForSchedule",
@@ -905,7 +919,11 @@ def banner_emergency(text, city):
     deliberate: the text is on the dashboard either way, and the flag is what
     an alert hangs off.
     """
-    for sentence in re.split(r"(?<=[.!?])\s+|\n", text):
+    # "м. Київ" is not a sentence end: split there and "Київ застосовуються
+    # екстрені відключення" names no place, which reads as country-wide.
+    held = re.sub(r"(?i)(?<!\w)(м|с|смт|вул|обл|р-н)\.[ \t\xa0]+", "\\1.\x00", text)
+    for sentence in (s.replace("\x00", " ")
+                     for s in re.split(r"(?<=[.!?])\s+|\n", held)):
         if (EMERGENCY_RE.search(sentence) and BANNER_ACTIVE_RE.search(sentence)
                 and not BANNER_NOT_NOW_RE.search(sentence)):
             scope = banner_scope(sentence, city)
@@ -1016,18 +1034,72 @@ def fetch_yasno():
         return json.loads(resp.read().decode("utf-8"))
 
 
+def yasno_notice_text(markup):
+    """YASNO's notice HTML as plain text, one line per paragraph.
+
+    "<p>У&nbsp;м.&nbsp;Дніпро&nbsp;...</p><p>У&nbsp;Дніпропетровській...</p>"
+    -> "У м. Дніпро ...\\nУ Дніпропетровській ...". Lines are what
+    banner_emergency() splits on, so each paragraph is judged on its own.
+    """
+    s = re.sub(r"(?i)<br\s*/?>|</p\s*>|</div\s*>|</li\s*>", "\n", markup or "")
+    s = htmllib.unescape(re.sub(r"<[^>]*>", "", s))
+    lines = (re.sub(r"\s+", " ", x.replace("\xa0", " ")).strip() for x in s.split("\n"))
+    return "\n".join(x for x in lines if x)
+
+
+def fetch_yasno_notice():
+    """GET the settings JSON and return its notice as plain text ("" when YASNO
+    shows none). Not JSON, or no startupModalMessage key at all, raises: an
+    error page must not read as "no notice" and clear a real one."""
+    log("GET %s" % YASNO_SETTINGS_URL)
+    req = urllib.request.Request(YASNO_SETTINGS_URL)
+    req.add_header("Accept", "application/json")
+    req.add_header("User-Agent", USER_AGENT)
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    if not isinstance(data, dict) or "startupModalMessage" not in data:
+        raise ValueError("YASNO settings carry no startupModalMessage")
+    return yasno_notice_text(data.get("startupModalMessage") or "")
+
+
 YASNO_FIELDS = ("yasno_status_today", "yasno_status_tomorrow", "yasno_updated_on",
                 "yasno_emergency", "yasno_emergency_queues")
 
 
-def apply_yasno(payload, cache, now):
+def apply_yasno(payload, cache, now, city=None):
     """Read YASNO and publish its verdict on `payload`, whether the DTEK poll
     worked or not -- the two sources fail independently.
 
     A failed read keeps the last verdict, with yasno_checked_at saying how old
     it is; the binary sensor stops trusting it after 20 minutes. A change of
     status keeps the raw answer next to DTEK's captures.
+
+    The notice (fetch_yasno_notice) is read the same way but on its own: its
+    own checked_at, so one endpoint failing never makes the other look fresh.
+    It is judged exactly as DTEK's banner is, by banner_emergency() with the
+    city from secrets.yaml (None when unreadable, which leaves only the
+    no-place and country rules).
     """
+    try:
+        text = fetch_yasno_notice()
+        scope, emergency = banner_emergency(text, city) if text else (None, False)
+        prev_text = (cache.get("yasno_notice") or {}).get("text")
+        cache["yasno_notice"] = {"text": text or None, "scope": scope,
+                                 "emergency": emergency}
+        cache["yasno_notice_checked_at"] = now.isoformat()
+        payload["yasno_notice_error"] = None
+        if prev_text != (text or None):
+            save_yasno_capture({"settings_notice": text}, cache["yasno_notice"], now,
+                               "notice")
+    except Exception as exc:                      # noqa: BLE001 - see poll()
+        log("yasno notice not read: %r" % exc)
+        payload["yasno_notice_error"] = "%s: %s" % (type(exc).__name__, exc)
+    notice = cache.get("yasno_notice") or {}
+    payload["yasno_notice_text"] = notice.get("text")
+    payload["yasno_notice_scope"] = notice.get("scope")
+    payload["yasno_notice_emergency"] = bool(notice.get("emergency"))
+    payload["yasno_notice_checked_at"] = cache.get("yasno_notice_checked_at")
+
     try:
         raw = fetch_yasno()
         verdict = yasno_verdict(raw, payload.get("queues") or [], now.date())
@@ -1054,14 +1126,15 @@ def apply_yasno(payload, cache, now):
     return payload
 
 
-def save_yasno_capture(raw, verdict, now):
-    """The raw YASNO answer whenever our status changes. Best effort. Named so
-    it sorts after DTEK's captures and survives their rotation."""
+def save_yasno_capture(raw, verdict, now, label=None):
+    """The raw YASNO answer whenever our status (or the notice) changes. Best
+    effort. Named so it sorts after DTEK's captures and survives their
+    rotation."""
     stamp = now.isoformat()[:19].replace(":", "").replace("-", "")
     try:
         CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
         path = CAPTURE_DIR / ("yasno_%s_%s.json" % (
-            stamp, verdict.get("yasno_status_today") or "none"))
+            stamp, label or verdict.get("yasno_status_today") or "none"))
         path.write_text(json.dumps({"_meta": {"captured_at": now.isoformat(),
                                               "verdict": verdict},
                                     "planned_outages": raw},
@@ -1231,7 +1304,13 @@ def main(argv=None):
         payload.setdefault("fetched_at", None)
 
     # YASNO after both branches: its emergency flag must not depend on DTEK.
-    apply_yasno(payload, cache, datetime.now(KYIV).replace(microsecond=0))
+    # The city judges YASNO's notice; unreadable secrets only cost the notice.
+    try:
+        city = read_secrets()[0]
+    except Exception as exc:                      # noqa: BLE001 - see above
+        log("city not read for the yasno notice: %r" % exc)
+        city = None
+    apply_yasno(payload, cache, datetime.now(KYIV).replace(microsecond=0), city)
     save_cache(cache)
 
     print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))

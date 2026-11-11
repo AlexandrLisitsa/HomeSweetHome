@@ -154,7 +154,11 @@ def base_attrs(**over):
             "yasno_emergency": False, "yasno_emergency_queues": [],
             "yasno_updated_on": "2026-09-01T08:00:00+00:00",
             "yasno_checked_at": "2026-09-01T12:00:00+03:00",
-            "yasno_error": None}
+            "yasno_error": None,
+            "yasno_notice_text": None, "yasno_notice_scope": None,
+            "yasno_notice_emergency": False,
+            "yasno_notice_checked_at": "2026-09-01T12:00:00+03:00",
+            "yasno_notice_error": None}
     data.update(over)
     return {(SENSOR, k): v for k, v in data.items()}
 
@@ -265,8 +269,30 @@ check("a stale YASNO on does not count",
           yasno_emergency=True, yasno_checked_at="2026-09-01T11:30:00+03:00"), NOON), "False")
 check("a missing YASNO flag reads off",
       render(emerg["state"], {SENSOR: "ok"}, base_attrs(yasno_emergency=None), NOON), "False")
+# YASNO's notice (11.11.2026): every queue ScheduleApplies, the notice says
+# Dnipro is under emergency outages.
+NOTICE = ("У м. Дніпро застосовуються екстрені відключення електроенергії. "
+          "Тут графіки не діють.\nУ Дніпропетровській області діють графіки "
+          "стабілізаційних відключень.")
+n_on = base_attrs(yasno_notice_emergency=True, yasno_notice_scope="city",
+                  yasno_notice_text=NOTICE, banner_checked_at="2026-11-11T05:59:30+02:00")
+check("YASNO notice alone, queues on schedule -> on",
+      render(emerg["state"], {SENSOR: "ok"}, n_on, NOON), "True")
+check("a stale notice's on does not count",
+      render(emerg["state"], {SENSOR: "ok"}, base_attrs(
+          yasno_notice_emergency=True,
+          yasno_notice_checked_at="2026-09-01T11:30:00+03:00"), NOON), "False")
+check("a missing notice flag reads off",
+      render(emerg["state"], {SENSOR: "ok"}, base_attrs(yasno_notice_emergency=None),
+             NOON), "False")
 src = emerg["attributes"]["source"]
 check("source: yasno", render(src, {SENSOR: "ok"}, y_on, NOON), "yasno")
+check("source: the notice reports as yasno", render(src, {SENSOR: "ok"}, n_on, NOON), "yasno")
+check("source: status and notice together are still yasno, not both",
+      render(src, {SENSOR: "ok"}, base_attrs(yasno_emergency=True,
+                                             yasno_notice_emergency=True), NOON), "yasno")
+check("source: notice + banner -> both", render(src, {SENSOR: "ok"}, base_attrs(
+    yasno_notice_emergency=True, banner_emergency=True), NOON), "both")
 check("source: banner", render(src, {SENSOR: "ok"}, on, NOON), "banner")
 check("source: both", render(src, {SENSOR: "ok"}, base_attrs(
     yasno_emergency=True, banner_emergency=True), NOON), "both")
@@ -278,9 +304,13 @@ check("neither read for 25 min -> unavailable, not a stale on",
       render(avail, {SENSOR: "ok"}, on, NOON + timedelta(minutes=25)), "False")
 check("banner unread but YASNO fresh -> available",
       render(avail, {SENSOR: "ok"}, y_on, NOON), "True")
+check("only the notice read lately -> available",
+      render(avail, {SENSOR: "ok"}, base_attrs(banner_checked_at=None,
+                                               yasno_checked_at=None), NOON), "True")
 check("never read -> unavailable",
       render(avail, {SENSOR: "ok"}, base_attrs(banner_checked_at=None,
-                                               yasno_checked_at=None), NOON), "False")
+                                               yasno_checked_at=None,
+                                               yasno_notice_checked_at=None), NOON), "False")
 check("sensor itself down -> unavailable",
       render(avail, {SENSOR: "unavailable"}, on, NOON), "False")
 check("two polls must agree before it turns on", emerg.get("delay_on"), {"minutes": 10})
@@ -630,6 +660,15 @@ v = fire(autos["dtek_emergency_announced"], rstates, YAS, {})
 check("announced from YASNO: names the queue, not the old banner",
       v["message"].startswith("YASNO marks queue 3.2 as under emergency outages. "
                               "No schedule applies"), True)
+NOT = dict(BAN)
+NOT.update(base_attrs(yasno_notice_emergency=True, yasno_notice_text=NOTICE,
+                      banner_text="Старий банер про Кривий Ріг."))
+NOT[(EMS, "source")] = "yasno"
+v = fire(autos["dtek_emergency_announced"], rstates, NOT, {})
+check("announced from YASNO's notice: its first line, not the old banner",
+      v["message"].startswith("У м. Дніпро застосовуються екстрені відключення "
+                              "електроенергії. Тут графіки не діють. No schedule applies"),
+      True)
 v = fire(autos["dtek_emergency_announced"], rstates, base_attrs(banner_text=None), {})
 check("announced with no source attribute yet: still a sentence",
       v["message"].startswith("YASNO marks queue 3.2"), True)
