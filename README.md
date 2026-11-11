@@ -44,6 +44,7 @@ flowchart LR
 | [`ElectricityMeter/`](ElectricityMeter/README.md) | A photodiode on the electricity meter's imp/kWh LED and an ESP8266 that counts its blinks, so Home Assistant gets the flat's power and consumption from the meter itself, split day / night. It is the Energy dashboard's grid source; the inverter alone misses the boiler's circuit. |
 | [`Portal/`](Portal/README.md) | The house dashboard: one page with a card for every service (status, live numbers from Proxmox, AdGuard and Home Assistant), and `.lan` names (`home.lan`, `ha.lan`, `pve.lan`, ...) for every web UI. LAN and Tailscale only; built to cost no CPU while nobody is looking. |
 | [`Proxmox/`](Proxmox/README.md) | The host and its guests, one doc each; read-only Proxmox API scripts that measure the Home Assistant guest's resource history; and the backup setup that keeps every guest and HA's backups on the host and, encrypted, on Google Drive ([`Proxmox/docs/backups.md`](Proxmox/docs/backups.md)). |
+| [`Prints/`](Prints/README.md) | Things we design and 3D-print for the house that belong to no other project, each a parametric OpenSCAD model with a doc on how to print it: so far a five-roll satin ribbon case. |
 
 Unfinished projects live on branches of their own until they are:
 

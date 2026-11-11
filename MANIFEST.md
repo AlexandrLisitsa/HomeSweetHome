@@ -30,6 +30,11 @@ HomeSweetHome/
   holds only the files above.
 - **Every project is listed in the root README**, with one line on what it is.
 - A new project gets its own directory with a README before anything else.
+- **3D prints:** a printed part that serves a project lives in that project (an
+  enclosure, a mount). A print that belongs to no project lives in `Prints/<Print>/`,
+  with its doc in `Prints/docs/`. The `.scad` model is the source of truth; renders
+  go to a git-ignored `out/`. A saved Bambu Studio project (`.3mf`) may be committed
+  next to the model, because it serves reprints.
 
 ## 2. Documentation
 
