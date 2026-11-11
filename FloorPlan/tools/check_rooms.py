@@ -102,6 +102,8 @@ PANEL = ("panel", "panel_config", "panel_fill", "dashboard")
 check("printer panels", [[p.get(k) for k in PANEL] for p in card.get("printers", [])]
       == [[i.get(k) for k in PANEL] for i in by_kind("printer")])
 check("power panel", [card.get("power", {}).get(k) for k in PANEL] == [POWER.get(k) for k in PANEL])
+check("badge panels", [[b.get(k) for k in PANEL] for b in card["badges"]]
+      == [[i.get(k) for k in PANEL] for i in by_kind("badge")])
 check("device panels", [[d.get(k) for k in PANEL] for d in card["devices"]]
       == [[i.get(k) for k in PANEL] for i in by_kind("device")])
 check("printer overlays", [re.sub(r"\.png\?.*", "", p["overlay"].rsplit("/", 1)[1]) for p in card.get("printers", [])]

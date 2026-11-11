@@ -857,6 +857,75 @@ group = "consoles: ";
   check("a plug's tooltip does not promise a console", !/console/.test(plug.btn.dataset.tip));
 }
 
+/* --- climate badges: the Rooms console, and a short pill on a phone ---------- */
+
+group = "climate badges: ";
+{
+  eq("every badge opens the Climate console's Rooms tab",
+    CFG.badges.map((b) => [b.room, b.panel, b.panel_config, b.dashboard]),
+    CFG.badges.map((b) => [b.room, "climate-console-card", { tab: "rooms", fx: ["tinted_rooms"] },
+      "/dashboard-climate/rooms"]));
+  const mountB = (over) => {
+    const L = loadCard("floorplan-card.js");
+    L.sandbox.window.customElements = { get: (t) => (t === "climate-console-card" ? class {} : undefined) };
+    L.sandbox.document.createElement = ((make) => (t) => {
+      const e = make(t);
+      if (t === "climate-console-card") { e.configs = []; e.setConfig = function (c) { this.configs.push(c); }; }
+      return e;
+    })(L.sandbox.document.createElement);
+    const card = new L.Card();
+    card.setConfig(JSON.parse(JSON.stringify(CFG)));
+    card.hass = mkHass(house(over));
+    L.flushTimers();
+    const seen = [];
+    card.addEventListener("hass-more-info", (e) => seen.push(e.detail.entityId));
+    return { L, card, seen, dialog: () => card.shadowRoot.querySelector("dialog.panel") };
+  };
+  const press = (el, hold) => {
+    const m = mountB();
+    const target = el(m.card);
+    fire(target, "pointerdown", { button: 0 });
+    if (hold) m.L.flushTimers();
+    fire(target, "pointerup");
+    const dlg = m.dialog();
+    const con = dlg && dlg.querySelector("climate-console-card");
+    return { seen: m.seen, configs: con ? con.configs : null, fill: !!dlg && dlg.classList.contains("fill") };
+  };
+  CFG.badges.forEach((b, i) => {
+    const tap = press((c) => c._badges[i].el, false);
+    eq(b.room + ": a tap opens the Rooms console, no dialog", [tap.configs, tap.seen, tap.fill],
+      [[b.panel_config], [], false]);
+    const hold = press((c) => c._badges[i].el, true);
+    eq(b.room + ": a hold opens the temperature's dialog, no console", [hold.seen, hold.configs],
+      [[b.entities[0]], null]);
+    const row = press((c) => c._badges[i].row, false);
+    eq(b.room + ": its phone row opens the console too", [row.configs, row.seen], [[b.panel_config], []]);
+  });
+
+  const t0 = CFG.badges[0].entities[0];
+  const h0 = CFG.badges[0].entities[1];
+  const m = mountB({ [t0]: S("24.6", { unit_of_measurement: "°C" }), [h0]: S("48.2", { unit_of_measurement: "%" }) });
+  const B = m.card._badges[0];
+  eq("the full text: one decimal and the humidity", B.full.textContent, "24.6 °C · 48%");
+  eq("the phone pill: the rounded temperature", B.short.textContent, "25 °C");
+  eq("the row keeps the full text", B.rowValue.textContent, "24.6 °C · 48%");
+  eq("its tooltip ends with the console's tap line", B.el.dataset.tip.split("\n").pop(),
+    "Tap: opens its console over the plan. Hold it for 500 ms: opens its dialog.");
+  check("a badge is a button with a name", B.el.getAttribute("role") === "button"
+    && /^Climate 24\.6 °C · 48%$/.test(B.el.getAttribute("aria-label")));
+  const gone = mountB({ [t0]: S("unavailable", { unit_of_measurement: "°C" }) });
+  eq("an unavailable sensor: a dash in the pill", gone.card._badges[0].short.textContent, "—");
+
+  // The stylesheet: on a phone's whole-flat view the badge is the short pill, elsewhere the full text.
+  const css = m.card.shadowRoot.querySelector("style").textContent;
+  check("the phone overview no longer hides badges", !/\.narrow:not\(\.zoomed\) \.badge\s*\{\s*display:\s*none/.test(css)
+    && !/\.narrow:not\(\.zoomed\) \.pct, \.narrow:not\(\.zoomed\) \.badge/.test(css));
+  check("…it shows the short text there, at 10 px", /\.narrow:not\(\.zoomed\) \.badge \.short \{ display: inline; \}/.test(css)
+    && /\.narrow:not\(\.zoomed\) \.badge \.full \{ display: none; \}/.test(css)
+    && /\.narrow:not\(\.zoomed\) \.badge \{[^}]*font-size: 10px/.test(css));
+  check("…and the full text everywhere else", /\.badge \.short \{ display: none; \}/.test(css));
+}
+
 /* --- the outage chip opens the Shutdowns console --------------------------- */
 
 group = "outage chip: ";

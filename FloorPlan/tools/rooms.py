@@ -102,7 +102,9 @@ ITEMS = [
     {"kind": "light", "room": "kitchen", "spot": "kitchen_led", "overlay": "kitchen_led",
      "entity": "light.led_ambient", "name": "LED strip", "icon": "mdi:led-strip-variant"},
     {"kind": "badge", "room": "kitchen", "spot": "kitchen_climate",
-     "entities": ["sensor.0xa4c1383900dd497c_temperature", "sensor.0xa4c1383900dd497c_humidity"]},
+     "entities": ["sensor.0xa4c1383900dd497c_temperature", "sensor.0xa4c1383900dd497c_humidity"],
+     "panel": "climate-console-card", "panel_config": {"tab": "rooms", "fx": ["tinted_rooms"]},
+     "dashboard": "/dashboard-climate/rooms"},
     # Hallway
     {"kind": "light", "room": "hallway", "spot": "hallway_light", "overlay": "hallway",
      "entity": "light.hallway_relay", "name": "Light", "icon": "mdi:lightbulb"},
@@ -127,7 +129,9 @@ ITEMS = [
      "name": "Router", "icon": "mdi:router-wireless",
      "panel": "router-console-card", "panel_config": {}, "dashboard": "/dashboard-network/router"},
     {"kind": "badge", "room": "bedroom", "spot": "bedroom_climate",
-     "entities": ["sensor.0xa4c138437ae3f5a6_temperature", "sensor.0xa4c138437ae3f5a6_humidity"]},
+     "entities": ["sensor.0xa4c138437ae3f5a6_temperature", "sensor.0xa4c138437ae3f5a6_humidity"],
+     "panel": "climate-console-card", "panel_config": {"tab": "rooms", "fx": ["tinted_rooms"]},
+     "dashboard": "/dashboard-climate/rooms"},
     # The 3D printer: no plug, so no power wire. Off is p2s_online off.
     {"kind": "printer", "room": "bedroom", "spot": "bedroom_printer", "entity": "sensor.p2s_print_status",
      "name": "3D printer", "icon": "mdi:printer-3d-nozzle", "overlay": "p2s_chamber", "flow": "3D printer P2S",
@@ -161,7 +165,9 @@ ITEMS = [
      "entity": "media_player.samsung_7_series_43_ue43nu7090", "name": "TV", "icon": "mdi:television",
      "color": [90, 156, 255]},
     {"kind": "badge", "room": "living", "spot": "living_climate",
-     "entities": ["sensor.0xa4c13858c97f07f8_temperature", "sensor.0xa4c13858c97f07f8_humidity"]},
+     "entities": ["sensor.0xa4c13858c97f07f8_temperature", "sensor.0xa4c13858c97f07f8_humidity"],
+     "panel": "climate-console-card", "panel_config": {"tab": "rooms", "fx": ["tinted_rooms"]},
+     "dashboard": "/dashboard-climate/rooms"},
     # Vestibule: the power station
     {"kind": "device", "room": "vestibule", "spot": "inverter",
      "entity": "sensor.powmr_inverter_ac_output_power", "name": "Inverter output", "icon": "mdi:flash",

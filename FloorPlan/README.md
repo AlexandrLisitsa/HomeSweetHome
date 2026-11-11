@@ -87,7 +87,8 @@ dashboard in a modal over the plan, and one on the router its console from the
 Network dashboard. The routes come from `make_dashboard.py`: the walls of the model are a graph,
 each wire takes the shortest way along their tops and drops to its icon from the
 wall point nearest it in the picture; `POWER` in `rooms.py` names the entities. Tap toggles what can be toggled and opens the dialog for
-the rest; holding always opens the dialog. Every icon, number, badge, chip, switch
+the rest; holding always opens the dialog. A climate badge's tap opens the Climate
+console's Rooms tab; on a phone's whole-flat view it shrinks to the rounded temperature. Every icon, number, badge, chip, switch
 and slider explains itself on hover, in the house tooltip format
 ([`dashboard-tooltips.md`](../HomeAssistant/docs/dashboard-tooltips.md)).
 

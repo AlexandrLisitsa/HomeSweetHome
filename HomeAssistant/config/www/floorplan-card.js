@@ -44,6 +44,14 @@
  * console and open whatever sits there (the inverter's "Grid down" pill). So a modal
  * swallows every click for its first GHOST_MS.
  *
+ * CLIMATE BADGES
+ * --------------
+ * A badge shows a room's temperature and humidity ("24.3 °C · 48%"). On a phone's
+ * whole-flat view that would crowd the 24 px icons, so it shrinks to a 10 px pill
+ * with the rounded temperature ("24 °C"); zoomed into a room it is whole again.
+ * With a `panel` (climate-console-card, its Rooms tab) a tap on it or its row opens
+ * that console over the plan; holding opens the temperature's dialog.
+ *
  * ROOM TINT
  * ---------
  * A room with a `tint` (its mask from build_overlays.py, as the alpha of a
@@ -137,7 +145,8 @@
  *     - { entity: switch.ac_plug, value: sensor.ac_plug_power, x: 82, y: 40, room: kitchen }
  *   badges:
  *     - { entities: [sensor.kitchen_temperature, sensor.kitchen_humidity],
- *         x: 70.8, y: 29.6, room: kitchen }
+ *         x: 70.8, y: 29.6, room: kitchen,
+ *         panel: climate-console-card, panel_config: { tab: rooms }, dashboard: /dashboard-climate/rooms }
  *   presence:
  *     - { entity: binary_sensor.hallway_motion, x: 30, y: 40, room: hallway, name: Motion }
  *   printers:          # entity is its print status; every other entity is optional but online
@@ -168,7 +177,7 @@
 const CARD = "floorplan-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "1.20.0";
+const VERSION = "1.21.0";
 
 // Glow colour for a lamp that reports none: the warm white it was rendered in.
 const WARM = [255, 180, 107];
@@ -1075,16 +1084,25 @@ class FloorplanCard extends HTMLElement {
       el.style.left = b.x + "%";
       el.style.top = b.y + "%";
       el.dataset.room = b.room || "";
-      el.addEventListener("click", () => this._moreInfo(b.entities[0]));
+      el.tabIndex = 0;
+      el.setAttribute("role", "button");
+      // The whole text, and the rounded temperature a phone's whole-flat view shows instead.
+      const full = this._el("span", "full", el);
+      const short = this._el("span", "short", el);
+      // With a console: tap opens it, hold the temperature's dialog. Without: tap opens that.
+      const open = b.panel ? () => this._openPanel(Object.assign({ entity: b.entities[0] }, b)) : null;
+      if (open) this._bindPress(el, b.entities[0], open);
+      else el.addEventListener("click", () => this._moreInfo(b.entities[0]));
       const row = this._el("div", "row info");
       row.dataset.room = b.room || "";
       const rowIcon = this._el("ha-icon", "info-icon", row);
       rowIcon.setAttribute("icon", "mdi:thermometer");
       const rowName = this._el("div", "name", row);
       const rowValue = this._el("div", "value", row);
-      row.addEventListener("click", () => this._moreInfo(b.entities[0]));
+      if (open) this._bindPress(row, b.entities[0], open);
+      else row.addEventListener("click", () => this._moreInfo(b.entities[0]));
       group(b.room).appendChild(row);
-      return { cfg: b, el, row, rowName, rowValue };
+      return { cfg: b, el, full, short, row, rowName, rowValue };
     });
 
     // Presence sensors: an icon with two rings behind it that ripple out while it sees someone.
@@ -1338,14 +1356,16 @@ class FloorplanCard extends HTMLElement {
 
     this._badges.forEach((B) => {
       const text = B.cfg.entities.map((id) => this._number(this._stateObj(id))).join(" · ");
-      B.el.textContent = text;
+      B.full.textContent = text;
+      B.short.textContent = this._number(this._stateObj(B.cfg.entities[0]), 0);
+      B.el.setAttribute("aria-label", (B.cfg.name || "Climate") + " " + text);
       B.rowValue.textContent = text;
       B.rowName.textContent = B.cfg.name || "Climate";
       const room = this._config.rooms.find((r) => r.id === B.cfg.room);
       const label = room ? (room.name || room.id) + " climate" : B.cfg.name || "Climate";
       const band = room && room.tint ? this._comfort(room.temperature) : null;
       B.el.dataset.tip = B.row.dataset.tip = label + " — " + spaced(text) + (band ? " · " + band[1] : "")
-        + "\n" + HELP.badge;
+        + "\n" + helpFor("badge", B.cfg);
     });
 
     this._presence.forEach((X) => {
@@ -1843,7 +1863,14 @@ dialog.panel::backdrop { background: rgba(0, 0, 0, 0.62); }
 .narrow .spot.dimmable .slider { display: none; }
 .narrow:not(.zoomed) .lamp:not(.small) { width: 24px; height: 24px; }
 .narrow:not(.zoomed) .lamp:not(.small) ha-icon { --mdc-icon-size: 14px; }
-.narrow:not(.zoomed) .pct, .narrow:not(.zoomed) .badge { display: none; }
+.narrow:not(.zoomed) .pct { display: none; }
+/* A badge: the whole text, except on a phone's whole-flat view, where it shrinks to a
+   small pill with the rounded temperature that clears the 24 px icons. */
+.badge .short { display: none; }
+.narrow:not(.zoomed) .badge { padding: 1px 5px; border-radius: 8px; font-size: 10px; line-height: 14px; }
+.narrow:not(.zoomed) .badge .full { display: none; }
+.narrow:not(.zoomed) .badge .short { display: inline; }
+.badge:focus-visible { outline: 2px solid var(--fp-on-plan); outline-offset: 2px; }
 .spot.elsewhere, .badge.elsewhere { display: none; }
 .badge {
   position: absolute;
