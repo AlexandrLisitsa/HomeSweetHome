@@ -8,7 +8,7 @@ Every print is a parametric model in **OpenSCAD + BOSL2**: code you can diff, wh
 
 | Print | What it is | Model | Doc |
 |---|---|---|---|
-| Ribbon box | AMS-style case for five satin ribbon rolls: PLA base with five bays and pull slots, clear PETG hinged lid | [`RibbonBox/ribbon_box.scad`](RibbonBox/ribbon_box.scad) | [docs/ribbon-box.md](docs/ribbon-box.md) |
+| Ribbon box | AMS-style case for five satin ribbon rolls, all PETG: base with five bays, ribbon clamps and pull slots, clear lid on two screw hinges | [`RibbonBox/ribbon_box.scad`](RibbonBox/ribbon_box.scad) | [docs/ribbon-box.md](docs/ribbon-box.md) |
 
 ## Layout
 
@@ -35,7 +35,7 @@ Prints/
 
 | Script | What it does | Changes anything live? |
 |---|---|---|
-| [`tools/scad_render.ps1`](tools/scad_render.ps1) | Renders one part of a `.scad` to STL + 3MF and four PNG views (iso, top, front, side) in `out/` next to the model. Fails on any OpenSCAD warning. Example: `tools/scad_render.ps1 RibbonBox/ribbon_box.scad -Part plate_pla` | No |
+| [`tools/scad_render.ps1`](tools/scad_render.ps1) | Renders one part of a `.scad` to STL + 3MF and four PNG views (iso, top, front, side) in `out/` next to the model. Fails on any OpenSCAD warning. Example: `tools/scad_render.ps1 RibbonBox/ribbon_box.scad -Part plate_base` | No |
 
 ## Docs
 
