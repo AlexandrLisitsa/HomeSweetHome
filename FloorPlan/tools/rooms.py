@@ -8,7 +8,8 @@ An A/C's `flow` names its piece in the model: the card draws its air leaving the
 POWER names the inverter's entities; the power path runs from its spot along the wall tops.
 A printer is one icon reading many entities (`printer`): its state, progress, heat, door,
 chamber light and errors; its `overlay` is the chamber light's, its `flow` the piece its
-heat drifts out of while the door is open.
+heat drifts out of while the door is open. Its `panel` is the custom card a tap opens in a
+modal (the console of its own `dashboard`, where the tap goes if that card is missing).
 """
 
 ROOMS = {
@@ -120,6 +121,7 @@ ITEMS = [
     # The 3D printer: no plug, so no power wire. Off is p2s_online off.
     {"kind": "printer", "room": "bedroom", "spot": "bedroom_printer", "entity": "sensor.p2s_print_status",
      "name": "3D printer", "icon": "mdi:printer-3d-nozzle", "overlay": "p2s_chamber", "flow": "3D printer P2S",
+     "panel": "p2s-printer-console-card", "dashboard": "/dashboard-printer",
      "printer": {
          "online": "binary_sensor.p2s_online",
          "stage": "sensor.p2s_current_stage",

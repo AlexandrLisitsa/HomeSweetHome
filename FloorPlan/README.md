@@ -67,7 +67,8 @@ as the `p2s_plate_cool` alert); red *Error* on a failed job or an HMS error, wit
 chip on the plan unless an outage outranks it. Its chamber light has a rendered overlay
 like a lamp's. An open door puts a door pip on the icon (amber while it prints or
 heats), and while the printer is warm its heat drifts out of the front, the A/C's
-airflow drawn in amber (`flow` names the piece). Tap opens its camera, hold its status;
+airflow drawn in amber (`flow` names the piece). Tap opens its console (`panel`, the
+card of `/dashboard-printer`) in a modal over the plan, hold its status;
 on a phone its row has a switch for the chamber light. It has no smart plug, so no
 power wire runs to it.
 
