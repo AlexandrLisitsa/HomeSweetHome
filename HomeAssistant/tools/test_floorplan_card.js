@@ -742,11 +742,26 @@ group = "printer: ";
     fire(r.card._printers[0].sw, "click");
     eq("the row switch toggles the chamber light", r.hass.calls.map((c) => c[1] + " " + c[2].entity_id),
       ["toggle " + PR.light]);
+    // The error chip opens the printer console, like the icon; without it, the HMS dialog.
+    const cm = modal();
+    cm.card.hass = mkHass(house(printer(PR, { error: "on" })));
+    cm.L.flushTimers();
+    const chipSeen = [];
+    cm.card.addEventListener("hass-more-info", (e) => chipSeen.push(e.detail.entityId));
+    const chipEl = cm.card.shadowRoot.querySelector(".status");
+    check("the printer error shows its chip", !chipEl.hidden && /3D printer: error/.test(chipEl.textContent));
+    eq("…whose tooltip says a tap opens the console", chipEl.dataset.tip.split("\n").pop(),
+      "Tap: opens the printer console over the plan.");
+    fire(chipEl, "click");
+    const chipDlg = cm.dialog();
+    eq("the printer chip opens the printer console in its fixed box, no dialog",
+      [!!chipDlg && !!chipDlg.querySelector(PR.panel), !!chipDlg && chipDlg.classList.contains("fill"), chipSeen],
+      [true, true, []]);
     const chip = render(printer(PR, { error: "on" }));
     const opened = [];
     chip.card.addEventListener("hass-more-info", (e) => opened.push(e.detail.entityId));
     fire(chip.$(".status"), "click");
-    eq("the printer chip opens the HMS errors", opened, [PR.hms]);
+    eq("without the console card or a router, the chip opens the HMS errors", opened, [PR.hms]);
   }
 }
 
