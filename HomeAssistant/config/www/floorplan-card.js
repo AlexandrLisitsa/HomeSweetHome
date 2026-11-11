@@ -34,8 +34,10 @@
  * shows its air leaving the unit while it runs, in the colour of its mode.
  * Tapping toggles what can be toggled (lights, switches, the TV) and opens the
  * dialog for the rest; holding always opens the dialog. A device with a `panel`
- * (each A/C: its tab of climate-console-card, set up by `panel_config`) opens
- * that card in a modal over the plan instead, as the printer does.
+ * opens that card in a modal over the plan instead, as the printer does, set up by
+ * `panel_config`: each A/C its tab of climate-console-card, the inverter
+ * powmr-inverter-console-card, the pack jkbms-battery-console-card. Its tooltip's
+ * tap line is then PANEL_TAP.
  *
  * ROOM TINT
  * ---------
@@ -157,7 +159,7 @@
 const CARD = "floorplan-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "1.17.1";
+const VERSION = "1.18.0";
 
 // Glow colour for a lamp that reports none: the warm white it was rendered in.
 const WARM = [255, 180, 107];
@@ -258,8 +260,7 @@ const HELP = {
   switch: "Switches it on or off, the same as a tap on its icon.\n"
     + "E.g. off on a lamp darkens its room on the plan; off on an A/C plug cuts that A/C.",
   ac: "The room's A/C: its mode and target; while it runs, air streams out in the mode's colour.\n"
-    + "E.g. Cool 23°: blue streams, Heat orange; the living room unit shows its last sent mode.\n"
-    + "Tap: opens its climate console over the plan. Hold it for 500 ms: opens its dialog.",
+    + "E.g. Cool 23°: blue streams, Heat orange; the living room unit shows its last sent mode.",
   plug: "A switched device; with a meter on it, the power it draws right now.\n"
     + "E.g. an A/C plug at 25–60 W: the A/C's fan alone; from about 150 W, its compressor.\n"
     + PRESS,
@@ -272,8 +273,7 @@ const HELP = {
     + "E.g. 27 °C: a faint warm wash, deeper each degree up to 34 °C; under 20 °C, a cool one.\n"
     + "Tap: opens the temperature's dialog.",
   hub: "The inverter every socket runs through: the power it gives the house, and its source.\n"
-    + "E.g. 274 W to the house · on battery while the pack gives 300 W: the inverter uses 26 W.\n"
-    + "Tap: opens its dialog.",
+    + "E.g. 274 W to the house · on battery while the pack gives 300 W: the inverter uses 26 W.",
   down: "The inverter sees no mains, so the whole flat runs on the 280 Ah pack.\n"
     + "E.g. 3.4 h left at the current draw; load shedding steps the A/Cs down at 80 % and 60 %.\n"
     + "The grid counts as back after 5 minutes of steady 185–250 V.",
@@ -296,6 +296,16 @@ const HELP = {
     + "E.g. 5 lights and 8 devices across six rooms, each room under its own heading.\n"
     + "This phone remembers the choice.",
 };
+
+// What a tap does on anything with a console (`panel`): it replaces the help's own tap line.
+const PANEL_TAP = "Tap: opens its console over the plan. Hold it for 500 ms: opens its dialog.";
+
+/** HELP[kind] for this item: with a `panel`, its tap line is PANEL_TAP. */
+function helpFor(kind, item) {
+  const lines = HELP[kind].split("\n");
+  if (!item || !item.panel) return lines.join("\n");
+  return lines.filter((l) => !/^Tap\b/.test(l)).concat(PANEL_TAP).join("\n");
+}
 
 class FloorplanCard extends HTMLElement {
   constructor() {
@@ -1252,7 +1262,7 @@ class FloorplanCard extends HTMLElement {
       D.name.textContent = name;
       const domain = this._domain(D.cfg.entity);
       const kind = domain === "climate" ? "ac" : TOGGLES.indexOf(domain) >= 0 ? "plug" : "reading";
-      D.btn.dataset.tip = D.label.dataset.tip = D.head.dataset.tip = name + " — " + spaced(look.text) + "\n" + HELP[kind];
+      D.btn.dataset.tip = D.label.dataset.tip = D.head.dataset.tip = name + " — " + spaced(look.text) + "\n" + helpFor(kind, D.cfg);
       for (const el of [D.btn, D.rowLamp]) {
         el.setAttribute("aria-label", name);
         el.classList.toggle("on", look.active);
@@ -1410,7 +1420,7 @@ class FloorplanCard extends HTMLElement {
       hub.label.textContent = hub.value.textContent = text;
       hub.btn.dataset.tip = hub.label.dataset.tip = hub.head.dataset.tip = this._name(hub.cfg, hub.cfg.entity)
         + " — " + text + (own > 0 ? " · uses " + watt(own) + " itself" : "") + (mode ? " (" + mode + ")" : "")
-        + "\n" + HELP.hub;
+        + "\n" + helpFor("hub", hub.cfg);
     }
     // The pack says which way its power goes: + charging, − feeding the house.
     const pack = this._devices.find((D) => D.cfg.entity === P.battery_entity);

@@ -158,7 +158,12 @@ ITEMS = [
      "entities": ["sensor.0xa4c13858c97f07f8_temperature", "sensor.0xa4c13858c97f07f8_humidity"]},
     # Vestibule: the power station
     {"kind": "device", "room": "vestibule", "spot": "inverter",
-     "entity": "sensor.powmr_inverter_ac_output_power", "name": "Inverter output", "icon": "mdi:flash"},
+     "entity": "sensor.powmr_inverter_ac_output_power", "name": "Inverter output", "icon": "mdi:flash",
+     "panel": "powmr-inverter-console-card", "panel_config": {"fx": ["power_glow", "chart_polish"]},
+     "dashboard": "/dashboard-inverter/0"},
     {"kind": "device", "room": "vestibule", "spot": "inverter_battery",
-     "entity": "sensor.jkbms_gateway_bms_state_of_charge", "name": "Battery", "icon": "mdi:battery"},
+     "entity": "sensor.jkbms_gateway_bms_state_of_charge", "name": "Battery", "icon": "mdi:battery",
+     "panel": "jkbms-battery-console-card",
+     "panel_config": {"fx": ["power_glow", "liquid_soc", "balance_pulse", "chart_polish"]},
+     "dashboard": "/dashboard-inverter/battery"},
 ]

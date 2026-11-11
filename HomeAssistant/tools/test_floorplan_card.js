@@ -728,23 +728,28 @@ group = "printer: ";
   }
 }
 
-/* --- each A/C opens its climate console ------------------------------------ */
+/* --- a device with a console opens it in a modal --------------------------- */
 
-group = "A/C console: ";
+group = "consoles: ";
 {
-  const ACS = CFG.devices.filter((d) => d.entity.startsWith("climate."));
-  eq("both A/Cs have a console", ACS.map((d) => [d.panel, d.panel_config && d.panel_config.tab, d.dashboard]),
-    [["climate-console-card", "bedroom", "/dashboard-climate/bedroom"],
-      ["climate-console-card", "hall", "/dashboard-climate/living-room"]]);
-  check("only the A/Cs have one", CFG.devices.filter((d) => d.panel).length === ACS.length);
+  const WITH = CFG.devices.filter((d) => d.panel);
+  eq("the A/Cs, the inverter and the pack have a console",
+    WITH.map((d) => [d.entity, d.panel, d.dashboard]),
+    [["climate.153931629566331_climate", "climate-console-card", "/dashboard-climate/bedroom"],
+      ["climate.daewoo_a_c", "climate-console-card", "/dashboard-climate/living-room"],
+      [P.hub_entity, "powmr-inverter-console-card", "/dashboard-inverter/0"],
+      [P.battery_entity, "jkbms-battery-console-card", "/dashboard-inverter/battery"]]);
+  eq("each A/C opens its own tab", WITH.filter((d) => d.panel === "climate-console-card")
+    .map((d) => d.panel_config.tab), ["bedroom", "hall"]);
+  const TAGS = new Set(WITH.map((d) => d.panel));
 
   // A fresh card per press (see the lamp's): a tap's cancelled hold timer still fires on a flush.
   const mount = () => {
     const L = loadCard("floorplan-card.js");
-    L.sandbox.window.customElements = { get: (t) => (t === "climate-console-card" ? class {} : undefined) };
+    L.sandbox.window.customElements = { get: (t) => (TAGS.has(t) ? class {} : undefined) };
     L.sandbox.document.createElement = ((make) => (t) => {
       const e = make(t);
-      if (t === "climate-console-card") { e.configs = []; e.setConfig = function (c) { this.configs.push(c); }; }
+      if (TAGS.has(t)) { e.configs = []; e.setConfig = function (c) { this.configs.push(c); }; }
       return e;
     })(L.sandbox.document.createElement);
     const card = new L.Card();
@@ -755,42 +760,47 @@ group = "A/C console: ";
     card.addEventListener("hass-more-info", (e) => seen.push(e.detail.entityId));
     return { L, card, seen, dialog: () => card.shadowRoot.querySelector("dialog.panel") };
   };
-  for (const ac of ACS) {
-    const tab = ac.panel_config.tab;
+  for (const dev of WITH) {
+    const who = dev.panel_config.tab || dev.panel;
     let m = mount();
-    let D = m.card._devices.find((x) => x.cfg.entity === ac.entity);
+    let D = m.card._devices.find((x) => x.cfg.entity === dev.entity);
     fire(D.btn, "pointerdown", { button: 0 });
     fire(D.btn, "pointerup");
     const dlg = m.dialog();
-    const el = dlg && dlg.querySelector("climate-console-card");
-    eq(tab + ": a tap opens its console with its tab", el && el.configs, [ac.panel_config]);
-    check(tab + ": the console gets hass", !!el && el.hass === m.card._hass);
-    check(tab + ": the modal sizes to the console (not a fixed box)", !dlg.classList.contains("fill"));
-    eq(tab + ": …and no entity dialog or service call", [m.seen, m.card._hass.calls.length], [[], 0]);
+    const el = dlg && dlg.querySelector(dev.panel);
+    eq(who + ": a tap opens its console with its config", el && el.configs, [dev.panel_config]);
+    check(who + ": the console gets hass", !!el && el.hass === m.card._hass);
+    check(who + ": the modal sizes to the console (not a fixed box)", !dlg.classList.contains("fill"));
+    eq(who + ": …and no entity dialog or service call", [m.seen, m.card._hass.calls.length], [[], 0]);
+    const tip = D.btn.dataset.tip.split("\n");
+    eq(who + ": its tooltip ends with the console's tap line, once",
+      [tip[tip.length - 1], tip.filter((l) => /^Tap\b/.test(l)).length],
+      ["Tap: opens its console over the plan. Hold it for 500 ms: opens its dialog.", 1]);
     fire(dlg, "close");
-    check(tab + ": closing removes it", !m.dialog());
+    check(who + ": closing removes it", !m.dialog());
 
     m = mount();
-    D = m.card._devices.find((x) => x.cfg.entity === ac.entity);
+    D = m.card._devices.find((x) => x.cfg.entity === dev.entity);
     fire(D.btn, "pointerdown", { button: 0 });
     m.L.flushTimers();
     fire(D.btn, "pointerup");
-    eq(tab + ": a hold still opens its dialog, no modal", [m.seen, !!m.dialog()], [[ac.entity], false]);
+    eq(who + ": a hold still opens its dialog, no modal", [m.seen, !!m.dialog()], [[dev.entity], false]);
 
     m = mount();
-    D = m.card._devices.find((x) => x.cfg.entity === ac.entity);
+    D = m.card._devices.find((x) => x.cfg.entity === dev.entity);
     fire(D.rowLamp, "pointerdown", { button: 0 });
     fire(D.rowLamp, "pointerup");
-    check(tab + ": its phone row's icon opens it too", !!m.dialog());
+    check(who + ": its phone row's icon opens it too", !!m.dialog());
   }
 
-  // A plug is not an A/C: its tap still toggles it.
+  // A plug has no console: its tap still toggles it, and its tooltip keeps its own tap line.
   const m = mount();
   const plug = m.card._devices.find((x) => x.cfg.entity.startsWith("switch."));
   fire(plug.btn, "pointerdown", { button: 0 });
   fire(plug.btn, "pointerup");
   eq("a plug's tap still toggles it", [m.card._hass.calls.map((c) => c[1] + " " + c[2].entity_id), !!m.dialog()],
     [["toggle " + plug.cfg.entity], false]);
+  check("a plug's tooltip does not promise a console", !/console/.test(plug.btn.dataset.tip));
 }
 
 /* --- report ---------------------------------------------------------------- */
