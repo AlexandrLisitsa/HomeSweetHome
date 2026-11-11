@@ -89,7 +89,7 @@
  * prints, the ring filling with the job and the label "42% · 1 h 10 m"; amber Paused;
  * ice-blue Cooling while the plate is 40 °C or more after a job (the ring drains as it
  * cools), then green "Take it off" for two hours; red Error, with a red chip on the plan
- * when nothing outranks it. Its chamber light has an overlay like a lamp's. An open
+ * when nothing outranks it (a tap on the chip opens the console too). Its chamber light has an overlay like a lamp's. An open
  * door puts a door pip on the icon (amber while it prints or heats), and while the
  * printer is warm its heat drifts out of the front (`flow`, like an A/C's air). Tap:
  * its console (`panel`, the card of the printer's own dashboard) in a modal over the
@@ -168,7 +168,7 @@
 const CARD = "floorplan-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "1.19.0";
+const VERSION = "1.20.0";
 
 // Glow colour for a lamp that reports none: the warm white it was rendered in.
 const WARM = [255, 180, 107];
@@ -296,7 +296,7 @@ const HELP = {
     + "E.g. on to look at a print through the door or on the camera; it uses a couple of watts.",
   printer_error: "The 3D printer reports a fault: a failed print or an HMS error.\n"
     + "E.g. a filament runout or a clogged nozzle; the message is on the printer's screen.\n"
-    + "Tap: opens the HMS error's dialog.",
+    + "Tap: opens the printer console over the plan.",
   chip: "Zooms the plan to this room and lists only its controls below it.\n"
     + "E.g. Bedroom: its A/C and plug, the router, the 3D printer and the room's climate.\n"
     + "This phone remembers the choice.",
@@ -1023,9 +1023,14 @@ class FloorplanCard extends HTMLElement {
       this._status.addEventListener("click", () => {
         const s = this._status.dataset.kind;
         const entity = s === "printer_error" ? this._printerChip : s === "dtek" ? P.dtek_start : s ? P.runtime : P.down;
+        const fault = this._printerFault;
         if (P.panel && POWER_CHIPS.indexOf(s) >= 0) {
           this._openPanel({ panel: P.panel, panel_config: P.panel_config, dashboard: P.dashboard,
             entity: entity, name: "Shutdowns" });
+        } else if (s === "printer_error" && fault && fault.panel) {
+          // The faulty printer's console; without it, its dashboard, else the HMS dialog.
+          this._openPanel({ panel: fault.panel, panel_config: fault.panel_config, panel_fill: fault.panel_fill,
+            dashboard: fault.dashboard, entity: entity, name: fault.name });
         } else {
           this._moreInfo(entity);
         }
@@ -1483,6 +1488,7 @@ class FloorplanCard extends HTMLElement {
     // A printer fault, when nothing about the house's power outranks it.
     const faulty = this._printers.find((R) => R.look && R.look.state === "error");
     this._printerChip = faulty ? faulty.cfg.hms || faulty.cfg.error || faulty.cfg.entity : null;
+    this._printerFault = faulty ? faulty.cfg : null;
     if (!status && faulty) {
       const name = this._name(faulty.cfg, faulty.cfg.entity);
       status = { kind: "printer_error", text: name + ": " + faulty.look.text.toLowerCase(),
