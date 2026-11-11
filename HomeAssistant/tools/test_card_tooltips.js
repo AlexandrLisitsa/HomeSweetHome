@@ -56,6 +56,7 @@ const FILES = {
   "custom:dtek-shutdowns-card": "dtek-shutdowns-card.js",
   "custom:load-shedding-card": "load-shedding-card.js",
   "custom:p2s-printer-console-card": "p2s-printer-console-card.js",
+  "custom:router-console-card": "router-console-card.js",
 };
 
 const INTERACTIVE = "[data-more], [data-act], [role=button], [role=switch], button, select, input, textarea";
@@ -72,6 +73,7 @@ const READ_ONLY = {
     ".legend span", ".stamp", ".kv div", ".arc", ".ctr", ".tlname", ".blk"],
   "floorplan-card.js": [".badge", ".row .value", ".pct"],
   "p2s-printer-console-card.js": [".pill", ".doorchip", ".kv", ".slot", ".tag", ".vpbox", ".cambox", ".pct", ".pbar"],
+  "router-console-card.js": [".pill", ".tile", ".plot"],
 };
 
 /** Selectors that are in scope by the rules above but exempt by the standard. */
@@ -83,6 +85,7 @@ const EXEMPT = {
   "dtek-shutdowns-card.js": [],
   "floorplan-card.js": [],
   "p2s-printer-console-card.js": [],
+  "router-console-card.js": [],
 };
 
 /**
@@ -90,6 +93,12 @@ const EXEMPT = {
  * its full layout. Return a map of entity id -> state object.
  */
 const FIXTURES = {
+  // A made-up address in the CGNAT range: the real one never goes in git.
+  "router-console-card.js": () => ({
+    "sensor.archer_c80_ac1900_mu_mimo_wi_fi_router_download_speed": S("2311.4", { unit_of_measurement: "KiB/s" }),
+    "sensor.archer_c80_ac1900_mu_mimo_wi_fi_router_upload_speed": S("187.2", { unit_of_measurement: "KiB/s" }),
+    "sensor.archer_c80_ac1900_mu_mimo_wi_fi_router_external_ip": S("100.64.0.10"),
+  }),
   // A night charge two minutes into a grid return: both plans charging, so
   // the AC charge chip's sub-labels draw, and the pill's countdown runs.
   "powmr-inverter-console-card.js": () => {

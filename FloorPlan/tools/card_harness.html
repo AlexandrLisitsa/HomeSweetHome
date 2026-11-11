@@ -59,11 +59,13 @@
   });
   customElements.define("ha-icon", class extends HTMLElement {});
   await import("/HomeAssistant/config/www/floorplan-card.js");
-  // The consoles a tap opens in a modal: the printer's, each A/C's, the inverter's, the pack's.
+  // The consoles a tap opens in a modal: the printer's, each A/C's, the inverter's, the pack's,
+  // the router's.
   await import("/HomeAssistant/config/www/p2s-printer-console-card.js");
   await import("/HomeAssistant/config/www/climate-console-card.js");
   await import("/HomeAssistant/config/www/powmr-inverter-console-card.js");
   await import("/HomeAssistant/config/www/jkbms-battery-console-card.js");
+  await import("/HomeAssistant/config/www/router-console-card.js");
 
   const q = new URLSearchParams(location.search);
   const onParam = q.get("on") || "all";

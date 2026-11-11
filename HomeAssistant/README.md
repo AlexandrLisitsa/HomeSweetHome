@@ -65,6 +65,9 @@ read before it goes live, and a `git revert` if it was wrong.
   ha-bambulab. The phones hear when a print is done or failed, or when the
   printer reports a problem, and a **3D printer** dashboard shows the job,
   camera, temperatures and filament ([`docs/bambu-printer.md`](docs/bambu-printer.md)).
+- **Router**: the Archer C80 over UPnP. A **Network** dashboard shows its live
+  download and upload, their history, and its WAN address
+  ([`docs/router-dashboard.md`](docs/router-dashboard.md)).
 - **Google Home and Gemini**: entities exposed through the Google Assistant
   integration, with the spoken names kept in a git-ignored file
   ([`docs/private-files.md`](docs/private-files.md)). Google reaches the box
@@ -145,6 +148,7 @@ sh tools/ha_get.sh /api/config
 | `tools/test_dtek_card.js` | the DTEK card's hero, Next window tile and today/tomorrow grid against the applied schedule, on a pinned clock | no — pure local |
 | `tools/test_card_fx.js` | `config/www/card-fx.js`, the cards' visual effects: the `fx` key, data-fx on the host, the off-screen pause | no — pure local |
 | `tools/test_card_tooltips.js` | renders every custom card and checks each meaningful element's tooltip against [the standard](docs/dashboard-tooltips.md); `tools/fake_dom.js` is the small DOM it, `test_power_cards.js` and `test_floorplan_card.js` share | no — pure local |
+| `tools/test_router_card.js` | the router console card: units, the status pill, the WAN address's kind, today's peak and average, the statistics ranges, no timer off the page | no — pure local |
 | `tools/test_floorplan_card.js` | the Home floor plan card with its real config: room tints, the power path's streams and labels, the DTEK chip, outage mode with load shedding's marks, patching and taps | no — pure local |
 | `tools/ha_www_push.sh` | pushes `config/www/` (the custom cards) to the box over SSH; follow with `ha_dashboard.py --card` to bump the resource version — **changes the house** | yes, deliberately |
 
@@ -191,6 +195,7 @@ node tools/test_climate_chart.js
 node tools/test_card_fx.js
 node tools/test_card_tooltips.js
 node tools/test_floorplan_card.js
+node tools/test_router_card.js
 python ../FloorPlan/tools/check_rooms.py
 ```
 
@@ -239,6 +244,7 @@ job or a nearly full Drive to `notify.household`.
 | [`docs/climate-dashboard.md`](docs/climate-dashboard.md) | the climate dashboard and its checker |
 | [`docs/dashboard-tooltips.md`](docs/dashboard-tooltips.md) | the tooltip standard every custom card follows: format, scope, examples, the CI check |
 | [`docs/ac-features.md`](docs/ac-features.md) | the inventory of both A/C units' features the climate card is built from |
+| [`docs/router-dashboard.md`](docs/router-dashboard.md) | the router console and the Network dashboard: where its numbers come from, CGNAT, deploying |
 | [`docs/bambu-printer.md`](docs/bambu-printer.md) | the Bambu Lab P2S: how it is connected, its entities, the print alerts and its dashboard |
 | [`docs/renaming-entities.md`](docs/renaming-entities.md) | renaming entity ids across the registry, dashboards and YAML |
 | [`docs/remote-access-security.md`](docs/remote-access-security.md) | how HA is reached from the internet: the traffic flow, and how each request is accepted or denied |

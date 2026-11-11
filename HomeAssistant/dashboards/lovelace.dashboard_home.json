@@ -174,7 +174,10 @@
                   "icon": "mdi:router-wireless",
                   "x": 65.6,
                   "y": 64.8,
-                  "room": "bedroom"
+                  "room": "bedroom",
+                  "panel": "router-console-card",
+                  "panel_config": {},
+                  "dashboard": "/dashboard-network/router"
                 },
                 {
                   "entity": "climate.daewoo_a_c",
