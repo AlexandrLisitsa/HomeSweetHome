@@ -274,6 +274,7 @@ for item in ITEMS:
     elif item["kind"] == "printer":
         card["printers"].append({"entity": item["entity"], "name": item["name"], "icon": item["icon"],
                                  "overlay": url(item["overlay"]), **item["printer"],
+                                 **{k: item[k] for k in ("panel", "dashboard") if k in item},
                                  "flow": flow(item["flow"], item["room"], **PRINTER_FLOW), **common})
     elif item["kind"] == "presence":
         card["presence"].append({"entity": item["entity"], "name": item["name"], "icon": item["icon"], **common})

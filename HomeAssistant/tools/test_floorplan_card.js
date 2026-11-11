@@ -635,8 +635,78 @@ group = "printer: ";
       fire(R.btn, "pointerup");
       return [r.hass.calls.length, seen];
     };
-    eq("a tap opens its camera", press(false), [0, [PR.camera]]);
+    eq("without the console card or a router, a tap opens its camera", press(false), [0, [PR.camera]]);
     eq("a hold opens its status", press(true), [0, [PR.entity]]);
+
+    // With the console card loaded, a tap opens it in a modal over the plan.
+    check("the printer names its console and dashboard", PR.panel === "p2s-printer-console-card"
+      && PR.dashboard === "/dashboard-printer");
+    const modal = () => {
+      const L = loadCard("floorplan-card.js");
+      class Console { constructor() { this.configs = []; } setConfig(c) { this.configs.push(c); } }
+      const registry = { get: (t) => (t === PR.panel ? Console : undefined) };
+      L.sandbox.window.customElements = registry;
+      L.sandbox.document.createElement = ((make) => (t) => {
+        const e = make(t);
+        if (t === PR.panel) { e.configs = []; e.setConfig = function (c) { this.configs.push(c); }; }
+        return e;
+      })(L.sandbox.document.createElement);
+      const card = new L.Card();
+      card.setConfig(JSON.parse(JSON.stringify(CFG)));
+      card.hass = mkHass(house(printer(PR, {})));
+      L.flushTimers();
+      const R = card._printers[0];
+      const tap = (el) => { fire(el, "pointerdown", { button: 0 }); fire(el, "pointerup"); };
+      return { L, card, R, tap, dialog: () => card.shadowRoot.querySelector("dialog.panel") };
+    };
+    const m = modal();
+    const seen = [];
+    m.card.addEventListener("hass-more-info", (e) => seen.push(e.detail.entityId));
+    m.tap(m.R.btn);
+    const dlg = m.dialog();
+    check("a tap opens the console modal", !!dlg && dlg.hasAttribute("open"));
+    eq("…and no entity dialog", seen, []);
+    const consoleEl = dlg && dlg.querySelector(PR.panel);
+    check("the modal holds the console card, configured", !!consoleEl && consoleEl.configs.length === 1);
+    check("the console gets hass", !!consoleEl && consoleEl.hass === m.card._hass);
+    const h2 = mkHass(house(printer(PR, { status: "running" })));
+    m.card.hass = h2;
+    check("…and every new hass", consoleEl.hass === h2);
+    check("the modal has a close button with a name", !!dlg.querySelector(".panel-close")
+      && dlg.querySelector(".panel-close").getAttribute("aria-label") === "Close");
+    fire(dlg.querySelector(".panel-close"), "click");
+    check("the cross closes it and removes the console", !m.dialog() && !m.card._panel);
+
+    m.tap(m.R.btn);
+    m.tap(m.R.btn);
+    eq("a second tap still leaves one modal", m.card.shadowRoot.querySelectorAll("dialog.panel").length, 1);
+    fire(m.dialog().querySelector(".panel-body"), "click");
+    check("a click inside keeps it open", !!m.dialog());
+    fire(m.dialog(), "click");
+    check("a click on the backdrop closes it", !m.dialog());
+
+    m.tap(m.R.btn);
+    fire(m.dialog(), "close");
+    check("Esc (the dialog's close) removes it", !m.dialog() && !m.card._panel);
+
+    m.tap(m.R.rowLamp);
+    check("the phone row's icon opens it too", !!m.dialog());
+    m.card.disconnectedCallback();
+    check("leaving the page closes it", !m.dialog());
+
+    // The console card missing but a router there: the tap goes to the printer's dashboard.
+    const L2 = loadCard("floorplan-card.js");
+    const pushed = [];
+    const events = [];
+    L2.sandbox.window.history = { pushState: (_s, _t, url) => pushed.push(url) };
+    L2.sandbox.window.dispatchEvent = (ev) => events.push(ev.type);
+    const c2 = new L2.Card();
+    c2.setConfig(JSON.parse(JSON.stringify(CFG)));
+    c2.hass = mkHass(house(printer(PR, {})));
+    L2.flushTimers();
+    fire(c2._printers[0].btn, "pointerdown", { button: 0 });
+    fire(c2._printers[0].btn, "pointerup");
+    eq("without the console card a tap goes to its dashboard", [pushed, events], [[PR.dashboard], ["location-changed"]]);
     const r = render(printer(PR, {}));
     fire(r.card._printers[0].sw, "click");
     eq("the row switch toggles the chamber light", r.hass.calls.map((c) => c[1] + " " + c[2].entity_id),

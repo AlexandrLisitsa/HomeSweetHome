@@ -53,9 +53,14 @@
   }
 }</script>
 <script type="module">
-  customElements.define("ha-card", class extends HTMLElement {});
+  // A block, like HA's own ha-card: an inline box has no size for container queries.
+  customElements.define("ha-card", class extends HTMLElement {
+    connectedCallback() { if (!this.style.display) this.style.display = "block"; }
+  });
   customElements.define("ha-icon", class extends HTMLElement {});
   await import("/HomeAssistant/config/www/floorplan-card.js");
+  // The printer console a tap opens in a modal.
+  await import("/HomeAssistant/config/www/p2s-printer-console-card.js");
 
   const q = new URLSearchParams(location.search);
   const onParam = q.get("on") || "all";

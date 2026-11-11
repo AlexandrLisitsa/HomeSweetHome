@@ -81,7 +81,11 @@
  * when nothing outranks it. Its chamber light has an overlay like a lamp's. An open
  * door puts a door pip on the icon (amber while it prints or heats), and while the
  * printer is warm its heat drifts out of the front (`flow`, like an A/C's air). Tap:
- * its camera. Hold: its status.
+ * its console (`panel`, the card of the printer's own dashboard) in a modal over the
+ * plan; Esc, the cross or a click beside it closes it. The console card is made when
+ * the modal opens and removed when it closes, so its camera refresh stops with it.
+ * Without that card loaded the tap goes to `dashboard`, else to the camera. Hold: its
+ * status.
  *
  * PRESENCE
  * --------
@@ -127,7 +131,8 @@
  *     - { entity: sensor.p2s_print_status, online: binary_sensor.p2s_online, x: 40, y: 30,
  *         room: bedroom, overlay: /local/floorplan/p2s_chamber.png?v=1, flow: ["M ..."],
  *         progress, remaining, stage, bed, bed_target, nozzle, nozzle_target,
- *         door, light, error, hms, camera }
+ *         door, light, error, hms, camera,
+ *         panel: p2s-printer-console-card, dashboard: /dashboard-printer }
  *   day_image: /local/floorplan/base_day.png?v=1    # optional, with sun
  *   sun: sun.sun
  *
@@ -148,7 +153,7 @@
 const CARD = "floorplan-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "1.15.0";
+const VERSION = "1.16.0";
 
 // Glow colour for a lamp that reports none: the warm white it was rendered in.
 const WARM = [255, 180, 107];
@@ -274,7 +279,7 @@ const HELP = {
     + "E.g. 14:00–18:00: the pack is charged up beforehand so the house rides it out.",
   printer: "The 3D printer: its colour says what it does; the ring fills with heat or the print.\n"
     + "E.g. blue 42% · 1 h 10 m: printing; amber: heating; ice-blue: cooling; green: Take it off.\n"
-    + "Tap: opens its camera. Hold it for 500 ms: opens its status.",
+    + "Tap: opens the printer console over the plan. Hold it for 500 ms: opens its status.",
   chamber: "Switches the light inside the 3D printer; the corner round it lights up on the plan.\n"
     + "E.g. on to look at a print through the door or on the camera; it uses a couple of watts.",
   printer_error: "The 3D printer reports a fault: a failed print or an HMS error.\n"
@@ -368,6 +373,7 @@ class FloorplanCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    if (this._panel) this._panel.card.hass = hass;
     if (this._config) this._render();
   }
 
@@ -396,6 +402,7 @@ class FloorplanCard extends HTMLElement {
   }
 
   disconnectedCallback() {
+    this._closePanel();
     if (this._resize) this._resize.disconnect();
     if (this._seen) this._seen.disconnect();
     if (typeof document.removeEventListener === "function") {
@@ -705,6 +712,50 @@ class FloorplanCard extends HTMLElement {
     }));
   }
 
+  /**
+   * A printer's console in a modal over the plan: a <dialog> in the top layer, so no
+   * dashboard layout or z-index can cover it. The card lives only while it is open.
+   */
+  _openPanel(p) {
+    const tag = p.panel;
+    if (!tag || !window.customElements || !window.customElements.get(tag)) {
+      if (p.dashboard && window.history && typeof window.history.pushState === "function") {
+        window.history.pushState(null, "", p.dashboard);
+        window.dispatchEvent(new CustomEvent("location-changed", { detail: { replace: false } }));
+      } else {
+        this._moreInfo(p.camera || p.entity);
+      }
+      return;
+    }
+    this._closePanel();
+    const dialog = this._el("dialog", "panel", this.shadowRoot);
+    dialog.setAttribute("aria-label", p.name || "3D printer");
+    const close = this._el("button", "panel-close", dialog);
+    close.setAttribute("aria-label", "Close");
+    this._el("ha-icon", null, close).setAttribute("icon", "mdi:close");
+    close.addEventListener("click", () => this._closePanel());
+    const body = this._el("div", "panel-body", dialog);
+    const card = document.createElement(tag);
+    if (typeof card.setConfig === "function") card.setConfig(p.panel_config || {});
+    if (this._hass) card.hass = this._hass;
+    body.appendChild(card);
+    // A click on the backdrop lands on the dialog itself; one inside lands on the body.
+    dialog.addEventListener("click", (ev) => { if (ev.target === dialog) this._closePanel(); });
+    // Esc closes a modal dialog by itself; the card still has to go.
+    dialog.addEventListener("close", () => this._closePanel());
+    this._panel = { dialog, card };
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.setAttribute("open", "");
+  }
+
+  _closePanel() {
+    const P = this._panel;
+    if (!P) return;
+    this._panel = null;
+    if (P.dialog.open && typeof P.dialog.close === "function") P.dialog.close();
+    if (P.dialog.parentNode) P.dialog.parentNode.removeChild(P.dialog);
+  }
+
   _call(domain, service, data) {
     if (this._hass) this._hass.callService(domain, service, data);
   }
@@ -820,6 +871,7 @@ class FloorplanCard extends HTMLElement {
   _build() {
     const cfg = this._config;
     const root = this.shadowRoot;
+    this._closePanel();
     root.innerHTML = "";
     this._el("style", null, root).textContent = STYLE;
 
@@ -1025,7 +1077,7 @@ class FloorplanCard extends HTMLElement {
         });
         air.appendChild(flow);
       }
-      const camera = () => this._moreInfo(p.camera || p.entity);
+      const camera = () => this._openPanel(p);
       const spot = this._el("div", "spot printer", plane);
       spot.style.left = p.x + "%";
       spot.style.top = p.y + "%";
@@ -1576,6 +1628,28 @@ ha-card { display: block; overflow: hidden; background: var(--fp-surface); color
   .stream path.current { animation: none; }
 }
 .narrow:not(.zoomed) .flow path { stroke-width: 4; }
+/* A printer's console over the plan. The console card fills the box it is given:
+   --p2s-height sets its height, and its width follows the body. */
+dialog.panel {
+  position: fixed; inset: 0; margin: auto;
+  width: min(1280px, 94vw); height: min(820px, 90dvh);
+  max-width: none; max-height: none; padding: 0; border: 0; border-radius: 16px;
+  overflow: hidden; background: var(--fp-surface); color: var(--fp-text);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+}
+dialog.panel::backdrop { background: rgba(0, 0, 0, 0.62); }
+.panel-body { width: 100%; height: 100%; --p2s-height: 100%; }
+.panel-body > * { display: block; height: 100%; }
+.panel-close {
+  position: absolute; top: 8px; right: 8px; z-index: 1;
+  width: 36px; height: 36px; border-radius: 50%; border: 0; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--fp-pill); color: var(--fp-on-plan);
+}
+.panel-close:focus-visible { outline: 2px solid var(--fp-on-plan); outline-offset: 2px; }
+@media (max-width: 600px) {
+  dialog.panel { width: 100vw; height: 100dvh; border-radius: 0; }
+}
 .spot, .row {
   --level: 0;
   --glow: rgb(255, 180, 107);
