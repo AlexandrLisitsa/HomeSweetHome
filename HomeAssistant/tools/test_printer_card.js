@@ -131,13 +131,19 @@ async function main() {
 
   // --- running → finish: still camera every 10 s, then gone -----------------
   {
-    const t = mount({}, RUNNING());
+    const st = RUNNING();
+    const t = mount({}, st);
     eq("running: label", t.r("plabel").textContent, "Printing");
     eq("running: pct", t.r("pctn").textContent + t.r("pctu").textContent, "46%");
     eq("running: layers", t.r("layerv").textContent, "66 / 142");
     eq("running: to go", t.r("togo").textContent, "76 layers to go");
     eq("running: left", t.r("leftv").textContent, "1 h 03 min");
-    eq("running: subtitle", /^Layer 66 of 142 · finishing at \d\d:\d\d$/.test(t.r("sub").textContent), true);
+    // The job ends 63 min from now: after about 22:57 that is past midnight, and the card says so.
+    const end = new Date(st["sensor.p2s_end_time"].state);
+    const two = (n) => String(n).padStart(2, "0");
+    const next = end.toDateString() !== new Date().toDateString();
+    eq("running: subtitle", t.r("sub").textContent, "Layer 66 of 142 · finishing at "
+      + two(end.getHours()) + ":" + two(end.getMinutes()) + (next ? " tomorrow" : ""));
     eq("running: badge", t.r("badgev").textContent, "Live");
     eq("running: still shown", t.r("camimg").hidden, false);
     eq("running: still src", /^\/api\/camera_proxy\/camera\.p2s_camera\?token=y&t=\d+$/.test(t.r("camimg").getAttribute("src")), true);
