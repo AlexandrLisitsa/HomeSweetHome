@@ -101,6 +101,7 @@ check("printers", [(who(p), {k: p.get(k) for k in i["printer"]}, bool(p.get("flo
 PANEL = ("panel", "panel_config", "panel_fill", "dashboard")
 check("printer panels", [[p.get(k) for k in PANEL] for p in card.get("printers", [])]
       == [[i.get(k) for k in PANEL] for i in by_kind("printer")])
+check("power panel", [card.get("power", {}).get(k) for k in PANEL] == [POWER.get(k) for k in PANEL])
 check("device panels", [[d.get(k) for k in PANEL] for d in card["devices"]]
       == [[i.get(k) for k in PANEL] for i in by_kind("device")])
 check("printer overlays", [re.sub(r"\.png\?.*", "", p["overlay"].rsplit("/", 1)[1]) for p in card.get("printers", [])]

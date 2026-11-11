@@ -338,6 +338,16 @@
                 "shedding": "sensor.load_shedding",
                 "dtek_start": "sensor.dtek_next_outage_start",
                 "dtek_end": "sensor.dtek_next_outage_end",
+                "panel": "dtek-shutdowns-card",
+                "panel_config": {
+                  "blocks": [
+                    "hero",
+                    "timeline",
+                    "week",
+                    "source"
+                  ]
+                },
+                "dashboard": "/dashboard-dtek/shutdowns",
                 "grid_path": "M690.9 87.0 L691.0 87.0 L694.6 90.6 L721.4 119.4 L719.9 123.7 L620.4 136.4 L610.5 137.7 L600.7 139.0 L590.8 140.2 L449.5 158.4 L444.3 154.1 L443.3 132.9",
                 "battery_path": "M370.9 178.0 L371.3 178.0 L369.3 173.5 L369.2 173.4 L371.7 168.4 L439.6 159.7 L444.3 154.1 L443.3 132.9",
                 "battery_entity": "sensor.jkbms_gateway_bms_state_of_charge",

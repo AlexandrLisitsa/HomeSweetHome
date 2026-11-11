@@ -81,6 +81,11 @@ POWER = {
     "shedding": "sensor.load_shedding",
     "dtek_start": "sensor.dtek_next_outage_start",
     "dtek_end": "sensor.dtek_next_outage_end",
+    # A tap on the outage chip ("Grid down", "Grid returning", a DTEK window) opens the
+    # Shutdowns console in a modal, its whole view in one card.
+    "panel": "dtek-shutdowns-card",
+    "panel_config": {"blocks": ["hero", "timeline", "week", "source"]},
+    "dashboard": "/dashboard-dtek/shutdowns",
 }
 
 # The noon photo (renders/base_day.png, render.sh's base_day shot) and the sun entity whose

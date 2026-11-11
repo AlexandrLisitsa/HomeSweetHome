@@ -99,6 +99,12 @@ function render(over) {
   return { L, card, hass, root, $: (s) => root.querySelector(s), $$: (s) => root.querySelectorAll(s) };
 }
 
+/** Moves the card's clock `ms` ahead: a new modal ignores clicks for its first 600 ms. */
+function age(L, ms) {
+  const Base = L.sandbox.Date;
+  L.sandbox.Date = class extends Base { static now() { return Base.now() + ms; } };
+}
+
 /** Everything drawn under `n`, styles too: serialize() alone leaves styles out. */
 function snapshot(n) {
   if (n.nodeType === 3) return n.data;
@@ -675,6 +681,17 @@ group = "printer: ";
     check("…and every new hass", consoleEl.hass === h2);
     check("the modal has a close button with a name", !!dlg.querySelector(".panel-close")
       && dlg.querySelector(".panel-close").getAttribute("aria-label") === "Close");
+
+    // A phone's click after the opening tap lands on the console: it must reach nothing.
+    const got = [];
+    consoleEl.addEventListener("click", () => got.push("console"));
+    fire(consoleEl, "click");
+    fire(dlg, "click");
+    fire(dlg.querySelector(".panel-close"), "click");
+    eq("for 600 ms a click inside the new modal reaches nothing", [got, !!m.dialog(), seen], [[], true, []]);
+    age(m.L, 700);
+    fire(consoleEl, "click");
+    eq("after that the console gets its clicks", got, ["console"]);
     fire(dlg.querySelector(".panel-close"), "click");
     check("the cross closes it and removes the console", !m.dialog() && !m.card._panel);
 
@@ -689,10 +706,15 @@ group = "printer: ";
     const third = m.dialog();
     fire(second, "close");
     check("a closed modal's late close event leaves the new one open", !!m.dialog() && m.dialog() === third);
+    age(m.L, 1400);
     fire(m.dialog().querySelector(".panel-body"), "click");
     check("a click inside keeps it open", !!m.dialog());
     fire(m.dialog(), "click");
     check("a click on the backdrop closes it", !m.dialog());
+    m.tap(m.R.btn);
+    fire(m.dialog(), "click");
+    check("…but not the phone's click right after the opening tap", !!m.dialog());
+    m.card._closePanel();
 
     m.tap(m.R.btn);
     fire(m.dialog(), "close");
@@ -795,6 +817,21 @@ group = "consoles: ";
     check(who + ": its phone row's icon opens it too", !!m.dialog());
   }
 
+  // A phone row is mostly its name: with a console, the name opens it too.
+  for (const dev of WITH) {
+    const m = mount();
+    const D = m.card._devices.find((x) => x.cfg.entity === dev.entity);
+    fire(D.name, "click");
+    eq((dev.panel_config.tab || dev.panel) + ": its row's name opens the console, no dialog",
+      [!!m.dialog() && !!m.dialog().querySelector(dev.panel), m.seen], [true, []]);
+  }
+  {
+    const m = mount();
+    const plug = m.card._devices.find((x) => x.cfg.entity.startsWith("switch."));
+    fire(plug.name, "click");
+    eq("a plug's row name still opens its dialog", [m.seen, !!m.dialog()], [[plug.cfg.entity], false]);
+  }
+
   // A plug has no console: its tap still toggles it, and its tooltip keeps its own tap line.
   const m = mount();
   const plug = m.card._devices.find((x) => x.cfg.entity.startsWith("switch."));
@@ -803,6 +840,50 @@ group = "consoles: ";
   eq("a plug's tap still toggles it", [m.card._hass.calls.map((c) => c[1] + " " + c[2].entity_id), !!m.dialog()],
     [["toggle " + plug.cfg.entity], false]);
   check("a plug's tooltip does not promise a console", !/console/.test(plug.btn.dataset.tip));
+}
+
+/* --- the outage chip opens the Shutdowns console --------------------------- */
+
+group = "outage chip: ";
+{
+  eq("the power block names the Shutdowns console", [P.panel, P.panel_config, P.dashboard],
+    ["dtek-shutdowns-card", { blocks: ["hero", "timeline", "week", "source"] }, "/dashboard-dtek/shutdowns"]);
+  const chip = (over, defined) => {
+    const L = loadCard("floorplan-card.js");
+    if (defined) {
+      L.sandbox.window.customElements = { get: (t) => (t === P.panel ? class {} : undefined) };
+      L.sandbox.document.createElement = ((make) => (t) => {
+        const e = make(t);
+        if (t === P.panel) { e.configs = []; e.setConfig = function (c) { this.configs.push(c); }; }
+        return e;
+      })(L.sandbox.document.createElement);
+    }
+    const card = new L.Card();
+    card.setConfig(JSON.parse(JSON.stringify(CFG)));
+    card.hass = mkHass(house(over));
+    L.flushTimers();
+    const seen = [];
+    card.addEventListener("hass-more-info", (e) => seen.push(e.detail.entityId));
+    const $ = (s) => card.shadowRoot.querySelector(s);
+    fire($(".status"), "click");
+    const dlg = $("dialog.panel");
+    const el = dlg && dlg.querySelector(P.panel);
+    return { seen, dlg, el, tip: $(".status").dataset.tip };
+  };
+  const down = { [P.down]: S("on", {}), [P.runtime]: S("3.4", {}) };
+  const d = chip(down, true);
+  eq("Grid down: a tap opens the Shutdowns console, no dialog", [d.el && d.el.configs, d.seen],
+    [[P.panel_config], []]);
+  check("…sized to the console, not a fixed box", !!d.dlg && !d.dlg.classList.contains("fill"));
+  eq("…and its tooltip says so, last", d.tip.split("\n").pop(), "Tap: opens the Shutdowns console over the plan.");
+  const back = chip({ [P.down]: S("on", {}), [P.returning]: S("on", {}), [P.runtime]: S("3.4", {}) }, true);
+  check("Grid returning: the same", !!back.el && back.seen.length === 0);
+  const dtekNow = new Date();
+  const at = (h) => { const t = new Date(dtekNow); t.setHours(h, 0, 0, 0); return t.toISOString(); };
+  const dt = chip({ [P.dtek_start]: S(at(23)), [P.dtek_end]: S(at(23)) }, true);
+  if (dt.tip) check("a DTEK window: the same", !!dt.el && dt.seen.length === 0);
+  const missing = chip(down, false);
+  eq("without the console card the chip opens the runtime, as before", missing.seen, [P.runtime]);
 }
 
 /* --- report ---------------------------------------------------------------- */
