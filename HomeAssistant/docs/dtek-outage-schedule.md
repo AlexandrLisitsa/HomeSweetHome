@@ -5,8 +5,8 @@ distributor's own view of this address — the queue it sits in, whether DTEK ha
 an outage recorded against it, and the hourly stabilisation schedule for today
 and tomorrow — off the AJAX endpoint behind
 [the shutdowns page](https://www.dtek-dnem.com.ua/ua/shutdowns). The same run
-also reads YASNO's public per-queue status and the popup on DTEK's home page,
-the two places Ukrenergo's emergency outages show up
+also reads YASNO's public per-queue status, YASNO's area notice and the popup on
+DTEK's home page, the places Ukrenergo's emergency outages show up
 ([below](#ukrenergos-emergency-outages)). A `command_line:` sensor runs the
 script every five minutes.
 
@@ -338,6 +338,40 @@ status changes, the raw answer is saved as `captures/yasno_*.json`.
 Section 15 of `test_dtek_schedule.py` covers all of it, starting from the real
 answer of 04.11.2026 (`tools/fixtures/yasno_planned_20261104.json`).
 
+### YASNO's notice
+
+The queue status covers the whole area YASNO serves for DTEK Dnipro, and it can
+miss an emergency that covers only the city. On 11.11.2026 Dnipro was under
+emergency outages while every queue read `ScheduleApplies`, because the region
+around the city still ran schedules. DTEK's popup said so, but the popup was
+bot-blocked.
+
+YASNO's Dnipro outage page (`static.yasno.ua/dnipro/outages`) opens with a
+notice, and it said: "У м. Дніпро застосовуються екстрені відключення
+електроенергії. Тут графіки не діють." That notice comes from a second public
+endpoint on the same API, a plain GET with no bot check:
+`https://app.yasno.ua/api/blackout-service/public/shutdowns/regions/3/dsos/301/settings`.
+Its answer is `{"startupModalMessage": "<p>…</p>"}`.
+
+`fetch_yasno_notice()` turns that HTML into one line per paragraph, and
+`apply_yasno()` judges it with `banner_emergency()`, the popup's own rules
+below:
+
+| Attribute | Meaning |
+| --- | --- |
+| `yasno_notice_text` | YASNO's words, verbatim, one line per paragraph; null when it shows none |
+| `yasno_notice_scope` | `city`, `region`, `country` or `other`, as for the popup |
+| `yasno_notice_emergency` | whether it announces emergency outages here, now |
+| `yasno_notice_checked_at` | when the notice was last read successfully |
+| `yasno_notice_error` | why the latest read failed, else null |
+
+The notice has its own `checked_at`. If one YASNO endpoint fails, the other
+does not make it look fresh. An answer that is not JSON, or has no
+`startupModalMessage` key, is an error and not "no notice", so it never clears
+a real one. When the notice text changes, it is saved as
+`captures/yasno_*_notice.json`. Section 15b of `test_dtek_schedule.py` covers
+it.
+
 ### Built to miss rather than cry wolf
 
 An alert hangs off this, so a false "on" costs more than a late one. The text
@@ -365,13 +399,19 @@ is on the dashboard whatever the flag says.
    A notice naming somewhere else (a preposition and a capitalised name,
    "у Києві", "в Харкові", or any oblast but ours), advice to save power,
    or an all-clear is shown in grey and never raises the flag.
+
+   Abbreviations (м., с., смт., вул., обл., р-н) do not end a sentence.
+   Before 11.11.2026 they did, so "У м. Київ застосовуються екстрені
+   відключення" was cut after "м.". What was left named no place and counted
+   as country-wide.
 2. **Two polls must agree.** `binary_sensor.dtek_emergency_shutdowns` has
    `delay_on: 10 min`.
 3. **Fresh or nothing.** The sensor is on when a source read in the last 20
-   minutes says so: YASNO's `yasno_emergency` or the popup's
-   `banner_emergency`. With neither read for 20 minutes it goes
-   `unavailable`, not `on`. Its `source` attribute says which one is behind
-   an `on`: `yasno`, `banner` or `both`.
+   minutes says so: YASNO's `yasno_emergency`, YASNO's
+   `yasno_notice_emergency` or the popup's `banner_emergency`. With none read
+   for 20 minutes it goes `unavailable`, not `on`. Its `source` attribute says
+   which one is behind an `on`: `yasno` (the status or the notice), `banner` or
+   `both`.
 
 The card turns red and amber from that binary sensor, never from the raw
 attribute. When the sensor is on and there is no fresh popup to quote, the
@@ -391,9 +431,13 @@ the same two channels as the DTEK outage pair and with one tag,
 > schedule applies and DTEK gives no end time. The inverter still sees mains.
 > Battery 100%.
 
-DTEK's line is quoted only when the popup is a source of this `on`. When YASNO
-alone turned it on, the message starts "YASNO marks queue 3.2 as under
-emergency outages." instead, so an old popup is never sent as news.
+DTEK's line is quoted only when the popup is a source of this `on`. When
+YASNO's notice turned it on, the message quotes the notice's first line. When
+only YASNO's queue status did, the message starts "YASNO marks queue 3.2 as
+under emergency outages." instead. That way an old popup is never sent as news.
+
+Outage pre-charge follows this sensor too: while it is on, the battery charges
+at 60 A whatever the schedule says ([outage-precharge.md](outage-precharge.md)).
 
 Edges out of `unknown` (a restart) or `unavailable` (an unread popup) fire
 nothing. That includes the sensor's first `on` after it is created, so an
