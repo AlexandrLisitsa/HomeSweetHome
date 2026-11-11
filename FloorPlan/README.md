@@ -68,7 +68,8 @@ chip on the plan unless an outage outranks it. Its chamber light has a rendered 
 like a lamp's. An open door puts a door pip on the icon (amber while it prints or
 heats), and while the printer is warm its heat drifts out of the front, the A/C's
 airflow drawn in amber (`flow` names the piece). Tap opens its console (`panel`, the
-card of `/dashboard-printer`) in a modal over the plan, hold its status;
+card of `/dashboard-printer`) in a modal over the plan, hold its status; each A/C's tap
+likewise opens its tab of the Climate console (`climate-console-card`);
 on a phone its row has a switch for the chamber light. It has no smart plug, so no
 power wire runs to it.
 

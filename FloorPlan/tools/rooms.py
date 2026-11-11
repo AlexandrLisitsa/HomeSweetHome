@@ -8,8 +8,10 @@ An A/C's `flow` names its piece in the model: the card draws its air leaving the
 POWER names the inverter's entities; the power path runs from its spot along the wall tops.
 A printer is one icon reading many entities (`printer`): its state, progress, heat, door,
 chamber light and errors; its `overlay` is the chamber light's, its `flow` the piece its
-heat drifts out of while the door is open. Its `panel` is the custom card a tap opens in a
-modal (the console of its own `dashboard`, where the tap goes if that card is missing).
+heat drifts out of while the door is open.
+A `panel` (on a printer or a device) is the custom card a tap opens in a modal over the plan,
+set up with `panel_config`: the console of its own `dashboard`, where the tap goes if that
+card is missing. `panel_fill` gives it a fixed box to fill instead of its own height.
 """
 
 ROOMS = {
@@ -109,7 +111,9 @@ ITEMS = [
     # Bedroom
     {"kind": "device", "room": "bedroom", "spot": "bedroom_ac",
      "entity": "climate.153931629566331_climate", "name": "A/C", "icon": "mdi:air-conditioner",
-     "flow": "Bedroom A/C"},
+     "flow": "Bedroom A/C",
+     "panel": "climate-console-card", "panel_config": {"tab": "bedroom", "fx": ["gradient_dial"]},
+     "dashboard": "/dashboard-climate/bedroom"},
     {"kind": "device", "room": "bedroom", "spot": "bedroom_ac_plug",
      "entity": "switch.0xa4c13820fe9ec412", "value": "sensor.0xa4c13820fe9ec412_power",
      "name": "A/C plug", "icon": "mdi:power-socket-eu"},
@@ -121,7 +125,7 @@ ITEMS = [
     # The 3D printer: no plug, so no power wire. Off is p2s_online off.
     {"kind": "printer", "room": "bedroom", "spot": "bedroom_printer", "entity": "sensor.p2s_print_status",
      "name": "3D printer", "icon": "mdi:printer-3d-nozzle", "overlay": "p2s_chamber", "flow": "3D printer P2S",
-     "panel": "p2s-printer-console-card", "dashboard": "/dashboard-printer",
+     "panel": "p2s-printer-console-card", "panel_fill": True, "dashboard": "/dashboard-printer",
      "printer": {
          "online": "binary_sensor.p2s_online",
          "stage": "sensor.p2s_current_stage",
@@ -140,7 +144,9 @@ ITEMS = [
     # Living room. Its ceiling lamp is not in HA, so it is only furniture in the model.
     {"kind": "device", "room": "living", "spot": "living_ac",
      "entity": "climate.daewoo_a_c", "name": "A/C", "icon": "mdi:air-conditioner",
-     "flow": "Living room A/C"},
+     "flow": "Living room A/C",
+     "panel": "climate-console-card", "panel_config": {"tab": "hall", "fx": ["gradient_dial"]},
+     "dashboard": "/dashboard-climate/living-room"},
     {"kind": "device", "room": "living", "spot": "living_ac_plug",
      "entity": "switch.0x70b3d52b600fddcb", "value": "sensor.0x70b3d52b600fddcb_power",
      "name": "A/C plug", "icon": "mdi:power-socket-eu"},

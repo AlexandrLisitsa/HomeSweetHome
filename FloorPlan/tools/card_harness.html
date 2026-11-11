@@ -59,8 +59,9 @@
   });
   customElements.define("ha-icon", class extends HTMLElement {});
   await import("/HomeAssistant/config/www/floorplan-card.js");
-  // The printer console a tap opens in a modal.
+  // The consoles a tap opens in a modal: the printer's and each A/C's.
   await import("/HomeAssistant/config/www/p2s-printer-console-card.js");
+  await import("/HomeAssistant/config/www/climate-console-card.js");
 
   const q = new URLSearchParams(location.search);
   const onParam = q.get("on") || "all";
