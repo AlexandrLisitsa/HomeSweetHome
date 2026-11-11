@@ -119,7 +119,8 @@ ITEMS = [
      "name": "A/C plug", "icon": "mdi:power-socket-eu"},
     {"kind": "device", "room": "bedroom", "spot": "bedroom_router",
      "entity": "sensor.archer_c80_ac1900_mu_mimo_wi_fi_router_download_speed",
-     "name": "Router", "icon": "mdi:router-wireless"},
+     "name": "Router", "icon": "mdi:router-wireless",
+     "panel": "router-console-card", "panel_config": {}, "dashboard": "/dashboard-network/router"},
     {"kind": "badge", "room": "bedroom", "spot": "bedroom_climate",
      "entities": ["sensor.0xa4c138437ae3f5a6_temperature", "sensor.0xa4c138437ae3f5a6_humidity"]},
     # The 3D printer: no plug, so no power wire. Off is p2s_online off.

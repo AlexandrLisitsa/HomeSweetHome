@@ -733,9 +733,11 @@ group = "printer: ";
 group = "consoles: ";
 {
   const WITH = CFG.devices.filter((d) => d.panel);
-  eq("the A/Cs, the inverter and the pack have a console",
+  eq("the A/Cs, the router, the inverter and the pack have a console",
     WITH.map((d) => [d.entity, d.panel, d.dashboard]),
     [["climate.153931629566331_climate", "climate-console-card", "/dashboard-climate/bedroom"],
+      ["sensor.archer_c80_ac1900_mu_mimo_wi_fi_router_download_speed", "router-console-card",
+        "/dashboard-network/router"],
       ["climate.daewoo_a_c", "climate-console-card", "/dashboard-climate/living-room"],
       [P.hub_entity, "powmr-inverter-console-card", "/dashboard-inverter/0"],
       [P.battery_entity, "jkbms-battery-console-card", "/dashboard-inverter/battery"]]);

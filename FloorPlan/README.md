@@ -82,7 +82,8 @@ the inverter loses the grid, the flat dims, a red chip says so with the hours th
 pack has left, and whatever load shedding stepped down or cut gets an amber or
 red ring. With the grid up, a DTEK outage scheduled for today shows as an amber
 chip. A tap on the inverter or the pack opens its console from the Power station
-dashboard in a modal over the plan. The routes come from `make_dashboard.py`: the walls of the model are a graph,
+dashboard in a modal over the plan, and one on the router its console from the
+Network dashboard. The routes come from `make_dashboard.py`: the walls of the model are a graph,
 each wire takes the shortest way along their tops and drops to its icon from the
 wall point nearest it in the picture; `POWER` in `rooms.py` names the entities. Tap toggles what can be toggled and opens the dialog for
 the rest; holding always opens the dialog. Every icon, number, badge, chip, switch

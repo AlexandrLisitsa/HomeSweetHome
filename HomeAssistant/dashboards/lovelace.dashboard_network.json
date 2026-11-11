@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "minor_version": 1,
+  "key": "lovelace.dashboard_network",
+  "data": {
+    "config": {
+      "views": [
+        {
+          "type": "sections",
+          "title": "Router",
+          "path": "router",
+          "icon": "mdi:router-wireless",
+          "max_columns": 5,
+          "badges": [],
+          "cards": [],
+          "sections": [
+            {
+              "type": "grid",
+              "column_span": 5,
+              "cards": [
+                {
+                  "type": "custom:router-console-card"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
