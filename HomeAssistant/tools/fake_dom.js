@@ -81,7 +81,11 @@ class Node0 {
     if (this._selIdx !== undefined) delete this._selIdx;
     parseHTML(String(html), this);
   }
-  addEventListener(type, fn) { (this._listeners[type] = this._listeners[type] || []).push(fn); }
+  addEventListener(type, fn, opts) {
+    const capture = opts === true || !!(opts && opts.capture);
+    const map = capture ? (this._capture = this._capture || {}) : this._listeners;
+    (map[type] = map[type] || []).push(fn);
+  }
   removeEventListener(type, fn) {
     const l = this._listeners[type] || [];
     const i = l.indexOf(fn);
@@ -405,11 +409,24 @@ function fire(node, type, extra) {
     defaultPrevented: false,
     composedPath: () => pathArr.slice(),
     stopPropagation() { this.stopped = true; },
+    stopImmediatePropagation() { this.stopped = true; this.stoppedNow = true; },
     preventDefault() { this.defaultPrevented = true; },
   }, extra || {});
+  // Capture from the root down to the target, then bubble back up.
+  for (const p of pathArr.slice().reverse()) {
+    ev.currentTarget = p;
+    for (const fn of ((p._capture && p._capture[type]) || []).slice()) {
+      fn(ev);
+      if (ev.stoppedNow) break;
+    }
+    if (ev.stopped) return ev;
+  }
   for (const p of pathArr) {
     ev.currentTarget = p;
-    (p._listeners[type] || []).slice().forEach((fn) => fn(ev));
+    for (const fn of ((p._listeners && p._listeners[type]) || []).slice()) {
+      fn(ev);
+      if (ev.stoppedNow) break;
+    }
     if (ev.stopped) break;
   }
   return ev;

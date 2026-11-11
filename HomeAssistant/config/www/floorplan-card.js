@@ -37,7 +37,12 @@
  * opens that card in a modal over the plan instead, as the printer does, set up by
  * `panel_config`: each A/C its tab of climate-console-card, the inverter
  * powmr-inverter-console-card, the pack jkbms-battery-console-card. Its tooltip's
- * tap line is then PANEL_TAP.
+ * tap line is then PANEL_TAP, and on a phone its row's name opens the console too.
+ *
+ * A phone follows a tap with a click a few ms later, aimed at whatever is under the
+ * finger by then. The modal opens on the finger lift, so that click would land on the
+ * console and open whatever sits there (the inverter's "Grid down" pill). So a modal
+ * swallows every click for its first GHOST_MS.
  *
  * ROOM TINT
  * ---------
@@ -65,6 +70,8 @@
  * battery · 3.4 h left" (amber "Grid returning" during the 5-minute wait), and
  * what load shedding stepped down or cut gets an amber or red ring and a word.
  * With the grid up, a DTEK window today shows as an amber "Outage 14:00–18:00".
+ * With a `panel` in the power block (dtek-shutdowns-card), a tap on any of those
+ * chips opens the Shutdowns console over the plan.
  *
  * DAY AND NIGHT
  * -------------
@@ -148,6 +155,8 @@
  *     down: binary_sensor.house_on_battery, returning: binary_sensor.grid_in_range,
  *     runtime: sensor.battery_runtime, shedding: sensor.load_shedding,
  *     priority: select.power_priority, dtek_start: sensor.next_start, dtek_end: sensor.next_end,
+ *     panel: dtek-shutdowns-card, panel_config: { blocks: [hero, timeline, week, source] },
+ *     dashboard: /dashboard-dtek/shutdowns,
  *     grid_path: "M ...", battery_path: "M ...",
  *     loads: [{ entity: light.kitchen, room: kitchen, path: "M ..." },
  *             { entity: switch.ac_plug, value: sensor.ac_plug_power, room: bedroom, path: "M ..." }]
@@ -159,7 +168,7 @@
 const CARD = "floorplan-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "1.18.0";
+const VERSION = "1.19.0";
 
 // Glow colour for a lamp that reports none: the warm white it was rendered in.
 const WARM = [255, 180, 107];
@@ -275,8 +284,7 @@ const HELP = {
   hub: "The inverter every socket runs through: the power it gives the house, and its source.\n"
     + "E.g. 274 W to the house · on battery while the pack gives 300 W: the inverter uses 26 W.",
   down: "The inverter sees no mains, so the whole flat runs on the 280 Ah pack.\n"
-    + "E.g. 3.4 h left at the current draw; load shedding steps the A/Cs down at 80 % and 60 %.\n"
-    + "The grid counts as back after 5 minutes of steady 185–250 V.",
+    + "E.g. 3.4 h left at the current draw; load shedding steps the A/Cs down at 80 % and 60 %.",
   returning: "Mains is back in 185–250 V; the inverter waits 5 steady minutes before using it.\n"
     + "E.g. a flicker during the wait starts it again; the house stays on the pack meanwhile.",
   dtek: "DTEK's schedule says the power will be off then; the plan turns red if it really goes.\n"
@@ -299,6 +307,12 @@ const HELP = {
 
 // What a tap does on anything with a console (`panel`): it replaces the help's own tap line.
 const PANEL_TAP = "Tap: opens its console over the plan. Hold it for 500 ms: opens its dialog.";
+
+// What a tap on the outage chip does when the power block names a console.
+const CHIP_TAP = "Tap: opens the Shutdowns console over the plan.";
+// How long a new modal ignores clicks: a phone's click after the opening tap.
+const GHOST_MS = 600;
+const POWER_CHIPS = ["down", "returning", "dtek"];
 
 /** HELP[kind] for this item: with a `panel`, its tap line is PANEL_TAP. */
 function helpFor(kind, item) {
@@ -748,13 +762,23 @@ class FloorplanCard extends HTMLElement {
     close.setAttribute("aria-label", "Close");
     this._el("ha-icon", null, close).setAttribute("icon", "mdi:close");
     close.addEventListener("click", () => this._closePanel());
+    // A phone's click after the opening tap lands on whatever is under the finger by
+    // now: the console. Swallow every click for GHOST_MS, before anything inside sees it.
+    const opened = Date.now();
+    const fresh = () => Date.now() - opened < GHOST_MS;
+    dialog.addEventListener("click", (ev) => {
+      if (!fresh()) return;
+      ev.stopPropagation();
+      if (typeof ev.stopImmediatePropagation === "function") ev.stopImmediatePropagation();
+      ev.preventDefault();
+    }, true);
     const body = this._el("div", "panel-body", dialog);
     const card = document.createElement(tag);
     if (typeof card.setConfig === "function") card.setConfig(p.panel_config || {});
     if (this._hass) card.hass = this._hass;
     body.appendChild(card);
     // A click on the backdrop lands on the dialog itself; one inside lands on the body.
-    dialog.addEventListener("click", (ev) => { if (ev.target === dialog) this._closePanel(); });
+    dialog.addEventListener("click", (ev) => { if (ev.target === dialog && !fresh()) this._closePanel(); });
     // Esc closes a modal dialog by itself; the card still has to go. The event comes a
     // task later, also after _closePanel's own close(): by then another modal may be
     // open, so it only ever closes its own.
@@ -875,7 +899,8 @@ class FloorplanCard extends HTMLElement {
     const b = this._button(item.entity, true, onTap);
     head.appendChild(b.btn);
     const name = this._el("div", "name", head);
-    name.addEventListener("click", () => this._moreInfo(item.entity));
+    // With a tap action (a console), the name does the same: a phone row is all name.
+    name.addEventListener("click", () => (onTap ? onTap() : this._moreInfo(item.entity)));
     const value = this._el("div", "value", head);
     let sw = null;
     if (withSwitch) {
@@ -997,7 +1022,13 @@ class FloorplanCard extends HTMLElement {
       this._status.setAttribute("role", "button");
       this._status.addEventListener("click", () => {
         const s = this._status.dataset.kind;
-        this._moreInfo(s === "printer_error" ? this._printerChip : s === "dtek" ? P.dtek_start : s ? P.runtime : P.down);
+        const entity = s === "printer_error" ? this._printerChip : s === "dtek" ? P.dtek_start : s ? P.runtime : P.down;
+        if (P.panel && POWER_CHIPS.indexOf(s) >= 0) {
+          this._openPanel({ panel: P.panel, panel_config: P.panel_config, dashboard: P.dashboard,
+            entity: entity, name: "Shutdowns" });
+        } else {
+          this._moreInfo(entity);
+        }
       });
     }
 
@@ -1461,7 +1492,8 @@ class FloorplanCard extends HTMLElement {
     this._status.dataset.kind = status ? status.kind : "";
     this._status.className = "status" + (status ? " " + status.kind : "");
     this._status.textContent = status ? status.text : "";
-    this._status.dataset.tip = status ? status.tip + "\n" + HELP[status.kind] : "";
+    this._status.dataset.tip = status ? status.tip + "\n" + HELP[status.kind]
+      + (P.panel && POWER_CHIPS.indexOf(status.kind) >= 0 ? "\n" + CHIP_TAP : "") : "";
 
     // What load shedding did, on the icon and its row: amber when stepped down,
     // red when its plug was cut, and said in the first line of its tooltip.
