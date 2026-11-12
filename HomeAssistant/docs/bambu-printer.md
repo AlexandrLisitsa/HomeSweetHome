@@ -87,17 +87,22 @@ A1 reads `-1`). So the same package keeps HA's own count, in grams:
 | Automation | When | Does |
 | --- | --- | --- |
 | `p2s_filament_used` | status goes from running/pause/prepare to `finish` or `failed` | takes the job's sliced grams per slot (`sensor.p2s_print_weight`'s `AMS 1 Tray N` attributes) off each counter; a failed job takes its share up to the progress it reached; never below 0. A job that reports no grams changes nothing and sends "Filament not counted" to `notify.household` |
-| `p2s_spool_loaded` | a tray's `empty` attribute goes `true` → `false`, after the slot sat empty for at least 60 s, on a printer that was online for 2 min before the slot emptied | sets that slot to `p2s_spool_size` and asks on the phone, "🧵 New spool in A1?", with the old count and an **Undo** button |
+| `p2s_spool_loaded` | a tray's `empty` attribute goes `true` → `false`, after the slot sat empty for at least 60 s, unless it is a reconnect read (the slot emptied within 2 min of the printer coming online and stayed empty under 10 min) | sets that slot to `p2s_spool_size` and asks on the phone, "🧵 New spool in A1?", with the old count and an **Undo** button |
 | `p2s_spool_undo` | the Undo button on that notice | puts the old count back (only the five counters are accepted) and says so |
 
 The guards come from two false resets. When the printer comes back online,
 its first report has the AMS slots empty, and they fill as the AMS reads them:
 on 10.11.2026 slot 1 read empty for 5 s, on 11.11.2026 for 3 s, and both times
 A1 jumped to 1000 g (on 11.11 from 824.8 g). The 60 s rule ignores a short
-blip; the online rule ignores any of them, since on a reconnect "online" and
-"empty" start together, however long the AMS takes to read the slots. A real
-swap happens on a printer that has been on for a while, and takes longer than
-a minute. The same day two jobs sliced from the Bambu Studio command line
+blip; the reconnect rule ignores slower ones, since on a reconnect "online"
+and "empty" start together and the AMS fills its slots within minutes. A slot
+that stays empty for 10 minutes or more is always a real load: on 12.11.2026
+the first version of this rule (online for 2 min before the slot emptied, with
+no time limit) refused three new spools. HA had restarted at 12:28, which
+stamps every entity "changed at 12:28", online and empty alike; the spools went
+in 3 h later and A2-A4 stayed at 0 g. The card now always draws a loaded spool
+with at least a sliver, so a 0 g count shows as a red "0 g" plate, never as an
+empty slot. The same day two jobs sliced from the Bambu Studio command line
 carried a filament density of 0, so they reported 0 g and were skipped without
 a word; now that case raises a notification.
 

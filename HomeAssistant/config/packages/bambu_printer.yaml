@@ -166,17 +166,25 @@ automation:
     # they fill as the AMS reads them (10.11.2026 19:15, 5 s; 11.11.2026
     # 20:09, 3 s: A1 went 824.8 -> 1000 g both times).
     #  - the slot sat empty for at least a minute: a real swap takes longer;
-    #  - the printer was online for 2 minutes before the slot went empty: on
-    #    a reconnect "online" and "empty" start together, so however slowly
-    #    the AMS reads the slots, that is never a swap.
+    #  - not a reconnect read: on a reconnect "online" and "empty" start
+    #    together and the slot fills within a few minutes at most. So the
+    #    load is refused only when the slot emptied within 2 min of the
+    #    printer coming online AND stayed empty under 10 min. A slot empty
+    #    for 10 min or more is a real load, whenever it started: after an
+    #    HA restart every entity reads "changed at the restart", online and
+    #    empty alike, and the first version of this guard (online 2 min
+    #    before the slot emptied, full stop) refused three real spools on
+    #    12.11.2026 that had sat empty for 3 h since the restart.
     condition:
       - condition: template
         value_template: "{{ (now() - trigger.from_state.last_changed).total_seconds() >= 60 }}"
       - condition: template
         value_template: >-
           {% set on = states.binary_sensor.p2s_online %}
+          {% set emptied = as_timestamp(trigger.from_state.last_changed) %}
           {{ on is not none and on.state == 'on'
-             and (as_timestamp(trigger.from_state.last_changed) - as_timestamp(on.last_changed)) >= 120 }}
+             and ((emptied - as_timestamp(on.last_changed)) >= 120
+                  or (as_timestamp(now()) - emptied) >= 600) }}
     action:
       - variables:
           counter: >-

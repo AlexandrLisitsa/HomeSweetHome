@@ -567,20 +567,28 @@ online_ok = loaded["condition"][1]["value_template"]
 t_on = datetime(2026, 11, 11, 20, 9, 15, tzinfo=KYIV)
 
 
-def guard(online_since, empty_since, state="on"):
+def guard(online_since, empty_since, loaded_after, state="on"):
+    """The online guard when a slot that emptied at `empty_since` reads loaded `loaded_after` later."""
     tree = {"binary_sensor.p2s_online": _Obj(state=state, last_changed=online_since)}
-    return render_ha(online_ok, tree=tree, trigger=_Obj(from_state=_Obj(last_changed=empty_since)))
+    return render_ha(online_ok, now=empty_since + loaded_after, tree=tree,
+                     trigger=_Obj(from_state=_Obj(last_changed=empty_since)))
 
 
-check("11.11 reconnect: empty as it came online -> kept", guard(t_on, t_on), "False")
-check("a slow AMS read, empty 90 s after reconnect -> kept",
-      guard(t_on, t_on + timedelta(seconds=30)), "False")
-check("a swap on a printer online for hours -> reset",
-      guard(t_on - timedelta(hours=3), t_on), "True")
-check("online exactly 2 min before -> reset", guard(t_on - timedelta(seconds=120), t_on), "True")
-check("printer offline -> kept", guard(t_on - timedelta(hours=3), t_on, state="off"), "False")
+S_ = lambda s: timedelta(seconds=s)  # noqa: E731
+check("11.11 reconnect: empty 3 s as it came online -> kept", guard(t_on, t_on, S_(3)), "False")
+check("a slow AMS read, empty 90 s after reconnect -> kept", guard(t_on, t_on, S_(90)), "False")
+check("a very slow read, 9 min after reconnect -> kept", guard(t_on, t_on, S_(540)), "False")
+check("a swap on a printer online for hours -> reset", guard(t_on - timedelta(hours=3), t_on, S_(120)), "True")
+check("online exactly 2 min before -> reset", guard(t_on - S_(120), t_on, S_(90)), "True")
+# 12.11.2026: HA restarted at 12:28:49, so online and empty both read "since
+# 12:28:49"; three spools went in at 15:43-15:45 and the first guard refused them.
+t_restart = datetime(2026, 11, 12, 14, 28, 49, tzinfo=KYIV)
+check("12.11: empty 3 h since an HA restart, then loaded -> reset",
+      guard(t_restart, t_restart, timedelta(hours=3, minutes=14)), "True")
+check("empty 10 min since a reconnect -> reset", guard(t_on, t_on, S_(600)), "True")
+check("printer offline -> kept", guard(t_on - timedelta(hours=3), t_on, S_(120), state="off"), "False")
 check("no online sensor -> kept",
-      render_ha(online_ok, trigger=_Obj(from_state=_Obj(last_changed=t_on))), "False")
+      render_ha(online_ok, now=t_on + S_(700), trigger=_Obj(from_state=_Obj(last_changed=t_on))), "False")
 
 lv = loaded["action"][0]["variables"]
 check("tray 3 resets A3", render_ha(lv["counter"], trigger={"entity_id": "sensor.p2s_ams_1_tray_3"}),
