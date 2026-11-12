@@ -86,11 +86,24 @@ A1 reads `-1`). So the same package keeps HA's own count, in grams:
 
 | Automation | When | Does |
 | --- | --- | --- |
-| `p2s_filament_used` | status goes from running/pause/prepare to `finish` or `failed` | takes the job's sliced grams per slot (`sensor.p2s_print_weight`'s `AMS 1 Tray N` attributes) off each counter; a failed job takes its share up to the progress it reached; never below 0 |
-| `p2s_spool_loaded` | a tray's `empty` attribute goes `true` → `false` | sets that slot to `p2s_spool_size` |
+| `p2s_filament_used` | status goes from running/pause/prepare to `finish` or `failed` | takes the job's sliced grams per slot (`sensor.p2s_print_weight`'s `AMS 1 Tray N` attributes) off each counter; a failed job takes its share up to the progress it reached; never below 0. A job that reports no grams changes nothing and sends "Filament not counted" to `notify.household` |
+| `p2s_spool_loaded` | a tray's `empty` attribute goes `true` → `false`, after the slot sat empty for at least 60 s, on a printer that was online for 2 min before the slot emptied | sets that slot to `p2s_spool_size` and asks on the phone, "🧵 New spool in A1?", with the old count and an **Undo** button |
+| `p2s_spool_undo` | the Undo button on that notice | puts the old count back (only the five counters are accepted) and says so |
 
-A spool put back half-used is the one case the reset gets wrong: tap the slot
-on the console card and type the right figure into its counter. Counting began
+The guards come from two false resets. When the printer comes back online,
+its first report has the AMS slots empty, and they fill as the AMS reads them:
+on 10.11.2026 slot 1 read empty for 5 s, on 11.11.2026 for 3 s, and both times
+A1 jumped to 1000 g (on 11.11 from 824.8 g). The 60 s rule ignores a short
+blip; the online rule ignores any of them, since on a reconnect "online" and
+"empty" start together, however long the AMS takes to read the slots. A real
+swap happens on a printer that has been on for a while, and takes longer than
+a minute. The same day two jobs sliced from the Bambu Studio command line
+carried a filament density of 0, so they reported 0 g and were skipped without
+a word; now that case raises a notification.
+
+A spool put back half-used is the one case a reset gets wrong on purpose:
+tap **Undo** on the notice, or tap the slot on the console card and type the
+right figure into its counter. Counting began
 on 07.11.2026 with A1 at 984 g (a 1 kg spool less two door handles, about
 16 g). The sliced weight is the slicer's estimate, so the count drifts a few
 percent per spool; weigh a spool now and then and correct it. When a spool has

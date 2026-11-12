@@ -114,23 +114,39 @@ automation:
           {% endif %}
         {% endfor %}
         {{ ns.out }}
-    condition:
-      - condition: template
-        value_template: "{{ used | count > 0 }}"
     action:
-      - repeat:
-          for_each: "{{ used.keys() | list }}"
-          sequence:
-            - service: input_number.set_value
-              target:
-                entity_id: "{{ counters[repeat.item] }}"
+      # A job that reports no grams cannot be counted. Say so instead of
+      # skipping it quietly: on 10.11.2026 two jobs sliced with density 0
+      # reported 0 g and the count silently stayed high.
+      - if:
+          - condition: template
+            value_template: "{{ used | count == 0 }}"
+        then:
+          - service: notify.household
+            data:
+              title: '🖨️ Filament not counted'
+              message: >-
+                {% set task = states('sensor.p2s_task_name') %}
+                {{ task if task not in ['unknown', 'unavailable', ''] else 'The last print' }}
+                reported no filament weight, so the spool count was not reduced.
+                Tap the slot on the printer card and correct it.
               data:
-                value: >-
-                  {{ [states(counters[repeat.item]) | float(0) - used[repeat.item], 0]
-                     | max | round(1) }}
+                channel: 3D printer
+        else:
+          - repeat:
+              for_each: "{{ used.keys() | list }}"
+              sequence:
+                - service: input_number.set_value
+                  target:
+                    entity_id: "{{ counters[repeat.item] }}"
+                  data:
+                    value: >-
+                      {{ [states(counters[repeat.item]) | float(0) - used[repeat.item], 0]
+                         | max | round(1) }}
 
   # A spool going into an empty slot is a new spool. Putting a half-used one
-  # back is the case this gets wrong: tap the slot on the card and correct it.
+  # back is the case this gets wrong, so every reset asks on the phone, with
+  # an Undo button that puts the old count back (p2s_spool_undo below).
   - id: p2s_spool_loaded
     alias: '3D printer: spool loaded'
     mode: queued
@@ -145,17 +161,93 @@ automation:
         attribute: empty
         from: true
         to: false
+    # Two guards against the printer's own blips, both from real resets:
+    # when it comes back online its first report has the slots empty, and
+    # they fill as the AMS reads them (10.11.2026 19:15, 5 s; 11.11.2026
+    # 20:09, 3 s: A1 went 824.8 -> 1000 g both times).
+    #  - the slot sat empty for at least a minute: a real swap takes longer;
+    #  - the printer was online for 2 minutes before the slot went empty: on
+    #    a reconnect "online" and "empty" start together, so however slowly
+    #    the AMS reads the slots, that is never a swap.
+    condition:
+      - condition: template
+        value_template: "{{ (now() - trigger.from_state.last_changed).total_seconds() >= 60 }}"
+      - condition: template
+        value_template: >-
+          {% set on = states.binary_sensor.p2s_online %}
+          {{ on is not none and on.state == 'on'
+             and (as_timestamp(trigger.from_state.last_changed) - as_timestamp(on.last_changed)) >= 120 }}
     action:
-      - service: input_number.set_value
-        target:
-          entity_id: >-
+      - variables:
+          counter: >-
             {{ {'sensor.p2s_ams_1_tray_1': 'input_number.p2s_filament_a1',
                 'sensor.p2s_ams_1_tray_2': 'input_number.p2s_filament_a2',
                 'sensor.p2s_ams_1_tray_3': 'input_number.p2s_filament_a3',
                 'sensor.p2s_ams_1_tray_4': 'input_number.p2s_filament_a4',
                 'sensor.p2s_external_spool': 'input_number.p2s_filament_ext'}[trigger.entity_id] }}
+          slot: >-
+            {{ {'sensor.p2s_ams_1_tray_1': 'A1', 'sensor.p2s_ams_1_tray_2': 'A2',
+                'sensor.p2s_ams_1_tray_3': 'A3', 'sensor.p2s_ams_1_tray_4': 'A4',
+                'sensor.p2s_external_spool': 'External'}[trigger.entity_id] }}
+          before: "{{ states(counter) | float(0) | round(1) }}"
+          full: "{{ states('input_number.p2s_spool_size') | float(1000) | round(0) }}"
+      - service: input_number.set_value
+        target:
+          entity_id: "{{ counter }}"
         data:
-          value: "{{ states('input_number.p2s_spool_size') | float(1000) }}"
+          value: "{{ full }}"
+      - service: notify.household
+        data:
+          title: "🧵 New spool in {{ slot }}?"
+          message: >-
+            {{ slot }} now counts a full {{ full | int }} g spool (it was {{ before }} g).
+            Not a new spool? Tap Undo.
+          data:
+            channel: 3D printer
+            tag: "p2s_spool_{{ slot | lower }}"
+            actions:
+              - action: "P2S_SPOOL_UNDO|{{ counter }}|{{ before }}"
+                title: Undo
+
+  # The Undo button on "New spool in A1?": the action carries the counter and
+  # the count it had. Only the five counters are accepted, so a phone cannot
+  # set any other helper through this.
+  - id: p2s_spool_undo
+    alias: '3D printer: undo a spool reset'
+    mode: queued
+    trigger:
+      - platform: event
+        event_type: mobile_app_notification_action
+    condition:
+      - condition: template
+        value_template: >-
+          {% set p = (trigger.event.data.action | default('') | string).split('|') %}
+          {{ p | count == 3 and p[0] == 'P2S_SPOOL_UNDO'
+             and p[1] in ['input_number.p2s_filament_a1', 'input_number.p2s_filament_a2',
+                          'input_number.p2s_filament_a3', 'input_number.p2s_filament_a4',
+                          'input_number.p2s_filament_ext']
+             and is_number(p[2]) }}
+    action:
+      - variables:
+          parts: "{{ (trigger.event.data.action | string).split('|') }}"
+          counter: "{{ parts[1] }}"
+          value: "{{ [[parts[2] | float(0), 0] | max, 3000] | min }}"
+          slot: >-
+            {{ {'input_number.p2s_filament_a1': 'A1', 'input_number.p2s_filament_a2': 'A2',
+                'input_number.p2s_filament_a3': 'A3', 'input_number.p2s_filament_a4': 'A4',
+                'input_number.p2s_filament_ext': 'External'}[counter] }}
+      - service: input_number.set_value
+        target:
+          entity_id: "{{ counter }}"
+        data:
+          value: "{{ value }}"
+      - service: notify.household
+        data:
+          title: "🧵 {{ slot }} count restored"
+          message: "{{ slot }} is back to {{ value }} g."
+          data:
+            channel: 3D printer
+            tag: "p2s_spool_{{ slot | lower }}"
 
   - id: p2s_print_finished
     alias: '3D printer: print done'

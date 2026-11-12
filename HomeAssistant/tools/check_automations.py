@@ -498,8 +498,19 @@ check("two slots and the external spool",
       used({"AMS 1 Tray 1": 20, "AMS 1 Tray 3": "5.5", "External spool": 8, "friendly_name": "x"}, 1),
       {"a1": 20.0, "a3": 5.5, "ext": 8.0})
 check("no sensor: nothing", used(None, 1), {})
-check("a job with no grams is skipped", used_a["condition"][0]["value_template"], "{{ used | count > 0 }}")
-setv = used_a["action"][0]["repeat"]["sequence"][0]
+branch = used_a["action"][0]
+check("no top-level condition: a 0 g job still runs", "condition" in used_a, False)
+check("no grams -> the alert branch", [render(branch["if"][0]["value_template"], used=u) for u in ({}, {"a1": 1.6})],
+      ["True", "False"])
+alert = branch["then"][0]
+check("the alert goes to the household", alert["service"], "notify.household")
+check("the alert names the job",
+      " ".join(render(alert["data"]["message"], states={"sensor.p2s_task_name": "cubes_solid_PLA"}).split()),
+      "cubes_solid_PLA reported no filament weight, so the spool count was not reduced. "
+      "Tap the slot on the printer card and correct it.")
+check("no job name: 'The last print'",
+      render(alert["data"]["message"]).startswith("The last print"), True)
+setv = branch["else"][0]["repeat"]["sequence"][0]
 left = lambda have, took: render(setv["data"]["value"], states={"input_number.p2s_filament_a1": have},  # noqa: E731
                                  repeat={"item": "a1"}, used={"a1": took},
                                  counters=uv["counters"])
@@ -511,11 +522,104 @@ loaded = pa["p2s_spool_loaded"]
 check("a slot going from empty to loaded",
       [(t["attribute"], t["from"], t["to"], len(t["entity_id"])) for t in loaded["trigger"]],
       [("empty", True, False, 5)])
-target = loaded["action"][0]["target"]["entity_id"]
-check("tray 3 resets A3", render(target, trigger={"entity_id": "sensor.p2s_ams_1_tray_3"}),
+t_now = datetime(2026, 11, 10, 19, 15, 27, tzinfo=KYIV)
+empty_for = lambda secs: render(loaded["condition"][0]["value_template"], now=t_now,  # noqa: E731
+                                trigger=_Obj(from_state=_Obj(last_changed=t_now - timedelta(seconds=secs))))
+check("a reconnect blip (empty 5 s) keeps the count", empty_for(5), "False")
+check("a real swap (empty 2 min) resets it", empty_for(120), "True")
+check("exactly a minute counts as a swap", empty_for(60), "True")
+
+
+def render_ha(tpl, now=None, states=None, tree=None, **context):
+    """render() plus what the spool guards use: as_timestamp, is_number, float/round
+    with defaults, and `states.<domain>.<object>` for last_changed."""
+    env = jinja2.Environment(undefined=jinja2.StrictUndefined)
+    st = states or {}
+
+    class States:
+        def __call__(self, e):
+            return str(st.get(e, "unknown"))
+
+        def __getattr__(self, domain):
+            objs = {k.split(".", 1)[1]: v for k, v in (tree or {}).items() if k.startswith(domain + ".")}
+
+            class Domain:  # HA gives None for an entity that does not exist
+                def __getattr__(self, name):
+                    return objs.get(name)
+            return Domain()
+
+    def num(v):
+        try:
+            float(v)
+            return True
+        except (TypeError, ValueError):
+            return False
+
+    env.globals.update(now=lambda: now, states=States(), as_timestamp=lambda d: d.timestamp(), is_number=num)
+    env.filters["float"] = lambda v, d=0.0: float(v) if num(v) else d
+    env.filters["int"] = lambda v, d=0: int(float(v)) if num(v) else d
+    return env.from_string(tpl).render(**context).strip()
+
+
+# The online guard. 11.11.2026, the reset it was written for: the printer came
+# online at 20:09:15 and tray 1 read empty from 20:09:15 to 20:09:18.
+online_ok = loaded["condition"][1]["value_template"]
+t_on = datetime(2026, 11, 11, 20, 9, 15, tzinfo=KYIV)
+
+
+def guard(online_since, empty_since, state="on"):
+    tree = {"binary_sensor.p2s_online": _Obj(state=state, last_changed=online_since)}
+    return render_ha(online_ok, tree=tree, trigger=_Obj(from_state=_Obj(last_changed=empty_since)))
+
+
+check("11.11 reconnect: empty as it came online -> kept", guard(t_on, t_on), "False")
+check("a slow AMS read, empty 90 s after reconnect -> kept",
+      guard(t_on, t_on + timedelta(seconds=30)), "False")
+check("a swap on a printer online for hours -> reset",
+      guard(t_on - timedelta(hours=3), t_on), "True")
+check("online exactly 2 min before -> reset", guard(t_on - timedelta(seconds=120), t_on), "True")
+check("printer offline -> kept", guard(t_on - timedelta(hours=3), t_on, state="off"), "False")
+check("no online sensor -> kept",
+      render_ha(online_ok, trigger=_Obj(from_state=_Obj(last_changed=t_on))), "False")
+
+lv = loaded["action"][0]["variables"]
+check("tray 3 resets A3", render_ha(lv["counter"], trigger={"entity_id": "sensor.p2s_ams_1_tray_3"}),
       "input_number.p2s_filament_a3")
-check("the external spool resets ext", render(target, trigger={"entity_id": "sensor.p2s_external_spool"}),
+check("the external spool resets ext", render_ha(lv["counter"], trigger={"entity_id": "sensor.p2s_external_spool"}),
       "input_number.p2s_filament_ext")
+check("slot names", [render_ha(lv["slot"], trigger={"entity_id": e})
+                     for e in ("sensor.p2s_ams_1_tray_1", "sensor.p2s_external_spool")], ["A1", "External"])
+check("the old count is kept for Undo",
+      render_ha(lv["before"], states={"input_number.p2s_filament_a1": "824.8"},
+                counter="input_number.p2s_filament_a1"), "824.8")
+check("the reset sets the counter to the spool size", loaded["action"][1]["data"]["value"], "{{ full }}")
+note = loaded["action"][2]
+check("every reset asks on the phone", note["service"], "notify.household")
+ctx = dict(slot="A1", full=1000.0, before=824.8, counter="input_number.p2s_filament_a1")
+check("the ask says what changed", " ".join(render_ha(note["data"]["message"], **ctx).split()),
+      "A1 now counts a full 1000 g spool (it was 824.8 g). Not a new spool? Tap Undo.")
+check("its Undo carries counter and old count",
+      render_ha(note["data"]["data"]["actions"][0]["action"], **ctx),
+      "P2S_SPOOL_UNDO|input_number.p2s_filament_a1|824.8")
+check("one notice per slot", render_ha(note["data"]["data"]["tag"], **ctx), "p2s_spool_a1")
+
+print("\n14b. P2S: the Undo button")
+undo = pa["p2s_spool_undo"]
+check("listens for notification buttons",
+      (undo["trigger"][0]["platform"], undo["trigger"][0]["event_type"]), ("event", "mobile_app_notification_action"))
+ok_undo = lambda act: render_ha(undo["condition"][0]["value_template"],  # noqa: E731
+                                trigger=_Obj(event=_Obj(data={"action": act})))
+check("Undo for A1 is accepted", ok_undo("P2S_SPOOL_UNDO|input_number.p2s_filament_a1|824.8"), "True")
+check("another helper is refused", ok_undo("P2S_SPOOL_UNDO|input_number.gas_meter_manual_reading|1"), "False")
+check("a garbled value is refused", ok_undo("P2S_SPOOL_UNDO|input_number.p2s_filament_a1|lots"), "False")
+check("other buttons are not ours", ok_undo("GAS_SUBMIT_123"), "False")
+uv2 = undo["action"][0]["variables"]
+parts = "P2S_SPOOL_UNDO|input_number.p2s_filament_ext|512.5".split("|")
+check("restores the value", render_ha(uv2["value"], parts=parts), "512.5")
+check("never above the helper's 3000 g", render_ha(uv2["value"], parts=["", "", "9999"]), "3000")
+check("restores that counter", render_ha(uv2["counter"], parts=parts), "input_number.p2s_filament_ext")
+check("names the slot", render_ha(uv2["slot"], counter="input_number.p2s_filament_ext"), "External")
+check("sets the counter", undo["action"][1]["target"]["entity_id"], "{{ counter }}")
 
 print("\n%s" % ("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed"))
 sys.exit(1 if FAILED else 0)
