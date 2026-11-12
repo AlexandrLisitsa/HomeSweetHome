@@ -152,7 +152,7 @@ async function main() {
     eq("running: no picture card in auto", t.made.length, 0);
     eq("running: head scans", t.r("headrun").classList.contains("th-run"), true);
     eq("running: head centred", t.r("head").getAttribute("transform"), "translate(0 0)");
-    eq("running: fan spins (221 °C)", t.r("fan").classList.contains("fan-run"), true);
+    eq("running: no fan reading, no spin", [t.r("fan").classList.contains("fan-run"), t.r("fan").classList.contains("fan-var")], [false, false]);
     eq("running: bed stepped down", t.r("bed").getAttribute("transform"), "translate(0 " + (64 * 0.46).toFixed(2) + ")");
     eq("running: part height", t.r("part").querySelector(".pp").getAttribute("height"), (64 * 0.46).toFixed(2));
     eq("running: part in tray colour", t.r("part").getAttribute("fill"), "#898989");
@@ -222,7 +222,7 @@ async function main() {
   {
     const t = mount({ debug_status_entity: SEL }, states({ [SEL]: S("live") }));
     eq("pv: shown", t.r("pv").hidden, false);
-    eq("pv: eight segments", t.root.querySelectorAll(".seg").length, 8);
+    eq("pv: eight segments", t.r("segs").querySelectorAll(".seg").length, 8);
     eq("pv: live pressed", t.root.querySelector('[data-act="dbg:live"]').getAttribute("aria-pressed"), "true");
     fire(t.root.querySelector('[data-act="dbg:running"]'), "click");
     eq("pv: segment selects", t.card._hass.calls.pop(), ["input_select", "select_option", { entity_id: SEL, option: "running" }]);
@@ -519,6 +519,188 @@ async function main() {
     eq("photo fallback, no render: drawing", !!t.r("bed") && !t.r("x-bed"), true);
   }
 
+  // --- ideas (Playground layers) ----------------------------------------------
+  const FSEL = "input_select.p2s_playground_fans";
+  const ALL = ["fans", "fan_tag", "airflow", "thermal", "machine", "health"];
+  /** RUNNING plus every sensor the ideas read, as the box had them on 13.11.2026. */
+  const RICH = (over) => Object.assign(RUNNING(), {
+    "sensor.p2s_cooling_fan_speed": S("100"),
+    "sensor.p2s_heatbreak_fan_speed": S("100"),
+    "sensor.p2s_aux_fan_speed": S("30"), // the right air-duct fan
+    "sensor.p2s_secondary_aux_fan_speed": S("0"), // the optional left fan: never ran here
+    "sensor.p2s_chamber_fan_speed": S("30"), // the P2S repeats the duct fan here
+    "sensor.p2s_airduct_mode": S("cooling"),
+    "sensor.p2s_nozzle_size": S("0.4"),
+    "sensor.p2s_nozzle_type": S("hardened_steel"),
+    "sensor.p2s_print_bed_type": S("textured_plate"),
+    "binary_sensor.p2s_extruder_filament": S("on"),
+    "sensor.p2s_print_length": S("6.85"),
+    "sensor.p2s_start_time": S("2026-11-13T10:00:00+00:00"),
+    "sensor.p2s_skipped_objects": S("0"),
+    "sensor.p2s_printable_objects": S("8"),
+    "sensor.p2s_ams_status": S("idle"),
+    "sensor.p2s_ams_1_humidity_index": S("5"),
+    "binary_sensor.p2s_timelapse": S("off"),
+    "sensor.p2s_wi_fi_signal": S("-55"),
+    "binary_sensor.p2s_firmware": S("off"),
+    "sensor.p2s_sd_card_status": S("missing"),
+    "sensor.p2s_total_usage": S("32.82"),
+  }, over || {});
+  const shown = (el) => el.getAttribute("display") === "inline";
+  const spins = (el) => el.classList.contains("fan-var");
+  {
+    // Production, no ideas key: all six are on, with no Playground rows.
+    const d = mount({ art: "drawn" }, RICH());
+    eq("default: every idea on", ALL.map((k) => d.card._ideas()[k]), [true, true, true, true, true, true]);
+    eq("default: wall fans and fan tag", [shown(d.r("f-aux")), shown(d.r("fantag"))], [true, true]);
+    eq("default: toolhead fan at its %", [spins(d.r("fan")), d.r("fan").classList.contains("fan-run")], [true, false]);
+    eq("default: Wi-Fi chip", d.r("hc-wifi").hidden, false);
+    eq("default: no Playground rows", [d.r("pv").hidden, d.r("pv2").hidden], [true, true]);
+  }
+  {
+    // ideas: [] opts out: nothing new shows, the toolhead fan keeps its 60 °C rule.
+    const t = mount({ art: "drawn", ideas: [] }, RICH());
+    eq("ideas off: no wall fans", ["f-aux", "f-aux2", "f-heatbreak"].map((k) => shown(t.r(k))), [false, false, false]);
+    eq("ideas off: no speed-scaled spin anywhere", t.root.querySelectorAll(".fan-var").length, 0);
+    eq("ideas off: no air flowing", t.root.querySelectorAll(".flow-run").length, 0);
+    eq("ideas off: toolhead fan by temperature", t.r("fan").classList.contains("fan-run"), true);
+    eq("ideas off: no fan tag", shown(t.r("fantag")), false);
+    eq("ideas off: no fans cell", t.r("hs-fan").hidden, true);
+    eq("ideas off: no health chips", ["hc-rec", "hc-fw", "hc-sd", "hc-wifi"].map((k) => t.r(k).hidden), [true, true, true, true]);
+    eq("ideas off: no second preview row", t.r("pv2").hidden, true);
+    eq("ideas off: no machine lines", [shown(t.r("tx-noz")), shown(t.r("tx-bed"))], [false, false]);
+    eq("ideas off: filament line as before", t.r("filv").textContent, "11.7 g");
+    eq("ideas off: humidity as before", t.r("humv").textContent, "48 %");
+    // and a fan change alone does not redraw production
+    const fp = t.card._fp;
+    t.set({ "sensor.p2s_chamber_fan_speed": S("90") });
+    eq("ideas off: fan change ignored", t.card._fp, fp);
+  }
+  {
+    const t = mount({ art: "drawn", ideas: ALL }, RICH());
+    // fans: each at its own speed; a stopped one shows but does not move
+    eq("fans: duct and hotend fans shown", ["f-aux", "f-heatbreak"].map((k) => shown(t.r(k))), [true, true]);
+    eq("fans: the left fan at 0 % is not drawn", shown(t.r("f-aux2")), false);
+    eq("fans: no separate chamber fan, no air out of the roof", [t.r("f-chamber"), t.r("o-out1")], [null, null]);
+    eq("fans: toolhead fan at its %", [spins(t.r("fan")), t.r("fan").classList.contains("fan-run"), t.r("fan").style.getPropertyValue("--spin")],
+      [true, false, "0.30s"]);
+    eq("fans: duct fan at 30 %", [spins(t.r("f-aux-b")), t.r("f-aux-b").style.getPropertyValue("--spin")], [true, "1.35s"]);
+    eq("fans: left fan at 0 % stands still", spins(t.r("f-aux2-b")), false);
+    eq("fans: duct fan sits high in the right wall", t.r("f-aux").getAttribute("transform"), "translate(502 232)");
+    eq("fans: part-cooling jet", [shown(t.r("jet")), t.r("jet").getAttribute("opacity")], [true, "0.80"]);
+    eq("fans: duct air on the print while cooling", [shown(t.r("g-r1")), t.r("g-r1").classList.contains("flow-run")], [true, true]);
+    eq("fans: no left air at 0 %", shown(t.r("g-l1")), false);
+    // airflow: cooling sends the air out of the back
+    eq("airflow: outside air in while cooling", [shown(t.r("o-in1")), t.r("o-in1").classList.contains("flow-run")], [true, true]);
+    eq("airflow: no recirculation while cooling", [shown(t.r("o-duct")), shown(t.r("o-loop"))], [false, false]);
+    // fan tag and its strip cell
+    eq("fan tag: shown", shown(t.r("fantag")), true);
+    eq("fan tag: values", ["part", "heatbreak", "aux", "aux2", "chamber"].map((k) => t.r("ftv-" + k).textContent),
+      ["100%", "100%", "30%", "0%", "30%"]);
+    eq("fan tag: bars", [t.r("ftb-part").getAttribute("width"), t.r("ftb-aux").getAttribute("width")], ["40.0", "12.0"]);
+    eq("fan tag: chamber row hidden while it repeats the duct", [shown(t.r("ft-chamber")), t.r("ft-box").getAttribute("height")], [false, "90"]);
+    eq("fan tag: no AUX L row while the left fan reads 0", shown(t.r("ft-aux2")), false);
+    eq("fan tag: three rows, no gaps", ["part", "heatbreak", "aux"].map((k) => t.r("ft-" + k).getAttribute("transform")),
+      ["translate(0 0)", "translate(0 0)", "translate(0 0)"]);
+    eq("fan tag: duct", t.r("ftv-duct").textContent, "COOLING");
+    fire(t.r("ftv-aux"), "click");
+    let ev = t.card.dispatched.filter((e) => e.type === "hass-more-info").pop();
+    eq("fan tag: row opens its sensor", ev && ev.detail.entityId, "sensor.p2s_aux_fan_speed");
+    eq("fan cell: part · duct", [t.r("hs-fan").hidden, t.r("hsv-fan").textContent], [false, "100·30"]);
+    // thermal: nozzle at target, bed on its way (40 of 65)
+    eq("thermal: nozzle bar full", [shown(t.r("tb-noz")), t.r("tb-noz").getAttribute("width")], [true, "126.0"]);
+    eq("thermal: bed bar part way", t.r("tb-bed").getAttribute("width"), (126 * 40 / 65).toFixed(1));
+    eq("thermal: no haze at 22 °C", shown(t.r("haze")), false);
+    t.set({ "sensor.p2s_chamber_temperature": S("38") });
+    eq("thermal: haze at 38 °C", [shown(t.r("haze")), t.r("haze").getAttribute("opacity")], [true, (12 / 60).toFixed(3)]);
+    // machine
+    eq("machine: nozzle line", t.r("tx-noz").textContent, "0.4 MM · HARDENED STEEL");
+    eq("machine: plate line", t.r("tx-bed").textContent, "TEXTURED PEI PLATE");
+    eq("machine: filament length", t.r("filv").textContent, "11.7 g · 6.8 m");
+    eq("machine: start time", /76 layers to go · started \d\d:\d\d$/.test(t.r("togo").textContent), true);
+    eq("machine: humidity index", t.r("humv").textContent, "48% L5");
+    eq("machine: extruder dot", [shown(t.r("exdot")), t.r("exdot").getAttribute("fill")], [true, "#4FD1B0"]);
+    t.set({ "sensor.p2s_skipped_objects": S("2"), "sensor.p2s_ams_status": S("changing_filament") });
+    eq("machine: skipped objects", /2 of 8 skipped/.test(t.r("togo").textContent), true);
+    eq("machine: AMS busy", t.r("ts-ams").textContent, "CHANGING FI");
+    // health
+    eq("health: Wi-Fi chip", [t.r("hc-wifi").hidden, t.r("hc-wifiv").textContent, t.r("wb3").getAttribute("opacity")], [false, "-55 dBm", "1"]);
+    eq("health: nothing else to say", ["hc-rec", "hc-fw", "hc-sd"].map((k) => t.r(k).hidden), [true, true, true]);
+    t.set({ "binary_sensor.p2s_timelapse": S("on"), "binary_sensor.p2s_firmware": S("on"),
+      "sensor.p2s_sd_card_status": S("abnormal"), "sensor.p2s_wi_fi_signal": S("-80") });
+    eq("health: chips when they matter", ["hc-rec", "hc-fw", "hc-sd"].map((k) => t.r(k).hidden), [false, false, false]);
+    eq("health: weak Wi-Fi, one bar", [t.r("wb0").getAttribute("opacity"), t.r("wb1").getAttribute("opacity"), t.r("hc-wifi").classList.contains("warn")],
+      ["1", "0.25", true]);
+    eq("health: hours in the printer tooltip", /33 h printed/.test(t.r("vpbox").getAttribute("data-tip")), true);
+    // heating duct: the air goes round instead of out
+    t.set({ "sensor.p2s_airduct_mode": S("heating"), "sensor.p2s_aux_fan_speed": S("40") });
+    eq("airflow: down the duct and round while heating", ["o-duct", "o-loop"].map((k) => [shown(t.r(k)), t.r(k).classList.contains("flow-run")]),
+      [[true, true], [true, true]]);
+    eq("airflow: no outside air while heating", shown(t.r("o-in1")), false);
+    eq("fans: duct closed, no air on the print", shown(t.r("g-r1")), false);
+    eq("fans: duct fan still spins", spins(t.r("f-aux-b")), true);
+    t.set({ "sensor.p2s_chamber_fan_speed": S("10") });
+    eq("fan tag: chamber row when it differs, moved up into AUX L's place",
+      [shown(t.r("ft-chamber")), t.r("ft-chamber").getAttribute("transform"), t.r("ft-box").getAttribute("height")],
+      [true, "translate(0 -20)", "110"]);
+    eq("fan tag: heating", [t.r("ftv-duct").textContent, t.r("ftv-duct").getAttribute("fill")], ["HEATING", "#FFB066"]);
+    // offline: everything stops and hides
+    t.set({ "sensor.p2s_print_status": S("offline") });
+    eq("offline: no moving parts", t.root.querySelectorAll(".fan-var").length + t.root.querySelectorAll(".flow-run").length, 0);
+    eq("offline: wall fans hidden", shown(t.r("f-aux")), false);
+    eq("offline: no health chips", ["hc-rec", "hc-fw", "hc-sd", "hc-wifi"].map((k) => t.r(k).hidden), [true, true, true, true]);
+    // idle with fans at 0: nothing animates
+    t.set(RICH({ "sensor.p2s_print_status": S("idle"), "sensor.p2s_cooling_fan_speed": S("0"),
+      "sensor.p2s_heatbreak_fan_speed": S("0"), "sensor.p2s_aux_fan_speed": S("0"), "sensor.p2s_chamber_fan_speed": S("0") }));
+    eq("idle, fans off: no animation", t.root.querySelectorAll(".fan-var").length + t.root.querySelectorAll(".flow-run").length, 0);
+  }
+  {
+    // The Playground: fan scenarios and idea toggles on the Preview bar.
+    const t = mount({ art: "drawn", ideas: ALL, debug_status_entity: SEL, debug_fans_entity: FSEL },
+      RICH({ [SEL]: S("live"), [FSEL]: S("cool-down") }));
+    eq("pv2: shown", t.r("pv2").hidden, false);
+    eq("pv2: fan scenarios", t.r("fsegs").querySelectorAll(".seg").map((b) => b.textContent),
+      ["live", "off", "PLA print", "PETG print", "chamber heating", "cool-down"]);
+    eq("pv2: current scenario", t.r("fsegs").querySelectorAll(".seg")[5].getAttribute("aria-pressed"), "true");
+    eq("pv2: idea toggles", t.r("isegs").querySelectorAll(".seg").map((b) => b.textContent),
+      ["Fans", "Fan tag", "Airflow", "Thermal", "Machine", "Health"]);
+    eq("scenario: mock chip", t.r("mock").hidden, false);
+    eq("scenario: cool-down fans", ["part", "aux"].map((k) => t.r("ftv-" + k).textContent), ["0%", "100%"]);
+    eq("scenario: no left fan anywhere", [shown(t.r("f-aux2")), shown(t.r("ft-aux2"))], [false, false]);
+    eq("scenario: aux spins fast", t.r("f-aux-b").style.getPropertyValue("--spin"), "0.30s");
+    // The fallback: should a left fan ever report, it comes back by itself.
+    t.set({ [FSEL]: S("live"), "sensor.p2s_secondary_aux_fan_speed": S("60") });
+    eq("left fan reporting: drawn, spinning, blowing on the print",
+      [shown(t.r("f-aux2")), spins(t.r("f-aux2-b")), shown(t.r("g-l1")), t.r("g-l1").classList.contains("flow-run")], [true, true, true, true]);
+    eq("left fan reporting: its tag row and cell", [shown(t.r("ft-aux2")), t.r("ftv-aux2").textContent, t.r("hsv-fan").textContent],
+      [true, "60%", "100·30·60"]);
+    t.set({ "sensor.p2s_secondary_aux_fan_speed": S("0") });
+    fire(t.r("fsegs").querySelectorAll(".seg")[2], "click");
+    eq("scenario: tap selects", t.card._hass.calls.pop(), ["input_select", "select_option", { entity_id: FSEL, option: "PLA print" }]);
+    // a forced status brings its own fans when the scenario is live
+    t.set({ [FSEL]: S("live"), [SEL]: S("prepare") });
+    eq("forced prepare: only the hotend fan", ["part", "heatbreak", "aux"].map((k) => t.r("ftv-" + k).textContent), ["0%", "100%", "0%"]);
+    // toggling Fans off draws the printer as production does
+    fire(t.r("isegs").querySelectorAll(".seg")[0], "click");
+    eq("toggle: Fans off", [shown(t.r("f-aux")), t.root.querySelectorAll(".fan-var").length], [false, 0]);
+    eq("toggle: button shows it", t.r("isegs").querySelectorAll(".seg")[0].getAttribute("aria-pressed"), "false");
+    eq("toggle: other ideas stay", shown(t.r("fantag")), true);
+    fire(t.r("isegs").querySelectorAll(".seg")[0], "click");
+    eq("toggle: Fans back", shown(t.r("f-aux")), true);
+  }
+  {
+    // Photo mode carries the same layers.
+    const t = await mountP({ ideas: ALL }, RICH(), BUNDLE);
+    eq("photo ideas: in the scene", ["xf-aux", "xf-aux2", "xf-heatbreak", "fantag"].map((k) => shown(t.r(k))),
+      [true, false, true, true]);
+    eq("photo ideas: toolhead fan at its %", [spins(t.r("x-fan")), t.r("x-fan").classList.contains("fan-run")], [true, false]);
+    eq("photo ideas: jet", shown(t.r("x-jet")), true);
+    eq("photo ideas: outside air in", t.r("xo-in1").classList.contains("flow-run"), true);
+    eq("photo ideas: duct air on the print", t.r("xg-r1").classList.contains("flow-run"), true);
+    eq("photo ideas: duct fan right and high", t.r("xf-aux").getAttribute("transform"), "translate(600 282)");
+    eq("photo ideas: fan % label", t.r("xf-aux-v").textContent, "30%");
+  }
+
   // --- config ---------------------------------------------------------------
   {
     const L = loadCard(FILE);
@@ -535,6 +717,9 @@ async function main() {
     err = null;
     try { card.setConfig({ layer_height: 0 }); } catch (e) { err = e.message; }
     eq("config: bad layer_height", /layer_height/.test(err || ""), true);
+    err = null;
+    try { card.setConfig({ ideas: ["fans", "smoke"] }); } catch (e) { err = e.message; }
+    eq("config: bad idea", /ideas must be a list of/.test(err || ""), true);
   }
 
   console.log((failed ? "FAILED" : "ok") + "  " + passed + " passed, " + failed + " failed");
