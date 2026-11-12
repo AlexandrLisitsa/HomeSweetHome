@@ -52,6 +52,25 @@
  * edge-on through the lid, the wound filament as tall as what is left on it
  * (radius by area: mass ~ R^2 - r^2). The touchscreen shows the status.
  *
+ * IDEAS
+ * -----
+ * `ideas: [fans, fan_tag, airflow, thermal, machine, health]` turns on extra
+ * layers drawn from sensors the card otherwise ignores. All six are on by
+ * default (production since 2026-11-13); `ideas: []` turns them off. fans:
+ * each fan where it sits (FAN_KEYS says which is which): part cooling and
+ * heatbreak on the toolhead, the air-duct fan high in the right wall, the
+ * optional aux fan in the left wall, each spinning at its %, with the
+ * part-cooling jet and, in cooling mode, the side fans' air on the print.
+ * fan_tag: a FANS tag with the fans and the air-duct mode. airflow: the duct
+ * as flow, outside air in through the right wall (cooling), or down the duct,
+ * out of its bottom outlet and round the chamber (heating). thermal: chamber haze by °C and heat bars on the
+ * nozzle/bed tags. machine: nozzle, plate, extruder filament, AMS status and
+ * humidity index, job length and skipped objects. health: REC, Wi-Fi,
+ * firmware and SD chips in the header. A fan at 0 % has no animation, so an
+ * idle printer still costs nothing. `debug_fans_entity` names an input_select
+ * (live + FAN_MOCK's names) that forces mock fan speeds, and with either debug
+ * key the Preview bar gets a second row: fan scenarios and a toggle per idea.
+ *
  * Bump VERSION on every edit and re-register:
  *
  *     python HomeAssistant/tools/ha_dashboard.py --card p2s-printer-console-card.js
@@ -61,7 +80,7 @@
  */
 
 const CARD = "p2s-printer-console-card";
-const VERSION = "0.8.2";
+const VERSION = "0.11.2";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
 const STATUSES = ["idle", "prepare", "running", "pause", "finish", "failed", "offline"];
@@ -71,6 +90,50 @@ const LOW_G = 100; // a slot under this many grams is drawn amber
 // The least of a spool the picture shows while one is loaded: a loaded spool
 // counted at 0 g (run out, or a count never set) must not look like no spool.
 const MIN_SPOOL = 0.06;
+
+/* The Playground's optional layers (IDEAS above), in the order the toggles show them. */
+const IDEAS = ["fans", "fan_tag", "airflow", "thermal", "machine", "health"];
+const IDEA_LABEL = { fans: "Fans", fan_tag: "Fan tag", airflow: "Airflow", thermal: "Thermal", machine: "Machine", health: "Health" };
+
+/*
+ * The fans: model key, config key, tag label, tooltip name. What each is on
+ * this P2S, from ha-bambulab's code and HA's history (10-13.11.2026):
+ *   part     cooling_fan_speed, the toolhead's front fan;
+ *   heatbreak  the hotend fan, also on the toolhead;
+ *   aux      big_fan1, the air-duct fan in the RIGHT wall (Bambu's "adaptive
+ *            airflow"): cooling mode pulls outside air and blows it on the
+ *            print from an upper outlet; heating mode closes the duct, pulls
+ *            chamber air through a filter and lets it out of a bottom outlet;
+ *   aux2     airduct part 160, the optional LEFT aux fan (sold separately),
+ *            off in heating mode. It never ran in four prints, and this
+ *            printer most likely has none, so it is drawn, and gets a tag
+ *            row, only if it ever reports more than 0 %;
+ *   chamber  big_fan2, which this firmware reports equal to big_fan1 at every
+ *            point, so it is not drawn as a fan of its own, and its tag row
+ *            shows only if it ever differs.
+ */
+const FAN_KEYS = [
+  ["part", "fan_part", "PART", "Part-cooling fan"],
+  ["heatbreak", "fan_heatbreak", "HOTEND", "Heatbreak fan"],
+  ["aux", "fan_aux", "DUCT R", "Air-duct fan, right"],
+  ["aux2", "fan_aux2", "AUX L", "Aux fan, left"],
+  ["chamber", "fan_chamber", "CHAMBER", "Chamber fan"],
+];
+
+/* Fan scenarios for debug_fans_entity, after the real prints: %, and the air-duct mode. */
+const FAN_MOCK = {
+  "off": { part: 0, heatbreak: 0, aux: 0, aux2: 0, chamber: 0, duct: "cooling" },
+  "PLA print": { part: 100, heatbreak: 100, aux: 70, aux2: 0, chamber: 70, duct: "cooling" },
+  "PETG print": { part: 40, heatbreak: 100, aux: 50, aux2: 0, chamber: 50, duct: "heating" },
+  "chamber heating": { part: 20, heatbreak: 100, aux: 90, aux2: 0, chamber: 90, duct: "heating" },
+  "cool-down": { part: 0, heatbreak: 30, aux: 100, aux2: 0, chamber: 100, duct: "cooling" },
+};
+
+/** A fan's spin period: 1.8 s at a whisper, 0.3 s flat out; null when stopped. */
+function spinFor(pct) {
+  if (pct === null || pct === undefined || !(pct > 0)) return null;
+  return (0.3 + 1.5 * (1 - Math.min(100, pct) / 100)).toFixed(2) + "s";
+}
 
 /* The design's tones. */
 const TONES = {
@@ -127,6 +190,30 @@ const DEFAULTS = {
   remains: ["input_number.p2s_filament_a1", "input_number.p2s_filament_a2",
     "input_number.p2s_filament_a3", "input_number.p2s_filament_a4", "input_number.p2s_filament_ext"],
   spool_size: "input_number.p2s_spool_size",
+  // Read only when an idea needs them (IDEAS above).
+  fan_part: "sensor.p2s_cooling_fan_speed",
+  fan_heatbreak: "sensor.p2s_heatbreak_fan_speed",
+  fan_aux: "sensor.p2s_aux_fan_speed",
+  fan_aux2: "sensor.p2s_secondary_aux_fan_speed",
+  fan_chamber: "sensor.p2s_chamber_fan_speed",
+  airduct: "sensor.p2s_airduct_mode",
+  nozzle_size: "sensor.p2s_nozzle_size",
+  nozzle_type: "sensor.p2s_nozzle_type",
+  bed_type: "sensor.p2s_print_bed_type",
+  extruder_filament: "binary_sensor.p2s_extruder_filament",
+  print_length: "sensor.p2s_print_length",
+  start_time: "sensor.p2s_start_time",
+  skipped: "sensor.p2s_skipped_objects",
+  printable: "sensor.p2s_printable_objects",
+  ams_status: "sensor.p2s_ams_status",
+  humidity_index: "sensor.p2s_ams_1_humidity_index",
+  timelapse: "binary_sensor.p2s_timelapse",
+  wifi: "sensor.p2s_wi_fi_signal",
+  firmware: "binary_sensor.p2s_firmware",
+  sd_card: "sensor.p2s_sd_card_status",
+  total_usage: "sensor.p2s_total_usage",
+  ideas: IDEAS.slice(), // all on (production since 2026-11-13); ideas: [] draws the card as 0.8 did
+  debug_fans_entity: null,
   camera_view: "auto", // auto = a still every 10 s; live = the RTSP stream via picture-entity
   debug_status: null,
   debug_status_entity: null,
@@ -162,6 +249,16 @@ const MOCK = {
     endIn: null, stage: "offline", nozzle: [null, null], bed: [null, null], chamber: null,
     active: null, grams: null },
 };
+/* What the fans do in each forced status (part, heatbreak, aux L, aux R, chamber; duct). */
+const MOCK_FANS = {
+  idle: [0, 0, 0, 0, 0, "cooling"],
+  prepare: [0, 100, 0, 0, 0, "cooling"],
+  running: [100, 100, 60, 0, 60, "cooling"],
+  pause: [0, 100, 0, 0, 0, "cooling"],
+  finish: [0, 40, 0, 0, 0, "cooling"],
+  failed: [0, 100, 0, 0, 0, "cooling"],
+  offline: [null, null, null, null, null, null],
+};
 
 /* Tooltip lines 2-4, house format (docs/dashboard-tooltips.md). */
 const HELP = {
@@ -196,7 +293,7 @@ const HELP = {
     + "Tap to correct the count, e.g. after putting back a used spool.",
   external: "The spool on the external holder at the back, and its grams left.\n"
     + "E.g. empty while every job feeds from the AMS.\nTap to correct the count.",
-  humidity: "Relative humidity inside the AMS.\n"
+  humidity: "Relative humidity inside the AMS; L1-L5 is Bambu's own humidity index, if shown.\n"
     + "E.g. 48 %; dry it when PLA sits above 60 % for days.",
   ams_temp: "Air temperature inside the AMS.\n"
     + "E.g. 24 °C at rest, up to 65 °C while it dries filament.",
@@ -216,6 +313,36 @@ const HELP = {
     + "E.g. live with the printer idle draws No active print.\nTap to switch.",
   door_preview: "Draws the door open or shut without the sensor. Playground only.\n"
     + "E.g. open swings the glass door out on the virtual printer.\nTap to cycle.",
+  fans: "The printer's fans, % of full speed, and the air duct's mode.\n"
+    + "E.g. PART 100 and DUCT R 70 while printing PLA.\nTap a row for its sensor.",
+  fan_part: "The part-cooling fan on the toolhead's front, blowing on the fresh layer.\n"
+    + "E.g. 100 % for PLA, 30-40 % for PETG.",
+  fan_heatbreak: "The hotend fan that keeps the heatbreak cold so filament melts only in the nozzle.\n"
+    + "E.g. 100 % whenever the nozzle is hot.",
+  fan_aux: "The air-duct fan in the right wall: outside air onto the print, or chamber air round.\n"
+    + "E.g. 20-90 % through a PLA print; it runs in both duct modes.",
+  fan_aux2: "The optional aux fan in the left wall, sold separately; this printer likely has none.\n"
+    + "E.g. shown only if it ever reports more than 0 %, in cooling mode.",
+  fan_chamber: "The printer's chamber-fan reading; on the P2S it repeats the air-duct fan's.\n"
+    + "E.g. 70 % whenever DUCT R is 70 %; shown only if the two ever differ.",
+  airduct: "The air duct: cooling takes outside air in; heating closes it and filters chamber air.\n"
+    + "E.g. heating for PETG and above; the printer picks it from the filament.",
+  machine: "The fitted nozzle and plate, as the printer reports them.\n"
+    + "E.g. 0.4 mm hardened steel nozzle, textured PEI plate.",
+  extruder: "The filament sensor in the toolhead: is there filament at the extruder?\n"
+    + "E.g. yes while a spool is loaded through to the nozzle.",
+  rec: "The printer is recording a timelapse of this job.\n"
+    + "E.g. on when Timelapse was ticked when the job was sent.",
+  wifi: "The printer's Wi-Fi signal.\n"
+    + "E.g. -55 dBm is good; below -75 dBm the camera and status start to lag.",
+  firmware: "A firmware update for the printer is waiting.\n"
+    + "E.g. install it from the printer's screen or Bambu Handy.",
+  sd_card: "The printer's storage card is reporting a problem.\n"
+    + "E.g. abnormal; a missing card is normal here, jobs come over the network.",
+  fan_preview: "Forces these fan speeds with mock data. Playground only.\n"
+    + "E.g. cool-down spins the chamber and aux fans at 100 %.\nTap to switch.",
+  idea: "Shows or hides this idea's layer on the card. Playground only.\n"
+    + "E.g. Fans off draws the printer as production does.\nTap to toggle.",
   mock: "This card is drawing mock data for a forced status.\n"
     + "E.g. The Playground is on running, so the numbers are invented.\nSet it to live.",
 };
@@ -287,6 +414,9 @@ h2 { margin: 0; font-family: ${MONO}; font-size: clamp(8.5px, 1.4cqmin, 11px); f
 .pv .seg[aria-pressed="true"] { background: #ECEEF1; color: #0C0E11; }
 .pv .door { border: 1px solid #2E333A; margin-left: auto; }
 .pv .lab { white-space: nowrap; }
+.pv .idea { border: 1px dashed #3A3F47; }
+.pv .idea[aria-pressed="true"] { border-style: solid; border-color: #5AA9FF; background: rgba(90,169,255,0.12); color: #ECEEF1; }
+.pv .gap { flex: none; width: clamp(4px, 1.5cqmin, 14px); }
 
 /* --- header --- */
 .head { flex: none; display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between;
@@ -310,6 +440,11 @@ h1 { margin: 0; font-family: ${GROT}; font-size: clamp(18px, 4.6cqmin, 36px); li
 .doorchip.open { border-color: rgba(255,181,71,0.45); color: #FFB547; }
 .lightbtn { border: 1px solid #2A2F36; background: transparent; color: #B4BBC6; font-weight: 500; }
 .lightbtn.on { border-color: rgba(255,214,140,0.45); background: rgba(255,214,140,0.10); color: #FFD68C; }
+.hchip { border: 1px solid #2A2F36; color: #B4BBC6; font-family: ${MONO}; font-size: clamp(10px, 1.55cqmin, 12px); }
+.hchip.rec { border-color: rgba(255,90,78,0.45); color: #FF8A80; letter-spacing: .12em; }
+.hchip.rec i { width: 8px; height: 8px; border-radius: 50%; background: #FF5A4E; animation: pulse 1.6s ease-in-out infinite; }
+.hchip.warn { border-color: rgba(255,181,71,0.45); color: #FFB547; }
+.wifi rect { stroke: none; fill: currentColor; }
 .ico { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
   width: clamp(14px, 2.3cqmin, 18px); height: clamp(14px, 2.3cqmin, 18px); flex: none; }
 
@@ -335,7 +470,7 @@ h1 { margin: 0; font-family: ${GROT}; font-size: clamp(18px, 4.6cqmin, 36px); li
 .t-stat { font: 600 9px ${MONO}; letter-spacing: .1em; text-anchor: end; }
 .t-val { font: 600 16px ${MONO}; fill: #ECEEF1; }
 .d-txt { font: 600 10px ${MONO}; letter-spacing: .08em; }
-.hud-strip { display: none; margin: 0; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; flex: none; }
+.hud-strip { display: none; margin: 0; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 6px; flex: none; }
 .hud-strip > div { background: #1A1E23; border-radius: 10px; padding: 5px 8px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .hud-strip dt { font-family: ${MONO}; font-size: 9px; letter-spacing: .12em; text-transform: uppercase; color: #949CA8; }
 .hud-strip dd { margin: 0; font-family: ${MONO}; font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -350,6 +485,14 @@ h1 { margin: 0; font-family: ${GROT}; font-size: clamp(18px, 4.6cqmin, 36px); li
 @keyframes pulse { 0%, 100% { opacity: .4; } 50% { opacity: 1; } }
 .layer-run { animation: pulse 1.4s ease-in-out infinite; }
 .rec { animation: pulse 1.6s ease-in-out infinite; }
+/* ideas: fans at their own speed (--spin), air as moving dashes (--flow) */
+.fan-var { animation: spin var(--spin, 1s) linear infinite; }
+@keyframes flow { to { stroke-dashoffset: -32; } }
+.flow { stroke-dasharray: 12 20; }
+.flow-run { animation: flow var(--flow, 1s) linear infinite; }
+.fan-hub { fill: #0D0F12; }
+.fan-pct { font-family: ${MONO}; font-weight: 600; fill: #B4BBC6; letter-spacing: .04em; }
+.t-fv { font: 600 11px ${MONO}; fill: #ECEEF1; text-anchor: end; }
 
 /* --- progress --- */
 .prog { flex: none; }
@@ -498,7 +641,7 @@ dl { margin: 0; }
 
 @media (prefers-reduced-motion: reduce) {
   .th-run, .fan-run, .spool-run, .feed-run, .layer-run, .rec, .badge.live i, .pill.live .dot,
-  .xh-run, .xs-run { animation: none !important; }
+  .xh-run, .xs-run, .fan-var, .flow-run, .hchip.rec i { animation: none !important; }
 }
 `;
 
@@ -517,7 +660,51 @@ function tag(key, x, y, label) {
     + '<rect width="150" height="46" rx="9" fill="#101215" stroke="#2A2F36" stroke-width="1"></rect>'
     + '<text x="12" y="18" class="t-lab" data-r="tl-' + key + '">' + label + "</text>"
     + '<text x="138" y="18" class="t-stat" data-r="ts-' + key + '"></text>'
-    + '<text x="12" y="37" class="t-val" data-r="tv-' + key + '"></text></g>';
+    + '<text x="12" y="37" class="t-val" data-r="tv-' + key + '"></text>'
+    // thermal: how far to the target; machine: a detail line under the tag
+    + '<rect data-r="tb-' + key + '" x="12" y="41" width="0" height="2.5" rx="1.2" display="none"></rect>'
+    + '<text x="4" y="60" class="t-lab" data-r="tx-' + key + '" display="none"></text></g>';
+}
+
+/**
+ * A fan seen face-on at (cx, cy), radius r: housing, five blades that spin
+ * (data-r key + "-b") and its % under it (key + "-v"). Hidden until an idea shows it.
+ */
+function fanSvg(key, cx, cy, r) {
+  const k = (v) => (v * r).toFixed(1);
+  const blade = (deg) => '<path d="M0 0 C ' + k(0.4) + " " + k(-0.2) + ", " + k(0.48) + " " + k(-0.72) + ", 0 " + k(-0.9)
+    + " C " + k(-0.22) + " " + k(-0.66) + ", " + k(-0.18) + " " + k(-0.3) + ', 0 0 Z" transform="rotate(' + deg + ')"></path>';
+  return '<g data-r="' + key + '" display="none" transform="translate(' + cx + " " + cy + ')">'
+    + '<circle r="' + r + '" fill="#0B0D10" fill-opacity="0.72" stroke="#5A616B" stroke-width="' + k(0.07) + '"></circle>'
+    + '<g data-r="' + key + '-b" fill="#9AA3B0" fill-opacity="0.6">' + [0, 72, 144, 216, 288].map(blade).join("") + "</g>"
+    + '<circle r="' + k(0.2) + '" class="fan-hub" stroke="#5A616B" stroke-width="' + k(0.05) + '"></circle>'
+    + (r >= 10 ? '<text data-r="' + key + '-v" y="' + k(1.55) + '" text-anchor="middle" class="fan-pct" font-size="' + k(0.5) + '"></text>' : "")
+    + "</g>";
+}
+
+/** Air as a moving dashed line along `d`; hidden until an idea shows it. */
+function flowSvg(key, d, colour, width) {
+  return '<path data-r="' + key + '" class="flow" d="' + d + '" fill="none" stroke="' + colour + '" stroke-width="' + width
+    + '" stroke-linecap="round" display="none"></path>';
+}
+
+/** The FANS tag: the five fans as bars with %, and the air-duct mode; each row its own entity. */
+function fanTag(x, y, s) {
+  const rows = FAN_KEYS.map((f, n) => {
+    const y0 = 24 + n * 20;
+    return '<g data-r="ft-' + f[0] + '" data-more="" data-tip="">'
+      + '<rect x="6" y="' + y0 + '" width="138" height="19" rx="4" fill="#FFFFFF" fill-opacity="0"></rect>'
+      + '<text x="12" y="' + (y0 + 13) + '" class="t-lab">' + f[2] + "</text>"
+      + '<rect x="70" y="' + (y0 + 7) + '" width="40" height="4" rx="2" fill="#22262C"></rect>'
+      + '<rect data-r="ftb-' + f[0] + '" x="70" y="' + (y0 + 7) + '" width="0" height="4" rx="2" fill="#5AA9FF"></rect>'
+      + '<text data-r="ftv-' + f[0] + '" x="140" y="' + (y0 + 13) + '" class="t-fv"></text></g>';
+  }).join("");
+  return '<g data-r="fantag" display="none" transform="translate(' + x + " " + y + ") scale(" + s + ')">'
+    + '<rect data-r="ft-box" width="150" height="130" rx="9" fill="#101215" stroke="#2A2F36" stroke-width="1"></rect>'
+    + '<text x="12" y="17" class="t-lab">FANS</text>'
+    + '<g data-r="ft-duct" data-more="" data-tip=""><rect x="64" y="4" width="82" height="18" rx="4" fill="#FFFFFF" fill-opacity="0"></rect>'
+    + '<text data-r="ftv-duct" x="138" y="17" class="t-stat"></text></g>'
+    + rows + "</g>";
 }
 
 function amsSlotSvg(i) {
@@ -554,6 +741,9 @@ const PRINTER_SVG = `
 <line x1="468" y1="182" x2="468" y2="498" stroke-width="3" data-r="w-rail2"></line>
 <rect x="226" y="152" width="268" height="4" rx="2" data-r="w-strip"></rect>
 <polygon points="232,156 488,156 520,540 200,540" fill="#FFF4E0" data-r="w-beam"></polygon>
+<rect data-r="haze" x="200" y="150" width="320" height="390" fill="#FF9F43" opacity="0" display="none"></rect>
+${fanSvg("f-aux", 502, 232, 13)}
+${fanSvg("f-aux2", 218, 330, 13)}
 
 <g data-r="bed" transform="translate(0 40)">
 <rect x="246" y="250" width="14" height="16" rx="3" fill="#2C3036"></rect>
@@ -575,6 +765,14 @@ ${tag("bed", 568, 253, "BED")}
 </g>
 </g>
 
+${flowSvg("g-r1", "M 488 236 Q 440 250, 392 282", "#9CCBFF", 2)}
+${flowSvg("g-r2", "M 488 250 Q 446 272, 404 298", "#9CCBFF", 2)}
+${flowSvg("g-l1", "M 234 318 Q 262 306, 300 298", "#9CCBFF", 2)}
+${flowSvg("g-l2", "M 234 340 Q 266 330, 304 324", "#9CCBFF", 2)}
+${flowSvg("o-in1", "M 552 252 Q 536 246, 518 238", "#9CCBFF", 2.5)}
+${flowSvg("o-in2", "M 552 268 Q 534 260, 516 246", "#9CCBFF", 2.5)}
+${flowSvg("o-duct", "M 502 248 L 502 522", "#FFB066", 2.5)}
+${flowSvg("o-loop", "M 494 528 Q 360 538, 226 522 Q 212 400, 226 190 Q 360 176, 488 224", "#FFB066", 2.5)}
 <rect x="210" y="199" width="300" height="9" rx="2" fill="#3A3F47"></rect>
 <rect x="204" y="192" width="16" height="22" rx="3" fill="#2C3036"></rect>
 <rect x="500" y="192" width="16" height="22" rx="3" fill="#2C3036"></rect>
@@ -594,6 +792,9 @@ ${tag("bed", 568, 253, "BED")}
 <circle cx="379" cy="233" r="2" data-r="headled"></circle>
 <rect x="351" y="242" width="18" height="8" rx="1.5" fill="#3A3F47"></rect>
 <polygon points="354,250 366,250 362,258 358,258" data-r="nozzle"></polygon>
+<polygon data-r="jet" points="356,259 364,259 388,294 332,294" fill="#7FB8FF" opacity="0" display="none"></polygon>
+${fanSvg("f-heatbreak", 343, 236, 5)}
+<circle data-r="exdot" cx="341" cy="191" r="2.6" display="none"></circle>
 </g>
 </g>
 
@@ -642,6 +843,7 @@ ${tag("ch", -28, 330, "CHAMBER")}
 <line x1="516" y1="205" x2="568" y2="205" stroke="#3A414B" stroke-width="1"></line>
 <circle cx="516" cy="205" r="3" fill="#949CA8"></circle>
 ${tag("noz", 568, 182, "NOZZLE")}
+${fanTag(-28, 410, 1)}
 </g>
 </svg>`;
 
@@ -819,6 +1021,9 @@ function photoSvg(a) {
   <linearGradient id="xg-dry" x1="0" y1="0" x2="0" y2="1">
     <stop offset="0" stop-color="#FF9F43" stop-opacity="0.10"></stop><stop offset="1" stop-color="#FF7A2E" stop-opacity="0.38"></stop>
   </linearGradient>
+  <linearGradient id="xg-jet" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#9CCBFF" stop-opacity="0.85"></stop><stop offset="1" stop-color="#9CCBFF" stop-opacity="0"></stop>
+  </linearGradient>
   <clipPath id="xc-exband"><rect data-r="x-exbandclip" x="${EX.X - EX.HALF}" y="${EX.AXLE}" width="${EX.HALF * 2}" height="0"></rect></clipPath>
 </defs>
 
@@ -841,6 +1046,8 @@ ${extSpoolSvg()}
   ${P()}
   ${P(' x="-' + H[2] + '" clip-path="url(#xc-head)"')}
   ${P(' y="' + B[3] + '" clip-path="url(#xc-bed)"')}
+  ${fanSvg("xf-aux", 600, 282, 40)}
+  ${fanSvg("xf-aux2", 120, 430, 44)}
   <g clip-path="url(#xc-glass)"><g data-r="x-bed">
     ${P(' clip-path="url(#xc-bed)"')}
     <rect data-r="x-bedheat" x="${B[0]}" y="${PH.BED - 4}" width="${B[2]}" height="6" fill="#FF8A3D" opacity="0"></rect>
@@ -851,17 +1058,32 @@ ${extSpoolSvg()}
     <circle cx="${B[0] + B[2]}" cy="${PH.BED + 17}" r="5" fill="#949CA8"></circle>
     ${bigTag("bed", 744, PH.BED + 17 - 46, "BED")}
   </g>
+  ${flowSvg("xg-r1", "M 560 290 Q 470 300, 390 340", "#9CCBFF", 5)}
+  ${flowSvg("xg-r2", "M 562 316 Q 476 340, 396 380", "#9CCBFF", 5)}
+  ${flowSvg("xg-r3", "M 556 342 Q 480 376, 404 418", "#9CCBFF", 5)}
+  ${flowSvg("xg-l1", "M 166 392 Q 240 352, 316 332", "#9CCBFF", 5)}
+  ${flowSvg("xg-l2", "M 168 430 Q 246 400, 322 372", "#9CCBFF", 5)}
+  ${flowSvg("xg-l3", "M 166 468 Q 248 450, 318 412", "#9CCBFF", 5)}
+  ${flowSvg("xo-in1", "M 736 372 Q 690 360, 652 316", "#9CCBFF", 6)}
+  ${flowSvg("xo-in2", "M 736 398 Q 684 384, 642 334", "#9CCBFF", 6)}
+  ${flowSvg("xo-duct", "M 612 326 L 612 800", "#FFB066", 6)}
+  ${flowSvg("xo-loop", "M 598 822 Q 360 850, 112 822 Q 92 520, 112 210 Q 360 186, 562 262", "#FFB066", 6)}
   <rect data-r="x-layer" x="${PH.NOZX - 95}" y="${PH.NOZ - 1}" width="190" height="3" rx="1.5" fill="#FFB066" opacity="0"></rect>
   <g data-r="x-head" transform="translate(${PH.PARK} 0)"><g data-r="x-headrun">
     ${P(' clip-path="url(#xc-head)"')}
     <g data-r="x-fan" class="x-spin">${blade(0)}${blade(120)}${blade(240)}</g>
     <circle data-r="x-glow" cx="${PH.NOZX}" cy="${PH.NOZ + 2}" r="18" fill="url(#xg-glow)" opacity="0"></circle>
+    <polygon data-r="x-jet" points="${PH.NOZX - 8},${PH.NOZ + 4} ${PH.NOZX + 8},${PH.NOZ + 4} ${PH.NOZX + 62},${PH.NOZ + 96} ${PH.NOZX - 62},${PH.NOZ + 96}"
+      fill="url(#xg-jet)" opacity="0" display="none"></polygon>
+    ${fanSvg("xf-heatbreak", 322, 206, 14)}
+    <circle data-r="x-exdot" cx="398" cy="200" r="7" stroke="#0B0D10" stroke-width="2" display="none"></circle>
   </g></g>
   <path data-r="x-spag" d="M300 ${PH.NOZ + 6} c 12 -22, 30 18, 42 -4 s 22 26, 36 2 s 18 -20, 30 6 m -96 14 c 16 10, 30 -14, 48 2 s 24 12, 40 -6"
     fill="none" stroke-width="4" stroke-linecap="round" opacity="0"></path>
   <g clip-path="url(#xc-glass)">
     <rect data-r="x-warm" x="${G[0]}" y="${G[1]}" width="${G[2]}" height="${G[3]}" fill="url(#xg-warm)" opacity="0"></rect>
     <rect data-r="x-dark" x="${G[0]}" y="${G[1]}" width="${G[2]}" height="${G[3]}" fill="#000000" opacity="0"></rect>
+    <rect data-r="x-haze" x="${G[0]}" y="${G[1]}" width="${G[2]}" height="${G[3]}" fill="#FF9F43" opacity="0" display="none"></rect>
   </g>
   <g data-r="x-door" opacity="0">
     <rect x="${G[0]}" y="${G[1]}" width="${G[2]}" height="${G[3]}" fill="#FFFFFF" opacity="0.05"></rect>
@@ -894,12 +1116,17 @@ ${extSpoolSvg()}
   <line x1="-50" y1="${A + 720}" x2="${G[0] + 40}" y2="${A + 720}" stroke="#3A414B" stroke-width="2"></line>
   <circle cx="${G[0] + 40}" cy="${A + 720}" r="5" fill="#949CA8"></circle>
   ${bigTag("ch", -350, A + 674, "CHAMBER")}
+  ${fanTag(-350, 662, 2)}
 </g>
 </svg>`;
 }
 
 const DOOR_ICON = '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 21V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v17M4 21h16M14.5 12h.01"></path></svg>';
 const BULB_ICON = '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.6 10.8c.7.5 1.1 1.3 1.1 2.1V16h5v-.1c0-.8.4-1.6 1.1-2.1A6 6 0 0 0 12 3z"></path></svg>';
+
+const WIFI_ICON = '<svg class="ico wifi" viewBox="0 0 24 24" aria-hidden="true">'
+  + [0, 1, 2, 3].map((i) => '<rect data-r="wb' + i + '" x="' + (3 + i * 5) + '" y="' + (17 - i * 4) + '" width="3.4" height="'
+    + (4 + i * 4) + '" rx="1"></rect>').join("") + "</svg>";
 
 const TEMPLATE = `
 <ha-card><div class="root">
@@ -908,6 +1135,13 @@ const TEMPLATE = `
     <div class="segs" role="group" data-r="segs"></div>
     <button type="button" class="door" data-r="pvdoor" data-act="door"></button>
   </div>
+  <div class="pv" data-r="pv2" hidden>
+    <span class="lab" data-r="pvfl">Fans</span>
+    <div class="segs" role="group" data-r="fsegs"></div>
+    <span class="gap"></span>
+    <span class="lab" data-r="pvil">Ideas</span>
+    <div class="segs" role="group" data-r="isegs"></div>
+  </div>
   <header class="head">
     <div class="head-l">
       <div class="kick"><span class="brand">Bambu Lab P2S</span><span class="mockchip" data-r="mock" hidden>Mock data</span></div>
@@ -915,6 +1149,10 @@ const TEMPLATE = `
       <p class="sub" data-r="sub"></p>
     </div>
     <div class="head-r">
+      <span class="chip hchip rec" data-r="hc-rec" data-more="" hidden><i></i>REC</span>
+      <span class="chip hchip" data-r="hc-fw" data-more="" hidden>Update</span>
+      <span class="chip hchip warn" data-r="hc-sd" data-more="" hidden>SD card</span>
+      <span class="chip hchip" data-r="hc-wifi" data-more="" hidden>${WIFI_ICON}<span data-r="hc-wifiv"></span></span>
       <span class="chip pill" role="status" data-r="pill" data-more=""><span class="dot"></span><span data-r="plabel"></span></span>
       <span class="chip doorchip" data-r="door" data-more="">${DOOR_ICON}<span data-r="doorv"></span></span>
       <button type="button" class="chip lightbtn" data-r="light" data-act="light" role="switch">${BULB_ICON}<span data-r="lightv"></span></button>
@@ -931,6 +1169,7 @@ const TEMPLATE = `
           <div data-r="hs-bed" data-more=""><dt>Bed</dt><dd data-r="hsv-bed"></dd></div>
           <div data-r="hs-ch" data-more=""><dt>Chamber</dt><dd data-r="hsv-ch"></dd></div>
           <div data-r="hs-ams" data-more=""><dt data-r="hsl-ams">AMS A1</dt><dd data-r="hsv-ams"></dd></div>
+          <div data-r="hs-fan" data-more="" hidden><dt>Fans</dt><dd data-r="hsv-fan"></dd></div>
         </dl>
       </section>
       <section class="sec ams">
@@ -1061,6 +1300,7 @@ class P2sPrinterConsoleCard extends HTMLElement {
     this._camWanted = false;
     this._camTimer = null;
     this._doorPreview = null; // null = sensor, "on" = open, "off" = shut
+    this._ideaOff = {}; // ideas switched off on the Preview bar, by name
     this._fp = null;
     this._photo = false; // the box holds the photo scene (art: photo, renders found)
     this._cover = null; // the plate image's opaque box: { key, W, H, box: [x, y, w, h] }
@@ -1091,6 +1331,9 @@ class P2sPrinterConsoleCard extends HTMLElement {
     }
     if (!(Number(cfg.layer_height) > 0)) {
       throw new Error(CARD + ": layer_height must be a positive number of mm");
+    }
+    if (!Array.isArray(cfg.ideas) || cfg.ideas.some((k) => IDEAS.indexOf(k) < 0)) {
+      throw new Error(CARD + ": ideas must be a list of " + IDEAS.join(", "));
     }
     this._config = cfg;
     this._fp = null;
@@ -1133,6 +1376,25 @@ class P2sPrinterConsoleCard extends HTMLElement {
       return v && STATUSES.indexOf(v) >= 0 ? v : null;
     }
     return cfg.debug_status || null;
+  }
+
+  /** The fan scenario forced by debug_fans_entity, or null when live. */
+  _fanScenario() {
+    const v = this._s(this._config.debug_fans_entity);
+    return v && Object.prototype.hasOwnProperty.call(FAN_MOCK, v) ? FAN_MOCK[v] : null;
+  }
+
+  /** Which ideas are drawn: listed in the config and not switched off on the Preview bar. */
+  _ideas() {
+    const on = {};
+    IDEAS.forEach((k) => { on[k] = this._config.ideas.indexOf(k) >= 0 && !this._ideaOff[k]; });
+    return on;
+  }
+
+  /** A state that means something, or null. */
+  _str(id) {
+    const v = this._s(id);
+    return v && v !== "unknown" && v !== "unavailable" ? v : null;
   }
 
   /**
@@ -1224,7 +1486,20 @@ class P2sPrinterConsoleCard extends HTMLElement {
         : null,
       cover: (() => { const s = this._st(c.cover); return s && s.attributes.entity_picture ? s.attributes.entity_picture : null; })(),
       coverKey: this._s(c.cover), // the image entity's state changes with the picture, its URL token does not
-
+      fans: (() => { const f = {}; FAN_KEYS.forEach((k) => { f[k[0]] = num(this._s(c[k[1]])); }); return f; })(),
+      airduct: (() => { const d = this._s(c.airduct); return d === "cooling" || d === "heating" ? d : null; })(),
+      mach: {
+        nozSize: num(this._s(c.nozzle_size)), nozType: this._str(c.nozzle_type), plate: this._str(c.bed_type),
+        extruder: (() => { const e = this._s(c.extruder_filament); return e === "on" ? true : e === "off" ? false : null; })(),
+        length: num(this._s(c.print_length)),
+        start: (() => { const s = this._str(c.start_time); const d = s ? new Date(s) : null; return d && !isNaN(d.getTime()) ? d : null; })(),
+        skipped: num(this._s(c.skipped)), printable: num(this._s(c.printable)),
+        amsStatus: this._str(c.ams_status), humIdx: num(this._s(c.humidity_index)),
+      },
+      health: {
+        timelapse: this._s(c.timelapse) === "on", wifi: num(this._s(c.wifi)), fw: this._s(c.firmware) === "on",
+        sd: this._str(c.sd_card), usage: num(this._s(c.total_usage)),
+      },
     };
     const forced = this._forced();
     if (forced) {
@@ -1246,6 +1521,15 @@ class P2sPrinterConsoleCard extends HTMLElement {
       }
       m.jobGrams = k.task ? [m.weight || 11.7, 0, 0, 0, 0] : [0, 0, 0, 0, 0];
       m.ext = Object.assign({}, m.ext, { active: false });
+      const mf = MOCK_FANS[forced];
+      m.fans = { part: mf[0], heatbreak: mf[1], aux: mf[2], aux2: mf[3], chamber: mf[4] };
+      m.airduct = mf[5];
+    }
+    const sc = this._fanScenario();
+    if (sc && m.status !== "offline") {
+      m.fans = { part: sc.part, heatbreak: sc.heatbreak, aux: sc.aux, aux2: sc.aux2, chamber: sc.chamber };
+      m.airduct = sc.duct;
+      m.mock = true;
     }
     if (this._doorPreview && c.debug_status_entity) m.door = this._doorPreview;
     return m;
@@ -1315,7 +1599,13 @@ class P2sPrinterConsoleCard extends HTMLElement {
       c.weight, c.speed, c.cover, c.light, c.door, c.nozzle, c.nozzle_target, c.bed, c.bed_target,
       c.chamber, c.external, c.ams_humidity, c.ams_temperature, c.ams_drying, c.ams_drying_left,
       c.hms, c.print_error, c.debug_status_entity, c.spool_size].concat(c.trays, c.remains);
-    const fp = JSON.stringify([this._doorPreview].concat(
+    // The ideas' sensors only when one is on: production must not redraw on a fan change.
+    if (c.ideas.length || c.debug_fans_entity) {
+      ids.push(c.fan_part, c.fan_heatbreak, c.fan_aux, c.fan_aux2, c.fan_chamber, c.airduct, c.nozzle_size,
+        c.nozzle_type, c.bed_type, c.extruder_filament, c.print_length, c.start_time, c.skipped, c.printable,
+        c.ams_status, c.humidity_index, c.timelapse, c.wifi, c.firmware, c.sd_card, c.total_usage, c.debug_fans_entity);
+    }
+    const fp = JSON.stringify([this._doorPreview, this._ideaOff].concat(
       ids.map((id) => { const s = this._st(id); return s ? [s.state, s.attributes] : null; })));
     if (fp === this._fp) return;
     this._fp = fp;
@@ -1400,6 +1690,7 @@ class P2sPrinterConsoleCard extends HTMLElement {
     const dp = this._doorPreview === "on" ? "open" : this._doorPreview === "off" ? "closed" : "sensor";
     text(r.pvdoor, "Door: " + dp);
     setAttrs(r.pvdoor, { "data-tip": tip("Door preview", dp.toUpperCase(), HELP.door_preview) });
+    this._patchPreview2();
 
     // header
     r.mock.hidden = !m.mock;
@@ -1419,6 +1710,7 @@ class P2sPrinterConsoleCard extends HTMLElement {
     text(r.lightv, "Light " + (offline || m.light === null ? "unknown" : lightOn ? "on" : "off"));
     setAttrs(r.light, { "aria-checked": lightOn ? "true" : "false",
       "data-tip": tip("Chamber light", lightOn ? "ON" : "OFF", HELP.light) });
+    this._patchHealth(m, printing, offline);
 
     // issue line
     const issues = m.hms.slice();
@@ -1445,7 +1737,9 @@ class P2sPrinterConsoleCard extends HTMLElement {
     text(r.donel, m.status === "finish" ? "Finished at" : "Done at");
     text(r.donev, doneTxt);
     setAttrs(r.done, { "data-more": c.end_time, "data-tip": tip("Done at", doneTxt, HELP.done) });
-    const fil = m.weight === null || !m.task ? "—" : m.weight.toFixed(1) + " g";
+    const I = this._ideas();
+    const fil = m.weight === null || !m.task ? "—" : m.weight.toFixed(1) + " g"
+      + (I.machine && m.mach.length ? " · " + m.mach.length.toFixed(1) + " m" : "");
     text(r.filv, fil);
     setAttrs(r.fil, { "data-more": c.weight, "data-tip": tip("Filament used", fil, HELP.weight) });
     const spRaw = m.speed && m.speed !== "unknown" && m.speed !== "unavailable" ? m.speed : null;
@@ -1458,9 +1752,11 @@ class P2sPrinterConsoleCard extends HTMLElement {
     const layerTxt = m.layers ? (m.layer || 0) + " / " + m.layers : "—";
     text(r.layerv, layerTxt);
     const rest = Math.max(0, L - (m.layer || 0));
-    text(r.togo, !L ? "" : {
+    const extra = !I.machine ? "" : (m.mach.skipped > 0 ? " · " + m.mach.skipped + (m.mach.printable ? " of " + m.mach.printable : "")
+      + " skipped" : "") + (printing && m.mach.start && !m.mock ? " · started " + hm(m.mach.start) : "");
+    text(r.togo, !L ? "" : ({
       prepare: L + " layers queued", running: rest + " layers to go", pause: rest + " layers to go",
-      finish: "All layers done", failed: rest + " layers not printed" }[m.status] || "");
+      finish: "All layers done", failed: rest + " layers not printed" }[m.status] || "") + extra);
     setAttrs(r.layer, { "data-more": c.layer, "data-tip": tip("Layer", layerTxt, HELP.layer) });
 
     // AMS
@@ -1496,6 +1792,7 @@ class P2sPrinterConsoleCard extends HTMLElement {
     // virtual printer
     if (this._photo) this._patchPhoto(m, meta, tone, feed, lightOn, doorOpen);
     else this._patchPrinter(m, meta, tone, feed, lightOn, doorOpen);
+    this._patchIdeas(m, meta);
     text(r.caption, this._caption(m));
 
     // camera
@@ -1570,7 +1867,7 @@ class P2sPrinterConsoleCard extends HTMLElement {
     // toolhead
     setAttrs(r.head, { transform: "translate(" + (meta.head === "park" ? -118 : 0) + " 0)" });
     anim(r.headrun, "th-run", meta.head === "run");
-    anim(r.fan, "fan-run", nozC >= 60);
+    anim(r.fan, "fan-run", nozC >= 60 && !this._ideas().fans); // with the fans idea it spins at its real %
     setAttrs(r.glow, { opacity: nozC >= 170 ? 0.5 : nozC >= 60 ? 0.18 : 0 });
     setAttrs(r.nozzle, { fill: nozC >= 170 ? "#FF9F43" : nozC >= 60 ? "#C98A5A" : "#8A9099" });
     setAttrs(r.headled, { fill: offline ? "#3A3F47" : tone.fg });
@@ -1617,9 +1914,14 @@ class P2sPrinterConsoleCard extends HTMLElement {
     const lay = { val: m.layers ? (m.layer || 0) + " / " + m.layers : "—", stat: layStat,
       col: run ? "#FFB066" : m.status === "failed" ? "#FF7A6E" : "#949CA8" };
     const amsLbl = feed < 0 ? "AMS" : feed < 4 ? "AMS · A" + (feed + 1) : "EXTERNAL";
+    const I = this._ideas();
+    // machine: what the AMS is busy with, when it is not just idle or feeding
+    const amsBusy = I.machine && !offline && m.mach.amsStatus && ["idle", "unknown"].indexOf(m.mach.amsStatus) < 0
+      ? m.mach.amsStatus.replace(/_/g, " ").toUpperCase().slice(0, 11) : null;
     const ams = { val: offline || !fs ? "—"
-      : fs.type + (fs.grams === null ? "" : " · " + Math.round(Math.max(0, fs.grams)) + "g"), stat: offline || !fs ? "" : run ? "FEEDING" : "LOADED",
-      col: run ? "#5AA9FF" : "#949CA8" };
+      : fs.type + (fs.grams === null ? "" : " · " + Math.round(Math.max(0, fs.grams)) + "g"),
+      stat: offline || !fs ? "" : amsBusy || (run ? "FEEDING" : "LOADED"),
+      col: amsBusy ? "#FFB547" : run ? "#5AA9FF" : "#949CA8" };
     const tags = { noz: [noz, c.nozzle, "Nozzle", HELP.nozzle], bed: [bed, c.bed, "Bed", HELP.bed],
       ch: [ch, c.chamber, "Chamber", HELP.chamber], lay: [lay, c.layer, "Layer", HELP.layer],
       ams: [ams, feed >= 0 ? all[feed].id : c.trays[0], "AMS", HELP.ams_tag] };
@@ -1637,6 +1939,191 @@ class P2sPrinterConsoleCard extends HTMLElement {
     text(r["tl-ams"], amsLbl);
     text(r["hsl-ams"], amsLbl.replace(" · ", " "));
     setAttrs(r.laytag, { opacity: meta.part === "none" ? 0 : 1 });
+
+    // thermal: a bar under the nozzle and bed values, how far to the target
+    [["noz", m.nozzle, noz], ["bed", m.bed, bed]].forEach(([k, t, v]) => {
+      const on = I.thermal && !offline && t[0] !== null && t[1] > 0;
+      setAttrs(r["tb-" + k], { display: on ? "inline" : "none",
+        width: on ? (126 * Math.max(0, Math.min(1, t[0] / t[1]))).toFixed(1) : 0, fill: v.col });
+    });
+    // machine: the fitted nozzle and plate under their tags
+    const plate = { textured_plate: "Textured PEI plate", cool_plate: "Cool plate", engineering_plate: "Engineering plate",
+      hot_plate: "Smooth PEI plate", supertack_plate: "SuperTack plate" };
+    const nozTxt = m.mach.nozSize === null ? "" : m.mach.nozSize + " mm"
+      + (m.mach.nozType ? " · " + m.mach.nozType.replace(/_/g, " ") : "");
+    const bedTxt = m.mach.plate ? plate[m.mach.plate] || m.mach.plate.replace(/_/g, " ") : "";
+    [["noz", nozTxt], ["bed", bedTxt]].forEach(([k, s]) => {
+      const on = I.machine && !offline && !!s;
+      text(r["tx-" + k], on ? s.toUpperCase() : "");
+      setAttrs(r["tx-" + k], { display: on ? "inline" : "none" });
+    });
+
+    // the FANS tag, and its cell in the narrow strip
+    const pct = (v) => (v === null || v === undefined ? "—" : Math.round(v) + "%");
+    setAttrs(r.fantag, { display: I.fan_tag ? "inline" : "none" });
+    FAN_KEYS.forEach((f) => {
+      const v = offline ? null : m.fans[f[0]];
+      text(r["ftv-" + f[0]], pct(v));
+      setAttrs(r["ftb-" + f[0]], { width: v > 0 ? (40 * Math.min(100, v) / 100).toFixed(1) : 0 });
+      setAttrs(r["ft-" + f[0]], { "data-more": c[f[1]], "data-tip": tip(f[3], v === null ? "—" : Math.round(v) + " %", HELP["fan_" + f[0]]) });
+    });
+    // Rows that say something: AUX L only if the left fan ever runs (it likely isn't
+    // fitted), CHAMBER only if it differs from DUCT R (the P2S repeats it). The rest
+    // move up into the gaps and the box shrinks to fit.
+    const rowOn = {
+      aux2: !offline && m.fans.aux2 > 0,
+      chamber: !offline && m.fans.chamber !== null && m.fans.chamber !== m.fans.aux,
+    };
+    let rows = 0;
+    FAN_KEYS.forEach((f, n) => {
+      const on = rowOn[f[0]] === undefined || rowOn[f[0]];
+      setAttrs(r["ft-" + f[0]], { display: on ? "inline" : "none", transform: "translate(0 " + (rows - n) * 20 + ")" });
+      if (on) rows++;
+    });
+    setAttrs(r["ft-box"], { height: 30 + rows * 20 });
+    const duct = offline || !m.airduct ? "" : m.airduct.toUpperCase();
+    text(r["ftv-duct"], duct);
+    setAttrs(r["ftv-duct"], { fill: m.airduct === "heating" ? "#FFB066" : "#5AA9FF" });
+    setAttrs(r["ft-duct"], { "data-more": c.airduct, "data-tip": tip("Air duct", duct || "—", HELP.airduct) });
+    if (r["hs-fan"]) {
+      r["hs-fan"].hidden = !I.fan_tag;
+      const f = m.fans;
+      const vals = [f.part, f.aux].concat(rowOn.aux2 ? [f.aux2] : []);
+      const cell = offline ? "—" : vals.map((v) => (v === null ? "—" : Math.round(v))).join("·");
+      text(r["hsv-fan"], cell);
+      setAttrs(r["hs-fan"], { "data-more": c.fan_part,
+        "data-tip": tip("Fans", "PART · DUCT R" + (rowOn.aux2 ? " · AUX L " : " ") + cell, HELP.fans) });
+    }
+  }
+
+  /** The Preview bar's second row: fan scenarios and a toggle per idea. Playground only. */
+  _patchPreview2() {
+    const r = this._r;
+    const c = this._config;
+    const fId = c.debug_fans_entity;
+    const ideas = (c.debug_status_entity || fId) ? IDEAS.filter((k) => c.ideas.indexOf(k) >= 0) : [];
+    r.pv2.hidden = !fId && !ideas.length;
+    r.pvfl.hidden = !fId;
+    r.fsegs.hidden = !fId;
+    r.pvil.hidden = !ideas.length;
+    r.isegs.hidden = !ideas.length;
+    if (fId) {
+      const cur = this._s(fId) || "live";
+      if (!r.fsegs.firstElementChild) {
+        r.fsegs.innerHTML = ["live"].concat(Object.keys(FAN_MOCK)).map((o) =>
+          '<button type="button" class="seg" data-act="fan:' + o + '">' + o + "</button>").join("");
+      }
+      r.fsegs.querySelectorAll(".seg").forEach((b) => {
+        const o = b.getAttribute("data-act").slice(4);
+        setAttrs(b, { "aria-pressed": o === cur ? "true" : "false",
+          "data-tip": tip("Fan preview", o === cur ? o.toUpperCase() + " · ON" : o.toUpperCase(),
+            o === "live" ? HELP.dbg_live : HELP.fan_preview) });
+      });
+    }
+    if (r.isegs.getAttribute("data-k") !== ideas.join(",")) {
+      r.isegs.innerHTML = ideas.map((k) =>
+        '<button type="button" class="seg idea" data-act="idea:' + k + '">' + IDEA_LABEL[k] + "</button>").join("");
+      r.isegs.setAttribute("data-k", ideas.join(","));
+    }
+    r.isegs.querySelectorAll(".seg").forEach((b) => {
+      const k = b.getAttribute("data-act").slice(5);
+      const on = !this._ideaOff[k];
+      setAttrs(b, { "aria-pressed": on ? "true" : "false", "data-tip": tip("Idea · " + IDEA_LABEL[k], on ? "ON" : "OFF", HELP.idea) });
+    });
+  }
+
+  /** health: header chips that show only when they mean something. */
+  _patchHealth(m, printing, offline) {
+    const r = this._r;
+    const c = this._config;
+    const on = this._ideas().health && !offline;
+    const h = m.health;
+    r["hc-rec"].hidden = !(on && printing && h.timelapse);
+    setAttrs(r["hc-rec"], { "data-more": c.timelapse, "data-tip": tip("Timelapse", h.timelapse ? "RECORDING" : "OFF", HELP.rec) });
+    r["hc-fw"].hidden = !(on && h.fw);
+    setAttrs(r["hc-fw"], { "data-more": c.firmware, "data-tip": tip("Firmware", h.fw ? "UPDATE WAITING" : "UP TO DATE", HELP.firmware) });
+    const sdBad = !!h.sd && ["normal", "missing", "not_applicable"].indexOf(h.sd) < 0;
+    r["hc-sd"].hidden = !(on && sdBad);
+    setAttrs(r["hc-sd"], { "data-more": c.sd_card, "data-tip": tip("SD card", (h.sd || "—").toUpperCase(), HELP.sd_card) });
+    const w = h.wifi;
+    r["hc-wifi"].hidden = !(on && w !== null);
+    const bars = w === null ? 0 : w >= -55 ? 4 : w >= -65 ? 3 : w >= -75 ? 2 : w >= -85 ? 1 : 0;
+    [0, 1, 2, 3].forEach((i) => setAttrs(r["wb" + i], { opacity: i < bars ? 1 : 0.25 }));
+    text(r["hc-wifiv"], w === null ? "" : Math.round(w) + " dBm");
+    r["hc-wifi"].classList.toggle("warn", w !== null && w < -75);
+    setAttrs(r["hc-wifi"], { "data-more": c.wifi, "data-tip": tip("Wi-Fi", w === null ? "—" : Math.round(w) + " dBm · " + bars + "/4", HELP.wifi) });
+  }
+
+  /**
+   * fans, airflow, thermal and the extruder dot, in whichever picture is up.
+   * A fan below 1 % gets no animation class, so a quiet printer animates nothing.
+   */
+  _patchIdeas(m, meta) {
+    const r = this._r;
+    const I = this._ideas();
+    const x = this._photo;
+    const offline = m.status === "offline";
+    const F = offline ? { part: null, heatbreak: null, aux: null, aux2: null, chamber: null } : m.fans;
+    const show = (el, on) => { if (el) setAttrs(el, { display: on ? "inline" : "none" }); };
+    const spin = (el, pct, on) => {
+      if (!el) return;
+      const d = on ? spinFor(pct) : null;
+      el.classList.toggle("fan-var", !!d);
+      if (d) el.style.setProperty("--spin", d);
+    };
+    const flow = (keys, pct, on) => keys.forEach((k) => {
+      const el = r[k];
+      if (!el) return;
+      const go = on && pct > 0;
+      show(el, go);
+      el.classList.toggle("flow-run", go);
+      if (go) el.style.setProperty("--flow", (0.4 + 1.6 * (1 - Math.min(100, pct) / 100)).toFixed(2) + "s");
+      setAttrs(el, { opacity: go ? (0.3 + 0.5 * Math.min(100, pct) / 100).toFixed(2) : 0 });
+    });
+    const P = x ? "xf-" : "f-";
+    ["aux", "aux2", "heatbreak"].forEach((k) => {
+      const v = F[k];
+      // the left fan is optional and has never run here: no dead fan in the picture
+      show(r[P + k], I.fans && !offline && (k !== "aux2" || v > 0));
+      spin(r[P + k + "-b"], v, I.fans);
+      setAttrs(r[P + k + "-b"], { fill: v > 0 ? "#9CCBFF" : "#9AA3B0" });
+      text(r[P + k + "-v"], v === null ? "—" : Math.round(v) + "%");
+    });
+    spin(r[x ? "x-fan" : "fan"], F.part, I.fans);
+    const jet = r[x ? "x-jet" : "jet"];
+    show(jet, I.fans && F.part > 0);
+    setAttrs(jet, { opacity: I.fans && F.part > 0 ? (0.2 + 0.6 * Math.min(100, F.part) / 100).toFixed(2) : 0 });
+    // The duct fan (right) blows on the print only in cooling mode: in heating mode its
+    // duct is closed and the air goes out of the bottom outlet (airflow, below).
+    const heat = m.airduct === "heating";
+    flow(x ? ["xg-r1", "xg-r2", "xg-r3"] : ["g-r1", "g-r2"], F.aux, I.fans && !offline && !heat);
+    flow(x ? ["xg-l1", "xg-l2", "xg-l3"] : ["g-l1", "g-l2"], F.aux2, I.fans && !offline && !heat);
+
+    // airflow, both driven by the duct fan: cooling draws outside air in through the right
+    // wall; heating sends chamber air down the duct, out of the bottom outlet and round
+    flow(x ? ["xo-in1", "xo-in2"] : ["o-in1", "o-in2"], F.aux, I.airflow && !heat && !offline);
+    flow(x ? ["xo-duct", "xo-loop"] : ["o-duct", "o-loop"], F.aux, I.airflow && heat && !offline);
+
+    // thermal: the chamber air warms the glass from 26 °C
+    const haze = r[x ? "x-haze" : "haze"];
+    const hz = I.thermal && !offline && m.chamber !== null ? Math.max(0, Math.min(0.22, (m.chamber - 26) / 60)) : 0;
+    show(haze, hz > 0);
+    setAttrs(haze, { opacity: hz.toFixed(3) });
+    const glow = r[x ? "x-glow" : "glow"];
+    if (I.thermal && glow) {
+      const n = m.nozzle[0] || 0;
+      setAttrs(glow, { opacity: Math.max(0, Math.min(x ? 1 : 0.6, (n - 40) / 200)).toFixed(2) });
+    }
+
+    // machine: the extruder's filament sensor, a dot on the toolhead
+    const ex = r[x ? "x-exdot" : "exdot"];
+    show(ex, I.machine && !offline && m.mach.extruder !== null);
+    setAttrs(ex, { fill: m.mach.extruder ? "#4FD1B0" : "#5A616B" });
+
+    // health: lifetime hours in the printer's tooltip
+    if (I.health && m.health.usage !== null) {
+      setAttrs(r.vpbox, { "data-tip": tip("Virtual printer", meta.word + " · " + Math.round(m.health.usage) + " h printed", HELP.printer) });
+    }
   }
 
   /** A slot's tap target and tooltip; the same in the AMS section and on its plate in the picture. */
@@ -1652,7 +2139,9 @@ class P2sPrinterConsoleCard extends HTMLElement {
   _climate(m) {
     const c = this._config;
     const offline = m.status === "offline";
-    const hum = offline || m.humidity === null ? "—" : Math.round(m.humidity) + " %";
+    // with the machine idea, Bambu's 1-5 index joins it; compact, the climate tag's row is narrow
+    const idx = this._ideas().machine && m.mach.humIdx !== null ? Math.round(m.mach.humIdx) : null;
+    const hum = offline || m.humidity === null ? "—" : Math.round(m.humidity) + (idx === null ? " %" : "% L" + idx);
     const at = offline || m.amsTemp === null ? "—" : m.amsTemp.toFixed(1) + " °C";
     const dry = offline ? "—" : m.drying ? fmtLeft(m.dryLeft) + " left" : "Off";
     return {
@@ -1787,7 +2276,7 @@ class P2sPrinterConsoleCard extends HTMLElement {
     // toolhead: sweeps while printing, parked otherwise
     setAttrs(r["x-head"], { transform: "translate(" + (meta.head === "park" ? PH.PARK : 0) + " 0)" });
     anim(r["x-headrun"], "xh-run", meta.head === "run");
-    anim(r["x-fan"], "fan-run", nozC >= 60);
+    anim(r["x-fan"], "fan-run", nozC >= 60 && !this._ideas().fans);
     setAttrs(r["x-glow"], { opacity: nozC >= 170 ? 0.9 : nozC >= 60 ? 0.35 : 0 });
     setAttrs(r["x-spag"], { stroke: filament, opacity: m.status === "failed" ? 1 : 0 });
 
@@ -1948,6 +2437,17 @@ class P2sPrinterConsoleCard extends HTMLElement {
     if (act && act.indexOf("dbg:") === 0 && this._config.debug_status_entity) {
       this._hass.callService("input_select", "select_option",
         { entity_id: this._config.debug_status_entity, option: act.slice(4) });
+      return true;
+    }
+    if (act && act.indexOf("fan:") === 0 && this._config.debug_fans_entity) {
+      this._hass.callService("input_select", "select_option",
+        { entity_id: this._config.debug_fans_entity, option: act.slice(4) });
+      return true;
+    }
+    if (act && act.indexOf("idea:") === 0) {
+      const k = act.slice(5);
+      this._ideaOff[k] = !this._ideaOff[k];
+      this._render();
       return true;
     }
     this.dispatchEvent(new CustomEvent("hass-more-info", {

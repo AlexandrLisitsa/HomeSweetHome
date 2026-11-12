@@ -47,6 +47,27 @@ this repo uses:
 | `binary_sensor.p2s_hms_errors` | the printer's health system; attributes `1-Error`, `1-Severity`, … and `Count` |
 | `binary_sensor.p2s_print_error` | the print error; attributes `code`, `error` |
 | `sensor.p2s_ams_1_tray_1` … `_4`, `sensor.p2s_external_spool` | filament per slot; `type`, `color`, `empty` and `remain` (RFID %, else -1) in the attributes |
+| `sensor.p2s_cooling_fan_speed`, `_heatbreak_fan_speed`, `_aux_fan_speed`, `_secondary_aux_fan_speed`, `_chamber_fan_speed` | fans, %; see *Fans* below |
+| `sensor.p2s_airduct_mode` | `cooling` or `heating`; the printer picks it from the filament (PETG and up get `heating`) |
+
+### Fans
+
+Worked out from ha-bambulab's code and HA's history of four prints
+(10-12.11.2026):
+
+| Sensor | MQTT field | The fan |
+| --- | --- | --- |
+| `cooling_fan_speed` | `cooling_fan_speed` | part cooling, the toolhead's front fan |
+| `heatbreak_fan_speed` | `heatbreak_fan_speed` | the hotend fan, on the toolhead |
+| `aux_fan_speed` | `big_fan1_speed` | the air-duct fan in the right wall, 20-90 % through every print |
+| `secondary_aux_fan_speed` | `airduct.parts` id 160 | the optional aux fan in the left wall, sold separately: 0 % on every print here, and most likely not fitted. The card leaves it out (picture, FANS tag, strip) unless it ever reports more than 0 % |
+| `chamber_fan_speed` | `big_fan2_speed` | equal to `aux_fan_speed` at every one of its 31 changes: the firmware repeats the duct fan, there is no separate chamber fan to see |
+
+The air duct, after the ha-bambulab issue #1617 and owners' reports: in
+**cooling** mode the right fan pulls outside air in and blows it on the
+print from an upper outlet; in **heating** mode the duct closes, the fan
+pulls chamber air through a filter and lets it out of a bottom outlet, so
+the air goes round inside. The P2S has no rear exhaust fan.
 
 `IRBridge/tools/check_ha_entities.py` treats `sensor.p2s_`, `binary_sensor.p2s_`
 and `image.p2s_` as external, like the other config-entry devices.
@@ -214,7 +235,32 @@ Mono, since cards load no fonts from the internet. Tests:
   button that draws the door open or shut. Real dashboards set neither. The
   card was designed on such Playgrounds (a temporary dashboard and helper,
   deleted on 07.11.2026 and again on 12.11.2026 after photo mode); make a new
-  one the same way to try changes.
+  one the same way to try changes. `debug_fans_entity: input_select.…` does
+  the same for the fans, with the options `live`, `off`, `PLA print`,
+  `PETG print`, `chamber heating` and `cool-down`, and adds a second row to
+  the bar: those scenarios and an on/off toggle for each listed idea.
+- **Ideas (`ideas:`, all on by default).** Layers drawn from sensors the
+  card otherwise ignores. They were tried out on a Playground and went to
+  production on 13.11.2026; `ideas: []` (or a shorter list) turns them off:
+  - `fans`: each fan where it sits (table above), spinning at its %: part
+    cooling and hotend on the toolhead, the duct fan high in the right wall,
+    and the left aux fan only if it ever runs (see the table above). The part-cooling jet under the nozzle, and in cooling
+    mode the side fans' air on the print. It replaces the "spins over 60 °C"
+    guess. A fan at 0 % doesn't move, so an idle printer animates nothing.
+  - `fan_tag`: a FANS tag with the fans and the air-duct mode; CHAMBER gets a
+    row only if it ever differs from DUCT R, AUX L only if the left fan ever
+    runs. A "Fans" cell (part · duct) in the narrow strip.
+  - `airflow`: the air duct as moving air: outside air in through the right
+    wall while cooling; down the duct, out of its bottom outlet and round the
+    chamber while heating.
+  - `thermal`: a bar under the nozzle and bed values showing how far they are
+    to the target, and the glass warming with the chamber temperature.
+  - `machine`: nozzle and plate under their tags, the extruder's filament
+    sensor as a dot on the toolhead, the AMS status and humidity index, the job
+    length in metres, skipped objects and start time.
+  - `health`: REC while recording a timelapse, Wi-Fi bars, firmware update and
+    SD card chips in the header (each only when it means something), and
+    lifetime hours in the printer tooltip.
 
 Register a new version with `python tools/ha_dashboard.py --card
 p2s-printer-console-card.js`.
