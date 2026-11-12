@@ -374,6 +374,148 @@ async function main() {
     eq("door preview without Playground: nothing drawn", t.r("dooropen").getAttribute("opacity"), "0");
   }
 
+  // --- photo mode -------------------------------------------------------------
+  // ha-bambulab's bundle as the card reads it: the renders under hashed names.
+  const BUNDLE = 'x={P2S:"/bambu_lab/images/P2S-91b06b81ed6c08bb.webp"};y="/bambu_lab/images/ams2-745f39126059db9e.webp";'
+    + 'z="/bambu_lab/images/ams2pro-mech-b2bd80433f105f9b.png";w="/bambu_lab/images/ams2pro-brand-873c4b8d625cab23.png"';
+  /** Mount with a fetch that serves `bundle` (or fails when it is null); counts the fetches. */
+  async function mountP(config, st, bundle) {
+    const L = loadCard(FILE);
+    const fetches = [];
+    L.sandbox.fetch = (url) => {
+      fetches.push(url);
+      return bundle === null ? Promise.reject(new Error("offline"))
+        : Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(bundle) });
+    };
+    const card = new L.Card();
+    card.setConfig(config);
+    card.hass = mkHass(st || states());
+    await flush();
+    await flush();
+    const root = card.shadowRoot;
+    const r = (name) => root.querySelector('[data-r="' + name + '"]');
+    const set = (over) => { card.hass = mkHass(Object.assign({}, card._hass.states, over)); };
+    return { card, r, set, fetches };
+  }
+  // The wound filament's radius, as the card computes it (AM.r 66, AM.R 212, axle 232, housing edge 160).
+  const spoolTop = (f) => 232 - Math.sqrt(66 * 66 + f * (212 * 212 - 66 * 66));
+  {
+    let t = await mountP({ art: "drawn" }, null, BUNDLE);
+    eq("art drawn: no fetch", t.fetches.length, 0);
+    eq("art drawn: drawn bed", !!t.r("bed") && !t.r("x-bed"), true);
+    t = await mountP({}, null, BUNDLE);
+    eq("photo by default", !!t.r("x-bed") && !t.r("bed"), true);
+  }
+  {
+    const t = await mountP({ art: "photo" }, null, BUNDLE);
+    eq("photo: the bundle is read", t.fetches, ["/bambu_lab/ha-bambulab-cards.js"]);
+    eq("photo: the scene is in", !!t.r("x-bed") && !t.r("bed"), true);
+    const imgs = t.card.shadowRoot.querySelectorAll("image").map((e) => e.getAttribute("href"));
+    eq("photo: P2S render", imgs.indexOf("/bambu_lab/images/P2S-91b06b81ed6c08bb.webp") >= 0, true);
+    eq("photo: AMS render", imgs.indexOf("/bambu_lab/images/ams2-745f39126059db9e.webp") >= 0, true);
+    eq("photo: feeder layer", imgs.indexOf("/bambu_lab/images/ams2pro-mech-b2bd80433f105f9b.png") >= 0, true);
+    // idle: bed where the render has it, head parked, no part, the screen says Ready
+    eq("photo idle: bed at rest", t.r("x-bed").getAttribute("transform"), "translate(0 0.0)");
+    eq("photo idle: head parked", t.r("x-head").getAttribute("transform"), "translate(-190 0)");
+    eq("photo idle: head still", t.r("x-headrun").classList.contains("xh-run"), false);
+    eq("photo idle: nothing revealed", t.r("x-reveal").getAttribute("height"), "0.0");
+    eq("photo idle: screen", [t.r("x-st").textContent, t.r("x-big").textContent, t.r("x-sub").textContent],
+      ["READY", "Ready", "N 19° B 17° C 22°"]);
+    eq("photo idle: screen lit", t.r("x-scr").getAttribute("opacity"), "1");
+    // slot 1: 984 of 1000 g, wound almost to the top; slots 2-4 empty
+    eq("photo: slot 1 filament top", t.r("x-band0").getAttribute("y"), spoolTop(0.984).toFixed(1));
+    eq("photo: slot 1 colour", t.r("x-band0").getAttribute("fill"), "#898989");
+    eq("photo: empty slot hidden", t.r("x-spool1").getAttribute("opacity"), "0");
+    // the AMS section's contents, now in the picture
+    eq("photo: card marked photo", t.card.shadowRoot.querySelector("ha-card").classList.contains("photo"), true);
+    eq("photo: A1 plate", [t.r("xbi0").textContent, t.r("xbm0").textContent, t.r("xbg0").textContent], ["A1", "PLA", "984 g"]);
+    eq("photo: A1 plate colour", t.r("xbd0").getAttribute("fill"), "#898989");
+    eq("photo: A1 plate bar", t.r("xbb0").getAttribute("width"), (92 * 0.984).toFixed(1));
+    eq("photo: A2 plate", [t.r("xbi1").textContent, t.r("xbm1").textContent, t.r("xbg1").textContent], ["A2", "Empty", "Slot free"]);
+    eq("photo: external plate", [t.r("xbi4").textContent, t.r("xbm4").textContent, t.r("xbg4").textContent], ["EXT", "Empty", "Holder free"]);
+    eq("photo: external holder empty", [t.r("x-exspool").getAttribute("opacity"), t.r("x-exfree").getAttribute("opacity")], ["0", "1"]);
+    eq("photo: A1 plate tooltip", t.r("xb0").getAttribute("data-tip"), t.r("sl0").getAttribute("data-tip"));
+    fire(t.r("xbm0"), "click");
+    let pev = t.card.dispatched.filter((e) => e.type === "hass-more-info").pop();
+    eq("photo: A1 plate opens its counter", pev && pev.detail.entityId, "input_number.p2s_filament_a1");
+    eq("photo: climate", [t.r("xav-hum").textContent, t.r("xav-tmp").textContent, t.r("xav-dry").textContent], ["48 %", "24.2 °C", "Off"]);
+    eq("photo: climate tooltips", ["hum", "tmp", "dry"].map((k) => !!t.r("xa-" + k).getAttribute("data-tip")), [true, true, true]);
+    fire(t.r("xav-hum"), "click");
+    pev = t.card.dispatched.filter((e) => e.type === "hass-more-info").pop();
+    eq("photo: humidity opens its sensor", pev && pev.detail.entityId, "sensor.p2s_ams_1_humidity");
+    eq("photo: lid not drying", t.r("x-dry").getAttribute("opacity"), "0");
+    t.set({ "binary_sensor.p2s_ams_1_drying": S("on"), "sensor.p2s_ams_1_remaining_drying_time": S("2.5") });
+    eq("photo: drying", [t.r("xav-dry").textContent, t.r("x-dry").getAttribute("opacity")], ["2h 30m", "1"]);
+    eq("photo: drying tooltip in full", /2 h 30 min left/.test(t.r("xa-dry").getAttribute("data-tip")), true);
+    // a low slot, and a loaded external spool
+    t.set({ "input_number.p2s_filament_a1": S("60"), "input_number.p2s_filament_ext": S("500"),
+      "sensor.p2s_external_spool": S("PETG", { active: false, color: "#FF0000FF", empty: false, name: "PETG HF", type: "PETG" }) });
+    eq("photo: low slot amber", t.r("xbg0").getAttribute("fill"), "#FFB547");
+    eq("photo: external loaded", [t.r("xbm4").textContent, t.r("xbg4").textContent, t.r("x-exspool").getAttribute("opacity")], ["PETG", "500 g", "1"]);
+    const exR = Math.sqrt(33 * 33 + 0.5 * (106 * 106 - 33 * 33));
+    eq("photo: external spool by grams", t.r("x-exband").getAttribute("height"), (2 * exR).toFixed(1));
+    t.set({ "input_number.p2s_filament_a1": S("984"), "input_number.p2s_filament_ext": S("0"),
+      "binary_sensor.p2s_ams_1_drying": S("off"),
+      "sensor.p2s_external_spool": S("?", { active: false, color: "#00000000", empty: true, name: "?", type: "?" }) });
+    t.set({ "input_number.p2s_filament_a1": S("250") });
+    eq("photo: 250 g left, lower", t.r("x-band0").getAttribute("y"), spoolTop(0.25).toFixed(1));
+    eq("photo: band ends at the housing", Number(t.r("x-band0").getAttribute("y")) + Number(t.r("x-band0").getAttribute("height")), 160);
+    t.set({ "input_number.p2s_filament_a1": S("0") });
+    eq("photo: an empty spool shows nothing", t.r("x-band0").getAttribute("height"), "0.0");
+    // printing layer 66 of 142, no plate image here: a block of 142 x 0.2 mm, 66/142 of it shown,
+    // and the bed brought up so its top meets the nozzle (y 325; the bed's top is at 594)
+    t.set(RUNNING());
+    const h = 142 * 0.2 * 2.09;
+    const shown = h * 66 / 142;
+    eq("photo running: bed follows the layers", t.r("x-bed").getAttribute("transform"), "translate(0 " + (325 + shown - 594).toFixed(1) + ")");
+    eq("photo running: bed tag rides along", t.r("x-bedtag").getAttribute("transform"), t.r("x-bed").getAttribute("transform"));
+    eq("photo running: part revealed to the layer", t.r("x-reveal").getAttribute("height"), shown.toFixed(1));
+    eq("photo running: block height", t.r("x-pblk1").getAttribute("height"), h.toFixed(1));
+    eq("photo running: head sweeps", [t.r("x-head").getAttribute("transform"), t.r("x-headrun").classList.contains("xh-run")],
+      ["translate(0 0)", true]);
+    eq("photo running: slot 1 rolls", t.r("x-roll0").classList.contains("xs-run"), true);
+    eq("photo running: AMS tube feeds", t.r("x-tube-ams").classList.contains("feed-run"), true);
+    eq("photo running: external tube idle", t.r("x-tube-ext").classList.contains("feed-run"), false);
+    eq("photo running: A1 plate feeding", [t.r("xbr0").getAttribute("stroke"), t.r("xbi0").getAttribute("fill")], ["#5AA9FF", "#5AA9FF"]);
+    eq("photo running: screen", [t.r("x-st").textContent, t.r("x-job").textContent, t.r("x-big").textContent, t.r("x-sub").textContent],
+      ["PRINTING", "Cable clips x8", "46%", "1h 03m · L66/142"]);
+    eq("photo running: progress bar", t.r("x-barf").getAttribute("width"), (192 * 0.46).toFixed(1));
+    // a later layer: the bed steps down
+    t.set({ "sensor.p2s_current_layer": S("100") });
+    eq("photo running: layer 100 is lower", t.r("x-bed").getAttribute("transform"),
+      "translate(0 " + (325 + h * 100 / 142 - 594).toFixed(1) + ")");
+    t.set({ "sensor.p2s_print_status": S("finish"), "sensor.p2s_current_layer": S("142") });
+    eq("photo finish: all of it shown", t.r("x-reveal").getAttribute("height"), h.toFixed(1));
+    eq("photo finish: head parked, still", [t.r("x-head").getAttribute("transform"), t.r("x-headrun").classList.contains("xh-run")],
+      ["translate(-190 0)", false]);
+    eq("photo finish: screen", [t.r("x-st").textContent, t.r("x-big").textContent], ["DONE", "Done"]);
+    t.set({ "sensor.p2s_print_status": S("offline") });
+    eq("photo offline: screen dark", t.r("x-scr").getAttribute("opacity"), "0");
+    eq("photo offline: box greyed", t.r("vpbox").classList.contains("offline"), true);
+    // back to drawn: the line drawing returns
+    t.card.setConfig({ art: "drawn" });
+    eq("photo → drawn: drawing back", !!t.r("bed") && !t.r("x-bed"), true);
+  }
+  {
+    const t = await mountP({ art: "photo", debug_status_entity: SEL }, states({ [SEL]: S("prepare") }), BUNDLE);
+    eq("photo prepare: bed at the nozzle", t.r("x-bed").getAttribute("transform"), "translate(0 " + (325 - 594).toFixed(1) + ")");
+    eq("photo prepare: head centred", t.r("x-head").getAttribute("transform"), "translate(0 0)");
+    eq("photo prepare: screen", [t.r("x-st").textContent, t.r("x-big").textContent, t.r("x-sub").textContent],
+      ["PREPARING", "Heating", "N 152°/220° B 48°/65°"]);
+    t.set({ [SEL]: S("failed") });
+    eq("photo failed: screen", [t.r("x-st").textContent, t.r("x-big").textContent, t.r("x-sub").textContent],
+      ["ERROR", "Error", "0300-8006"]);
+    eq("photo failed: spaghetti", t.r("x-spag").getAttribute("opacity"), "1");
+  }
+  {
+    // No bundle (ha-bambulab gone) or no P2S render in it: the line drawing stays.
+    let t = await mountP({ art: "photo" }, null, null);
+    eq("photo fallback, no bundle: drawing", !!t.r("bed") && !t.r("x-bed"), true);
+    eq("photo fallback, no bundle: still patched", t.r("disp").textContent, "READY");
+    t = await mountP({ art: "photo" }, null, "nothing here");
+    eq("photo fallback, no render: drawing", !!t.r("bed") && !t.r("x-bed"), true);
+  }
+
   // --- config ---------------------------------------------------------------
   {
     const L = loadCard(FILE);
@@ -384,6 +526,12 @@ async function main() {
     err = null;
     try { card.setConfig({ camera_view: "hls" }); } catch (e) { err = e.message; }
     eq("config: bad camera_view", /camera_view/.test(err || ""), true);
+    err = null;
+    try { card.setConfig({ art: "3d" }); } catch (e) { err = e.message; }
+    eq("config: bad art", /art must be drawn or photo/.test(err || ""), true);
+    err = null;
+    try { card.setConfig({ layer_height: 0 }); } catch (e) { err = e.message; }
+    eq("config: bad layer_height", /layer_height/.test(err || ""), true);
   }
 
   console.log((failed ? "FAILED" : "ok") + "  " + passed + " passed, " + failed + " failed");
