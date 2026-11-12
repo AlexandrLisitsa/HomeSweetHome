@@ -461,7 +461,10 @@ async function main() {
     eq("photo: 250 g left, lower", t.r("x-band0").getAttribute("y"), spoolTop(0.25).toFixed(1));
     eq("photo: band ends at the housing", Number(t.r("x-band0").getAttribute("y")) + Number(t.r("x-band0").getAttribute("height")), 160);
     t.set({ "input_number.p2s_filament_a1": S("0") });
-    eq("photo: an empty spool shows nothing", t.r("x-band0").getAttribute("height"), "0.0");
+    eq("photo: a loaded spool at 0 g still shows a sliver", t.r("x-band0").getAttribute("y"), spoolTop(0.06).toFixed(1));
+    eq("photo: ... and visibly", Number(t.r("x-band0").getAttribute("height")) > 5, true);
+    eq("photo: ... with a red 0 g plate", [t.r("xbg0").textContent, t.r("xbg0").getAttribute("fill")], ["0 g", "#FF7A6E"]);
+    eq("photo: an empty slot shows no spool", t.r("x-band1").getAttribute("height"), "0.0");
     // printing layer 66 of 142, no plate image here: a block of 142 x 0.2 mm, 66/142 of it shown,
     // and the bed brought up so its top meets the nozzle (y 325; the bed's top is at 594)
     t.set(RUNNING());

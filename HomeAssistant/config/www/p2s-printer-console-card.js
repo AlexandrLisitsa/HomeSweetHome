@@ -61,13 +61,16 @@
  */
 
 const CARD = "p2s-printer-console-card";
-const VERSION = "0.8.1";
+const VERSION = "0.8.2";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
 const STATUSES = ["idle", "prepare", "running", "pause", "finish", "failed", "offline"];
 const PRINTING = ["prepare", "running", "pause"];
 const CAM_EVERY_MS = 10000;
 const LOW_G = 100; // a slot under this many grams is drawn amber
+// The least of a spool the picture shows while one is loaded: a loaded spool
+// counted at 0 g (run out, or a count never set) must not look like no spool.
+const MIN_SPOOL = 0.06;
 
 /* The design's tones. */
 const TONES = {
@@ -1795,7 +1798,7 @@ class P2sPrinterConsoleCard extends HTMLElement {
 
     // AMS: each spool as tall as what is left on it; the feeding one rolls
     m.trays.forEach((t, i) => {
-      const f = t.empty ? 0 : t.grams === null ? 0.75 : t.grams / (t.full || 1000);
+      const f = t.empty ? 0 : t.grams === null ? 0.75 : Math.max(MIN_SPOOL, t.grams / (t.full || 1000));
       const top = AM.AXLE - spoolR(f);
       const h = Math.max(0, AM.EDGE - top);
       ["x-band", "x-wind", "x-cyl", "x-bandclip"].forEach((k) => setAttrs(r[k + i], { y: top.toFixed(1), height: h.toFixed(1) }));
@@ -1827,7 +1830,7 @@ class P2sPrinterConsoleCard extends HTMLElement {
 
     // the external spool, whole and edge-on: as thick as what is left on it
     const ex = m.ext;
-    const exR = ex.empty ? 0 : Math.sqrt(EX.r * EX.r + Math.max(0, Math.min(1, ex.grams === null ? 0.75 : ex.grams / (ex.full || 1000)))
+    const exR = ex.empty ? 0 : Math.sqrt(EX.r * EX.r + Math.max(MIN_SPOOL, Math.min(1, ex.grams === null ? 0.75 : ex.grams / (ex.full || 1000)))
       * (EX.R * EX.R - EX.r * EX.r));
     ["x-exband", "x-exwind", "x-exbandclip"].forEach((k) => setAttrs(r[k], { y: (EX.AXLE - exR).toFixed(1), height: (2 * exR).toFixed(1) }));
     setAttrs(r["x-exband"], { fill: ex.color });
