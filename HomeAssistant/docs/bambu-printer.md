@@ -140,13 +140,55 @@ Mono, since cards load no fonts from the internet. Tests:
   1.15 × tall): virtual printer + AMS on the left, progress + camera on the
   right. Portrait: one column of printer, progress, camera, AMS, with the AMS
   shrunk to one line. Checked at 1740×845 down to 360×640.
-- **Virtual printer.** An SVG of the P2S drawn from live data: the bed steps
-  down and the part rises with progress, the toolhead scans while printing, the
-  fan spins over 60 °C, the AMS spools take their trays' colours, and the
-  door, chamber light, front display and a failed print's spaghetti all
-  follow the printer. Its tags (nozzle, bed, chamber, layer, AMS) open the
-  sensor on a tap; when the drawing is narrower than 600 px they become a
-  strip under it.
+- **Virtual printer, photo mode (the default, `art: photo`).** The P2S with
+  the AMS 2 Pro on top, from Bambu's own renders, animated from live data:
+  - **Where the pictures come from.** ha-bambulab serves the renders at
+    `/bambu_lab/images/` under names with a content hash. The card reads the
+    current names from the integration's card bundle
+    (`/bambu_lab/ha-bambulab-cards.js`), once per page load. The renders are
+    never in this repo, which is public. If the bundle or the P2S/AMS 2 names
+    are missing (the integration removed, or files renamed by an update), the
+    card keeps the line drawing below.
+  - **Bed and part.** The bed and toolhead are cut out of the render and
+    moved over a patch of the chamber beside them. The bed rises to the nozzle
+    while preparing and steps down with the layers. The job's plate image
+    (`image.p2s_cover_image`, cropped to its opaque part) stands on the bed
+    and is revealed bottom-up to layer ÷ layers, so its top always meets the
+    nozzle. Without a plate image it is a block in the filament colour,
+    `layer_height` (0.2 mm) tall per layer.
+  - **Toolhead.** It sweeps along the rail while printing and parks
+    otherwise. Its fan spins over 60 °C and the nozzle glows when hot.
+  - **Spools.** Each spool shows edge-on through the AMS lid, the wound
+    filament as tall as what is left on it (radius by mass: R² − r²). The
+    feeding spool rolls and the PTFE tube runs.
+  - **Touchscreen.** It shows the status: PRINTING with %, time left and
+    layer; Heating with targets; PAUSED, DONE, ERROR with its code; Ready
+    with temperatures; dark when offline.
+  - **Light and door.** Chamber light on warms the glass, off darkens it. An
+    open door swings its glass panel out.
+- **The AMS lives in the picture** (photo mode on a landscape card at least
+  1100 px wide):
+  - **Slot plates.** Each AMS slot has a plate on its feeders: colour, A1…A4,
+    material, grams, bar. It is blue while feeding, amber under 100 g or when
+    the job needs more than the slot holds, and red at 0. Tapping it does
+    what the slot card did.
+  - **External spool.** It hangs on an arm left of the AMS, with its own
+    plate and tube.
+  - **AMS climate.** A tag with humidity, temperature and drying, one tap
+    each; the lid glows while drying.
+  - **Layout.** The AMS section is hidden and the printer gets the whole
+    left column. Narrower, or in one column (phones), the picture is too small
+    to read, so the AMS section stays as below.
+- **Virtual printer, line drawing (`art: drawn`, and the fallback).** An SVG
+  of the P2S drawn from live data:
+  - The bed steps down and the part rises with progress, and the toolhead
+    scans while printing.
+  - The fan spins over 60 °C, and the AMS spools take their trays' colours.
+  - The door, chamber light, front display and a failed print's spaghetti all
+    follow the printer.
+- **Tags.** In both modes the tags (nozzle, bed, chamber, layer, AMS) open
+  their sensor on a tap. When the drawing is narrower than 600 px they become
+  a strip under it.
 - **Camera only while printing.** During `prepare`, `running` and `pause` the
   camera box shows a still from `camera_proxy`, refreshed every 10 s while the
   page is visible (`camera_view: live` mounts a `picture-entity` stream
@@ -165,8 +207,9 @@ Mono, since cards load no fonts from the internet. Tests:
   input_select.…` follows a helper with the options `live` plus the seven
   statuses and shows the design's "Preview state" bar, with a door preview
   button that draws the door open or shut. Real dashboards set neither. The
-  card was designed on such a Playground (a temporary dashboard and helper,
-  deleted on 07.11.2026); make a new one the same way to try changes.
+  card was designed on such Playgrounds (a temporary dashboard and helper,
+  deleted on 07.11.2026 and again on 12.11.2026 after photo mode); make a new
+  one the same way to try changes.
 
 Register a new version with `python tools/ha_dashboard.py --card
 p2s-printer-console-card.js`.

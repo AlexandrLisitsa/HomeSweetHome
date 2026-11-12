@@ -34,6 +34,24 @@
  * draws MOCK numbers over the live ones. It changes the drawing only and
  * calls no service except that input_select. Real dashboards set neither key.
  *
+ * PHOTO MODE
+ * ----------
+ * By default (`art: photo`) the virtual printer is drawn from Bambu's own
+ * renders: the P2S with the AMS 2 Pro on top; `art: drawn` keeps our line
+ * drawing. The renders are never in this repo (it is public); ha-bambulab
+ * serves them at /bambu_lab/images/
+ * under names with a content hash, so bambuArt() reads the current names out
+ * of ha-bambulab's own card bundle, once per page load. If that fails (the
+ * integration is gone, or renamed its files) the card keeps the line drawing.
+ *
+ * The P2S render is one picture with the bed and toolhead in it, so those two
+ * are cut out of it with clip paths and moved, over a patch of the chamber
+ * next to them. The bed rises to the nozzle while preparing and steps down
+ * with the layers; the job's plate image (image.p2s_cover_image) stands on it
+ * and is revealed bottom-up, so the model grows. Each AMS slot shows its spool
+ * edge-on through the lid, the wound filament as tall as what is left on it
+ * (radius by area: mass ~ R^2 - r^2). The touchscreen shows the status.
+ *
  * Bump VERSION on every edit and re-register:
  *
  *     python HomeAssistant/tools/ha_dashboard.py --card p2s-printer-console-card.js
@@ -43,7 +61,7 @@
  */
 
 const CARD = "p2s-printer-console-card";
-const VERSION = "0.4.0";
+const VERSION = "0.8.1";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
 const STATUSES = ["idle", "prepare", "running", "pause", "finish", "failed", "offline"];
@@ -109,6 +127,8 @@ const DEFAULTS = {
   camera_view: "auto", // auto = a still every 10 s; live = the RTSP stream via picture-entity
   debug_status: null,
   debug_status_entity: null,
+  art: "photo", // photo = Bambu's renders (PHOTO MODE above); drawn = our line drawing, also the fallback
+  layer_height: 0.2, // mm, for the plain block that stands in when there is no plate image
 };
 
 /*
@@ -446,8 +466,36 @@ dl { margin: 0; }
   .slot .note, .prog h2 { display: none; }
 }
 
+/* --- photo mode: the touchscreen and the moving parts --- */
+.s-st { font: 600 13px ${MONO}; letter-spacing: .12em; }
+.s-job { font: 500 12px ${SANS}; fill: #B4BBC6; }
+.s-big { font: 600 36px ${GROT}; fill: #ECEEF1; letter-spacing: -.02em; }
+.s-sub { font: 500 12px ${MONO}; fill: #949CA8; }
+@keyframes xh-scan { 0%, 100% { transform: translateX(-150px); } 50% { transform: translateX(150px); } }
+.xh-run { animation: xh-scan 2.8s ease-in-out infinite; }
+@keyframes xs-roll { to { transform: translateY(-18px); } }
+.xs-run { animation: xs-roll 1.1s linear infinite; }
+.x-spin { transform-box: fill-box; transform-origin: center; }
+.b-id { font: 600 13px ${MONO}; letter-spacing: .12em; fill: #949CA8; }
+.b-mat { font: 600 22px ${GROT}; fill: #ECEEF1; }
+.b-g { font: 500 13px ${MONO}; fill: #B4BBC6; }
+.t-row { font: 600 13px ${MONO}; fill: #ECEEF1; text-anchor: end; }
+/*
+ * Photo mode on a wide landscape card: the AMS is in the picture (a plate on
+ * each slot, the climate tag, the external spool), so its section goes and
+ * the printer gets the whole column. The tags must then show at any box
+ * width, since they carry what the section did. Narrower, or one column, the
+ * picture is too small to read and the AMS section stays as it was.
+ */
+@container p2s (min-aspect-ratio: 23/20) and (min-width: 1100px) {
+  ha-card.photo .ams { display: none; }
+  ha-card.photo .hud-tags { display: inline; }
+  ha-card.photo .hud-strip { display: none; }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .th-run, .fan-run, .spool-run, .feed-run, .layer-run, .rec, .badge.live i, .pill.live .dot { animation: none !important; }
+  .th-run, .fan-run, .spool-run, .feed-run, .layer-run, .rec, .badge.live i, .pill.live .dot,
+  .xh-run, .xs-run { animation: none !important; }
 }
 `;
 
@@ -593,6 +641,259 @@ ${tag("ch", -28, 330, "CHAMBER")}
 ${tag("noz", 568, 182, "NOZZLE")}
 </g>
 </svg>`;
+
+/*
+ * --- photo mode -------------------------------------------------------------
+ * Coordinates are the renders' own pixels. The P2S render is 716 x 924 (PH);
+ * the AMS 2 render is 700 x 360 (AM), scaled 0.971 to sit on the printer's
+ * top, which is y 55 of the P2S render, so the printer starts PH.A below.
+ */
+const PH = {
+  A: 280, // scene y of the P2S render's top
+  NOZ: 325, // nozzle tip y: the bed's top at Z = 0
+  NOZX: 344, // nozzle tip x
+  BED: 594, // bed top y where the render has it
+  PLATE: 488, // bed width in px; the plate image spans the whole 256 mm plate
+  PARK: -190, // toolhead x offset when parked
+  HEAD: [300, 186, 112, 142], // the toolhead, cut out and moved along the rail
+  BEDCUT: [100, 588, 488, 46], // the bed, cut out and moved in Z
+  GLASS: [62, 164, 594, 702], // the chamber window
+  SCREEN: [104, 8, 216, 118], // the touchscreen
+};
+const AM = {
+  CX: [155, 282, 410, 540], // slot centres
+  AXLE: 232, // spool axle y (hidden behind the housing)
+  R: 212, // a full spool's radius: the wound filament reaches y 20
+  r: 66, // the hub: an empty spool shows nothing above the housing
+  EDGE: 160, // the housing's top edge; the lid window is above it
+  HALF: 42, // half the wound filament's width
+};
+
+/**
+ * The renders' URLs, read from ha-bambulab's card bundle, which maps each
+ * model to its hashed file. One fetch per page load, shared by every card;
+ * rejects when the bundle or the P2S/AMS 2 names are not found.
+ */
+let ART = null;
+function bambuArt() {
+  if (ART) return ART;
+  if (typeof fetch !== "function") { ART = Promise.reject(new Error("no fetch")); ART.catch(() => {}); return ART; }
+  ART = fetch("/bambu_lab/ha-bambulab-cards.js", { credentials: "same-origin" })
+    .then((res) => (res.ok ? res.text() : Promise.reject(new Error("bundle " + res.status))))
+    .then((t) => {
+      const find = (re) => { const m = t.match(re); return m ? "/bambu_lab/images/" + m[0] : null; };
+      const a = {
+        printer: find(/P2S-[0-9a-f]{16}\.webp/), ams: find(/ams2-[0-9a-f]{16}\.webp/),
+        mech: find(/ams2pro-mech-[0-9a-f]{16}\.png/), brand: find(/ams2pro-brand-[0-9a-f]{16}\.png/),
+      };
+      if (!a.printer || !a.ams) throw new Error("P2S or AMS 2 render not in the bundle");
+      return a;
+    });
+  ART.catch(() => {});
+  return ART;
+}
+
+/** The wound filament's radius for `f` of a spool left: mass ~ R^2 - r^2. */
+function spoolR(f) {
+  const k = Math.max(0, Math.min(1, f));
+  return Math.sqrt(AM.r * AM.r + k * (AM.R * AM.R - AM.r * AM.r));
+}
+
+/** A HUD tag in the scene: the drawn card's tag, twice its size. */
+function bigTag(key, x, y, label) {
+  return '<g transform="translate(' + x + " " + y + ') scale(2)">' + tag(key, 0, 0, label) + "</g>";
+}
+
+/** One copy of the part: the plate image (cropped by a nested svg's viewBox) or a plain block. */
+function partSvg(n) {
+  return '<svg data-r="x-pimg' + n + '" x="0" y="0" width="0" height="0" preserveAspectRatio="none" overflow="visible">'
+    + '<image data-r="x-pimgi' + n + '" width="0" height="0" preserveAspectRatio="none"></image></svg>'
+    + '<rect data-r="x-pblk' + n + '" x="0" y="0" width="0" height="0" rx="3"></rect>';
+}
+
+/**
+ * A slot's plate: what the AMS section's slot card said, on the spool's
+ * holder. `i` 0-3 are A1-A4, 4 the external spool; (cx, y) is its top centre.
+ */
+function slotPlate(i, cx, y) {
+  const x = cx - 56;
+  return '<g data-r="xb' + i + '" data-more="" data-tip="">'
+    + '<rect data-r="xbr' + i + '" x="' + x + '" y="' + y + '" width="112" height="80" rx="10" fill="#0C0E11" fill-opacity="0.8" stroke="#2A2F36" stroke-width="1.5"></rect>'
+    + '<circle data-r="xbd' + i + '" cx="' + (x + 16) + '" cy="' + (y + 16) + '" r="6"></circle>'
+    + '<text data-r="xbi' + i + '" class="b-id" x="' + (x + 28) + '" y="' + (y + 21) + '">' + (i < 4 ? "A" + (i + 1) : "EXT") + "</text>"
+    + '<text data-r="xbm' + i + '" class="b-mat" x="' + (x + 10) + '" y="' + (y + 47) + '"></text>'
+    + '<text data-r="xbg' + i + '" class="b-g" x="' + (x + 10) + '" y="' + (y + 65) + '"></text>'
+    + '<rect x="' + (x + 10) + '" y="' + (y + 70) + '" width="92" height="4" rx="2" fill="#22262C"></rect>'
+    + '<rect data-r="xbb' + i + '" x="' + (x + 10) + '" y="' + (y + 70) + '" width="0" height="4" rx="2"></rect>'
+    + "</g>";
+}
+
+/*
+ * The external spool, on a holder arm left of the AMS (scene coords). Drawn
+ * whole and edge-on, at half the AMS spools' scale; EX.AXLE is its axle.
+ */
+const EX = { X: -170, AXLE: 200, R: 106, r: 33, HALF: 25 };
+
+function extSpoolSvg() {
+  const x = EX.X - EX.HALF;
+  const w = EX.HALF * 2;
+  const top = EX.AXLE - EX.R;
+  const rows = [];
+  for (let y = top - 20; y <= EX.AXLE + EX.R + 20; y += 18) rows.push('<rect x="' + x + '" y="' + y + '" width="' + w + '" height="2" fill="#FFFFFF" opacity="0.08"></rect>');
+  return '<line x1="' + EX.X + '" y1="' + EX.AXLE + '" x2="18" y2="' + EX.AXLE + '" stroke="#3A3F47" stroke-width="6" stroke-linecap="round"></line>'
+    + '<rect x="' + (x - 10) + '" y="' + top + '" width="' + (w + 20) + '" height="' + EX.R * 2 + '" rx="8" fill="none" stroke="#3A3F47" stroke-width="2" stroke-dasharray="6 6" data-r="x-exfree"></rect>'
+    + '<g data-r="x-exspool">'
+    + '<rect data-r="x-exband" x="' + x + '" y="' + EX.AXLE + '" width="' + w + '" height="0"></rect>'
+    + '<rect data-r="x-exwind" x="' + x + '" y="' + EX.AXLE + '" width="' + w + '" height="0" fill="url(#xp-wind)"></rect>'
+    + '<g clip-path="url(#xc-exband)"><g data-r="x-exroll">' + rows.join("") + "</g></g>"
+    + '<rect x="' + (x - 7) + '" y="' + top + '" width="7" height="' + EX.R * 2 + '" rx="3" fill="#16191C" opacity="0.9"></rect>'
+    + '<rect x="' + (x + w) + '" y="' + top + '" width="7" height="' + EX.R * 2 + '" rx="3" fill="#16191C" opacity="0.9"></rect>'
+    + '<circle cx="' + EX.X + '" cy="' + EX.AXLE + '" r="7" fill="#0D0F12" stroke="#5A616B" stroke-width="2"></circle>'
+    + "</g>"
+    + slotPlate(4, EX.X, EX.AXLE + EX.R + 14);
+}
+
+/** The AMS climate tag: humidity, temperature, drying; each row its own entity. */
+function climateTag(x, y) {
+  const row = (k, n, label) => {
+    const y0 = 26 + n * 26;
+    return '<g data-r="xa-' + k + '" data-more="" data-tip="">'
+      + '<rect x="6" y="' + y0 + '" width="138" height="24" rx="5" fill="#FFFFFF" fill-opacity="0"></rect>'
+      + '<text x="12" y="' + (y0 + 16) + '" class="t-lab">' + label + "</text>"
+      + '<text data-r="xav-' + k + '" x="138" y="' + (y0 + 17) + '" class="t-row"></text></g>';
+  };
+  return '<g transform="translate(' + x + " " + y + ') scale(2)">'
+    + '<rect width="150" height="108" rx="9" fill="#101215" stroke="#2A2F36" stroke-width="1"></rect>'
+    + '<text x="12" y="18" class="t-lab">AMS CLIMATE</text>'
+    + row("hum", 0, "HUMIDITY") + row("tmp", 1, "TEMP") + row("dry", 2, "DRYING")
+    + "</g>";
+}
+
+function photoSvg(a) {
+  const A = PH.A;
+  const P = (extra) => '<image href="' + a.printer + '" width="716" height="924" preserveAspectRatio="none"' + (extra || "") + "></image>";
+  const H = PH.HEAD;
+  const B = PH.BEDCUT;
+  const G = PH.GLASS;
+  const S = PH.SCREEN;
+  const spools = AM.CX.map((cx, i) => {
+    const x = cx - AM.HALF;
+    const w = AM.HALF * 2;
+    const rows = [];
+    for (let y = 0; y <= 380; y += 18) rows.push('<rect x="' + x + '" y="' + y + '" width="' + w + '" height="2" fill="#FFFFFF" opacity="0.08"></rect>');
+    return '<g data-r="x-spool' + i + '">'
+      + '<rect data-r="x-band' + i + '" x="' + x + '" y="' + AM.EDGE + '" width="' + w + '" height="0"></rect>'
+      + '<rect data-r="x-wind' + i + '" x="' + x + '" y="' + AM.EDGE + '" width="' + w + '" height="0" fill="url(#xp-wind)"></rect>'
+      + '<g clip-path="url(#xc-band' + i + ')"><g data-r="x-roll' + i + '">' + rows.join("") + "</g></g>"
+      + '<rect data-r="x-cyl' + i + '" x="' + x + '" y="' + AM.EDGE + '" width="' + w + '" height="0" fill="url(#xg-cyl)"></rect>'
+      + '<rect x="' + (x - 8) + '" y="' + (AM.AXLE - AM.R) + '" width="8" height="' + (AM.EDGE - AM.AXLE + AM.R) + '" rx="3" fill="#16191C" opacity="0.88"></rect>'
+      + '<rect x="' + (x + w) + '" y="' + (AM.AXLE - AM.R) + '" width="8" height="' + (AM.EDGE - AM.AXLE + AM.R) + '" rx="3" fill="#16191C" opacity="0.88"></rect>'
+      + "</g>";
+  }).join("");
+  const bandClips = AM.CX.map((cx, i) => '<clipPath id="xc-band' + i + '"><rect data-r="x-bandclip' + i + '" x="' + (cx - AM.HALF)
+    + '" y="' + AM.EDGE + '" width="' + AM.HALF * 2 + '" height="0"></rect></clipPath>').join("");
+  const blade = (deg) => '<path d="M357 224 L357 192 A32 32 0 0 1 384 208 Z" fill="#FFFFFF" opacity="0.10" transform="rotate(' + deg + ' 357 224)"></path>';
+  return `
+<svg viewBox="-350 0 1400 1210" preserveAspectRatio="xMidYMid meet" role="img" data-r="svg">
+<defs>
+  <clipPath id="xc-head"><rect x="${H[0]}" y="${H[1]}" width="${H[2]}" height="${H[3]}"></rect></clipPath>
+  <clipPath id="xc-bed"><rect x="${B[0]}" y="${B[1]}" width="${B[2]}" height="${B[3]}"></rect></clipPath>
+  <clipPath id="xc-glass"><rect x="${G[0]}" y="${G[1]}" width="${G[2]}" height="${G[3]}"></rect></clipPath>
+  <clipPath id="xc-screen"><rect x="${S[0]}" y="${S[1]}" width="${S[2]}" height="${S[3]}" rx="6"></rect></clipPath>
+  <clipPath id="xc-lid"><rect x="92" y="14" width="516" height="${AM.EDGE - 14}" rx="12"></rect></clipPath>
+  <clipPath id="xc-part"><rect data-r="x-reveal" x="-400" y="${PH.BED}" width="1600" height="0"></rect></clipPath>
+  ${bandClips}
+  <pattern id="xp-wind" width="5" height="10" patternUnits="userSpaceOnUse"><rect width="1.3" height="10" fill="#000000" opacity="0.22"></rect></pattern>
+  <linearGradient id="xg-cyl" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#000000" stop-opacity="0.5"></stop><stop offset="0.35" stop-color="#000000" stop-opacity="0"></stop>
+    <stop offset="0.7" stop-color="#FFFFFF" stop-opacity="0.12"></stop><stop offset="1" stop-color="#000000" stop-opacity="0.2"></stop>
+  </linearGradient>
+  <linearGradient id="xg-warm" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#FFE2AA" stop-opacity="0.34"></stop><stop offset="0.35" stop-color="#FFE2AA" stop-opacity="0.10"></stop>
+    <stop offset="1" stop-color="#FFE2AA" stop-opacity="0.05"></stop>
+  </linearGradient>
+  <radialGradient id="xg-glow"><stop offset="0" stop-color="#FFB066" stop-opacity="0.95"></stop><stop offset="1" stop-color="#FF7A2E" stop-opacity="0"></stop></radialGradient>
+  <linearGradient id="xg-dry" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#FF9F43" stop-opacity="0.10"></stop><stop offset="1" stop-color="#FF7A2E" stop-opacity="0.38"></stop>
+  </linearGradient>
+  <clipPath id="xc-exband"><rect data-r="x-exbandclip" x="${EX.X - EX.HALF}" y="${EX.AXLE}" width="${EX.HALF * 2}" height="0"></rect></clipPath>
+</defs>
+
+<g transform="translate(18 0) scale(0.971)">
+  <image href="${a.ams}" width="700" height="360" preserveAspectRatio="none"></image>
+  <g clip-path="url(#xc-lid)">${spools}</g>
+  <image href="${a.ams}" width="700" height="360" preserveAspectRatio="none" clip-path="url(#xc-lid)" opacity="0.3"></image>
+  <rect data-r="x-dry" x="92" y="14" width="516" height="${AM.EDGE - 14}" rx="12" fill="url(#xg-dry)" opacity="0"></rect>
+  ${a.mech ? '<image href="' + a.mech + '" width="700" height="360" preserveAspectRatio="none"></image>' : ""}
+  ${a.brand ? '<image href="' + a.brand + '" width="700" height="360" preserveAspectRatio="none"></image>' : ""}
+  ${AM.CX.map((cx, i) => slotPlate(i, cx, 168)).join("")}
+</g>
+<path d="M610 334 C 660 350, 660 ${A - 8}, 622 ${A + 16}" fill="none" stroke="#C9CCD1" stroke-opacity="0.35" stroke-width="11" stroke-linecap="round"></path>
+<path data-r="x-tube-ams" d="M610 334 C 660 350, 660 ${A - 8}, 622 ${A + 16}" fill="none" stroke-width="5" stroke-linecap="round"></path>
+${extSpoolSvg()}
+<path d="M${EX.X} ${EX.AXLE - EX.R} C ${EX.X} 30, -40 40, -40 200 S -10 ${A + 100}, 2 ${A + 120}" fill="none" stroke="#C9CCD1" stroke-opacity="0.25" stroke-width="11" stroke-linecap="round"></path>
+<path data-r="x-tube-ext" d="M${EX.X} ${EX.AXLE - EX.R} C ${EX.X} 30, -40 40, -40 200 S -10 ${A + 100}, 2 ${A + 120}" fill="none" stroke-width="5" stroke-linecap="round"></path>
+
+<g transform="translate(0 ${A})">
+  ${P()}
+  ${P(' x="-' + H[2] + '" clip-path="url(#xc-head)"')}
+  ${P(' y="' + B[3] + '" clip-path="url(#xc-bed)"')}
+  <g clip-path="url(#xc-glass)"><g data-r="x-bed">
+    ${P(' clip-path="url(#xc-bed)"')}
+    <rect data-r="x-bedheat" x="${B[0]}" y="${PH.BED - 4}" width="${B[2]}" height="6" fill="#FF8A3D" opacity="0"></rect>
+    <g clip-path="url(#xc-part)">${partSvg(1)}</g>
+  </g></g>
+  <g data-r="x-bedtag" class="hud-tags">
+    <line x1="${B[0] + B[2]}" y1="${PH.BED + 17}" x2="744" y2="${PH.BED + 17}" stroke="#3A414B" stroke-width="2"></line>
+    <circle cx="${B[0] + B[2]}" cy="${PH.BED + 17}" r="5" fill="#949CA8"></circle>
+    ${bigTag("bed", 744, PH.BED + 17 - 46, "BED")}
+  </g>
+  <rect data-r="x-layer" x="${PH.NOZX - 95}" y="${PH.NOZ - 1}" width="190" height="3" rx="1.5" fill="#FFB066" opacity="0"></rect>
+  <g data-r="x-head" transform="translate(${PH.PARK} 0)"><g data-r="x-headrun">
+    ${P(' clip-path="url(#xc-head)"')}
+    <g data-r="x-fan" class="x-spin">${blade(0)}${blade(120)}${blade(240)}</g>
+    <circle data-r="x-glow" cx="${PH.NOZX}" cy="${PH.NOZ + 2}" r="18" fill="url(#xg-glow)" opacity="0"></circle>
+  </g></g>
+  <path data-r="x-spag" d="M300 ${PH.NOZ + 6} c 12 -22, 30 18, 42 -4 s 22 26, 36 2 s 18 -20, 30 6 m -96 14 c 16 10, 30 -14, 48 2 s 24 12, 40 -6"
+    fill="none" stroke-width="4" stroke-linecap="round" opacity="0"></path>
+  <g clip-path="url(#xc-glass)">
+    <rect data-r="x-warm" x="${G[0]}" y="${G[1]}" width="${G[2]}" height="${G[3]}" fill="url(#xg-warm)" opacity="0"></rect>
+    <rect data-r="x-dark" x="${G[0]}" y="${G[1]}" width="${G[2]}" height="${G[3]}" fill="#000000" opacity="0"></rect>
+  </g>
+  <g data-r="x-door" opacity="0">
+    <rect x="${G[0]}" y="${G[1]}" width="${G[2]}" height="${G[3]}" fill="#FFFFFF" opacity="0.05"></rect>
+    <polygon points="${G[0]},${G[1]} 14,${G[1] - 18} 14,${G[1] + G[3] + 18} ${G[0]},${G[1] + G[3]}" fill="#AAB4BE" fill-opacity="0.14" stroke="#9AA1AD" stroke-opacity="0.6" stroke-width="2"></polygon>
+  </g>
+  <g data-r="x-scr" clip-path="url(#xc-screen)">
+    <rect x="${S[0]}" y="${S[1]}" width="${S[2]}" height="${S[3]}" fill="#070A0E" opacity="0.94"></rect>
+    <text data-r="x-st" class="s-st" x="${S[0] + 12}" y="${S[1] + 22}"></text>
+    <text data-r="x-job" class="s-job" x="${S[0] + 12}" y="${S[1] + 40}"></text>
+    <text data-r="x-big" class="s-big" x="${S[0] + 12}" y="${S[1] + 80}"></text>
+    <text data-r="x-sub" class="s-sub" x="${S[0] + 12}" y="${S[1] + 99}"></text>
+    <rect data-r="x-barbg" x="${S[0] + 12}" y="${S[1] + 106}" width="${S[2] - 24}" height="5" rx="2.5" fill="#20242A"></rect>
+    <rect data-r="x-barf" x="${S[0] + 12}" y="${S[1] + 106}" width="0" height="5" rx="2.5"></rect>
+  </g>
+</g>
+
+<g class="hud-tags">
+  <line x1="690" y1="110" x2="748" y2="110" stroke="#3A414B" stroke-width="2"></line>
+  <circle cx="690" cy="110" r="5" fill="#949CA8"></circle>
+  ${bigTag("ams", 748, 64, "AMS · A1")}
+  <line x1="632" y1="${A + 253}" x2="748" y2="${A + 253}" stroke="#3A414B" stroke-width="2"></line>
+  <circle cx="632" cy="${A + 253}" r="5" fill="#949CA8"></circle>
+  ${bigTag("noz", 748, A + 207, "NOZZLE")}
+  ${climateTag(748, 172)}
+  <g data-r="laytag">
+    <line x1="-50" y1="${A + PH.NOZ}" x2="${PH.NOZX - 100}" y2="${A + PH.NOZ}" stroke="#3A414B" stroke-width="2"></line>
+    <circle cx="${PH.NOZX - 100}" cy="${A + PH.NOZ}" r="5" fill="#FFB066"></circle>
+    ${bigTag("lay", -350, A + PH.NOZ - 46, "LAYER")}
+  </g>
+  <line x1="-50" y1="${A + 720}" x2="${G[0] + 40}" y2="${A + 720}" stroke="#3A414B" stroke-width="2"></line>
+  <circle cx="${G[0] + 40}" cy="${A + 720}" r="5" fill="#949CA8"></circle>
+  ${bigTag("ch", -350, A + 674, "CHAMBER")}
+</g>
+</svg>`;
+}
 
 const DOOR_ICON = '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 21V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v17M4 21h16M14.5 12h.01"></path></svg>';
 const BULB_ICON = '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.6 10.8c.7.5 1.1 1.3 1.1 2.1V16h5v-.1c0-.8.4-1.6 1.1-2.1A6 6 0 0 0 12 3z"></path></svg>';
@@ -758,6 +1059,9 @@ class P2sPrinterConsoleCard extends HTMLElement {
     this._camTimer = null;
     this._doorPreview = null; // null = sensor, "on" = open, "off" = shut
     this._fp = null;
+    this._photo = false; // the box holds the photo scene (art: photo, renders found)
+    this._cover = null; // the plate image's opaque box: { key, W, H, box: [x, y, w, h] }
+    this._coverKey = null;
     cardTip(this, this.shadowRoot);
     this.shadowRoot.addEventListener("click", (ev) => this._onClick(ev));
     this.shadowRoot.addEventListener("keydown", (ev) => {
@@ -779,9 +1083,16 @@ class P2sPrinterConsoleCard extends HTMLElement {
     if (!Array.isArray(cfg.remains) || cfg.remains.length !== 5) {
       throw new Error(CARD + ": remains must list five counters, A1-A4 then external");
     }
+    if (["drawn", "photo"].indexOf(cfg.art) < 0) {
+      throw new Error(CARD + ": art must be drawn or photo");
+    }
+    if (!(Number(cfg.layer_height) > 0)) {
+      throw new Error(CARD + ": layer_height must be a positive number of mm");
+    }
     this._config = cfg;
     this._fp = null;
     this._unmountCamera();
+    this._syncArt();
     if (this._hass) this._render();
   }
 
@@ -909,6 +1220,8 @@ class P2sPrinterConsoleCard extends HTMLElement {
         ? { code: String(errSt.attributes.code || ""), text: String(errSt.attributes.error || "Print error") }
         : null,
       cover: (() => { const s = this._st(c.cover); return s && s.attributes.entity_picture ? s.attributes.entity_picture : null; })(),
+      coverKey: this._s(c.cover), // the image entity's state changes with the picture, its URL token does not
+
     };
     const forced = this._forced();
     if (forced) {
@@ -1022,6 +1335,33 @@ class P2sPrinterConsoleCard extends HTMLElement {
     try {
       console.info("%c " + CARD + " %c " + VERSION + " ", "background:#5AA9FF;color:#000", "");
     } catch (e) { /* no console */ }
+    this._syncArt();
+  }
+
+  /**
+   * Put the right picture in the virtual printer box: the photo scene once
+   * the renders are found (art: photo), else the line drawing. Swapping the
+   * box's content re-reads its data-r elements and redraws from scratch.
+   */
+  _syncArt() {
+    if (!this._r) return;
+    const want = this._config.art === "photo";
+    if (!want && this._photo) this._fillPrinterBox(PRINTER_SVG, false);
+    if (!want) return;
+    bambuArt().then((a) => {
+      if (this._config.art !== "photo" || !this._r || this._photo) return;
+      this._fillPrinterBox(photoSvg(a), true);
+    }, () => { /* keep the line drawing */ });
+  }
+
+  _fillPrinterBox(svg, photo) {
+    const box = this._r.vpbox;
+    box.innerHTML = svg;
+    box.querySelectorAll("[data-r]").forEach((el) => { this._r[el.getAttribute("data-r")] = el; });
+    this._photo = photo;
+    this.shadowRoot.querySelector("ha-card").classList.toggle("photo", photo);
+    this._fp = null;
+    this._render();
   }
 
   _patch(m) {
@@ -1140,24 +1480,19 @@ class P2sPrinterConsoleCard extends HTMLElement {
       el.classList.toggle("short", !!short && short.slot === i);
       r["gb" + i].style.setProperty("--p", t.empty || g === null ? "0%"
         : Math.min(100, 100 * g / (t.full || 1000)).toFixed(1) + "%");
-      const name = i < 4 ? "AMS slot A" + (i + 1) : "External spool";
-      const val = t.empty ? "EMPTY" : t.type + " · " + (g === null ? "count unknown" : gTxt + " left")
-        + (t.src === "rfid" ? " (RFID)" : "") + (t.active ? " · IN USE" : "");
-      setAttrs(el, { "data-more": t.src === "rfid" ? t.id : t.counter,
-        "data-tip": tip(name, val, i < 4 ? HELP.tray : HELP.external) });
+      setAttrs(el, this._slotLink(t, i));
     });
-    const hum = offline || m.humidity === null ? "—" : Math.round(m.humidity) + " %";
-    text(r.humv, hum);
-    setAttrs(r.hum, { "data-more": c.ams_humidity, "data-tip": tip("AMS humidity", hum, HELP.humidity) });
-    const at = offline || m.amsTemp === null ? "—" : m.amsTemp.toFixed(1) + " °C";
-    text(r.amstv, at);
-    setAttrs(r.amst, { "data-more": c.ams_temperature, "data-tip": tip("AMS temperature", at, HELP.ams_temp) });
-    const dry = offline ? "—" : m.drying ? fmtLeft(m.dryLeft) + " left" : "Off";
-    text(r.dryv, dry);
-    setAttrs(r.dry, { "data-more": c.ams_drying, "data-tip": tip("AMS drying", m.drying ? "DRYING · " + dry : "OFF", HELP.drying) });
+    const cl = this._climate(m);
+    text(r.humv, cl.hum.v);
+    setAttrs(r.hum, cl.hum.a);
+    text(r.amstv, cl.tmp.v);
+    setAttrs(r.amst, cl.tmp.a);
+    text(r.dryv, cl.dry.v);
+    setAttrs(r.dry, cl.dry.a);
 
     // virtual printer
-    this._patchPrinter(m, meta, tone, feed, lightOn, doorOpen);
+    if (this._photo) this._patchPhoto(m, meta, tone, feed, lightOn, doorOpen);
+    else this._patchPrinter(m, meta, tone, feed, lightOn, doorOpen);
     text(r.caption, this._caption(m));
 
     // camera
@@ -1261,7 +1596,17 @@ class P2sPrinterConsoleCard extends HTMLElement {
       setAttrs(r["aled" + i], { fill: lit });
     });
 
-    // HUD tags (and the narrow strip)
+    this._patchTags(m, meta, feed);
+  }
+
+  /** The HUD tags around the printer and the narrow strip under it; both modes have them. */
+  _patchTags(m, meta, feed) {
+    const r = this._r;
+    const c = this._config;
+    const all = m.trays.concat([m.ext]);
+    const fs = feed >= 0 ? all[feed] : null;
+    const run = m.status === "running";
+    const offline = m.status === "offline";
     const noz = tempTag(m.nozzle[0], m.nozzle[1]);
     const bed = tempTag(m.bed[0], m.bed[1]);
     const ch = { val: m.chamber === null ? "—" : Math.round(m.chamber) + "°C", stat: "", col: "#949CA8" };
@@ -1289,6 +1634,235 @@ class P2sPrinterConsoleCard extends HTMLElement {
     text(r["tl-ams"], amsLbl);
     text(r["hsl-ams"], amsLbl.replace(" · ", " "));
     setAttrs(r.laytag, { opacity: meta.part === "none" ? 0 : 1 });
+  }
+
+  /** A slot's tap target and tooltip; the same in the AMS section and on its plate in the picture. */
+  _slotLink(t, i) {
+    const g = t.grams === null ? null : Math.max(0, t.grams);
+    const name = i < 4 ? "AMS slot A" + (i + 1) : "External spool";
+    const val = t.empty ? "EMPTY" : t.type + " · " + (g === null ? "count unknown" : Math.round(g) + " g left")
+      + (t.src === "rfid" ? " (RFID)" : "") + (t.active ? " · IN USE" : "");
+    return { "data-more": t.src === "rfid" ? t.id : t.counter, "data-tip": tip(name, val, i < 4 ? HELP.tray : HELP.external) };
+  }
+
+  /** The AMS climate: value and tap/tooltip attributes for humidity, temperature, drying. */
+  _climate(m) {
+    const c = this._config;
+    const offline = m.status === "offline";
+    const hum = offline || m.humidity === null ? "—" : Math.round(m.humidity) + " %";
+    const at = offline || m.amsTemp === null ? "—" : m.amsTemp.toFixed(1) + " °C";
+    const dry = offline ? "—" : m.drying ? fmtLeft(m.dryLeft) + " left" : "Off";
+    return {
+      hum: { v: hum, a: { "data-more": c.ams_humidity, "data-tip": tip("AMS humidity", hum, HELP.humidity) } },
+      tmp: { v: at, a: { "data-more": c.ams_temperature, "data-tip": tip("AMS temperature", at, HELP.ams_temp) } },
+      dry: { v: dry, a: { "data-more": c.ams_drying, "data-tip": tip("AMS drying", m.drying ? "DRYING · " + dry : "OFF", HELP.drying) } },
+    };
+  }
+
+  // --- photo mode ---------------------------------------------------------------
+
+  /** Where the part stands on the bed and how tall all of it is, in render px. */
+  _partGeom(m) {
+    const cv = this._cover && this._cover.key === m.coverKey && m.cover ? this._cover : null;
+    if (cv) {
+      const k = PH.PLATE / cv.W; // the plate image spans the whole plate
+      const w = cv.box[2] * k;
+      const h = cv.box[3] * k;
+      return { img: true, w: w, h: h, x: PH.NOZX - w / 2, href: m.cover, cv: cv };
+    }
+    const h = Math.max(30, Math.min(480, (m.layers || 60) * Number(this._config.layer_height) * 2.09));
+    return { img: false, w: 150, h: h, x: PH.NOZX - 75 };
+  }
+
+  /**
+   * The plate image's opaque bounding box, so the model and not its empty
+   * margin stands on the bed. Read once per picture through a canvas; the
+   * card redraws when it is known. No canvas (or a tainted one): the whole
+   * image is the box.
+   */
+  _measureCover(url, key) {
+    if (!url || key === this._coverKey || typeof Image !== "function") return;
+    this._coverKey = key;
+    const img = new Image();
+    img.onload = () => {
+      const W = img.naturalWidth;
+      const H = img.naturalHeight;
+      let box = [0, 0, W, H];
+      try {
+        const cv = document.createElement("canvas");
+        cv.width = W;
+        cv.height = H;
+        const g = cv.getContext("2d");
+        g.drawImage(img, 0, 0);
+        const d = g.getImageData(0, 0, W, H).data;
+        let x0 = W, y0 = H, x1 = -1, y1 = -1;
+        for (let y = 0; y < H; y += 2) {
+          for (let x = 0; x < W; x += 2) {
+            if (d[(y * W + x) * 4 + 3] > 24) {
+              if (x < x0) x0 = x;
+              if (x > x1) x1 = x;
+              if (y < y0) y0 = y;
+              if (y > y1) y1 = y;
+            }
+          }
+        }
+        if (x1 >= 0) box = [x0, y0, x1 - x0 + 2, y1 - y0 + 2];
+      } catch (e) { /* whole image */ }
+      if (this._coverKey !== key || !W || !H) return;
+      this._cover = { key: key, W: W, H: H, box: box };
+      this._fp = null;
+      this._render();
+    };
+    img.src = url;
+  }
+
+  /** The touchscreen: { st, col, job, big, sub, bar (0-1, or null for none) }; null when it is dark. */
+  _screen(m, tone) {
+    const t = (v) => (v === null || v === undefined ? "—" : Math.round(v) + "°");
+    const p = m.progress === null ? 0 : Math.max(0, Math.min(100, m.progress));
+    const left = fmtLeft(m.remaining).replace(" min", "m").replace(" h ", "h ");
+    const lay = m.layers ? "L" + (m.layer || 0) + "/" + m.layers : "";
+    const job = m.task ? (m.task.length > 24 ? m.task.slice(0, 23) + "…" : m.task) : "";
+    switch (m.status) {
+      case "running": return { st: "PRINTING", col: tone.fg, job: job, big: Math.round(p) + "%",
+        sub: left + (lay ? " · " + lay : ""), bar: p / 100 };
+      case "prepare": return { st: "PREPARING", col: tone.fg, job: job, big: "Heating",
+        sub: "N " + t(m.nozzle[0]) + "/" + t(m.nozzle[1]) + " B " + t(m.bed[0]) + "/" + t(m.bed[1]), bar: null };
+      case "pause": return { st: "PAUSED", col: tone.fg, job: job, big: Math.round(p) + "%",
+        sub: humanStage(m.stage) || "Paused", bar: p / 100 };
+      case "finish": return { st: "DONE", col: tone.fg, job: job, big: "Done",
+        sub: m.end ? "at " + hm(m.end) : "Remove the print", bar: 1 };
+      case "failed": return { st: "ERROR", col: tone.fg, job: job, big: "Error",
+        sub: m.error && m.error.code ? m.error.code : "Check the printer", bar: null };
+      case "idle": return { st: "READY", col: tone.fg, job: "", big: "Ready",
+        sub: "N " + t(m.nozzle[0]) + " B " + t(m.bed[0]) + " C " + t(m.chamber), bar: null };
+      default: return null;
+    }
+  }
+
+  _patchPhoto(m, meta, tone, feed, lightOn, doorOpen) {
+    const r = this._r;
+    const all = m.trays.concat([m.ext]);
+    const fs = feed >= 0 ? all[feed] : null;
+    const filament = fs ? fs.color : "#E4E6EA";
+    const run = m.status === "running";
+    const offline = m.status === "offline";
+    const nozC = m.nozzle[0] || 0;
+    const bedC = m.bed[0] || 0;
+    const anim = (el, cls, on) => { if (el) el.classList.toggle(cls, !!on); };
+
+    r.vpbox.classList.toggle("offline", offline);
+    setAttrs(r.vpbox, { "data-tip": tip("Virtual printer", meta.word, HELP.printer) });
+    setAttrs(r.svg, { "aria-label": "Virtual printer, " + meta.label.toLowerCase() + ". " + this._caption(m) });
+
+    // the part, and the bed under it: the revealed top always meets the nozzle
+    if (m.cover) this._measureCover(m.cover, m.coverKey);
+    const job = meta.part !== "none" && !!m.task;
+    const frac = !job || m.status === "prepare" ? 0 : m.status === "finish" ? 1
+      : m.layers ? Math.max(0, Math.min(1, (m.layer || 0) / m.layers))
+      : Math.max(0, Math.min(1, (m.progress || 0) / 100));
+    const g = this._partGeom(m);
+    const shown = g.h * frac;
+    const bedDy = job ? PH.NOZ + shown - PH.BED : 0;
+    const bedT = { transform: "translate(0 " + bedDy.toFixed(1) + ")" };
+    setAttrs(r["x-bed"], bedT);
+    setAttrs(r["x-bedtag"], bedT);
+    setAttrs(r["x-reveal"], { y: (PH.BED - shown).toFixed(1), height: shown.toFixed(1) });
+    if (g.img) {
+      setAttrs(r["x-pimg1"], { x: g.x.toFixed(1), y: (PH.BED - g.h).toFixed(1), width: g.w.toFixed(1), height: g.h.toFixed(1),
+        viewBox: g.cv.box.join(" "), opacity: 1 });
+      setAttrs(r["x-pimgi1"], { href: g.href, width: g.cv.W, height: g.cv.H });
+      setAttrs(r["x-pblk1"], { width: 0, height: 0 });
+    } else {
+      setAttrs(r["x-pimg1"], { width: 0, height: 0, opacity: 0 });
+      setAttrs(r["x-pblk1"], { x: g.x.toFixed(1), y: (PH.BED - g.h).toFixed(1), width: g.w, height: g.h.toFixed(1), fill: filament });
+    }
+    setAttrs(r["x-bedheat"], { opacity: Math.max(0, Math.min(0.85, (bedC - 30) / 40)).toFixed(2) });
+    setAttrs(r["x-layer"], { opacity: run ? 1 : m.status === "pause" ? 0.6 : 0 });
+    anim(r["x-layer"], "layer-run", run);
+
+    // toolhead: sweeps while printing, parked otherwise
+    setAttrs(r["x-head"], { transform: "translate(" + (meta.head === "park" ? PH.PARK : 0) + " 0)" });
+    anim(r["x-headrun"], "xh-run", meta.head === "run");
+    anim(r["x-fan"], "fan-run", nozC >= 60);
+    setAttrs(r["x-glow"], { opacity: nozC >= 170 ? 0.9 : nozC >= 60 ? 0.35 : 0 });
+    setAttrs(r["x-spag"], { stroke: filament, opacity: m.status === "failed" ? 1 : 0 });
+
+    // chamber light, door
+    setAttrs(r["x-warm"], { opacity: lightOn ? 1 : 0 });
+    setAttrs(r["x-dark"], { opacity: lightOn ? 0 : 0.3 });
+    setAttrs(r["x-door"], { opacity: doorOpen ? 1 : 0 });
+
+    // AMS: each spool as tall as what is left on it; the feeding one rolls
+    m.trays.forEach((t, i) => {
+      const f = t.empty ? 0 : t.grams === null ? 0.75 : t.grams / (t.full || 1000);
+      const top = AM.AXLE - spoolR(f);
+      const h = Math.max(0, AM.EDGE - top);
+      ["x-band", "x-wind", "x-cyl", "x-bandclip"].forEach((k) => setAttrs(r[k + i], { y: top.toFixed(1), height: h.toFixed(1) }));
+      setAttrs(r["x-band" + i], { fill: t.color });
+      setAttrs(r["x-spool" + i], { opacity: t.empty ? 0 : 1 });
+      anim(r["x-roll" + i], "xs-run", !t.empty && t.active && run);
+    });
+    // a plate on each slot: what the AMS section's slot cards said
+    const short = this._short(m);
+    all.forEach((t, i) => {
+      const g = t.grams === null ? null : Math.max(0, t.grams);
+      const feeding = t.active && !t.empty && run;
+      const low = !t.empty && g !== null && g > 0 && g < LOW_G;
+      const out = !t.empty && g !== null && g <= 0;
+      const isShort = !!short && short.slot === i;
+      const col = out ? "#FF7A6E" : low ? "#FFB547" : feeding ? "#5AA9FF" : "#B4BBC6";
+      setAttrs(r["xb" + i], this._slotLink(t, i));
+      setAttrs(r["xbr" + i], { stroke: feeding ? "#5AA9FF" : isShort ? "#FFB547" : "#2A2F36", "stroke-width": feeding || isShort ? 3 : 1.5 });
+      setAttrs(r["xbd" + i], t.empty ? { fill: "none", stroke: "#5A616B", "stroke-dasharray": "3 3" }
+        : { fill: t.color, stroke: "#3A3F47", "stroke-dasharray": "none" });
+      setAttrs(r["xbi" + i], { fill: feeding ? "#5AA9FF" : "#949CA8" });
+      text(r["xbm" + i], t.empty ? "Empty" : t.type);
+      setAttrs(r["xbm" + i], { fill: t.empty ? "#949CA8" : "#ECEEF1" });
+      text(r["xbg" + i], t.empty ? (i < 4 ? "Slot free" : "Holder free") : g === null ? "? g" : Math.round(g) + " g");
+      setAttrs(r["xbg" + i], { fill: t.empty ? "#949CA8" : col });
+      setAttrs(r["xbb" + i], { width: t.empty || g === null ? 0 : (92 * Math.min(1, g / (t.full || 1000))).toFixed(1),
+        fill: col === "#B4BBC6" ? "#949CA8" : col });
+    });
+
+    // the external spool, whole and edge-on: as thick as what is left on it
+    const ex = m.ext;
+    const exR = ex.empty ? 0 : Math.sqrt(EX.r * EX.r + Math.max(0, Math.min(1, ex.grams === null ? 0.75 : ex.grams / (ex.full || 1000)))
+      * (EX.R * EX.R - EX.r * EX.r));
+    ["x-exband", "x-exwind", "x-exbandclip"].forEach((k) => setAttrs(r[k], { y: (EX.AXLE - exR).toFixed(1), height: (2 * exR).toFixed(1) }));
+    setAttrs(r["x-exband"], { fill: ex.color });
+    setAttrs(r["x-exspool"], { opacity: ex.empty ? 0 : 1 });
+    setAttrs(r["x-exfree"], { opacity: ex.empty ? 1 : 0 });
+    anim(r["x-exroll"], "xs-run", !ex.empty && ex.active && run);
+
+    // the tube from whichever feeds the job
+    setAttrs(r["x-tube-ams"], { stroke: feed >= 0 && feed < 4 ? filament : "#5A616B", opacity: offline ? 0.3 : feed >= 0 && feed < 4 ? 0.9 : 0.4 });
+    anim(r["x-tube-ams"], "feed-run", run && feed >= 0 && feed < 4);
+    setAttrs(r["x-tube-ext"], { stroke: feed === 4 ? filament : "#5A616B", opacity: offline ? 0.3 : feed === 4 ? 0.9 : 0.25 });
+    anim(r["x-tube-ext"], "feed-run", run && feed === 4);
+
+    // AMS climate, and the lid glowing while it dries
+    const cl = this._climate(m);
+    ["hum", "tmp", "dry"].forEach((k) => { text(r["xav-" + k], cl[k].v); setAttrs(r["xa-" + k], cl[k].a); });
+    // the tag's row is narrow: "2h 30m", the tooltip keeps "2 h 30 min left"
+    if (m.drying && !offline) text(r["xav-dry"], fmtLeft(m.dryLeft).replace(" h ", "h ").replace(" min", "m"));
+    setAttrs(r["xav-dry"], { fill: m.drying && !offline ? "#FFB547" : "#ECEEF1" });
+    setAttrs(r["x-dry"], { opacity: m.drying && !offline ? 1 : 0 });
+
+    // the touchscreen
+    const s = this._screen(m, tone);
+    setAttrs(r["x-scr"], { opacity: s ? 1 : 0 });
+    if (s) {
+      text(r["x-st"], s.st);
+      setAttrs(r["x-st"], { fill: s.col });
+      text(r["x-job"], s.job);
+      text(r["x-big"], s.big);
+      text(r["x-sub"], s.sub);
+      setAttrs(r["x-barbg"], { opacity: s.bar === null ? 0 : 1 });
+      setAttrs(r["x-barf"], { width: s.bar === null ? 0 : ((PH.SCREEN[2] - 24) * s.bar).toFixed(1), fill: s.col });
+    }
+
+    this._patchTags(m, meta, feed);
   }
 
   // --- camera ----------------------------------------------------------------
