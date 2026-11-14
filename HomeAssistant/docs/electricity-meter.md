@@ -15,6 +15,7 @@ for these lives in this repo's YAML:
 | --- | --- |
 | `sensor.electricity_meter_energy` | The register, kWh, `total_increasing`. Attributes `uncertain` (gaps long enough to have hidden a blink) and `missed_slots`. |
 | `sensor.electricity_meter_power` | W, averaged over the last 10 s of blinks. 0 once a minute has passed without one. |
+| `binary_sensor.electricity_meter_grid` | Mains present: the meter is lit. Off within 10–20 s of an outage starting (the sensor sat at its ceiling for 10 s), on again as the meter lights up. On while the house runs from the battery with the grid there, which no blink can show. |
 | `number.electricity_meter_reading` | Sets the register. Shows the last value typed into it, not the live register (that would write a second history row per blink). Configuration. |
 | `number.electricity_meter_threshold_on` / `_off` | The detector's hysteresis levels, raw 0–1023. Configuration. |
 | `button.electricity_meter_restart` | Configuration. |
@@ -25,6 +26,15 @@ From [`config/packages/electricity_meter.yaml`](../config/packages/electricity_m
 | --- | --- |
 | `sensor.electricity_meter_tariff_day` / `_night` | The register split by zone, reset monthly. The Energy dashboard's two grid sources. |
 | `select.electricity_meter_tariff` | Which zone is counting. Switched by the clock: night 23:00–07:00, set again on every start. |
+| `sensor.grid_light_today` | Hours of light (mains) since midnight, a `history_stats` of the grid sensor. Its long-term statistics keep each day's total (the day's `max`); the Shutdowns card reads them. |
+
+**The light history before 14.11.2026 is an estimate.** The grid sensor came
+with firmware 2.3.0 that afternoon. The days 25.10–13.11 were imported into
+`sensor.grid_light_today`'s statistics once: each 5-minute slot counted as
+lit if the meter blinked or the inverter's mean grid voltage was over 150 V,
+and where only hourly statistics were left, the hour's mean voltage over the
+usual 230 V gave its lit share. On 13.11 the hourly estimate came to 8.85 h
+against 9.17 h from the 5-minute data. 14.11 counts only from 16:37.
 
 The zone is the clock's, not `sensor.electricity_tariff_zone`. That sensor's
 third zone, `battery`, prices the A/C's off-grid use, and the meter has

@@ -503,6 +503,78 @@ eq("[hero, days, week]: all three", [!!r.root.querySelector(".hero"), r.root.que
   t.card._render();
   eq("hidden: asks nothing", t.asked.length, 1);
 
+  console.log("hours of light, measured at the meter");
+  const LIGHT = "sensor.grid_light_today";
+  const lit = (v) => ({ [LIGHT]: S(v) });
+  let l = render("18:00", {}, { blocks: ["hero"], states: lit("14.3333") });
+  eq("hero tile, green", [l.tile("Light today"), /ok-hi/.test(l.root.querySelectorAll(".tile")[0].innerHTML)],
+    [["14h 20m", "since 00:00, at the meter"], true]);
+  eq("four tiles", l.root.querySelector(".tiles").getAttribute("class"), "tiles four");
+  eq("the hero alone asks the recorder nothing", l.asked.length, 0);
+  l = render("18:00", {}, { blocks: ["hero"], states: lit("unavailable") });
+  eq("meter offline: a dash, and why", l.tile("Light today"), ["—", "the meter has no answer"]);
+  l = render("18:00", {}, { blocks: ["hero"] });
+  eq("no light sensor (the friend's bundle): no tile", [l.tile("Light today"),
+    l.root.querySelector(".tiles").getAttribute("class")], [null, "tiles"]);
+  l = render("18:00", {}, { blocks: ["hero"], states: lit("3"), config: { light_entity: null } });
+  eq("light_entity: null: no tile", l.tile("Light today"), null);
+
+  // Saturday 17.10.2026: Monday's and Friday's totals are in the statistics,
+  // today is live, Sunday is still to come.
+  const weekAttrs = { week: Array(7).fill("y".repeat(18) + "nnnnnn"), week_in_effect: true,
+                      schedule_in_effect: false, today: null };
+  const stats = { [LIGHT]: [
+    { start: new Date(2026, 9, 12).getTime(), end: new Date(2026, 9, 13).getTime(), max: 20.5 },
+    { start: new Date(2026, 9, 16).toISOString(), max: 18.0833 },
+    { start: new Date(2026, 9, 17).getTime(), max: 2 },  // today's so far: the live value wins
+  ] };
+  l = render("18:00", weekAttrs, { blocks: ["week"], states: lit("14.3333"), history: stats,
+                                   config: { week_style: "classic" } });
+  eq("one statistics request: two weeks of daily max", [l.asked.length, l.asked[0] && l.asked[0].type,
+    l.asked[0] && l.asked[0].statistic_ids, l.asked[0] && l.asked[0].period, l.asked[0] && l.asked[0].types,
+    l.asked[0] && l.asked[0].start_time],
+    [1, "recorder/statistics_during_period", [LIGHT], "day", ["max"], new Date(2026, 9, 4).toISOString()]);
+  await settle();
+  const litRow = () => l.root.querySelectorAll(".brow").map((row) => {
+    const el = row.querySelector(".dlit");
+    return el ? el.textContent : null;
+  });
+  eq("Mo and Fr from the statistics, Sa live, nothing ahead", litRow(),
+    ["20h30", null, null, null, "18h05", "14h20", null]);
+  eq("under the plan's dark hours", l.root.querySelectorAll(".brow")[0].querySelector(".dtot").textContent, "6h");
+  eq("the row figure's tooltip", l.root.querySelectorAll(".brow")[4].querySelector(".dlit")
+    .getAttribute("data-tip").split("\n")[0], "Fr light — 18h 5m measured");
+  eq("a legend entry", /Light, measured/.test(l.text(".legend")), true);
+  const strip = () => l.root.querySelectorAll(".lwday").map((x) => [x.querySelector(".lwn").textContent,
+    x.querySelector(".lwv").textContent, x.querySelector(".lwbar span").getAttribute("style")]);
+  eq("the last seven days, oldest first", strip(), [
+    ["Su11.10", "—", "height:0%"], ["Mo12.10", "20h30", "height:85.4%"], ["Tu13.10", "—", "height:0%"],
+    ["We14.10", "—", "height:0%"], ["Th15.10", "—", "height:0%"], ["Fr16.10", "18h05", "height:75.3%"],
+    ["Today17.10", "14h20", "height:59.7%"]]);
+  l.card._fingerprint = null;
+  l.card._render();
+  eq("the same day: not asked again", l.asked.length, 1);
+
+  l = render("18:00", weekAttrs, { blocks: ["week"], states: lit("14.3333"), history: new Error("busy"),
+                                   config: { week_style: "classic" } });
+  await settle();
+  eq("statistics fail: today still shows", litRow(), [null, null, null, null, null, "14h20", null]);
+  l = render("18:00", {}, { blocks: ["week"], states: lit("14.3333"), history: stats });
+  await settle();
+  eq("DTEK's table withdrawn: the strip stays", [l.root.querySelectorAll(".brow").length,
+    l.root.querySelectorAll(".lwday").length, l.root.querySelectorAll(".lwv").map((x) => x.textContent).join(" ")],
+    [0, 7, "— 20h30 — — — 18h05 14h20"]);
+  l = render("18:00", weekAttrs, { blocks: ["week"], config: { week_style: "classic" } });
+  eq("no light sensor: no request, no figures, no legend entry",
+    [l.asked.length, litRow().filter(Boolean).length, /Light, measured/.test(l.text(".legend")),
+     l.root.querySelectorAll(".lwday").length], [0, 0, false, 0]);
+
+  t = render("13:39", {}, { blocks: ["timeline"], history, config: { grid_entity: null } });
+  eq("grid_entity: null is left out of the request", t.asked[0] && t.asked[0].entity_ids, [OUT, SCHED, UNS]);
+  await settle();
+  eq("... and the four rows stay in place", [rows().length, blocks(0).length, blocks(3).map((b) => b[0])],
+    [4, 0, ["blk warn"]]);
+
   console.log(failed ? "test_dtek_card: " + failed + " FAILED, " + passed + " passed"
     : "test_dtek_card: ok — " + passed + " checks passed");
   process.exit(failed ? 1 : 0);

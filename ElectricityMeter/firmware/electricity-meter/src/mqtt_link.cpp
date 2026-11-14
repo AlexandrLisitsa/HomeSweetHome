@@ -117,6 +117,17 @@ void publishAllDiscovery() {
            state);
   publishDiscovery("sensor", "power", "Power", fields);
 
+  // Mains present: the meter is lit. It reads the meter itself, not the
+  // draw, so it stays on while the house runs from the battery with the grid
+  // there. 'None' (unknown) for the first 10 s after boot.
+  snprintf(fields, sizeof fields,
+           "\"state_topic\":\"%s\",\"value_template\":"
+           "\"{{ 'ON' if value_json.grid == true else "
+           "('OFF' if value_json.grid == false else 'None') }}\","
+           "\"device_class\":\"power\",\"icon\":\"mdi:transmission-tower\"",
+           state);
+  publishDiscovery("binary_sensor", "grid", "Grid", fields);
+
   // No state topic: the control keeps the last value typed into it, and
   // Home Assistant restores that across restarts. Mirroring the register
   // here would write a second recorder row for every pulse, next to the
@@ -176,16 +187,25 @@ void finishRestore() {
 
 // Only what Home Assistant uses. No uptime or RSSI: they change every time,
 // and would turn every check into a publish and a recorder row.
+//
+// "grid" is whether the meter is lit, i.e. mains is there; see gridDark().
+// null for the first kDarkSlots after boot, which is how long it takes to
+// tell an outage from a flash: a board that boots in the dark must not
+// report light for those 10 s.
 void buildState(char* json, size_t len) {
   char kwh[24];
   formatKwh(kwh, sizeof kwh, meterPulses);
+  uint32_t now = currentSlot();  // the next slot: now - 1 was the last sample
+  const char* grid = now < Detector::kDarkSlots  ? "null"
+                     : detector.gridDark(now - 1) ? "false"
+                                                  : "true";
   snprintf(json, len,
            "{\"energy\":%s,\"power\":%ld,\"pulses\":%lu,\"uncertain\":%lu,"
-           "\"missed\":%lu,\"on\":%u,\"off\":%u,\"set\":%s}",
+           "\"missed\":%lu,\"on\":%u,\"off\":%u,\"set\":%s,\"grid\":%s}",
            kwh, lroundf(meterWatts()), (unsigned long)meterPulses,
            (unsigned long)detector.uncertain, (unsigned long)missedSlots,
            settings->onLevel, settings->offLevel,
-           settings->registerSet ? "true" : "false");
+           settings->registerSet ? "true" : "false", grid);
 }
 
 void sendState(bool force) {
@@ -211,7 +231,7 @@ void onMessage(char* topic, byte* payload, unsigned int length) {
     if (!restored && p) {
       uint32_t retained = strtoul(p + 9, nullptr, 10);
       Serial.printf("# broker: %u pulses retained\n", (unsigned)retained);
-      uint32_t restoredPulses = retained + detector.pulses;
+      uint32_t restoredPulses = retained + detector.confirmed;
       if (restoredPulses > meterPulses) {
         meterPulses = restoredPulses;
         persistPulse(meterPulses);

@@ -72,6 +72,7 @@ static int finish() {
 static int restoreAddsCounted() {
   Settings settings = {950, 820, true};
   detector.pulses = 30;
+  detector.confirmed = 30;
   meterPulses = 1000 + 30;
   std::printf("restore keeps what was counted since boot\n");
   mqttBegin(&settings);
@@ -135,8 +136,60 @@ static int powerFloor() {
   return finish();
 }
 
+// The meter goes dark when the grid drops: the sensor sits at its ceiling.
+static int gridState() {
+  Settings settings = {990, 940, true};
+  detector.onLevel = 990;  // as setup() does from the settings
+  detector.offLevel = 940;
+  meterPulses = 1000;
+  std::printf("grid: the meter lit or dark\n");
+  mqttBegin(&settings);
+  mqttLoop();
+  nowMs += 3000;
+  mqttLoop();  // restore wait over
+  uint32_t s = 0;
+  auto feed = [&](uint16_t v, uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) {
+      if (detector.feed(s++, v, 0)) meterPulses++;  // as main.cpp does
+    }
+    sampleCount = s;
+  };
+  feed(1024, 500);  // booted in the dark: 5 s of it
+  mqttPublishState();
+  check("unknown for the first 10 s after boot", has(lastState(), "\"grid\":null"), lastState());
+  feed(1024, 500);
+  mqttPublishState();
+  check("dark after 10 s at the ceiling: no grid", has(lastState(), "\"grid\":false"),
+        lastState());
+  check("and the dark is not a pulse", meterPulses == 1000, std::to_string(meterPulses));
+  feed(910, 3);  // the grid is back: the meter lights up
+  mqttPublishState();
+  check("grid as soon as the level falls", has(lastState(), "\"grid\":true"), lastState());
+  for (int i = 0; i < 5; i++) {
+    feed(1024, 3);
+    feed(929, 1);
+    feed(910, 23);
+  }
+  mqttPublishState();
+  check("flashes count and keep it on", meterPulses == 1005 && has(lastState(), "\"grid\":true"),
+        std::to_string(meterPulses) + " " + lastState());
+  feed(905, 6000);  // a minute on the battery, the grid still there: no blinks
+  mqttPublishState();
+  check("no draw is not no grid", has(lastState(), "\"grid\":true"), lastState());
+  feed(1024, 999);
+  mqttPublishState();
+  check("9.99 s at the ceiling is not yet an outage", has(lastState(), "\"grid\":true"),
+        lastState());
+  feed(1024, 1);
+  mqttPublishState();
+  check("10 s is", has(lastState(), "\"grid\":false"), lastState());
+  check("the grid going adds no pulse", meterPulses == 1005, std::to_string(meterPulses));
+  return finish();
+}
+
 int main(int argc, char** argv) {
   std::string scenario = argc > 1 ? argv[1] : "";
+  if (scenario == "grid") return gridState();
   if (scenario == "power-floor") return powerFloor();
   if (scenario == "restore-adds-counted") return restoreAddsCounted();
   if (scenario == "reading-beats-restore") return readingBeatsRestore();
@@ -152,7 +205,7 @@ int main(int argc, char** argv) {
   check("online published, retained", !g_mqtt->published.empty() &&
         g_mqtt->published[0].topic == "electricity-meter/status" &&
         g_mqtt->published[0].payload == "online" && g_mqtt->published[0].retained);
-  check("six discovery payloads", countTopic("homeassistant/") == 6,
+  check("seven discovery payloads", countTopic("homeassistant/") == 7,
         std::to_string(countTopic("homeassistant/")));
   bool allRetained = true;
   for (auto& p : g_mqtt->published) allRetained &= p.retained;
@@ -266,7 +319,7 @@ int main(int argc, char** argv) {
   std::printf("Home Assistant restarts\n");
   size_t before = g_mqtt->published.size();
   g_mqtt->deliver("homeassistant/status", "online");
-  check("discovery sent again", countTopic("homeassistant/", before) == 6,
+  check("discovery sent again", countTopic("homeassistant/", before) == 7,
         std::to_string(countTopic("homeassistant/", before)));
 
   std::printf("restart button\n");

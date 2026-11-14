@@ -19,7 +19,7 @@ static const uint32_t SAMPLE_INTERVAL_MS = 10;
 // Power is averaged over the pulses of the last 10 s.
 static const uint32_t POWER_WINDOW_SLOTS = 10000 / SAMPLE_INTERVAL_MS;
 
-static const char FW_VERSION[] = "2.2.0";
+static const char FW_VERSION[] = "2.3.0";
 
 extern Detector detector;
 

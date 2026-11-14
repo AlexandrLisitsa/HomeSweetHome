@@ -102,8 +102,10 @@ timeline, week]` and `[source]`.
   to the next change in the middle. While DTEK's live notice is up (an
   emergency outage has no schedule behind it), its span is drawn over the hours
   as a hatched red arc, to the minute, and the countdown runs to the notice's
-  end time ("until back", or "overdue" once it has passed). Three stat tiles
-  under it.
+  end time ("until back", or "overdue" once it has passed). Stat tiles under
+  it, the first **Light today**: hours of mains since midnight, measured at the
+  electricity meter (`light_entity`, default `sensor.grid_light_today`, see
+  [electricity-meter.md](electricity-meter.md)).
 - `timeline`: the section the feature exists for. Today, 00:00–24:00, on four
   rows against the clock's hours: grid down (the inverter's measurement), DTEK's
   live notice (`binary_sensor.dtek_outage_now`), the schedule
@@ -129,6 +131,13 @@ timeline, week]` and `[source]`.
   unpublished tomorrow keeps the recurring row. When DTEK withholds the table,
   the reason takes its place, followed by just today and tomorrow when a
   schedule is applied, because `plan_off` only withdraws the weekly table.
+  Each row's dark-hours total has the day's measured light under it, in green.
+  Under the rows, **Light, measured at the meter**: the last seven days as bars
+  of 24 hours with the figure, whether DTEK publishes a table or not. Past days
+  come from one `recorder/statistics_during_period` request (daily `max` of
+  the light sensor), once a day and only while the card is on screen; today is
+  the live value. Without a light sensor (`light_entity: null`, or a house with
+  no meter) none of it is drawn.
 - `days`: today and tomorrow alone, as the week block draws them. Kept so an
   older config still renders; the dashboard no longer uses it.
 - `source`: where the data came from.

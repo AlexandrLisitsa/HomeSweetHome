@@ -18,6 +18,14 @@
 // A MISS IS NOT IGNORED. When the caller reports a gap of `kUncertainSlots` or
 // more, a whole flash (3 samples) could have fallen into it. It is counted in
 // `uncertain` rather than guessed at either way.
+//
+// A FLASH THAT DOES NOT END IS THE GRID GOING. With mains gone the meter goes
+// dark and the sensor sits at its ceiling (1024 for as long as the outage
+// lasts, read on 2026-11-14), so it looks like a flash that never ends. A
+// real flash is 3 samples. So `pulses` counts every flash that starts (power
+// is timed from those), but a pulse is only `confirmed` -- and only then goes
+// on the register -- when its flash ends inside `kMaxFlashSlots`; a longer
+// one is `dropped`. A flash held for `kDarkSlots` means no mains: gridDark().
 #pragma once
 
 #include <stdint.h>
@@ -35,17 +43,25 @@ class Detector {
   static const uint16_t kDefaultOn = 950;
   static const uint16_t kDefaultOff = 820;
   static const uint32_t kUncertainSlots = 3;
+  // At 10 ms slots: a flash longer than 1 s is not a pulse, one held for
+  // 10 s is the meter gone dark.
+  static const uint32_t kMaxFlashSlots = 100;
+  static const uint32_t kDarkSlots = 1000;
 
   uint16_t onLevel = kDefaultOn;
   uint16_t offLevel = kDefaultOff;
 
-  // Flashes seen since boot, and gaps that might have hidden one.
+  // Flashes started since boot, and gaps that might have hidden one.
   uint32_t pulses = 0;
   uint32_t uncertain = 0;
+  // Of those, the ones that ended like a flash (the register's pulses), and
+  // the ones held too long to be one.
+  uint32_t confirmed = 0;
+  uint32_t dropped = 0;
 
   // Feed one sample. `slot` is its slot number since boot; `skipped` is how
   // many slots were missed just before it. Returns true when this sample
-  // starts a flash, i.e. one meter pulse.
+  // confirms a pulse: the flash it ends started under kMaxFlashSlots ago.
   bool feed(uint32_t slot, uint16_t value, uint32_t skipped) {
     if (skipped >= kUncertainSlots) {
       uncertain++;
@@ -53,19 +69,36 @@ class Detector {
     if (!inFlash_) {
       if (value > onLevel) {
         inFlash_ = true;
+        pending_ = true;
+        flashStart_ = slot;
         pulses++;
         history_[head_] = slot;
         head_ = (head_ + 1) % kHistory;
         if (count_ < kHistory) count_++;
+      }
+      return false;
+    }
+    if (value < offLevel) {
+      inFlash_ = false;
+      if (pending_) {
+        pending_ = false;
+        confirmed++;
         return true;
       }
-    } else if (value < offLevel) {
-      inFlash_ = false;
+    } else if (pending_ && slot - flashStart_ + 1 >= kMaxFlashSlots) {
+      pending_ = false;
+      dropped++;
     }
     return false;
   }
 
   bool inFlash() const { return inFlash_; }
+
+  // True once a flash has been held for kDarkSlots samples: the meter is
+  // dark, so there is no mains. `lastSlot` is the latest sample's slot.
+  bool gridDark(uint32_t lastSlot) const {
+    return inFlash_ && lastSlot - flashStart_ + 1 >= kDarkSlots;
+  }
 
   // The slot of the newest pulse; meaningless until `pulses` > 0.
   uint32_t lastPulseSlot() const { return at(0); }
@@ -112,6 +145,8 @@ class Detector {
   }
 
   bool inFlash_ = false;
+  bool pending_ = false;     // the current flash is not confirmed or dropped yet
+  uint32_t flashStart_ = 0;  // the slot the current flash started in
   uint32_t history_[kHistory] = {};
   uint8_t head_ = 0;
   uint8_t count_ = 0;

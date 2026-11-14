@@ -56,6 +56,7 @@ RUNS = [
     "./build/test_mqtt_link restore-adds-counted",
     "./build/test_mqtt_link reading-beats-restore",
     "./build/test_mqtt_link power-floor",
+    "./build/test_mqtt_link grid",
     "./build/test_persist",
 ]
 
@@ -70,6 +71,9 @@ EXPECTED = {
         "default_entity_id": "sensor.electricity_meter_power",
         "device_class": "power", "state_class": "measurement",
         "unit_of_measurement": "W"},
+    "homeassistant/binary_sensor/electricity_meter/grid/config": {
+        "default_entity_id": "binary_sensor.electricity_meter_grid",
+        "device_class": "power"},
     "homeassistant/number/electricity_meter/reading/config": {
         "default_entity_id": "number.electricity_meter_reading",
         "entity_category": "config", "unit_of_measurement": "kWh",
@@ -151,7 +155,7 @@ def check_discovery():
     states = [json.loads(r.split("\t", 1)[1]) for r in rows
               if r.startswith("electricity-meter/state\t")]
     check("every state message is JSON", bool(states), len(states))
-    keys = {"energy", "power", "pulses", "uncertain", "missed", "on", "off", "set"}
+    keys = {"energy", "power", "pulses", "uncertain", "missed", "on", "off", "set", "grid"}
     check("state carries exactly its fields", all(set(s) == keys for s in states),
           sorted({k for s in states for k in set(s) ^ keys}))
     read = set(re.findall(r"value_json\.(\w+)", json.dumps(list(seen.values()))))

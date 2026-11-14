@@ -69,7 +69,7 @@ const READ_ONLY = {
   "climate-console-card.js": [".badge", ".tile", ".well", ".row", ".fval", ".zone", ".vbox",
     ".st-v", ".ch-name", ".win", ".dial", ".dial-v", ".rmark", ".fine", "#bed-fan-fine",
     ".cost-c", ".feat-l"],
-  "dtek-shutdowns-card.js": [".eyebrow", ".ident", ".banner", "h1", ".reason", ".tile", ".c", ".bulb", ".dtot",
+  "dtek-shutdowns-card.js": [".eyebrow", ".ident", ".banner", "h1", ".reason", ".tile", ".c", ".bulb", ".dtot", ".dlit", ".lwday",
     ".legend span", ".stamp", ".kv div", ".arc", ".ctr", ".tlname", ".blk"],
   "floorplan-card.js": [".badge", ".row .value", ".pct"],
   "p2s-printer-console-card.js": [".pill", ".doorchip", ".kv", ".slot", ".tag", ".vpbox", ".cambox", ".pct", ".pbar"],
@@ -214,6 +214,9 @@ const FIXTURES = {
       "binary_sensor.grid_down": S("off", {}),
       "binary_sensor.grid_outage_unscheduled": S("off", {}),
       "binary_sensor.dtek_data_stale": S("off", {}),
+      // Today's light at the meter: the hero tile, and today's week row.
+      "sensor.grid_light_today": S("14.3333", { friendly_name: "Grid light today",
+        unit_of_measurement: "h", state_class: "measurement" }),
     };
   },
   // A dimmable lamp at 25 %, relays on/off only, readings with their units.

@@ -65,6 +65,8 @@ int main() {
     }
     check("no holes in the stretch", holes == 0, std::to_string(holes));
     check("163 blinks at 950/820", d.pulses == 163, std::to_string(d.pulses));
+    check("all 163 confirmed for the register", d.confirmed == 163 && d.dropped == 0,
+          std::to_string(d.confirmed) + " / " + std::to_string(d.dropped));
     check("nothing uncertain", d.uncertain == 0, std::to_string(d.uncertain));
   }
   {
@@ -210,6 +212,8 @@ int main() {
     tuned.offLevel = 940;
     uint32_t end = mounted(tuned, 156, 0);
     check("990/940 counts all 156", tuned.pulses == 156, std::to_string(tuned.pulses));
+    check("and confirms all 156", tuned.confirmed == 156, std::to_string(tuned.confirmed));
+    check("lit all along", !tuned.gridDark(end), "");
     float w = tuned.watts(end, INTERVAL_MS, JOULES_PER_PULSE, WINDOW_SLOTS);
     check("at 2.08 kW (27 slots a blink)", std::fabs(w - 2083) < 30, std::to_string(w));
     Detector lamp;
@@ -231,6 +235,52 @@ int main() {
     uint32_t slot = 0;
     for (int i = 0; i < 4242; i++) d.feed(slot++, 1024, 0);
     check("counts one, never more", d.pulses == 1, std::to_string(d.pulses));
+    check("but never confirms it: no register pulse", d.confirmed == 0 && d.dropped == 1,
+          std::to_string(d.confirmed) + " / " + std::to_string(d.dropped));
+    check("and reads dark", d.gridDark(slot - 1), "");
+  }
+
+  std::printf("the grid goes and comes back (the meter dark, 2026-11-14)\n");
+  {
+    Detector d;
+    d.onLevel = 990;
+    d.offLevel = 940;
+    uint32_t slot = 0;
+    int confirmedNow = 0;
+    auto feedN = [&](uint16_t v, uint32_t n) {
+      for (uint32_t i = 0; i < n; i++) confirmedNow += d.feed(slot++, v, 0);
+    };
+    feedN(910, 100);
+    for (int i = 0; i < 3; i++) {
+      feedN(1024, 3);
+      feedN(929, 1);
+      feedN(910, 23);
+    }
+    check("three flashes, three register pulses", confirmedNow == 3, std::to_string(confirmedNow));
+    check("feed() says so on the falling sample", d.confirmed == 3, std::to_string(d.confirmed));
+    uint32_t goes = slot;
+    feedN(1024, 99);
+    check("99 slots high: still maybe a flash", d.dropped == 0, std::to_string(d.dropped));
+    feedN(1024, 1);
+    check("100 slots high: not a pulse", d.dropped == 1 && d.confirmed == 3,
+          std::to_string(d.dropped));
+    feedN(1024, 899);
+    check("9.99 s: not dark yet", !d.gridDark(slot - 1), std::to_string(slot - 1 - goes));
+    feedN(1024, 1);
+    check("10 s: dark", d.gridDark(slot - 1), std::to_string(slot - 1 - goes));
+    feedN(1024, 360000);  // an hour
+    check("an hour of it: still one start, no register pulse",
+          d.pulses == 4 && d.confirmed == 3 && confirmedNow == 3, std::to_string(d.pulses));
+    feedN(960, 1);
+    check("above 'off' it stays dark", d.gridDark(slot - 1), "");
+    feedN(910, 1);
+    check("lit again once under 'off'", !d.gridDark(slot - 1), "");
+    check("and the end of the dark is no pulse either", d.confirmed == 3 && confirmedNow == 3,
+          std::to_string(d.confirmed));
+    feedN(1024, 3);
+    feedN(929, 1);
+    check("the next real flash counts", d.confirmed == 4 && confirmedNow == 4,
+          std::to_string(d.confirmed));
   }
 
   std::printf("levels changed mid-flash\n");
