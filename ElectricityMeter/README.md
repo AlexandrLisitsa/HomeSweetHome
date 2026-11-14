@@ -70,6 +70,14 @@ C++, compiled into the firmware and, unchanged, into the tests.
 - **A gap is not ignored.** If the sampler misses 3 or more slots in a row
   (≥ 30 ms, room for a whole flash), the energy sensor's `uncertain`
   attribute goes up by one.
+- **A flash that never ends is the grid going.** With mains gone the meter
+  goes dark and the sensor sits at its ceiling, 1024, for the whole outage
+  (read live on 14.11.2026). So a blink only goes on the register once its
+  flash has ended inside 1 s; a longer one is dropped, which keeps an outage
+  from booking a pulse. A flash held for **10 s** means no mains:
+  `binary_sensor.electricity_meter_grid` turns off, and back on as soon as the
+  level falls below **off**. The meter stays lit while the house runs from the
+  battery with the grid there, so that counts as grid, correctly. Since 2.3.0.
 
 **The register never goes backwards.** Home Assistant reads a drop in a
 `total_increasing` sensor as a new meter. The board keeps the register in three
@@ -91,6 +99,7 @@ meter**:
 | --- | --- |
 | `sensor.electricity_meter_energy` | The register, kWh. **Unavailable until the meter reading has been set**, so the statistics never start from 0. |
 | `sensor.electricity_meter_power` | W |
+| `binary_sensor.electricity_meter_grid` | On while the meter is lit, i.e. mains is there. Unknown for the first 10 s after a boot. |
 | `number.electricity_meter_reading` | Set the register to the meter's display |
 | `number.electricity_meter_threshold_on` / `_off` | The detector's levels |
 | `button.electricity_meter_restart` | |

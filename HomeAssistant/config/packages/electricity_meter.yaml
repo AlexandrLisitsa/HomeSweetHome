@@ -7,8 +7,11 @@
 #
 #     sensor.electricity_meter_energy   the register, kWh
 #     sensor.electricity_meter_power    W
+#     binary_sensor.electricity_meter_grid   on while the meter is lit, i.e.
+#                                       mains is there (firmware 2.3.0+)
 #
-# This file only splits the register by tariff zone.
+# This file splits the register by tariff zone and counts the hours of
+# light (sensor.grid_light_today, at the end).
 #
 # Needs `ha core restart` to take effect: utility_meter registers no reload
 # service.
@@ -157,3 +160,22 @@ automation:
               data:
                 channel: Electricity meter
                 tag: electricity-tariff-switch
+
+# --- hours of light ------------------------------------------------------------
+# How long mains was there today, from the meter itself: lit means the grid is
+# up, even while the house runs from the battery and nothing blinks. The
+# inverter's grid voltage says the same but its link drops out dozens of times
+# a day, so the Shutdowns card counts this one.
+#
+# history_stats is a measurement sensor, so the recorder keeps its long-term
+# statistics after the 2-day purge: a past day's light is that day's `max`.
+# Minutes the board is offline count as neither light nor dark.
+sensor:
+  - platform: history_stats
+    name: "Grid light today"
+    unique_id: grid_light_today
+    entity_id: binary_sensor.electricity_meter_grid
+    state: "on"
+    type: time
+    start: "{{ today_at() }}"
+    end: "{{ now() }}"

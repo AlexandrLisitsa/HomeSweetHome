@@ -46,7 +46,7 @@
 const CARD = "dtek-shutdowns-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "2.7.2";
+const VERSION = "2.8.1";
 
 /*
  * The grid shows the NORMAL condition, not the exception: a cell is green when
@@ -244,6 +244,15 @@ const HELP = {
     + "E.g. hidden (plan_off): DTEK stopped drawing it, so a note replaces the grid.",
   interval: "How often Home Assistant runs the DTEK poller.\n"
     + "E.g. 5 min, the same cadence DTEK's own page uses to re-check itself.",
+  light: "Hours of mains since midnight, measured at the electricity meter: lit means grid.\n"
+    + "E.g. 14h 20m by 18:00: the grid was gone for 3h 40m of the day so far.\n"
+    + "It counts the battery hours with the grid still there as light, as they are.",
+  day_light: "Hours that day the meter was lit, i.e. mains was there; green, under the plan.\n"
+    + "E.g. 18h05 under 6h: DTEK planned six dark hours and the day had about six.\n"
+    + "Blank: before the meter counted, or a day still to come.",
+  light_week: "Hours of mains on each of the last seven days, measured at the electricity meter.\n"
+    + "E.g. Th 13.11: 9h10 lit, so the grid was gone for almost 15 hours of that day.\n"
+    + "Days before 14.11.2026 are estimated from the inverter's hourly grid voltage.",
 };
 
 const DAY_SHORT = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
@@ -265,6 +274,10 @@ const DEFAULTS = {
   // this rather than the raw banner_emergency attribute: the binary sensor is
   // the debounced, freshness-checked verdict an alert would use.
   emergency_entity: "binary_sensor.dtek_emergency_shutdowns",
+  // Hours of light today, measured at the electricity meter (history_stats in
+  // packages/electricity_meter.yaml). Past days come from its long-term
+  // statistics. Null, or an entity that does not exist, leaves it all out.
+  light_entity: "sensor.grid_light_today",
   poll_interval: 5, // minutes; matches scan_interval: 300 on the sensor
   debug_state: null, // on | outage | dtek | unscheduled | stale -- render only
   debug_banner: null, // emergency | pending | notice | none -- render only
@@ -396,6 +409,17 @@ function tip(name, state, key) {
 /** 17 -> "17h", 16.5 -> "16.5h". Half-hour states make the fractions real. */
 const fmtHours = (h) =>
   (Math.abs(h - Math.round(h)) < 0.001 ? String(Math.round(h)) : h.toFixed(1)) + "h";
+
+/** 14.33 -> "14h 20m" (the hero), or "14h20" (a week row, `tight`). */
+function fmtHM(hours, tight) {
+  const mins = Math.max(0, Math.round(hours * 60));
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return tight ? h + "h" + pad2(m) : h + "h " + m + "m";
+}
+
+/** A local date as "2026-11-14", the key the light statistics are kept under. */
+const dayKey = (d) => d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
 
 /** Cell index to a wall clock reading, half meaning the :30 boundary. */
 const clock = (h, half) => pad2(((h % 24) + 24) % 24) + (half ? ":30" : ":00");
@@ -676,7 +700,7 @@ class DtekShutdownsCard extends HTMLElement {
     const cfg = this._config;
     const main = this._stateObj(cfg.entity);
     const watched = [cfg.grid_entity, cfg.unscheduled_entity, cfg.stale_entity,
-      cfg.outage_entity, cfg.scheduled_entity, cfg.emergency_entity,
+      cfg.outage_entity, cfg.scheduled_entity, cfg.emergency_entity, cfg.light_entity,
       cfg.debug_state_entity, cfg.debug_banner_entity].filter(Boolean);
     return JSON.stringify([
       main ? main.state : null,
@@ -685,7 +709,76 @@ class DtekShutdownsCard extends HTMLElement {
       now.getDay(), now.getHours(), now.getMinutes(),
       cfg.debug_state, cfg.debug_banner, cfg.week_style,
       this._hist && [this._hist.at, this._hist.note],
+      this._light && this._light.at,
     ]);
+  }
+
+  // --- hours of light ------------------------------------------------------
+
+  /** The light sensor's state object, or null when it is not configured or not there. */
+  _lightObj() {
+    return this._config.light_entity ? this._stateObj(this._config.light_entity) : null;
+  }
+
+  /** Hours of light so far today, or null when the meter has no answer. */
+  _lightToday() {
+    const st = this._lightObj();
+    const h = st ? parseFloat(st.state) : NaN;
+    return isNaN(h) ? null : h;
+  }
+
+  /**
+   * Whether to ask for the past days' light: once a day, and again after a
+   * failed answer once HISTORY_TTL has gone by. Never while hidden or asking.
+   */
+  _wantLight(now) {
+    const blocks = this._config.blocks;
+    if (blocks.indexOf("week") < 0 && blocks.indexOf("days") < 0) return false;
+    if (!this._lightObj()) return false;
+    if (this._paused || this._lightBusy || !this._hass || typeof this._hass.callWS !== "function") return false;
+    const l = this._light;
+    return !l || l.day !== now.toDateString() || (l.failed && now.getTime() - l.at > HISTORY_TTL);
+  }
+
+  /**
+   * One statistics request for this week and last: each day's `max` of the
+   * light sensor is that day's total, because history_stats counts up from
+   * midnight. Keyed by local date; today is read live instead.
+   */
+  async _loadLight(now) {
+    this._lightBusy = true;
+    const id = this._config.light_entity;
+    const from = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 13);
+    const days = {};
+    let failed = false;
+    try {
+      const reply = await this._hass.callWS({
+        type: "recorder/statistics_during_period",
+        start_time: from.toISOString(),
+        statistic_ids: [id],
+        period: "day",
+        types: ["max"],
+      });
+      ((reply || {})[id] || []).forEach((row) => {
+        const start = typeof row.start === "number" ? new Date(row.start) : parseDate(row.start);
+        if (start && typeof row.max === "number") days[dayKey(start)] = row.max;
+      });
+    } catch (err) {
+      failed = true;
+    }
+    this._light = { day: now.toDateString(), at: Date.now(), days, failed };
+    this._lightBusy = false;
+    this._render();
+  }
+
+  /** Hours of light on a date: live for today, the statistics before it, null after. */
+  _lightOn(date, now) {
+    if (!this._lightObj()) return null;
+    const key = dayKey(date);
+    if (key === dayKey(now)) return this._lightToday();
+    if (date > now) return null;
+    const v = this._light && this._light.days[key];
+    return typeof v === "number" ? v : null;
   }
 
   // --- the timeline's history ----------------------------------------------
@@ -722,12 +815,14 @@ class DtekShutdownsCard extends HTMLElement {
         type: "history/history_during_period",
         start_time: midnight.toISOString(),
         end_time: now.toISOString(),
-        entity_ids: ids,
+        // A bundle without the inverter configures grid_entity: null, and a
+        // null id fails the whole request. Its row stays, empty.
+        entity_ids: ids.filter(Boolean),
         minimal_response: true,
         no_attributes: true,
         significant_changes_only: false,
       });
-      spans = ids.map((id) => onSpans((reply || {})[id], midnight.getTime(), now.getTime()));
+      spans = ids.map((id) => (id ? onSpans((reply || {})[id], midnight.getTime(), now.getTime()) : []));
     } catch (err) {
       note = "History is unavailable" + (err && err.message ? " (" + err.message + ")" : "")
         + ", so only the schedule is drawn.";
@@ -741,6 +836,7 @@ class DtekShutdownsCard extends HTMLElement {
     if (!this._hass || !this._config) return;
     const now = new Date();
     if (this._wantHistory(now)) this._loadHistory(now);
+    if (this._wantLight(now)) this._loadLight(now);
     const print = this._fingerprintOf(now);
     if (print === this._fingerprint) return;
     this._fingerprint = print;
@@ -929,6 +1025,7 @@ class DtekShutdownsCard extends HTMLElement {
           total: fmtHours(off),
           heavy: off >= 10,
           applied: !!own,
+          lit: this._lightOn(date, now),
         });
       }
     }
@@ -966,6 +1063,7 @@ class DtekShutdownsCard extends HTMLElement {
           name, cls: di === 0 ? "today" : "tmrw",
           sub: pad2(date.getDate()) + "." + pad2(date.getMonth() + 1),
           cells, total: ok ? fmtHours(off) : MDASH, published: ok, heavy: off >= 10,
+          lit: this._lightOn(date, now),
         });
       });
     }
@@ -1222,6 +1320,17 @@ class DtekShutdownsCard extends HTMLElement {
       identity,
       headline, lede, note, queue, week, days, win, applied, inEffect,
       weekLive, hiddenReason,
+      // Hours of light today at the meter: a number, null when the meter has
+      // no answer, undefined when no light sensor is configured or present.
+      lightToday: this._lightObj() ? this._lightToday() : undefined,
+      // The last seven days, oldest first, whatever DTEK publishes: the
+      // history the week block keeps even with DTEK's table withdrawn.
+      lightWeek: this._lightObj() ? [6, 5, 4, 3, 2, 1, 0].map((back) => {
+        const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() - back);
+        return { name: back ? DAY_SHORT[(date.getDay() + 6) % 7] : "Today",
+                 sub: pad2(date.getDate()) + "." + pad2(date.getMonth() + 1),
+                 h: this._lightOn(date, now) };
+      }) : null,
       // Null rather than "0h": both are computed from a pattern DTEK has
       // withdrawn, and a zero reads as a measured week with no outages in it.
       weekOff: weekLive ? fmtHours(weekOff) : null,
@@ -1301,7 +1410,12 @@ class DtekShutdownsCard extends HTMLElement {
         + "</span></div>").join("")
       + "</div>"
       + this._clock(d)
-      + '<div class="tiles">'
+      + '<div class="tiles' + (d.lightToday === undefined ? "" : " four") + '">'
+      // Measured, not planned: the meter is lit whenever mains is there.
+      + (d.lightToday === undefined ? ""
+        : tile("Light today", d.lightToday === null ? null : fmtHM(d.lightToday),
+               d.lightToday === null ? "the meter has no answer" : "since 00:00, at the meter",
+               "light", d.lightToday === null ? null : "var(--ds-ok-hi)"))
       // Both of these are read off the recurring pattern. When DTEK withdraws
       // it they have no answer, and a dash is the honest one -- "0h off" would
       // be a claim about a week nobody has scheduled.
@@ -1550,11 +1664,16 @@ class DtekShutdownsCard extends HTMLElement {
         + '<div class="blabel"><span class="dname">' + esc(day.name) + "</span>"
         + '<span class="dsub">' + esc(day.sub) + "</span></div>"
         + '<div class="wire">' + bulbs + "</div>"
-        + '<div class="dtot' + (day.heavy ? " heavy" : "") + '"'
+        + '<div class="dtots"><div class="dtot' + (day.heavy ? " heavy" : "") + '"'
         + tip(day.name + " total", day.published === false ? "not published" : day.total + " off",
               day.applied || totalKey === "sched_total" ? "sched_total" : totalKey)
-        + ">" + esc(day.total) + "</div></div>";
+        + ">" + esc(day.total) + "</div>"
+        + (typeof day.lit === "number"
+          ? '<div class="dlit"' + tip(day.name + " light", fmtHM(day.lit) + " measured", "day_light")
+            + ">" + fmtHM(day.lit, true) + "</div>" : "")
+        + "</div></div>";
     });
+    const anyLit = cols.some((day) => typeof day.lit === "number");
     const item = (cls, text, key) => "<span" + tip(text, null, key) + ">"
       + '<span class="bulb mini ' + cls + '">'
       + classicBulb(null, /(^| )now( |$)/.test(cls), /^out( |$)/.test(cls),
@@ -1568,6 +1687,8 @@ class DtekShutdownsCard extends HTMLElement {
       + item("out-2", "Off for half the hour", "legend_half")
       + (withUnknown ? item("unknown", "Not published", "sched_total") : "")
       + item("on now", "Now", "legend_now")
+      + (anyLit ? "<span" + tip("Light, measured", null, "day_light") + '><span class="dlit">'
+        + "18h05</span>Light, measured</span>" : "")
       + "</div></div>";
   }
 
@@ -1617,7 +1738,23 @@ class DtekShutdownsCard extends HTMLElement {
       + '<span class="stamp"' + tip("Schedule published", d.published, "published")
       + ">Published " + esc(d.published) + "</span></div>"
       + (blurb === null ? "" : '<p class="blurb">' + esc(blurb) + "</p>")
-      + inner + "</div></ha-card>";
+      + inner + this._lightStrip(d) + "</div></ha-card>";
+  }
+
+  /** Seven days of measured light: a bar of the 24 hours and the figure, per day. */
+  _lightStrip(d) {
+    if (!d.lightWeek) return "";
+    const days = d.lightWeek.map((x) => {
+      const has = typeof x.h === "number";
+      const pct = has ? Math.max(0, Math.min(100, (x.h / 24) * 100)).toFixed(1) : "0";
+      return '<div class="lwday' + (x.name === "Today" ? " today" : "") + '"'
+        + tip(x.name + " " + x.sub, has ? fmtHM(x.h) + " of light" : "not counted", "light_week") + ">"
+        + '<span class="lwbar"><span style="height:' + pct + '%"></span></span>'
+        + '<span class="lwv' + (has ? "" : " dim") + '">' + (has ? fmtHM(x.h, true) : MDASH) + "</span>"
+        + '<span class="lwn">' + esc(x.name) + "<br>" + esc(x.sub) + "</span></div>";
+    }).join("");
+    return '<div class="lightweek"><h3>Light, measured at the meter</h3>'
+      + '<div class="lwdays">' + days + "</div></div>";
   }
 
   _sourceCard(d) {
@@ -1788,6 +1925,7 @@ a:hover { text-decoration: underline; }
 .ctr .small { fill: var(--ds-text2); font: 500 11px var(--ds-sans); }
 
 .tiles { grid-area: tiles; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.tiles.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .tile {
   background: var(--ds-inner); border: 1px solid var(--ds-line2); border-radius: 8px;
   padding: 11px 13px; display: flex; flex-direction: column; gap: 5px; min-width: 0;
@@ -1903,6 +2041,21 @@ a:hover { text-decoration: underline; }
 .blabel { display: flex; flex-direction: column; gap: 2px; }
 .brow.today .dname, .brow.today .dsub { color: var(--ds-ok-hi); }
 .brow .dtot { height: auto; align-items: center; }
+/* Under the plan's dark hours, the light the meter measured that day. */
+.dtots { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.dlit { font: 600 11px var(--ds-mono); font-variant-numeric: tabular-nums; color: var(--ds-ok-hi); }
+/* Seven days of measured light, under whatever DTEK's schedule shows. */
+.lightweek { margin-top: 14px; border-top: 1px solid var(--ds-line); padding-top: 12px; }
+.lightweek h3 { margin: 0 0 10px; font: 600 13px var(--ds-sans); color: var(--ds-text2); }
+.lwdays { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.lwday { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; padding: 6px 2px; border-radius: 8px; }
+.lwday.today { background: color-mix(in srgb, var(--ds-ok) 10%, transparent); }
+.lwbar { position: relative; width: 14px; height: 48px; border-radius: 4px; background: var(--ds-dim); overflow: hidden; }
+.lwbar > span { position: absolute; left: 0; right: 0; bottom: 0; background: var(--ds-ok); border-radius: 4px; }
+.lwv { font: 600 12px var(--ds-mono); font-variant-numeric: tabular-nums; color: var(--ds-ok-hi); }
+.lwv.dim { color: var(--ds-muted); }
+.lwn { font: 500 10px/1.3 var(--ds-mono); color: var(--ds-muted); text-align: center; }
+@container (max-width: 640px) { .lwdays { gap: 2px; } .lwv { font-size: 11px; } }
 .wire { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 2px; justify-items: center; }
 .bulb { position: relative; display: flex; justify-content: center; min-width: 0; width: 100%; }
 /* The grid's .on/.out/.now paint whatever carries them; on a bulb only the glass shows the state. */
@@ -1995,7 +2148,7 @@ a:hover { text-decoration: underline; }
   .brow { grid-template-columns: minmax(0, 1fr) auto; gap: 6px 8px; padding: 6px; }
   .blabel { flex-direction: row; align-items: baseline; gap: 8px; }
   .brow .wire { grid-column: 1 / -1; grid-template-columns: repeat(12, minmax(0, 1fr)); row-gap: 6px; }
-  .brow .dtot { grid-row: 1; grid-column: 2; }
+  .brow .dtots { grid-row: 1; grid-column: 2; flex-direction: row; gap: 8px; }
   .bulb .t { font-size: 12px; }
 }
 
@@ -2015,7 +2168,7 @@ a:hover { text-decoration: underline; }
   .hero .pad { grid-template-columns: 1fr; grid-template-areas: "clock" "copy" "tiles"; justify-items: center; }
   .hero-left { align-items: center; text-align: center; }
   .eyebrow { justify-content: center; }
-  .tiles { grid-template-columns: 1fr 1fr; width: 100%; }
+  .tiles, .tiles.four { grid-template-columns: 1fr 1fr; width: 100%; }
   .tl { grid-template-columns: 1fr; gap: 4px; }
   .axis { grid-column: 1; }
   .grid { gap: 2px; }

@@ -242,7 +242,9 @@ static void sample() {
   lastSampleUs = nowUs;
 
   // sampleCount is this sample's index and missedSlots the slots lost so far:
-  // together, the slot this sample belongs to.
+  // together, the slot this sample belongs to. The register takes a pulse
+  // when its flash has ended like one: the meter going dark when the grid
+  // drops starts a "flash" that never ends, and that is not a kWh.
   if (detector.feed(sampleCount + missedSlots, value, skipped)) {
     meterPulses++;
     persistPulse(meterPulses);

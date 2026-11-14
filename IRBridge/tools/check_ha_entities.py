@@ -146,6 +146,7 @@ EXTERNAL = {
     "sensor.0x70b3d52b600fddcb_energy",
     "sensor.electricity_meter_energy",         # ElectricityMeter board, MQTT discovery
     "sensor.electricity_meter_power",
+    "binary_sensor.electricity_meter_grid",    # on while the meter is lit (fw 2.3.0)
 
     # Created in the UI, so they exist in .storage/core.entity_registry and
     # nowhere in this repo. Listed one by one on purpose: they are few, and a
