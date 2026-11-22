@@ -45,6 +45,13 @@ rest:
         value_template: >-
           {% set s = (value_json.last_accepted_s_ago | default({})).water | default(none) %}
           {{ (s / 60) | round(0) | int if s is number else none }}
+      - name: "Gas camera last refusal"
+        unique_id: metercam_gas_last_refusal
+        icon: mdi:alert-circle-outline
+        value_template: >-
+          {% set lr = value_json.last_refusal | default({}) %}
+          {% set r = (lr.gas | default('')) if lr is mapping else '' %}
+          {{ r[:255] if r else none }}
 
 automation:
   - id: metercam_gas_stale
@@ -55,6 +62,10 @@ automation:
         entity_id: sensor.gas_camera_last_accepted
         above: 360
         id: stale
+      - platform: numeric_state
+        entity_id: sensor.gas_camera_last_accepted
+        above: 1440
+        id: stale_24h
       - platform: state
         entity_id: sensor.gas_camera_last_accepted
         to: unavailable
@@ -63,6 +74,7 @@ automation:
     action:
       - variables:
           hours: "{{ ((states('sensor.gas_camera_last_accepted') | float(0)) / 60) | round(1) }}"
+          refusal: "{{ states('sensor.gas_camera_last_refusal') }}"
       - service: notify.household
         data:
           title: '📷 Gas camera'
@@ -71,7 +83,7 @@ automation:
             readings are coming in. Check LXC 104 (MeterCam/docs/operations.md).
             {%- else %}No accepted gas reading for {{ hours }} h. The camera may have
             stopped waking, or every frame is being refused: see its last photo and
-            the refused frames (MeterCam/docs/operations.md).{% endif %}
+            the refused frames (MeterCam/docs/operations.md).{% if refusal and refusal not in ('unknown', 'unavailable', 'none', 'None') %} Last refusal: {{ refusal }}.{% endif %}{% endif %}
           data:
             channel: Gas meter
             tag: metercam-stale

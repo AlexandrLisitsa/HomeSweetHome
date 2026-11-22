@@ -71,6 +71,7 @@ HA_TOKEN = os.environ.get("METERCAM_HA_TOKEN") or None
 _LOCK = threading.Lock()          # one reader, one request at a time
 _MODELS = reader.ModelCache()
 _LAST_READ = {}                   # meter -> epoch of its last /read
+_LAST_REFUSAL = {}                # meter -> last refusal reason (cleared on accept)
 _STARTED = time.time()
 
 
@@ -321,6 +322,7 @@ def health():
         # refused does not reset it. Home Assistant alerts on this
         # (packages/metercam_watch.yaml). A meter that never had one is absent.
         "last_accepted_s_ago": _accepted_ages(meters),
+        "last_refusal": dict(_LAST_REFUSAL),
     })
 
 
@@ -403,6 +405,7 @@ def do_read():
         except Exception as exc:        # noqa: BLE001
             result = None
             error = "%s: %s" % (type(exc).__name__, exc)
+            _LAST_REFUSAL[name] = error
         else:
             result["prevalue_from"] = prevalue_from
             result["firmware_running"] = fw
@@ -411,6 +414,9 @@ def do_read():
             if result.get("accepted") and result.get("value") is not None:
                 last_accepted(name, result["value"])
                 remember(name, result, "last_accepted.jpg")
+                _LAST_REFUSAL.pop(name, None)
+            elif result.get("reason"):
+                _LAST_REFUSAL[name] = str(result["reason"])
         _LAST_READ[name] = time.time()
 
     latest = _firmware_version(name)

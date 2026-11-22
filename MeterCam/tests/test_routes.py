@@ -116,6 +116,7 @@ check("a clock behind the file: 0, never negative", ages({"gas": {"at_epoch": 10
 check("each meter its own", ages({"gas": {"at_epoch": 999990.0}, "water": {"at_epoch": 999000.0}},
                                 meters=("gas", "water")) == {"gas": 10, "water": 1000})
 check("/health reports it", '"last_accepted_s_ago": _accepted_ages(meters)' in APP.read_text(encoding="utf-8"))
+check("/health reports last refusal", '"last_refusal": dict(_LAST_REFUSAL)' in APP.read_text(encoding="utf-8"))
 
 print("firmware: one channel per meter")
 # _firmware_version() lifted out like authorised() above, run against a real
@@ -164,5 +165,6 @@ check("/firmware/version.txt takes ?meter=, gas by default",
       '_firmware_version(request.args.get("meter", "gas"))' in app_src)
 check("/health still reports the gas version", '"firmware": _firmware_version("gas")' in app_src)
 check("no call without a meter is left", "_firmware_version()" not in app_src)
+check("no call without a meter in panel.py either", "_firmware_version()" not in PANEL.read_text(encoding="utf-8"))
 
 print("%d checks passed" % checks)

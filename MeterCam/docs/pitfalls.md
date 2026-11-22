@@ -70,6 +70,21 @@ confident wrong number, with no error. They are always redone together (see
 A missing or unreadable reference is a refusal, never a fallback to raw
 coordinates.
 
+Enable `align.mask_rois: true` so ORB ignores the moving drum strip on the
+reference frame. Without a mask, digits that change after the reference was
+taken drag the inlier ratio down toward `min_inlier_ratio` (0.35) and cause
+false `align:` refusals on sharp frames.
+
+## Model choice and the Gallus `3`
+
+`dig-class100-0180-s2-q.tflite` repeatedly misread the Gallus flat-topped `3`
+as `6` or `7` once the digit settled upward in its window (leaving the bar of
+the preceding `2` partially clipped at the top of the ROI) — including a
+persistent `+300` m³ (`2301 -> 2601`) jump when the hundreds drum first reached
+`3`. `dig-class100-0182-s2_q.tflite` reads all seven drums cleanly (`0/23`
+errors on the 2026-10/11 archive vs `10/23` for `0180`, minimum head confidence
+`0.83`).
+
 ## The camera's own settings
 
 - **Sensor powered down between wakes.** Every wake starts from a cold AGC, and

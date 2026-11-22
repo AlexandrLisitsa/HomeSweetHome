@@ -40,6 +40,12 @@ exist, and the first reading after a restart would be the least guarded of
 the day, which is exactly when a wrong value sets a `total_increasing`
 sensor's baseline permanently.
 
+The rate limit uses `max_delta + max_rate_per_hour * (elapsed_s / 3600)` and
+is bounded above by `max_delta_cap` (`9.0` m³, below one tens-drum step). Without
+that ceiling, an extended run of refusals eventually widens the allowance far
+enough to accept a systematic higher-order misread — which happened on
+2026-11-22 after 42 hours of rejecting `3 -> 6` (`+303.29` m³).
+
 ## The asymmetry
 
 A refused wake costs half an hour of resolution, because the meter is a

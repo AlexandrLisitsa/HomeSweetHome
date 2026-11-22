@@ -40,17 +40,20 @@
         "min_inlier_ratio": 0.35,
         "max_shift_px": 300,
         "max_rotation_deg": 10,
+        "mask_rois": true,
         "on_failure": "reject",
         "_comment": [
           "ORB matches every frame against the reference and warps it back onto",
-          "it, so a nudged bracket costs nothing. The min_*/max_* bars are",
-          "digits.align_gate(): a transform that exists is not one that can be",
-          "trusted. A missing reference or a failed alignment REJECTS the read --",
-          "fixed rectangles over an uncorrected frame give a confident wrong",
-          "number, which is worse than none."
+          "it, so a nudged bracket costs nothing. mask_rois excludes the moving",
+          "drum window on the reference so changing digits do not drag down the",
+          "inlier ratio. The min_*/max_* bars are digits.align_gate(): a",
+          "transform that exists is not one that can be trusted. A missing",
+          "reference or a failed alignment REJECTS the read -- fixed rectangles",
+          "over an uncorrected frame give a confident wrong number, which is",
+          "worse than none."
         ]
       },
-      "model": "/models/dig-class100-0180-s2-q.tflite",
+      "model": "/models/dig-class100-0182-s2_q.tflite",
       "decimals": 2,
       "report_decimals": 2,
       "counter_type": "jump",
@@ -79,14 +82,17 @@
       "gate": {
         "max_delta": 0.6,
         "max_delta_window_s": 300,
+        "max_rate_per_hour": 2.5,
+        "max_delta_cap": 9.0,
         "tolerance_down": 0.0,
         "min_confidence": 0.5,
         "min_confidence_last_digit": 0.3,
         "require_prevalue": true,
         "_comment": [
-          "max_delta 0.6 m3 per 300 s, scaled by the time since the last",
-          "accepted read: a G4 at its rated maximum only reaches 0.5. It is",
-          "there to catch a misread digit, not to police the boiler.",
+          "max_delta 0.6 m3 burst allowance + max_rate_per_hour 2.5 m3/h over",
+          "elapsed_s since last accept, capped hard at max_delta_cap 9.0 m3.",
+          "Keeping the cap below 10 guarantees that no tens/hundreds drum",
+          "misread can wait out the gate across an extended run of refusals.",
           "",
           "tolerance_down 0.0: the Energy sensor is total_increasing, and a",
           "decrease of more than 10% is taken as a meter reset that retyping",
@@ -169,13 +175,15 @@
       "gate": {
         "max_delta": 0.3,
         "max_delta_window_s": 300,
+        "max_rate_per_hour": 1.5,
+        "max_delta_cap": 9.0,
         "tolerance_down": 0.0,
         "min_confidence": 0.5,
         "min_confidence_last_digit": 0.3,
         "require_prevalue": true,
         "_comment": [
-          "max_delta 0.3 m3 per 300 s, scaled by the time since the last accepted",
-          "read: Qmax gives 0.25. tolerance_down 0.0 for the same reason as gas."
+          "max_delta 0.3 m3 burst + max_rate_per_hour 1.5 m3/h, capped at 9.0 m3.",
+          "tolerance_down 0.0 for the same reason as gas."
         ]
       },
       "confirm": {"samples": 2, "max_last_digit_step": 1},

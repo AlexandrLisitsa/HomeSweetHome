@@ -294,7 +294,7 @@ def api_overview():
         "config_error": cfg_error,
         "auth": "token" if _core.TOKEN else "DISABLED",
         "uptime_s": int(now - _core._STARTED),
-        "firmware_offered": _core._firmware_version(),
+        "firmware_offered": _core._firmware_version(meter),
         "last": last,
         "last_push_epoch": pushed,
         "wake_interval_s": wake_s,
@@ -498,7 +498,7 @@ def api_firmware():
     version = (request.form.get("version") or "").strip()
     upload = request.files.get("bin")
     blob = upload.read() if upload else b""
-    error = publish_firmware(_core.FIRMWARE_DIR, blob, version, _core._firmware_version())
+    error = publish_firmware(_core.FIRMWARE_DIR, blob, version, _core._firmware_version("gas"))
     if error:
         return jsonify({"error": error}), 400
     print("firmware %s published from the panel (%d bytes)" % (version, len(blob)), flush=True)
