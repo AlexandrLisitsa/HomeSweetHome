@@ -507,6 +507,35 @@ def test_gate():
     check("a clock that went backwards -> no gap",
           seconds_since({"at_epoch": now + 60}, now), None)
 
+    # Hard cap + hourly rate: an extended run of refusals must never widen the
+    # rate gate far enough to accept a higher-order digit misread (e.g. +300 m3
+    # on 2026-11-22 after 42 h of refusals).
+    capped_cfg = {
+        "max_delta": 0.6,
+        "max_rate_per_hour": 2.5,
+        "max_delta_cap": 9.0,
+        "tolerance_down": 0.0,
+        "min_confidence": 0.5,
+    }
+    check("30-min wake with max_rate_per_hour accepts 1.8 m3",
+          gate(4823.4, 4821.6, capped_cfg, elapsed_s=1800, **ok)[0], True)
+    check("30-min wake refuses 2.0 m3 (exceeds 0.6 + 1.25)",
+          gate(4823.6, 4821.6, capped_cfg, elapsed_s=1800, **ok)[0], False)
+    check("6-hour outage accepts 8.5 m3 (below 9.0 cap)",
+          gate(4830.1, 4821.6, capped_cfg, elapsed_s=6 * 3600, **ok)[0], True)
+    accepted, reason = gate(2604.23, 2300.94, capped_cfg, elapsed_s=42 * 3600, **ok)
+    check("42-hour outage refuses +303.29 m3 jump", accepted, False)
+    check("  naming the cap", reason, "rate: +303.290 exceeds 9.000 (cap)")
+    accepted, reason = gate(2311.00, 2300.94, capped_cfg, elapsed_s=10 * 86400, **ok)
+    check("10-day outage still refuses +10.06 m3 jump", accepted, False)
+    check("  at the same cap", reason, "rate: +10.060 exceeds 9.000 (cap)")
+    accepted, reason = gate(2311.00, 2300.94, cfg, elapsed_s=42 * 3600, **ok)
+    check("omitted max_delta_cap defaults to 15x max_delta (9.0)", accepted, False)
+    check("  and hits the default cap", "(cap)" in (reason or ""), True)
+    uncapped = dict(cfg, max_delta_cap=None)
+    check("max_delta_cap: None disables the ceiling",
+          gate(2400.94, 2300.94, uncapped, elapsed_s=42 * 3600, **ok)[0], True)
+
     done()
 
 
@@ -598,6 +627,38 @@ def test_transform():
     _, _, backwards = assemble(list(reversed(forward)), decimals=3)
     check("drum order reverses under a mirror", raw, "04821637")
     check("and the reversed read differs", backwards != raw, True)
+
+    done()
+
+
+def test_align_mask():
+    section("4b. align(): masking moving ROIs keeps rigid landmarks")
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        print("  SKIPPED - needs cv2 and numpy (run it in the container)")
+        return
+
+    from service.reader import _roi_exclude_mask, align
+
+    # Textured rigid housing around a blank window, shifted by (12, -8).
+    rng = np.random.default_rng(7)
+    ref = rng.integers(0, 256, (300, 500, 3), dtype=np.uint8)
+    rois = [{"x": 100, "y": 110, "w": 60, "h": 80},
+            {"x": 200, "y": 110, "w": 60, "h": 80}]
+    mask = _roi_exclude_mask(ref.shape, rois, pad_x=10, pad_y=10)
+    check("mask zeros out the ROI strip", int(mask[140, 150]), 0)
+    check("  and keeps the rigid frame outside", int(mask[20, 20]), 255)
+
+    # Replace the masked window in a translated frame with different texture.
+    shifted = np.roll(np.roll(ref, -8, axis=0), 12, axis=1)
+    shifted[90:210, 80:280] = rng.integers(0, 256, (120, 200, 3), dtype=np.uint8)
+    warped, info = align(shifted, ref, mask=mask)
+    check("masked align succeeds despite changed window", info.get("ok"), True)
+    check("  warped image produced", warped is not None, True)
+    check("  recovered translation within 2 px",
+          abs(info["dx"] + 12.0) <= 2.0 and abs(info["dy"] - 8.0) <= 2.0, True)
 
     done()
 
@@ -868,11 +929,19 @@ def test_config_example():
           (7, 2, 2, "jump", True))
     check("gas unchanged: the gate",
           {k: gas["gate"][k] for k in ("max_delta", "max_delta_window_s",
+                                       "max_rate_per_hour", "max_delta_cap",
                                        "min_confidence", "min_confidence_last_digit")},
           {"max_delta": 0.6, "max_delta_window_s": 300,
+           "max_rate_per_hour": 2.5, "max_delta_cap": 9.0,
            "min_confidence": 0.5, "min_confidence_last_digit": 0.3})
+    check("gas aligns with moving ROIs masked", gas["align"].get("mask_rois"), True)
     check("gas unchanged: writes the gas camera helper",
           gas["home_assistant"]["write_entity"], "input_number.gas_meter_camera_reading")
+
+    for name, m in sorted(meters.items()):
+        cap = m["gate"].get("max_delta_cap")
+        check("%s: max_delta_cap is below 10 m3" % name,
+              isinstance(cap, (int, float)) and 0 < cap < 10.0, True)
 
     water = meters["water"]
     check("water: eight drums, three decimals, publishes two",
@@ -1074,6 +1143,7 @@ def main():
     test_water_drums()
     test_gate()
     test_transform()
+    test_align_mask()
     try:
         test_adversarial()
     except ImportError as exc:

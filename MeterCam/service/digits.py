@@ -477,14 +477,26 @@ def gate(value, prevalue, cfg, digit_count, expected_digits, confidences,
     delta = value - prevalue
     max_delta = cfg.get("max_delta")
     if max_delta is not None:
+        rate_h = cfg.get("max_rate_per_hour")
         window = cfg.get("max_delta_window_s")
-        allowed = max_delta
-        if window and elapsed_s:
-            # Scale to the real gap, so a wake missed for an hour is not
-            # rejected for the gas that was legitimately burned meanwhile.
-            allowed = max_delta * max(1.0, elapsed_s / float(window))
+        allowed = float(max_delta)
+        if rate_h is not None and elapsed_s:
+            allowed = max(allowed, float(max_delta) + float(rate_h) * (elapsed_s / 3600.0))
+        elif window and elapsed_s:
+            # Legacy window-based scaling when max_rate_per_hour is absent.
+            allowed = float(max_delta) * max(1.0, elapsed_s / float(window))
+
+        # Hard ceiling so an extended outage or a run of refusals can never
+        # widen the gate far enough to accept a misread higher-order drum
+        # (e.g. +300 m3 on 2026-11-22 after 42 h of refusals). Defaults to
+        # 15 * max_delta when omitted; set max_delta_cap: null to disable.
+        cap = cfg.get("max_delta_cap", float(max_delta) * 15.0)
+        capped = cap is not None and allowed > float(cap)
+        if capped:
+            allowed = float(cap)
         if delta > allowed:
-            return False, "rate: +%.3f exceeds %.3f" % (delta, allowed)
+            suffix = " (cap)" if capped else ""
+            return False, "rate: +%.3f exceeds %.3f%s" % (delta, allowed, suffix)
 
     return True, None
 

@@ -325,16 +325,26 @@ check("polled every 10 minutes", pkg["rest"][0]["scan_interval"], 600)
 auto = pkg["automation"][0]
 trig = {t["id"]: t for t in auto["trigger"]}
 check("stale: above 6 h (360 min)", (trig["stale"]["platform"], trig["stale"]["above"]), ("numeric_state", 360))
+check("stale_24h: above 24 h (1440 min)", (trig["stale_24h"]["platform"], trig["stale_24h"]["above"]), ("numeric_state", 1440))
 check("down: MeterCam unanswered for an hour", (trig["down"]["to"], trig["down"]["for"]), ("unavailable", "01:00:00"))
 notify = auto["action"][1]
 msg = notify["data"]["message"]
 check("notifies the household", notify["service"], "notify.household")
 hours = render(auto["action"][0]["variables"]["hours"], states={"sensor.gas_camera_last_accepted": "397"})
 check("hours from the sensor", hours, "6.6")
-m = render(msg, trigger={"id": "stale"}, hours=hours)
+refusal_var = render(auto["action"][0]["variables"]["refusal"], states={"sensor.gas_camera_last_refusal": "rate: +300"})
+check("refusal from the sensor", refusal_var, "rate: +300")
+m = render(msg, trigger={"id": "stale"}, hours=hours, refusal="")
 check("stale message names the hours", "No accepted gas reading for 6.6 h." in " ".join(m.split()), True)
-m = render(msg, trigger={"id": "down"}, hours="0")
+check("stale message omits refusal when empty", "Last refusal:" in m, False)
+m_ref = render(msg, trigger={"id": "stale_24h"}, hours="24.0", refusal="rate: +300")
+check("stale_24h includes last refusal", "Last refusal: rate: +300." in " ".join(m_ref.split()), True)
+m = render(msg, trigger={"id": "down"}, hours="0", refusal="")
 check("down message says MeterCam is silent", m.startswith("MeterCam has not answered for an hour"), True)
+ref_sens = next(s for s in pkg["rest"][0]["sensor"] if s["unique_id"] == "metercam_gas_last_refusal")
+vr = lambda j: render(ref_sens["value_template"], value_json=j)  # noqa: E731
+check("refusal sensor extracts gas reason", vr({"last_refusal": {"gas": "rate: +300"}}), "rate: +300")
+check("refusal sensor absent -> None", vr({"status": "ok"}), "None")
 
 # --- no silent failures ---------------------------------------------------------
 print("\n11. A/C commands and the meter's tariff switch: a failure is reported")

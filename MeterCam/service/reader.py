@@ -183,13 +183,33 @@ def transform(img, cfg):
 # Alignment
 # ---------------------------------------------------------------------------
 
-def align(img, ref, min_matches=12, max_features=2000):
+def _roi_exclude_mask(shape, rois, pad_x=20, pad_y=30):
+    """Mask out the moving drum strip on the reference frame for ORB.
+
+    The digits inside the window change as gas is burned, while the printed
+    housing around them stays rigid. Excluding the drum strip keeps ORB
+    matching on fixed landmarks instead of stale numbers from ref.jpg.
+    """
+    if not rois:
+        return None
+    h, w = shape[:2]
+    mask = np.full((h, w), 255, dtype=np.uint8)
+    x1 = max(0, min(int(r["x"]) for r in rois) - pad_x)
+    y1 = max(0, min(int(r["y"]) for r in rois) - pad_y)
+    x2 = min(w, max(int(r["x"]) + int(r["w"]) for r in rois) + pad_x)
+    y2 = min(h, max(int(r["y"]) + int(r["h"]) for r in rois) + pad_y)
+    if x2 > x1 and y2 > y1:
+        mask[y1:y2, x1:x2] = 0
+    return mask
+
+
+def align(img, ref, min_matches=12, max_features=2000, mask=None):
     """Warp `img` onto `ref` using ORB features. Returns (warped, info)."""
     g1 = cv2.cvtColor(ref, cv2.COLOR_BGR2GRAY)
     g2 = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
     orb = cv2.ORB_create(max_features)
-    k1, d1 = orb.detectAndCompute(g1, None)
+    k1, d1 = orb.detectAndCompute(g1, mask)
     k2, d2 = orb.detectAndCompute(g2, None)
     if d1 is None or d2 is None or len(k1) < min_matches or len(k2) < min_matches:
         return None, {"ok": False, "reason": "too few features"}
@@ -434,7 +454,10 @@ def read_once(meter, models, image_bytes, prevalue=None):
                                     % ref_path)
                 return _finish(result, started, img)
         else:
-            warped, info = align(img, ref, align_cfg.get("min_matches", 12))
+            mask = (_roi_exclude_mask(ref.shape, meter.get("rois"))
+                    if align_cfg.get("mask_rois") else None)
+            warped, info = align(img, ref, align_cfg.get("min_matches", 12),
+                                 mask=mask)
             result["align"] = info
 
             # Producing a transform and producing a TRUSTWORTHY one are
