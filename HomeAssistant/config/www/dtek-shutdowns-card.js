@@ -46,7 +46,7 @@
 const CARD = "dtek-shutdowns-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "2.13.0";
+const VERSION = "2.14.0";
 
 /*
  * The grid shows the NORMAL condition, not the exception: a cell is green when
@@ -250,13 +250,11 @@ const HELP = {
   day_light: "Hours that day the meter was lit, i.e. mains was there; green, under the plan.\n"
     + "E.g. 18h05 under 6h: DTEK planned six dark hours and the day had about six.\n"
     + "Blank: before the meter counted, or a day still to come.",
-  lc_name: "Mains history: switch Daily bars or Hourly 00–24 view; click any day for modal.\n"
+  lc_name: "Mains history: switch Daily totals or Hourly strips; click any day for modal.\n"
     + "E.g. Mo 23.11: 3h 48m on in one window, 18:48–22:36.\n"
-    + "In Daily: drag to pan, scroll or pinch to zoom, double-click for today.",
-  lc_mode: "Switch between daily total bars and a horizontal 00–24 hourly periods view.\n"
-    + "E.g. Hourly stacks each day left-to-right so recurring outage hours stand out.",
-  lc_page: "Step the hourly periods window backward, forward, or back to today.\n"
-    + "E.g. step back one week to compare earlier outage hours with this week.",
+    + "Drag to pan, scroll or pinch to zoom; double-click or pick a range for today.",
+  lc_mode: "Switch between daily total bars (0–24h) and 24 hourly strips per day.\n"
+    + "E.g. Hourly shows each hour 00–24 as its own strip on the same zoomable day axis.",
   lc_win: "The dates shown on the bar chart; days before 14.11.2026 come from inverter voltage.\n"
     + "E.g. last 14 days, or 02.11–08.11 after dragging back into earlier history.",
   lc_range: "Shows this span of daily light bars ending today and resets any pan or zoom.\n"
@@ -318,12 +316,15 @@ const LIGHT_RANGES = {
 const LIGHT_RANGE_ORDER = ["7d", "14d", "30d", "all"];
 const LIGHT_MODES = [
   { id: "daily", label: "Daily", tip: "Daily totals (0–24h bars)" },
-  { id: "hourly", label: "Hourly", tip: "Hourly periods (00:00–24:00 per day)" },
+  { id: "hourly", label: "Hourly", tip: "Hourly strips (24 hours per day)" },
 ];
 const LC_W = 1000;
 const LC_H = 148;
 const LC_PAD_T = 22;
 const LC_PAD_B = 6;
+const LC_HR_H = 252;
+const LC_HR_PAD_T = 6;
+const LC_HR_PAD_B = 6;
 const LC_MIN_DAYS = 5;
 // Matches night_tariff_start / night_tariff_end in PowerStation/power-station.yaml.
 const NIGHT_START = 23;
@@ -842,7 +843,6 @@ class DtekShutdownsCard extends HTMLElement {
     this._lcMoved = false;
     this._shell = null;
     this._lcHover = null;
-    this._lcHourlyHover = null;
     this._lcModalDn = null;
     this._lcModalSeg = null;
     this._lcHoverSeg = null;
@@ -864,7 +864,7 @@ class DtekShutdownsCard extends HTMLElement {
       }
     };
     // Anything carrying data-more opens HA's own dialog for that entity, as the
-    // stock history-graph's rows did. lrange/lmode/lc-win-* switch views;
+    // stock history-graph's rows did. lrange/lmode switch the light chart;
     // lc-* controls manage the 24h day modal.
     const act = (ev) => {
       if (ev.type === "click" && this._lcModalDn !== null && this._shell && ev.target === this._shell.modal) {
@@ -881,7 +881,6 @@ class DtekShutdownsCard extends HTMLElement {
               if (this._lcMode !== val) {
                 this._lcMode = val;
                 this._lcHover = null;
-                this._lcHourlyHover = null;
                 this._patchLightChart(new Date());
               }
               return true;
@@ -900,18 +899,6 @@ class DtekShutdownsCard extends HTMLElement {
               }
               return true;
             }
-          }
-          if (da === "lc-win-prev") {
-            if (!el.disabled && !el.hasAttribute("disabled")) this._stepLcWindow(-1);
-            return true;
-          }
-          if (da === "lc-win-next") {
-            if (!el.disabled && !el.hasAttribute("disabled")) this._stepLcWindow(1);
-            return true;
-          }
-          if (da === "lc-win-live") {
-            if (!el.disabled && !el.hasAttribute("disabled")) this._resetLcView();
-            return true;
           }
           if (da === "lc-prev") {
             if (!el.disabled && !el.hasAttribute("disabled")) this._stepLcModal(-1);
@@ -2403,7 +2390,42 @@ class DtekShutdownsCard extends HTMLElement {
     };
   }
 
+  _lcGridSvg(isHourly) {
+    if (isHourly) {
+      const yT = (h) => LC_HR_PAD_T + h * 10;
+      let out = '<rect class="lc-night" x="0" y="' + yT(0) + '" width="' + LC_W
+        + '" height="' + (NIGHT_END * 10) + '"></rect>'
+        + '<rect class="lc-night" x="0" y="' + yT(NIGHT_START) + '" width="' + LC_W
+        + '" height="' + ((24 - NIGHT_START) * 10) + '"></rect>'
+        + '<line class="lc-tariff-line" x1="0" x2="' + LC_W + '" y1="' + yT(NIGHT_END)
+        + '" y2="' + yT(NIGHT_END) + '" vector-effect="non-scaling-stroke"></line>'
+        + '<line class="lc-tariff-line" x1="0" x2="' + LC_W + '" y1="' + yT(NIGHT_START)
+        + '" y2="' + yT(NIGHT_START) + '" vector-effect="non-scaling-stroke"></line>';
+      [0, 6, 12, 18, 24].forEach((h) => {
+        const y = yT(h);
+        const cls = h === 12 ? ' class="mid"' : (h === 0 || h === 24) ? ' class="base"' : "";
+        out += '<line' + cls + ' x1="0" x2="' + LC_W + '" y1="' + y + '" y2="' + y
+          + '" vector-effect="non-scaling-stroke"></line>';
+      });
+      return out;
+    }
+    const plotH = LC_H - LC_PAD_T - LC_PAD_B;
+    return [0, 1, 2, 3, 4].map((i) => {
+      const y = (LC_PAD_T + i * plotH / 4).toFixed(0);
+      const cls = i === 2 ? ' class="mid"' : i === 4 ? ' class="base"' : "";
+      return '<line' + cls + ' x1="0" x2="' + LC_W + '" y1="' + y + '" y2="' + y
+        + '" vector-effect="non-scaling-stroke"></line>';
+    }).join("");
+  }
+
+  _lcYaxHtml(isHourly) {
+    return isHourly
+      ? "<span>00</span><span>06</span><span>12</span><span>18</span><span>24</span>"
+      : "<span>24h</span><span>12h</span><span>0h</span>";
+  }
+
   _lcRenderParts(d) {
+    const isHourly = this._lcMode === "hourly";
     const plotH = LC_H - LC_PAD_T - LC_PAD_B;
     const yOf = (h) => LC_PAD_T + (1 - Math.max(0, Math.min(24, h)) / 24) * plotH;
     const yBase = LC_PAD_T + plotH;
@@ -2412,43 +2434,103 @@ class DtekShutdownsCard extends HTMLElement {
     const barW = Math.max(2, slotW - gap);
 
     let barsSvg = "";
-    if (d.mean !== null) {
-      const ym = yOf(d.mean).toFixed(1);
-      barsSvg += '<line class="lc-mean" x1="0" x2="' + LC_W + '" y1="' + ym + '" y2="' + ym + '"></line>';
-    }
     let valsHtml = "";
-    const showVals = d.span <= 10.5;
+    const showVals = !isHourly && d.span <= 10.5;
 
-    d.bars.forEach((b) => {
-      if (typeof b.h !== "number") return;
-      const val = Math.max(0, Math.min(24, b.h));
-      const xSlot = (b.dn - d.t0) * slotW;
-      const xBar = xSlot + (slotW - barW) / 2;
-      const cxPct = ((b.dn + 0.5 - d.t0) / d.span) * 100;
-      const todayCls = b.isToday ? " today" : "";
-      if (val === 0) {
-        const yZero = yBase - 3;
-        barsSvg += '<rect class="lc-bar zero' + todayCls + '" x="' + xBar.toFixed(1)
-          + '" y="' + yZero.toFixed(1) + '" width="' + barW.toFixed(1) + '" height="3" rx="1"></rect>';
-        if (showVals && cxPct >= 1 && cxPct <= 99) {
-          valsHtml += '<span class="lc-val' + todayCls + '" style="left:' + cxPct.toFixed(2)
-            + "%;top:" + Math.max(2, yZero - 16).toFixed(1) + 'px">' + fmtHM(0, true) + "</span>";
-        }
-      } else {
-        const yTop = yOf(val);
-        const hPx = Math.max(2, yBase - yTop);
-        barsSvg += '<rect class="lc-bar' + todayCls + '" x="' + xBar.toFixed(1)
-          + '" y="' + yTop.toFixed(1) + '" width="' + barW.toFixed(1)
-          + '" height="' + hPx.toFixed(1) + '" rx="2"></rect>';
-        barsSvg += '<rect class="lc-cap' + todayCls + '" x="' + xBar.toFixed(1)
-          + '" y="' + yTop.toFixed(1) + '" width="' + barW.toFixed(1)
-          + '" height="2" rx="1"></rect>';
-        if (showVals && cxPct >= 1 && cxPct <= 99) {
-          valsHtml += '<span class="lc-val' + todayCls + '" style="left:' + cxPct.toFixed(2)
-            + "%;top:" + Math.max(2, yTop - 16).toFixed(1) + 'px">' + fmtHM(val, true) + "</span>";
-        }
+    if (!isHourly) {
+      if (d.mean !== null) {
+        const ym = yOf(d.mean).toFixed(1);
+        barsSvg += '<line class="lc-mean" x1="0" x2="' + LC_W + '" y1="' + ym + '" y2="' + ym + '"></line>';
       }
-    });
+      d.bars.forEach((b) => {
+        if (typeof b.h !== "number") return;
+        const val = Math.max(0, Math.min(24, b.h));
+        const xSlot = (b.dn - d.t0) * slotW;
+        const xBar = xSlot + (slotW - barW) / 2;
+        const cxPct = ((b.dn + 0.5 - d.t0) / d.span) * 100;
+        const todayCls = b.isToday ? " today" : "";
+        if (val === 0) {
+          const yZero = yBase - 3;
+          barsSvg += '<rect class="lc-bar zero' + todayCls + '" x="' + xBar.toFixed(1)
+            + '" y="' + yZero.toFixed(1) + '" width="' + barW.toFixed(1) + '" height="3" rx="1"></rect>';
+          if (showVals && cxPct >= 1 && cxPct <= 99) {
+            valsHtml += '<span class="lc-val' + todayCls + '" style="left:' + cxPct.toFixed(2)
+              + "%;top:" + Math.max(2, yZero - 16).toFixed(1) + 'px">' + fmtHM(0, true) + "</span>";
+          }
+        } else {
+          const yTop = yOf(val);
+          const hPx = Math.max(2, yBase - yTop);
+          barsSvg += '<rect class="lc-bar' + todayCls + '" x="' + xBar.toFixed(1)
+            + '" y="' + yTop.toFixed(1) + '" width="' + barW.toFixed(1)
+            + '" height="' + hPx.toFixed(1) + '" rx="2"></rect>';
+          barsSvg += '<rect class="lc-cap' + todayCls + '" x="' + xBar.toFixed(1)
+            + '" y="' + yTop.toFixed(1) + '" width="' + barW.toFixed(1)
+            + '" height="2" rx="1"></rect>';
+          if (showVals && cxPct >= 1 && cxPct <= 99) {
+            valsHtml += '<span class="lc-val' + todayCls + '" style="left:' + cxPct.toFixed(2)
+              + "%;top:" + Math.max(2, yTop - 16).toFixed(1) + 'px">' + fmtHM(val, true) + "</span>";
+          }
+        }
+      });
+    } else {
+      const hStrip = 8;
+      d.bars.forEach((b) => {
+        if (typeof b.h !== "number") return;
+        const xSlot = (b.dn - d.t0) * slotW;
+        const xBar = xSlot + (slotW - barW) / 2;
+        const xStr = xBar.toFixed(1);
+        const wStr = barW.toFixed(1);
+        const todayCls = b.isToday ? " today" : "";
+        const spans = b.spans || [];
+
+        for (let h = 0; h < 24; h++) {
+          const yRow = LC_HR_PAD_T + h * 10;
+          const yStrip = yRow + 1;
+          if (b.isToday && h >= d.nowH - 0.005) {
+            barsSvg += '<rect class="lc-hcell future" x="' + xStr + '" y="' + yStrip
+              + '" width="' + wStr + '" height="' + hStrip + '" rx="1.5"></rect>';
+            continue;
+          }
+          const endOfHour = b.isToday ? Math.min(h + 1, d.nowH) : h + 1;
+          const elap = Math.max(0, endOfHour - h);
+          const elapH = Math.max(1.2, elap * hStrip).toFixed(1);
+          if (b.isToday && elap < 0.995) {
+            barsSvg += '<rect class="lc-hcell future" x="' + xStr
+              + '" y="' + (yStrip + elap * hStrip).toFixed(1)
+              + '" width="' + wStr + '" height="' + Math.max(1, (1 - elap) * hStrip).toFixed(1)
+              + '" rx="1"></rect>';
+          }
+          const clipped = [];
+          for (let i = 0; i < spans.length; i++) {
+            const a = Math.max(h, spans[i][0]);
+            const c = Math.min(endOfHour, spans[i][1]);
+            if (c - a > 0.005) clipped.push([a, c]);
+          }
+          if (clipped.length === 1 && clipped[0][0] <= h + 0.005 && clipped[0][1] >= endOfHour - 0.005) {
+            barsSvg += '<rect class="lc-hcell lit' + todayCls + '" x="' + xStr
+              + '" y="' + yStrip + '" width="' + wStr + '" height="' + elapH + '" rx="1.5"></rect>';
+          } else if (!clipped.length) {
+            barsSvg += '<rect class="lc-hcell dark" x="' + xStr
+              + '" y="' + yStrip + '" width="' + wStr + '" height="' + elapH + '" rx="1.5"></rect>';
+          } else {
+            barsSvg += '<rect class="lc-hcell dark" x="' + xStr
+              + '" y="' + yStrip + '" width="' + wStr + '" height="' + elapH + '" rx="1.5"></rect>';
+            clipped.forEach(([a, c]) => {
+              barsSvg += '<rect class="lc-hcell lit' + todayCls + '" x="' + xStr
+                + '" y="' + (yStrip + (a - h) * hStrip).toFixed(1)
+                + '" width="' + wStr + '" height="' + Math.max(1.2, (c - a) * hStrip).toFixed(1)
+                + '" rx="1"></rect>';
+            });
+          }
+        }
+        if (b.isToday) {
+          const yNow = (LC_HR_PAD_T + d.nowH * 10).toFixed(1);
+          barsSvg += '<line class="lc-hnow" x1="' + Math.max(0, xBar - 2).toFixed(1)
+            + '" x2="' + Math.min(LC_W, xBar + barW + 2).toFixed(1)
+            + '" y1="' + yNow + '" y2="' + yNow + '"></line>';
+        }
+      });
+    }
 
     let xaxHtml = "";
     if (d.span <= 10.5) {
@@ -2499,88 +2581,21 @@ class DtekShutdownsCard extends HTMLElement {
     return { barsSvg, valsHtml, xaxHtml, statsHtml, xaxTwoLine: d.span <= 10.5 };
   }
 
-  _lcRenderHourly(d) {
-    const rows = d.bars.slice().reverse();
-    const dense = rows.length > 15;
-    const compact = !dense && rows.length > 8;
-    const extraDense = rows.length > 35;
-    const step = Math.max(4, Math.round(rows.length / 6));
-
-    const emptyTicks = () => {
-      let s = "";
-      [6, 12, 18].forEach((h) => {
-        s += '<i class="lch-tl-tick" style="left:' + ((h / 24) * 100).toFixed(3) + '%"></i>';
-      });
-      [NIGHT_END, NIGHT_START].forEach((h) => {
-        s += '<i class="lch-tl-nt" style="left:' + ((h / 24) * 100).toFixed(3) + '%"></i>';
-      });
-      return s;
-    };
-
-    const rowsHtml = rows.map((b, i) => {
-      const showLabel = !dense || i === 0 || i === rows.length - 1
-        || (i % step === 0 && rows.length - 1 - i >= Math.floor(step / 2));
-      const dayLbl = !showLabel ? ""
-        : dense ? d.fmtD(b.dn, false)
-        : b.isToday ? "Today" : DAY_SHORT[(b.date.getDay() + 6) % 7] + " " + d.fmtD(b.dn, false);
-      const hasData = typeof b.h === "number";
-      const barInner = hasData ? this._buildLcTimelineHtml(d, b, "lch").inner : emptyTicks();
-      const totText = hasData ? fmtHM(b.h, true) : MDASH;
-      const pinCls = this._lcModalDn === b.dn ? " pin" : "";
-      const todayCls = b.isToday ? " today" : "";
-      return '<div class="lch-row' + todayCls + pinCls + '" data-dn="' + b.dn + '">'
-        + '<span class="lch-day">' + esc(dayLbl) + "</span>"
-        + '<div class="lch-bar' + (hasData ? "" : " nodata") + '">' + barInner + "</div>"
-        + '<span class="lch-tot">' + esc(totText) + "</span>"
-        + "</div>";
-    }).join("");
-
-    let cellsHtml = "";
-    for (let h = 0; h < 24; h++) {
-      const rel = hourReliability(h, d.statItems, d.todayN, d.nowH);
-      let fill = '<i class="lch-relfill empty" style="height:0%"></i>';
-      if (rel) {
-        const tone = rel.pct >= 60 ? "ok" : rel.pct >= 30 ? "warn" : "bad";
-        fill = '<i class="lch-relfill ' + tone + '" style="height:' + Math.max(4, rel.pct) + '%"></i>';
-      }
-      cellsHtml += '<span class="lch-relcell" data-rel-h="' + h + '">' + fill + "</span>";
-    }
-    const relHtml = '<span class="lch-day lch-rellbl">Avg %</span>'
-      + '<div class="lch-relbar">' + cellsHtml + "</div>"
-      + '<span class="lch-tot"></span>';
-
-    return {
-      rowsHtml,
-      relHtml,
-      gridCls: extraDense ? "dense xdense" : dense ? "dense" : compact ? "compact" : "",
-      prevDisabled: d.t0 <= d.minStart + 0.05,
-      nextDisabled: d.t1 >= d.todayN + 1 - 0.05,
-      liveDisabled: !this._lcView,
-    };
-  }
-
   _lcFootText() {
     return this._lcMode === "hourly"
-      ? "Hover any day or hour for exact windows and reliability · Click a row for full 24h view."
+      ? "Hover any hour strip for details, click a day for full 24h view · Drag to pan, scroll or pinch to zoom."
       : "Hover a bar for periods, click for full 24h view · Drag to pan, scroll or pinch to zoom.";
   }
 
-  /** Light history card with Daily bars / Hourly 00–24 switcher and 24h day modal. */
+  /** Light history chart with Daily bars / Hourly strips switcher and 24h day modal. */
   _lightCard(now) {
     if (!this._lightObj()) return "";
     const d = this._lcCompute(now);
     this._lcDom = { t0: d.t0, t1: d.t1 };
     this._lcData = d;
     const p = this._lcRenderParts(d);
-    const h = this._lcRenderHourly(d);
     const isHourly = this._lcMode === "hourly";
-    const plotH = LC_H - LC_PAD_T - LC_PAD_B;
-    const gy = [0, 1, 2, 3, 4].map((i) => {
-      const y = (LC_PAD_T + i * plotH / 4).toFixed(0);
-      const cls = i === 2 ? ' class="mid"' : i === 4 ? ' class="base"' : "";
-      return '<line' + cls + ' x1="0" x2="' + LC_W + '" y1="' + y + '" y2="' + y
-        + '" vector-effect="non-scaling-stroke"></line>';
-    }).join("");
+    const svgH = isHourly ? LC_HR_H : LC_H;
 
     const modes = LIGHT_MODES.map((m) =>
       '<button class="lc-mode" data-act="lmode" data-val="' + m.id + '" aria-pressed="'
@@ -2609,56 +2624,27 @@ class DtekShutdownsCard extends HTMLElement {
       + '<div class="lc-segs">' + segs + "</div>"
       + "</div>"
       + "</div>"
-      + '<div class="lc-view-daily"' + (isHourly ? " hidden" : "") + ">"
+      + '<div class="lc-hrleg"' + (isHourly ? "" : " hidden") + ">"
+      + '<span><i class="sw-lit"></i>Power on</span>'
+      + '<span><i class="sw-off"></i>No grid</span>'
+      + '<span><i class="sw-night"></i>Night tariff 23–07</span>'
+      + "</div>"
       + '<div class="lc-chart">'
-      + '<div class="lc-yax"><span>24h</span><span>12h</span><span>0h</span></div>'
-      + '<div class="lc-plot">'
-      + '<svg class="lc-svg" viewBox="0 0 ' + LC_W + " " + LC_H + '" preserveAspectRatio="none">'
-      + '<defs><clipPath id="lcclip"><rect x="0" y="0" width="' + LC_W + '" height="' + LC_H + '"></rect></clipPath></defs>'
-      + '<g class="lc-grid">' + gy + "</g>"
+      + '<div class="lc-yax' + (isHourly ? " hourly" : "") + '">' + this._lcYaxHtml(isHourly) + "</div>"
+      + '<div class="lc-plot' + (isHourly ? " hourly" : "") + '">'
+      + '<svg class="lc-svg' + (isHourly ? " hourly" : "") + '" viewBox="0 0 ' + LC_W + " " + svgH + '" preserveAspectRatio="none">'
+      + '<defs><clipPath id="lcclip"><rect class="lc-cliprect" x="0" y="0" width="' + LC_W + '" height="' + svgH + '"></rect></clipPath></defs>'
+      + '<g class="lc-grid">' + this._lcGridSvg(isHourly) + "</g>"
       + '<g class="lc-bars" clip-path="url(#lcclip)">' + p.barsSvg + "</g>"
       + "</svg>"
       + '<div class="lc-vals">' + p.valsHtml + "</div>"
       + '<div class="lc-hv"></div>'
+      + '<div class="lc-hvh"></div>'
+      + '<div class="lc-hvcell"></div>'
       + '<div class="lc-tip"></div>'
-      + '<div class="lc-note' + (d.note ? " show" : "") + '">' + esc(d.note || "") + "</div>"
+      + '<div class="lc-note' + (isHourly ? " hourly" : "") + (d.note ? " show" : "") + '">' + esc(d.note || "") + "</div>"
       + '<div class="lc-xax' + (p.xaxTwoLine ? " two" : "") + '">' + p.xaxHtml + "</div>"
       + "</div></div>"
-      + "</div>"
-      + '<div class="lc-view-hourly"' + (isHourly ? "" : " hidden") + ">"
-      + '<div class="lc-hourly' + (h.gridCls ? " " + h.gridCls : "") + '">'
-      + '<div class="lch-head">'
-      + '<span class="lch-leg">'
-      + '<span><i class="sw-lit"></i>Power on</span>'
-      + '<span><i class="sw-off"></i>No grid</span>'
-      + '<span><i class="sw-night"></i>Night tariff 23–07</span>'
-      + "</span>"
-      + '<div class="lch-pager">'
-      + '<button class="lch-pbtn" data-act="lc-win-prev" aria-label="Earlier days"'
-      + tip("Earlier days", d.winLabel, "lc_page") + (h.prevDisabled ? " disabled" : "") + ">‹</button>"
-      + '<button class="lch-pbtn" data-act="lc-win-live"'
-      + tip("Return to today", d.winLabel, "lc_page") + (h.liveDisabled ? " disabled" : "") + ">Today</button>"
-      + '<button class="lch-pbtn" data-act="lc-win-next" aria-label="Later days"'
-      + tip("Later days", d.winLabel, "lc_page") + (h.nextDisabled ? " disabled" : "") + ">›</button>"
-      + "</div>"
-      + "</div>"
-      + '<div class="lch-ruler">'
-      + '<span class="lch-day"></span>'
-      + '<div class="lch-ruler-track">'
-      + '<div class="lch-tariff"><span style="left:0%;width:29.167%"></span><span style="left:95.833%;width:4.167%"></span></div>'
-      + '<div class="lch-axis"><span>00</span><span>03</span><span>06</span><span>09</span><span>12</span><span>15</span><span>18</span><span>21</span><span>24</span></div>'
-      + "</div>"
-      + '<span class="lch-tot"></span>'
-      + "</div>"
-      + '<div class="lch-body">'
-      + '<div class="lch-rows' + (h.gridCls ? " " + h.gridCls : "") + '">' + h.rowsHtml + "</div>"
-      + '<div class="lch-relrow">' + h.relHtml + "</div>"
-      + '<div class="lch-crossx"></div>'
-      + '<div class="lch-tip"></div>'
-      + '<div class="lch-note' + (d.note ? " show" : "") + '">' + esc(d.note || "") + "</div>"
-      + "</div>"
-      + "</div>"
-      + "</div>"
       + '<div class="lc-stats">' + p.statsHtml + "</div>"
       + '<div class="lc-foot">' + esc(this._lcFootText()) + "</div>"
       + "</div></ha-card>";
@@ -2671,8 +2657,8 @@ class DtekShutdownsCard extends HTMLElement {
     this._lcDom = { t0: d.t0, t1: d.t1 };
     this._lcData = d;
     const p = this._lcRenderParts(d);
-    const h = this._lcRenderHourly(d);
     const isHourly = this._lcMode === "hourly";
+    const svgH = isHourly ? LC_HR_H : LC_H;
 
     card.querySelectorAll(".lc-mode").forEach((b) => {
       b.setAttribute("aria-pressed", String(b.getAttribute("data-val") === this._lcMode));
@@ -2681,10 +2667,8 @@ class DtekShutdownsCard extends HTMLElement {
       const pressed = !this._lcView && b.getAttribute("data-val") === this._lcRange;
       b.setAttribute("aria-pressed", String(pressed));
     });
-    const dailyWrap = card.querySelector(".lc-view-daily");
-    if (dailyWrap) dailyWrap.hidden = isHourly;
-    const hourlyWrap = card.querySelector(".lc-view-hourly");
-    if (hourlyWrap) hourlyWrap.hidden = !isHourly;
+    const hrLeg = card.querySelector(".lc-hrleg");
+    if (hrLeg) hrLeg.hidden = !isHourly;
 
     const nameEl = card.querySelector(".lc-name");
     if (nameEl) nameEl.setAttribute("data-tip", tipText("Light, measured at the meter", d.winLabel, "lc_name"));
@@ -2693,12 +2677,29 @@ class DtekShutdownsCard extends HTMLElement {
       winEl.textContent = d.winLabel;
       winEl.setAttribute("data-tip", tipText("Window", d.winLabel, "lc_win"));
     }
+    const yaxEl = card.querySelector(".lc-yax");
+    if (yaxEl) {
+      yaxEl.classList.toggle("hourly", isHourly);
+      yaxEl.innerHTML = this._lcYaxHtml(isHourly);
+    }
+    const plotEl = card.querySelector(".lc-plot");
+    if (plotEl) plotEl.classList.toggle("hourly", isHourly);
+    const svgEl = card.querySelector(".lc-svg");
+    if (svgEl) {
+      svgEl.classList.toggle("hourly", isHourly);
+      svgEl.setAttribute("viewBox", "0 0 " + LC_W + " " + svgH);
+    }
+    const clipRect = card.querySelector(".lc-cliprect");
+    if (clipRect) clipRect.setAttribute("height", String(svgH));
+    const gridEl = card.querySelector(".lc-grid");
+    if (gridEl) gridEl.innerHTML = this._lcGridSvg(isHourly);
     const barsEl = card.querySelector(".lc-bars");
     if (barsEl) barsEl.innerHTML = p.barsSvg;
     const valsEl = card.querySelector(".lc-vals");
     if (valsEl) valsEl.innerHTML = p.valsHtml;
     const noteEl = card.querySelector(".lc-note");
     if (noteEl) {
+      noteEl.classList.toggle("hourly", isHourly);
       noteEl.textContent = d.note || "";
       noteEl.classList.toggle("show", !!d.note);
     }
@@ -2707,37 +2708,6 @@ class DtekShutdownsCard extends HTMLElement {
       xaxEl.innerHTML = p.xaxHtml;
       xaxEl.classList.toggle("two", p.xaxTwoLine);
     }
-
-    const hourlyEl = card.querySelector(".lc-hourly");
-    if (hourlyEl) hourlyEl.className = "lc-hourly" + (h.gridCls ? " " + h.gridCls : "");
-    const rowsEl = card.querySelector(".lch-rows");
-    if (rowsEl) {
-      rowsEl.className = "lch-rows" + (h.gridCls ? " " + h.gridCls : "");
-      rowsEl.innerHTML = h.rowsHtml;
-    }
-    const relEl = card.querySelector(".lch-relrow");
-    if (relEl) relEl.innerHTML = h.relHtml;
-    const hNoteEl = card.querySelector(".lch-note");
-    if (hNoteEl) {
-      hNoteEl.textContent = d.note || "";
-      hNoteEl.classList.toggle("show", !!d.note);
-    }
-    const prevBtn = card.querySelector('[data-act="lc-win-prev"]');
-    if (prevBtn) {
-      prevBtn.disabled = h.prevDisabled;
-      prevBtn.setAttribute("data-tip", tipText("Earlier days", d.winLabel, "lc_page"));
-    }
-    const liveBtn = card.querySelector('[data-act="lc-win-live"]');
-    if (liveBtn) {
-      liveBtn.disabled = h.liveDisabled;
-      liveBtn.setAttribute("data-tip", tipText("Return to today", d.winLabel, "lc_page"));
-    }
-    const nextBtn = card.querySelector('[data-act="lc-win-next"]');
-    if (nextBtn) {
-      nextBtn.disabled = h.nextDisabled;
-      nextBtn.setAttribute("data-tip", tipText("Later days", d.winLabel, "lc_page"));
-    }
-
     const statsEl = card.querySelector(".lc-stats");
     if (statsEl) statsEl.innerHTML = p.statsHtml;
     const footEl = card.querySelector(".lc-foot");
@@ -2746,51 +2716,25 @@ class DtekShutdownsCard extends HTMLElement {
     if (this._fingerprint !== null) this._fingerprint = this._fingerprintOf(now);
     if (this._lcModalDn !== null) {
       this._setLcColHv(d, this._lcModalDn, true);
-    } else if (!isHourly && this._lcHover && !this._lcDragging) {
+    } else if (this._lcHover && !this._lcDragging) {
       this._onLcHover(this._lcHover);
     } else {
       this._hideLcHover();
     }
-    if (isHourly) this._hideLcHourlyHover();
-  }
-
-  _stepLcWindow(dir) {
-    const d = this._lcData;
-    if (!d) return;
-    const step = Math.max(1, Math.round(d.span));
-    this._lcApplyView(d.t0 + dir * step, d.t1 + dir * step);
   }
 
   _wireLightChart() {
     const plot = this.shadowRoot.querySelector(".lc-plot");
-    if (plot) {
-      plot.addEventListener("pointerdown", (e) => this._onLcPointerDown(e));
-      plot.addEventListener("pointermove", (e) => this._onLcPointerMove(e));
-      ["pointerup", "pointercancel"].forEach((n) =>
-        plot.addEventListener(n, (e) => this._onLcPointerUp(e)));
-      plot.addEventListener("wheel", (e) => this._onLcWheel(e), { passive: false });
-      plot.addEventListener("dblclick", () => this._resetLcView());
-      plot.addEventListener("mousemove", (e) => this._onLcHover(e));
-      ["mouseleave", "pointerleave", "pointercancel"].forEach((n) =>
-        plot.addEventListener(n, () => this._lcLeave()));
-    }
-    const hourly = this.shadowRoot.querySelector(".lc-hourly");
-    if (hourly) {
-      hourly.addEventListener("mousemove", (e) => this._onLcHourlyHover(e));
-      ["mouseleave", "pointerleave"].forEach((n) =>
-        hourly.addEventListener(n, () => this._lcHourlyLeave()));
-      hourly.addEventListener("click", (e) => {
-        let n = e.target;
-        while (n && n !== hourly && n !== this.shadowRoot) {
-          if (n.classList && n.classList.contains("lch-row")) {
-            const dn = Number(n.getAttribute("data-dn"));
-            if (!isNaN(dn)) this._openLcModal(dn);
-            return;
-          }
-          n = n.parentNode;
-        }
-      });
-    }
+    if (!plot) return;
+    plot.addEventListener("pointerdown", (e) => this._onLcPointerDown(e));
+    plot.addEventListener("pointermove", (e) => this._onLcPointerMove(e));
+    ["pointerup", "pointercancel"].forEach((n) =>
+      plot.addEventListener(n, (e) => this._onLcPointerUp(e)));
+    plot.addEventListener("wheel", (e) => this._onLcWheel(e), { passive: false });
+    plot.addEventListener("dblclick", () => this._resetLcView());
+    plot.addEventListener("mousemove", (e) => this._onLcHover(e));
+    ["mouseleave", "pointerleave", "pointercancel"].forEach((n) =>
+      plot.addEventListener(n, () => this._lcLeave()));
   }
 
   _lcDayAt(clientX, rect, base) {
@@ -2982,8 +2926,16 @@ class DtekShutdownsCard extends HTMLElement {
 
   _onLcHover(ev) {
     if (this._lcModalDn !== null || !this._lcData || this._lcDragging) return;
+    if (this._lcMode === "hourly") {
+      this._onLcHoverHourly(ev);
+      return;
+    }
     const plot = this.shadowRoot.querySelector(".lc-plot");
     if (!plot) return;
+    const hvh = plot.querySelector(".lc-hvh");
+    const hvcell = plot.querySelector(".lc-hvcell");
+    if (hvh) hvh.classList.remove("on");
+    if (hvcell) hvcell.classList.remove("on");
     const rect = plot.getBoundingClientRect ? plot.getBoundingClientRect() : null;
     if (!rect || !rect.width) return;
     const d = this._lcData;
@@ -3077,6 +3029,155 @@ class DtekShutdownsCard extends HTMLElement {
     const flip = yTop < 76;
     tipEl.classList.toggle("below", flip);
     tipEl.style.top = (flip ? Math.min(LC_H - 8, yTop + 10) : Math.max(10, yTop - 10)).toFixed(1) + "px";
+    tipEl.classList.add("on");
+  }
+
+  _onLcHoverHourly(ev) {
+    const d = this._lcData;
+    const plot = this.shadowRoot.querySelector(".lc-plot");
+    if (!d || !plot || this._lcDragging || this._lcModalDn !== null) return;
+    const rect = plot.getBoundingClientRect ? plot.getBoundingClientRect() : null;
+    if (!rect || !rect.width) return;
+
+    const dn = Math.floor(d.t0 + ((ev.clientX - rect.left) / rect.width) * d.span);
+    const item = d.byDn[dn];
+    if (!item || !this._setLcColHv(d, dn, false)) { this._hideLcHover(); return; }
+
+    const hrPlotH = LC_HR_H - LC_HR_PAD_T - LC_HR_PAD_B;
+    const rawY = ev.clientY !== undefined ? ev.clientY - (rect.top || 0) : LC_HR_H / 2;
+    const yPx = Math.max(LC_HR_PAD_T, Math.min(LC_HR_H - LC_HR_PAD_B - 0.01, rawY));
+    const yH = Math.max(0, Math.min(23.999, ((yPx - LC_HR_PAD_T) / hrPlotH) * 24));
+    const hour = Math.floor(yH);
+
+    this._lcHover = {
+      clientX: ev.clientX,
+      clientY: ev.clientY !== undefined ? ev.clientY : (rect.top || 0) + LC_HR_H / 2,
+    };
+
+    const hvh = plot.querySelector(".lc-hvh");
+    if (hvh) {
+      hvh.style.top = (LC_HR_PAD_T + hour * 10) + "px";
+      hvh.style.height = "10px";
+      hvh.classList.add("on");
+    }
+    const hvcell = plot.querySelector(".lc-hvcell");
+    if (hvcell) {
+      const slotW = LC_W / d.span;
+      const gap = Math.max(1.5, Math.min(24, slotW * 0.24));
+      const barW = Math.max(2, slotW - gap);
+      const xSlotPct = ((dn - d.t0) / d.span) * 100;
+      const barPct = (barW / LC_W) * 100;
+      const padPct = ((slotW - barW) / 2 / LC_W) * 100;
+      const leftPct = Math.max(0, xSlotPct + padPct);
+      const rightPct = Math.min(100, xSlotPct + padPct + barPct);
+      hvcell.style.left = leftPct.toFixed(3) + "%";
+      hvcell.style.width = Math.max(0, rightPct - leftPct).toFixed(3) + "%";
+      hvcell.style.top = (LC_HR_PAD_T + hour * 10 + 1) + "px";
+      hvcell.style.height = "8px";
+      hvcell.classList.add("on");
+    }
+
+    const tipEl = plot.querySelector(".lc-tip");
+    if (!tipEl) return;
+
+    const dt = item.date;
+    const dStr = pad2(dt.getDate()) + "." + pad2(dt.getMonth() + 1) + "." + dt.getFullYear();
+    const dayLabel = item.isToday ? "Today · " + dStr : DAY_SHORT[(dt.getDay() + 6) % 7] + " " + dStr;
+    const hourRange = pad2(hour) + ":00 " + DASH + " " + pad2(hour + 1) + ":00";
+    const rel = hourReliability(hour, d.statItems, d.todayN, d.nowH);
+    const relHtml = rel
+      ? '<div class="lct-wins">At ' + pad2(rel.hour) + ":00: power on " + rel.lit + " / "
+        + rel.total + " days (" + rel.pct + "%)</div>"
+      : "";
+
+    if (typeof item.h !== "number") {
+      tipEl.innerHTML =
+        '<div class="lct-hd"><span class="lct-date">' + esc(dayLabel)
+        + '</span><span class="lct-hd-r"><span class="lct-pill idle"><i></i>NO DATA</span></span></div>'
+        + '<div class="lct-main"><span class="lct-big">' + esc(hourRange) + "</span>"
+        + '<span class="lct-delta">Not recorded</span></div>'
+        + '<div class="lct-sub">No statistics for this day</div>'
+        + (relHtml ? '<div class="lct-rule">' + relHtml + "</div>" : "");
+    } else if (item.isToday && hour >= d.nowH - 0.005) {
+      tipEl.innerHTML =
+        '<div class="lct-hd"><span class="lct-date">' + esc(dayLabel)
+        + '</span><span class="lct-hd-r"><span class="lct-pill idle"><i></i>AHEAD</span></span></div>'
+        + '<div class="lct-main"><span class="lct-big">' + esc(hourRange) + "</span>"
+        + '<span class="lct-delta">Ahead of now</span></div>'
+        + '<div class="lct-sub">' + esc("Day so far " + fmtHM(item.h)) + "</div>"
+        + (relHtml ? '<div class="lct-rule">' + relHtml + "</div>" : "");
+    } else {
+      const endOfHour = item.isToday ? Math.min(hour + 1, d.nowH) : hour + 1;
+      const avail = Math.max(0, endOfHour - hour);
+      const lightList = item.spans || [];
+      const clipped = [];
+      let litInHour = 0;
+      lightList.forEach(([s, e]) => {
+        const a = Math.max(hour, s);
+        const c = Math.min(endOfHour, e);
+        if (c - a > 0.005) {
+          clipped.push([a, c]);
+          litInHour += c - a;
+        }
+      });
+      const minsOn = Math.round(litInHour * 60);
+
+      let pillHtml, statusText;
+      if (litInHour >= avail - 0.02) {
+        pillHtml = '<span class="lct-pill ok"><i></i>POWER ON</span>';
+        statusText = minsOn + "m on";
+      } else if (litInHour <= 0.02) {
+        pillHtml = '<span class="lct-pill bad"><i></i>NO GRID</span>';
+        statusText = "No grid · 0m on";
+      } else {
+        pillHtml = '<span class="lct-pill warn"><i></i>PARTIAL</span>';
+        statusText = minsOn + "m on · "
+          + clipped.map(([a, c]) => fmtClockH(a) + DASH + fmtClockH(c)).join(", ");
+      }
+
+      const endH = item.isToday ? Math.max(0, Math.min(24, d.nowH)) : 24;
+      const darkList = darkSpansOf(lightList, endH);
+      let kind = clipped.length ? "light" : "dark";
+      let seg = null;
+      if (kind === "light") {
+        const pMid = (clipped[0][0] + clipped[0][1]) / 2;
+        seg = lightList.find(([s, e]) => pMid >= s - 0.01 && pMid <= e + 0.01) || clipped[0];
+      } else {
+        const dMid = hour + avail / 2;
+        seg = darkList.find(([s, e]) => dMid >= s - 0.01 && dMid <= e + 0.01) || [0, endH];
+      }
+      const cont = continuousSpan(dn, kind, seg, d.getDaySpans, d.todayN, d.nowH);
+      const subText = (kind === "light" ? "Window: " : "Outage: ")
+        + fmtClockH(seg[0]) + DASH + fmtClockH(seg[1]) + " (" + fmtHM(seg[1] - seg[0]) + ")"
+        + " · Day " + fmtHM(item.h);
+      const contHtml = cont.crosses
+        ? '<div class="lct-split">Continuous: '
+          + esc((cont.startDn !== dn ? d.fmtD(cont.startDn, false) + " " : "")
+          + fmtClockH(cont.startH) + " → "
+          + (cont.endDn !== dn ? d.fmtD(cont.endDn, false) + " " : "")
+          + fmtClockH(cont.endH) + " (" + fmtHM(cont.hours) + ")")
+          + "</div>"
+        : "";
+      const estHtml = item.est ? '<div class="lct-est">Estimated from inverter voltage</div>' : "";
+
+      tipEl.innerHTML =
+        '<div class="lct-hd"><span class="lct-date">' + esc(dayLabel)
+        + '</span><span class="lct-hd-r">' + pillHtml + "</span></div>"
+        + '<div class="lct-main"><span class="lct-big">' + esc(hourRange) + "</span>"
+        + '<span class="lct-delta">' + esc(statusText) + "</span></div>"
+        + '<div class="lct-sub">' + esc(subText) + "</div>"
+        + '<div class="lct-rule">' + contHtml + relHtml + estHtml
+        + '<div class="lct-hint">Click day for full 24h view</div>'
+        + "</div>";
+    }
+
+    const cxPx = ((dn + 0.5 - d.t0) / d.span) * rect.width;
+    const halfW = Math.min(rect.width / 2, (tipEl.offsetWidth || 286) / 2 + 6);
+    tipEl.style.left = Math.max(halfW, Math.min(rect.width - halfW, cxPx)).toFixed(1) + "px";
+    const yRowMid = LC_HR_PAD_T + hour * 10 + 5;
+    const flip = yRowMid < LC_HR_H * 0.52;
+    tipEl.classList.toggle("below", flip);
+    tipEl.style.top = (flip ? Math.min(LC_HR_H - 6, yRowMid + 10) : Math.max(10, yRowMid - 10)).toFixed(1) + "px";
     tipEl.classList.add("on");
   }
 
@@ -3178,18 +3279,8 @@ class DtekShutdownsCard extends HTMLElement {
     if (!d || !backdrop) return;
 
     this._lcHover = null;
-    this._lcHourlyHover = null;
-    const plot = this.shadowRoot.querySelector(".lc-plot");
-    const tipEl = plot && plot.querySelector(".lc-tip");
-    if (tipEl) tipEl.classList.remove("on");
-    this._hideLcHourlyHover();
+    this._hideLcHover();
     this._setLcColHv(d, dn, true);
-    const hourly = this.shadowRoot.querySelector(".lc-hourly");
-    if (hourly) {
-      hourly.querySelectorAll(".lch-row").forEach((r) => {
-        r.classList.toggle("pin", Number(r.getAttribute("data-dn")) === dn);
-      });
-    }
 
     this._lcModalDn = dn;
     this._lcModalSeg = null;
@@ -3337,212 +3428,6 @@ class DtekShutdownsCard extends HTMLElement {
     }
   }
 
-  _onLcHourlyHover(ev) {
-    if (this._lcModalDn !== null || !this._lcData || this._lcMode !== "hourly") return;
-    const d = this._lcData;
-    const hourly = this.shadowRoot.querySelector(".lc-hourly");
-    if (!hourly) return;
-    const body = hourly.querySelector(".lch-body");
-    const tipEl = hourly.querySelector(".lch-tip");
-    const crossEl = hourly.querySelector(".lch-crossx");
-    if (!body || !tipEl) return;
-
-    let row = null, relCell = null, n = ev.target;
-    while (n && n !== hourly && n !== this.shadowRoot) {
-      if (n.classList) {
-        if (!row && n.classList.contains("lch-row")) { row = n; break; }
-        if (!relCell && n.classList.contains("lch-relcell")) { relCell = n; break; }
-      }
-      n = n.parentNode;
-    }
-    if (!row && !relCell) { this._lcHourlyLeave(); return; }
-
-    const bodyRect = body.getBoundingClientRect ? body.getBoundingClientRect() : null;
-    hourly.querySelectorAll(".lch-row.hv").forEach((r) => {
-      if (r !== row) r.classList.remove("hv");
-    });
-
-    if (relCell) {
-      const hour = Number(relCell.getAttribute("data-rel-h"));
-      if (isNaN(hour)) { this._lcHourlyLeave(); return; }
-      this._lcHourlyHover = { kind: "rel", hour };
-      const rel = hourReliability(hour, d.statItems, d.todayN, d.nowH);
-      const relBar = hourly.querySelector(".lch-relbar");
-      const barRect = relBar && relBar.getBoundingClientRect ? relBar.getBoundingClientRect() : null;
-      const pill = rel
-        ? '<span class="lct-pill ' + (rel.pct >= 60 ? "ok" : rel.pct >= 30 ? "warn" : "bad")
-          + '"><i></i>' + rel.pct + "% ON</span>"
-        : '<span class="lct-pill idle"><i></i>NO DATA</span>';
-      const mainText = rel ? "Power on " + rel.lit + " / " + rel.total + " days" : "No recorded days";
-      tipEl.innerHTML =
-        '<div class="lct-hd"><span class="lct-date">' + esc(pad2(hour) + ":00 " + DASH + " " + pad2(hour + 1) + ":00")
-        + '</span><span class="lct-hd-r">' + pill + "</span></div>"
-        + '<div class="lct-main"><span class="lct-big">' + esc(mainText) + "</span></div>"
-        + '<div class="lct-sub">' + esc("Across " + d.winLabel) + "</div>";
-
-      let anchorX = null;
-      if (bodyRect && barRect && barRect.width) {
-        anchorX = (barRect.left - bodyRect.left) + ((hour + 0.5) / 24) * barRect.width;
-      }
-      if (crossEl) {
-        if (anchorX !== null) {
-          crossEl.style.left = anchorX.toFixed(1) + "px";
-          crossEl.classList.add("on");
-        } else {
-          crossEl.classList.remove("on");
-        }
-      }
-      if (bodyRect && bodyRect.width) {
-        const halfW = Math.min(bodyRect.width / 2, (tipEl.offsetWidth || 260) / 2 + 6);
-        const cx = anchorX !== null ? anchorX : bodyRect.width / 2;
-        tipEl.style.left = Math.max(halfW, Math.min(bodyRect.width - halfW, cx)).toFixed(1) + "px";
-        const rRect = relBar && relBar.getBoundingClientRect ? relBar.getBoundingClientRect() : null;
-        const topPx = rRect ? Math.max(10, rRect.top - bodyRect.top - 8) : Math.max(10, (bodyRect.height || 180) - 28);
-        tipEl.classList.remove("below");
-        tipEl.style.top = topPx.toFixed(1) + "px";
-      } else {
-        tipEl.classList.remove("below");
-        tipEl.style.left = (((hour + 0.5) / 24) * 100).toFixed(2) + "%";
-        tipEl.style.top = "8px";
-      }
-      tipEl.classList.add("on");
-      return;
-    }
-
-    row.classList.add("hv");
-    const dn = Number(row.getAttribute("data-dn"));
-    const item = this._lcItemFor(d, dn);
-    const bar = row.querySelector(".lch-bar");
-    const barRect = bar && bar.getBoundingClientRect ? bar.getBoundingClientRect() : null;
-    const xH = (barRect && barRect.width && ev.clientX !== undefined)
-      ? Math.max(0, Math.min(24, ((ev.clientX - barRect.left) / barRect.width) * 24))
-      : 12;
-    const hour = Math.min(23, Math.floor(xH));
-    this._lcHourlyHover = { kind: "row", dn, xH };
-
-    let anchorX = null;
-    if (bodyRect && barRect && barRect.width) {
-      anchorX = (barRect.left - bodyRect.left) + (xH / 24) * barRect.width;
-    }
-    if (crossEl) {
-      if (anchorX !== null) {
-        crossEl.style.left = anchorX.toFixed(1) + "px";
-        crossEl.classList.add("on");
-      } else {
-        crossEl.classList.remove("on");
-      }
-    }
-
-    const dt = item.date;
-    const dStr = pad2(dt.getDate()) + "." + pad2(dt.getMonth() + 1) + "." + dt.getFullYear();
-    const dayLabel = item.isToday ? "Today · " + dStr : DAY_SHORT[(dt.getDay() + 6) % 7] + " " + dStr;
-    const rel = hourReliability(hour, d.statItems, d.todayN, d.nowH);
-    const relHtml = rel
-      ? '<div class="lct-wins">At ' + pad2(rel.hour) + ":00: power on " + rel.lit + " / "
-        + rel.total + " days (" + rel.pct + "%)</div>"
-      : "";
-
-    if (typeof item.h !== "number") {
-      tipEl.innerHTML =
-        '<div class="lct-hd"><span class="lct-date">' + esc(dayLabel)
-        + '</span><span class="lct-hd-r"><span class="lct-pill idle"><i></i>NO DATA</span></span></div>'
-        + '<div class="lct-main"><span class="lct-big">Not recorded</span></div>'
-        + '<div class="lct-sub">No statistics for this day</div>'
-        + (relHtml ? '<div class="lct-rule">' + relHtml + "</div>" : "");
-    } else if (item.isToday && xH > d.nowH + 0.01) {
-      tipEl.innerHTML =
-        '<div class="lct-hd"><span class="lct-date">' + esc(dayLabel)
-        + '</span><span class="lct-hd-r"><span class="lct-pill idle"><i></i>AHEAD</span></span></div>'
-        + '<div class="lct-main"><span class="lct-big">'
-        + esc(fmtClockH(d.nowH) + " " + DASH + " 24:00") + "</span></div>"
-        + '<div class="lct-sub">' + esc("Ahead of now · Day so far " + fmtHM(item.h)) + "</div>"
-        + (relHtml ? '<div class="lct-rule">' + relHtml + "</div>" : "");
-    } else {
-      const lightList = item.spans || [];
-      const endH = item.isToday ? Math.max(0, Math.min(24, d.nowH)) : 24;
-      const darkList = darkSpansOf(lightList, endH);
-      let kind = null, seg = null, idx = 0, total = 0;
-      for (let i = 0; i < lightList.length; i++) {
-        if (xH >= lightList[i][0] - 0.02 && xH <= lightList[i][1] + 0.02) {
-          kind = "light"; seg = lightList[i]; idx = i; total = lightList.length; break;
-        }
-      }
-      if (!seg) {
-        for (let i = 0; i < darkList.length; i++) {
-          if (xH >= darkList[i][0] - 0.02 && xH <= darkList[i][1] + 0.02) {
-            kind = "dark"; seg = darkList[i]; idx = i; total = darkList.length; break;
-          }
-        }
-      }
-      if (!seg) {
-        kind = "dark"; seg = [0, endH]; idx = 0; total = 1;
-      }
-
-      const cont = continuousSpan(dn, kind, seg, d.getDaySpans, d.todayN, d.nowH);
-      const pill = kind === "light"
-        ? '<span class="lct-pill ok"><i></i>POWER ON</span>'
-        : '<span class="lct-pill bad"><i></i>NO GRID</span>';
-      const spanText = fmtClockH(seg[0]) + " " + DASH + " " + fmtClockH(seg[1])
-        + " · " + fmtHM(seg[1] - seg[0]);
-      const dayPct = Math.round((Math.min(24, item.h) / 24) * 100);
-      const subText = (kind === "light" ? "Window " : "Outage ") + (idx + 1) + " of " + total
-        + " · Day total " + fmtHM(item.h) + (item.isToday ? "" : " (" + dayPct + "%)");
-      const contHtml = cont.crosses
-        ? '<div class="lct-split">Continuous: '
-          + esc((cont.startDn !== dn ? d.fmtD(cont.startDn, false) + " " : "")
-          + fmtClockH(cont.startH) + " → "
-          + (cont.endDn !== dn ? d.fmtD(cont.endDn, false) + " " : "")
-          + fmtClockH(cont.endH) + " (" + fmtHM(cont.hours) + ")")
-          + "</div>"
-        : "";
-      const estHtml = item.est ? '<div class="lct-est">Estimated from inverter voltage</div>' : "";
-
-      tipEl.innerHTML =
-        '<div class="lct-hd"><span class="lct-date">' + esc(dayLabel)
-        + '</span><span class="lct-hd-r">' + pill + "</span></div>"
-        + '<div class="lct-main"><span class="lct-big">' + esc(spanText) + "</span></div>"
-        + '<div class="lct-sub">' + esc(subText) + "</div>"
-        + '<div class="lct-rule">' + contHtml + relHtml + estHtml
-        + '<div class="lct-hint">Click row for full 24h view</div>'
-        + "</div>";
-    }
-
-    if (bodyRect && bodyRect.width) {
-      const halfW = Math.min(bodyRect.width / 2, (tipEl.offsetWidth || 286) / 2 + 6);
-      const cx = anchorX !== null ? anchorX : bodyRect.width / 2;
-      tipEl.style.left = Math.max(halfW, Math.min(bodyRect.width - halfW, cx)).toFixed(1) + "px";
-      const rowRect = row.getBoundingClientRect ? row.getBoundingClientRect() : null;
-      const bodyH = bodyRect.height || 180;
-      const relMid = rowRect ? (rowRect.top + rowRect.height / 2) - bodyRect.top : bodyH / 2;
-      const flip = relMid < bodyH * 0.55;
-      tipEl.classList.toggle("below", flip);
-      const topPx = flip
-        ? (rowRect ? rowRect.bottom - bodyRect.top + 6 : relMid + 14)
-        : (rowRect ? rowRect.top - bodyRect.top - 6 : Math.max(10, relMid - 14));
-      tipEl.style.top = topPx.toFixed(1) + "px";
-    } else {
-      tipEl.classList.remove("below");
-      tipEl.style.left = (((xH) / 24) * 100).toFixed(2) + "%";
-      tipEl.style.top = "8px";
-    }
-    tipEl.classList.add("on");
-  }
-
-  _lcHourlyLeave() {
-    this._lcHourlyHover = null;
-    this._hideLcHourlyHover();
-  }
-
-  _hideLcHourlyHover() {
-    const hourly = this.shadowRoot.querySelector(".lc-hourly");
-    if (!hourly) return;
-    hourly.querySelectorAll(".lch-row.hv").forEach((r) => r.classList.remove("hv"));
-    const crossEl = hourly.querySelector(".lch-crossx");
-    if (crossEl) crossEl.classList.remove("on");
-    const tipEl = hourly.querySelector(".lch-tip");
-    if (tipEl) tipEl.classList.remove("on");
-  }
-
   _lcLeave() {
     this._lcHover = null;
     this._hideLcHover();
@@ -3550,18 +3435,14 @@ class DtekShutdownsCard extends HTMLElement {
 
   _hideLcHover() {
     const plot = this.shadowRoot.querySelector(".lc-plot");
-    if (plot) {
-      const tipEl = plot.querySelector(".lc-tip");
-      if (tipEl) tipEl.classList.remove("on");
-      const hv = plot.querySelector(".lc-hv");
-      if (hv && this._lcModalDn === null) {
-        hv.classList.remove("on");
-        hv.classList.remove("pin");
-      }
-    }
-    if (this._lcModalDn === null) {
-      const hourly = this.shadowRoot.querySelector(".lc-hourly");
-      if (hourly) hourly.querySelectorAll(".lch-row.pin").forEach((r) => r.classList.remove("pin"));
+    if (!plot) return;
+    plot.querySelectorAll(".lc-tip, .lc-hvh, .lc-hvcell").forEach((el) => {
+      el.classList.remove("on");
+    });
+    const hv = plot.querySelector(".lc-hv");
+    if (hv && this._lcModalDn === null) {
+      hv.classList.remove("on");
+      hv.classList.remove("pin");
     }
   }
 
@@ -3874,10 +3755,19 @@ a:hover { text-decoration: underline; }
   background: color-mix(in srgb, var(--ds-ok) 22%, var(--ds-dim));
   color: var(--ds-ok-hi);
 }
-.lc-mode:focus-visible, .lc-seg:focus-visible, .lc-name:focus-visible, .lch-pbtn:focus-visible {
+.lc-mode:focus-visible, .lc-seg:focus-visible, .lc-name:focus-visible {
   outline: 2px solid var(--ds-ok-hi); outline-offset: 2px;
 }
-.lc-view-daily[hidden], .lc-view-hourly[hidden] { display: none; }
+.lc-hrleg {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: -2px 0 -2px 34px;
+  font: 500 10.5px var(--ds-mono); color: var(--ds-muted);
+}
+.lc-hrleg[hidden] { display: none; }
+.lc-hrleg > span { display: inline-flex; align-items: center; gap: 5px; }
+.lc-hrleg i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; }
+.lc-hrleg .sw-lit { background: color-mix(in srgb, var(--ds-ok) 82%, transparent); }
+.lc-hrleg .sw-off { background: rgba(187, 99, 91, .35); border: 1px solid rgba(255, 146, 138, .3); }
+.lc-hrleg .sw-night { background: rgba(134, 179, 227, .2); border: 1px dashed rgba(134, 179, 227, .48); }
 .lc-chart { display: flex; gap: 10px; align-items: flex-start; margin-top: 2px; }
 .lc-yax {
   display: flex; flex-direction: column; justify-content: space-between;
@@ -3885,6 +3775,7 @@ a:hover { text-decoration: underline; }
   font: 500 10.5px var(--ds-mono); font-variant-numeric: tabular-nums;
   color: var(--ds-muted); text-align: right; min-width: 24px;
 }
+.lc-yax.hourly { height: ${LC_HR_H}px; padding: ${LC_HR_PAD_T}px 0 ${LC_HR_PAD_B}px; }
 .lc-yax span { display: block; height: 0; line-height: 0; white-space: nowrap; }
 .lc-plot {
   flex: 1; min-width: 0; position: relative;
@@ -3892,14 +3783,22 @@ a:hover { text-decoration: underline; }
 }
 .lc-plot.grabbing { cursor: grabbing; }
 svg.lc-svg { width: 100%; height: ${LC_H}px; display: block; }
+svg.lc-svg.hourly { height: ${LC_HR_H}px; }
 .lc-grid line { stroke: var(--ds-line); stroke-width: 1; }
 .lc-grid line.mid, .lc-grid line.base { stroke: var(--ds-line2); }
+.lc-night { fill: rgba(134, 179, 227, .055); }
+.lc-tariff-line { stroke: rgba(134, 179, 227, .28); stroke-width: 1; stroke-dasharray: 3 4; }
 .lc-bar { fill: color-mix(in srgb, var(--ds-ok) 65%, transparent); }
 .lc-bar.today { fill: color-mix(in srgb, var(--ds-ok-hi) 68%, transparent); }
 .lc-bar.zero { fill: var(--ds-dim); }
 .lc-cap { fill: var(--ds-ok); }
 .lc-cap.today { fill: var(--ds-ok-hi); }
 .lc-mean { stroke: var(--ds-text2); stroke-width: 1; stroke-dasharray: 4 4; opacity: .55; vector-effect: non-scaling-stroke; }
+.lc-hcell.lit { fill: color-mix(in srgb, var(--ds-ok) 82%, transparent); }
+.lc-hcell.lit.today { fill: var(--ds-ok-hi); }
+.lc-hcell.dark { fill: rgba(187, 99, 91, .30); }
+.lc-hcell.future { fill: rgba(255, 255, 255, .035); }
+.lc-hnow { stroke: #F1F4F8; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .lc-vals { position: absolute; left: 0; right: 0; top: 0; height: ${LC_H}px; pointer-events: none; overflow: hidden; }
 .lc-val {
   position: absolute; transform: translateX(-50%); white-space: nowrap;
@@ -3910,11 +3809,25 @@ svg.lc-svg { width: 100%; height: ${LC_H}px; display: block; }
   background: rgba(255, 255, 255, .045); border-radius: 4px;
   pointer-events: none; opacity: 0; transition: opacity .1s; z-index: 1;
 }
+.lc-plot.hourly .lc-hv { top: ${LC_HR_PAD_T}px; height: ${LC_HR_H - LC_HR_PAD_T - LC_HR_PAD_B}px; }
 .lc-hv.on { opacity: 1; }
 .lc-hv.pin {
   background: rgba(98, 214, 168, .10);
   box-shadow: inset 0 0 0 1px rgba(98, 214, 168, .28);
 }
+.lc-hvh {
+  position: absolute; left: 0; right: 0;
+  background: rgba(255, 255, 255, .04);
+  border-top: 1px solid rgba(255, 255, 255, .09);
+  border-bottom: 1px solid rgba(255, 255, 255, .09);
+  pointer-events: none; opacity: 0; transition: opacity .08s; z-index: 1; box-sizing: border-box;
+}
+.lc-hvh.on { opacity: 1; }
+.lc-hvcell {
+  position: absolute; border-radius: 2px; box-shadow: inset 0 0 0 1.5px #F1F4F8;
+  pointer-events: none; opacity: 0; transition: opacity .08s; z-index: 2;
+}
+.lc-hvcell.on { opacity: 1; }
 .lc-tip {
   position: absolute; pointer-events: none; opacity: 0; transition: opacity .1s;
   transform: translate(-50%, -100%); z-index: 3; min-width: 268px; max-width: min(320px, calc(100% - 8px));
@@ -4143,6 +4056,7 @@ svg.lc-svg { width: 100%; height: ${LC_H}px; display: block; }
   font: 500 12px var(--ds-mono); color: var(--ds-muted); text-align: center; padding: 0 12px;
   pointer-events: none;
 }
+.lc-note.hourly { height: ${LC_HR_H}px; }
 .lc-note.show { display: flex; }
 .lc-xax { position: relative; height: 18px; margin-top: 6px; overflow: hidden; }
 .lc-xax.two { height: 28px; }
@@ -4162,118 +4076,6 @@ svg.lc-svg { width: 100%; height: ${LC_H}px; display: block; }
 .lc-stat span { font: 600 15px/1.2 var(--ds-mono); font-variant-numeric: tabular-nums; color: var(--ds-text); }
 .lc-stat small { font: 500 11px var(--ds-mono); color: var(--ds-muted); }
 .lc-foot { font: 500 11px var(--ds-mono); color: var(--ds-muted); }
-/* --- hourly 00:00–24:00 matrix view ------------------------------------- */
-.lc-hourly { display: flex; flex-direction: column; gap: 6px; margin-top: 2px; }
-.lch-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
-.lch-leg { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; font: 500 10.5px var(--ds-mono); color: var(--ds-muted); }
-.lch-leg > span { display: inline-flex; align-items: center; gap: 5px; }
-.lch-leg i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; }
-.lch-leg .sw-lit { background: color-mix(in srgb, var(--ds-ok) 85%, transparent); }
-.lch-leg .sw-off { background: rgba(187, 99, 91, .35); border: 1px solid rgba(255, 146, 138, .3); }
-.lch-leg .sw-night { background: rgba(134, 179, 227, .2); border: 1px dashed rgba(134, 179, 227, .48); }
-.lch-pager {
-  display: inline-flex; gap: 2px; padding: 2px; border-radius: 8px;
-  background: var(--ds-inner); border: 1px solid var(--ds-line);
-}
-.lch-pbtn {
-  padding: 4px 9px; border: 0; border-radius: 6px; background: transparent;
-  color: var(--ds-text2); font: 500 11px/1 var(--ds-mono); cursor: pointer;
-  transition: background .12s, color .12s;
-}
-.lch-pbtn:hover:not(:disabled) { color: var(--ds-text); background: rgba(255, 255, 255, .05); }
-.lch-pbtn:disabled { opacity: .35; cursor: default; }
-.lch-ruler, .lch-row, .lch-relrow {
-  display: grid; grid-template-columns: 74px minmax(0, 1fr) 44px; align-items: center; gap: 8px;
-}
-.lc-hourly.dense .lch-ruler,
-.lc-hourly.dense .lch-row,
-.lc-hourly.dense .lch-relrow {
-  grid-template-columns: 44px minmax(0, 1fr);
-}
-.lc-hourly.dense .lch-tot { display: none; }
-.lch-ruler-track { display: flex; flex-direction: column; gap: 2px; }
-.lch-tariff { position: relative; height: 3px; border-radius: 2px; overflow: hidden; }
-.lch-tariff > span { position: absolute; top: 0; bottom: 0; background: rgba(134, 179, 227, .38); }
-.lch-axis {
-  display: flex; justify-content: space-between;
-  font: 500 9.5px/1.1 var(--ds-mono); font-variant-numeric: tabular-nums; color: var(--ds-muted);
-}
-.lch-body { position: relative; display: flex; flex-direction: column; gap: 6px; }
-.lch-rows { display: flex; flex-direction: column; gap: 3px; }
-.lch-rows.compact { gap: 2px; }
-.lch-rows.dense { gap: 1px; }
-.lch-row { height: 22px; border-radius: 5px; cursor: pointer; }
-.lch-rows.compact .lch-row { height: 18px; }
-.lch-rows.dense .lch-row { height: 10px; border-radius: 3px; }
-.lch-rows.xdense .lch-row { height: 8px; }
-.lch-day {
-  font: 500 10.5px/1 var(--ds-mono); font-variant-numeric: tabular-nums;
-  color: var(--ds-text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.lch-rows.dense .lch-day { font-size: 9.5px; color: var(--ds-muted); }
-.lch-row.today .lch-day, .lch-row.today .lch-tot { color: var(--ds-ok-hi); font-weight: 600; }
-.lch-bar {
-  position: relative; height: 100%; border-radius: 4px; overflow: hidden;
-  background: #12161C; border: 1px solid var(--ds-line);
-}
-.lch-rows.dense .lch-bar { border-radius: 2px; border-color: rgba(255, 255, 255, .04); }
-.lch-bar.nodata { background: var(--ds-inner); opacity: .55; }
-.lch-seg { position: absolute; top: 0; bottom: 0; border-radius: 1.5px; }
-.lch-seg.lit { background: color-mix(in srgb, var(--ds-ok) 82%, transparent); }
-.lch-seg.lit.today { background: var(--ds-ok-hi); }
-.lch-seg.dark { background: rgba(187, 99, 91, .28); }
-.lch-tl-ahead { position: absolute; top: 0; bottom: 0; background: rgba(255, 255, 255, .035); pointer-events: none; }
-.lch-tl-tick {
-  position: absolute; top: 0; bottom: 0; width: 1px;
-  background: rgba(255, 255, 255, .07); pointer-events: none; z-index: 1;
-}
-.lch-tl-nt {
-  position: absolute; top: 0; bottom: 0; width: 1px;
-  border-left: 1px dashed rgba(134, 179, 227, .32); pointer-events: none; z-index: 1;
-}
-.lch-tl-now {
-  position: absolute; top: 0; bottom: 0; width: 1.5px;
-  background: #F1F4F8; pointer-events: none; z-index: 2;
-}
-.lch-tot {
-  font: 500 11px/1 var(--ds-mono); font-variant-numeric: tabular-nums;
-  color: var(--ds-text2); text-align: right; white-space: nowrap;
-}
-.lch-row.hv .lch-bar, .lch-row.pin .lch-bar { box-shadow: 0 0 0 1px var(--ds-ok-hi); }
-.lch-row.hv .lch-day, .lch-row.pin .lch-day { color: var(--ds-text); }
-.lch-relrow { margin-top: 2px; padding-top: 6px; border-top: 1px solid var(--ds-line); }
-.lch-rellbl { color: var(--ds-muted); font-size: 10px; }
-.lch-relbar {
-  display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 1px;
-  height: 18px; align-items: end; padding: 1px 0; cursor: pointer;
-}
-.lch-relcell { height: 100%; display: flex; align-items: flex-end; background: rgba(255, 255, 255, .03); border-radius: 2px; overflow: hidden; }
-.lch-relfill { display: block; width: 100%; border-radius: 1px; }
-.lch-relfill.ok { background: color-mix(in srgb, var(--ds-ok) 85%, transparent); }
-.lch-relfill.warn { background: color-mix(in srgb, var(--ds-warn) 85%, transparent); }
-.lch-relfill.bad { background: color-mix(in srgb, var(--ds-bad) 80%, transparent); }
-.lch-relfill.empty { background: transparent; }
-.lch-crossx {
-  position: absolute; top: 0; bottom: 0; width: 1px;
-  background: rgba(241, 244, 248, .35); pointer-events: none; opacity: 0; z-index: 2;
-}
-.lch-crossx.on { opacity: 1; }
-.lch-tip {
-  position: absolute; pointer-events: none; opacity: 0; transition: opacity .1s;
-  transform: translate(-50%, -100%); z-index: 4; min-width: 256px; max-width: min(320px, calc(100% - 8px));
-  background: #1A2028; border: 1px solid #2E3844; border-radius: 8px; padding: 9px 11px;
-  font-family: var(--ds-sans); color: #F1F4F8; white-space: normal;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(255, 255, 255, .04);
-}
-.lch-tip.below { transform: translate(-50%, 0); }
-.lch-tip.on { opacity: 1; }
-.lch-note {
-  position: absolute; left: 0; right: 0; top: 0; bottom: 24px;
-  display: none; align-items: center; justify-content: center;
-  font: 500 12px var(--ds-mono); color: var(--ds-muted); text-align: center; padding: 0 12px;
-  pointer-events: none;
-}
-.lch-note.show { display: flex; }
 .wire { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 2px; justify-items: center; }
 .bulb { position: relative; display: flex; justify-content: center; min-width: 0; width: 100%; }
 /* The grid's .on/.out/.now paint whatever carries them; on a bulb only the glass shows the state. */
