@@ -519,31 +519,47 @@ eq("[hero, days, week]: all three", [!!r.root.querySelector(".hero"), r.root.que
   l = render("18:00", {}, { blocks: ["hero"], states: lit("3"), config: { light_entity: null } });
   eq("light_entity: null: no tile", l.tile("Light today"), null);
 
-  // Saturday 17.10.2026: hourly statistics with midnight carry-over in 00:00,
-  // today live, Sunday still to come.
+  // Saturday 17.10.2026: hourly min/max/mean statistics with midnight carry-over
+  // in 00:00, cross-midnight outage 15.10->16.10, today live, Sunday ahead.
   const weekAttrs = { week: Array(7).fill("y".repeat(18) + "nnnnnn"), week_in_effect: true,
                       schedule_in_effect: false, today: null };
-  const hr = (d, h, max) => ({ start: new Date(2026, 9, d, h).getTime(), max });
-  const stats = { [LIGHT]: [
-    hr(8, 22, 10.5),
-    hr(12, 23, 20.5),
-    // Tu 13.10: 00:00 carries Mo's 20.5; the real day has 0h00.
-    hr(13, 0, 20.5), hr(13, 1, 0), hr(13, 23, 0),
-    // We 14.10: all light fell inside 00:00-01:00; 00:00 carries 17.0, 01:00+ holds 0.75.
-    hr(14, 0, 17.0), hr(14, 1, 0.75), { start: new Date(2026, 9, 14, 23).toISOString(), max: 0.75 },
-    // Th 15.10: 17h01.
-    hr(15, 0, 0.75), hr(15, 23, 17.0167),
-    // Fr 16.10: 00:00 carries Th's 17.0167; the real day had only 3h48.
-    hr(16, 0, 17.0167), hr(16, 1, 0), hr(16, 18, 1.2), hr(16, 23, 3.8),
-    // Sa 17.10 (today): 00:00 carries Fr's 3.8; live state (14h20) wins for today.
-    hr(17, 0, 3.8), hr(17, 1, 0), hr(17, 18, 2),
-  ] };
+  const hr = (d, h, min, max, mean) => ({ start: new Date(2026, 9, d, h).getTime(), min, max, mean });
+  const pushSpan = (arr, d, h0, h1, base) => {
+    for (let h = h0; h <= h1; h++) arr.push(hr(d, h, base + (h - h0), base + (h - h0) + 1, base + (h - h0) + 0.5));
+  };
+  const statRows = [
+    // Th 08.10: pre-14.11 backfilled midpoint mean on hour 12 next to full 13..22 -> snaps to 12:30-23:00.
+    hr(8, 12, 0, 0.5, 0.25),
+  ];
+  pushSpan(statRows, 8, 13, 22, 0.5);
+  statRows.push(hr(8, 23, 10.5, 10.5, 10.5));
+  // Mo 12.10: 00:00-20:30 (20h30)
+  pushSpan(statRows, 12, 0, 19, 0);
+  statRows.push(hr(12, 20, 20, 20.5, 20.375), hr(12, 23, 20.5, 20.5, 20.5));
+  // Tu 13.10: 00:00 carries Mo's 20.5; the real day has 0h00.
+  statRows.push(hr(13, 0, 0, 20.5, 0.2), hr(13, 1, 0, 0, 0), hr(13, 23, 0, 0, 0));
+  // We 14.10: all light fell inside 00:00-00:45; 00:00 carries 17.0, 01:00+ holds 0.75.
+  statRows.push(hr(14, 0, 0, 17.0, 0.5), hr(14, 1, 0.75, 0.75, 0.75),
+                { start: new Date(2026, 9, 14, 23).toISOString(), min: 0.75, max: 0.75, mean: 0.75 });
+  // Th 15.10: 00:00-17:01 (17h01), leaving 17:01-24:00 dark into 16.10.
+  pushSpan(statRows, 15, 0, 16, 0);
+  statRows.push(hr(15, 17, 17, 17.0167, 17.0165), hr(15, 23, 17.0167, 17.0167, 17.0167));
+  // Fr 16.10: 00:00 carries Th's 17.0167; the real day was lit 18:48-22:36 (3h48).
+  statRows.push(hr(16, 0, 0, 17.0167, 0.2), hr(16, 1, 0, 0, 0),
+                hr(16, 18, 0, 0.2, 0.02));
+  pushSpan(statRows, 16, 19, 21, 0.2);
+  statRows.push(hr(16, 22, 3.2, 3.8, 3.62), hr(16, 23, 3.8, 3.8, 3.8));
+  // Sa 17.10 (today at 18:00): 00:00 carries Fr's 3.8; lit 03:40-18:00 (14h20).
+  statRows.push(hr(17, 0, 0, 3.8, 0.1), hr(17, 1, 0, 0, 0), hr(17, 3, 0, 0.3333, 0.0555));
+  pushSpan(statRows, 17, 4, 17, 0.3333);
+  const stats = { [LIGHT]: statRows };
+
   l = render("18:00", weekAttrs, { blocks: ["week"], states: lit("14.3333"), history: stats,
                                    config: { week_style: "classic" } });
-  eq("one hourly statistics request for all recorded history", [l.asked.length, l.asked[0] && l.asked[0].type,
+  eq("one hourly min/max/mean statistics request for all recorded history", [l.asked.length, l.asked[0] && l.asked[0].type,
     l.asked[0] && l.asked[0].statistic_ids, l.asked[0] && l.asked[0].period, l.asked[0] && l.asked[0].types,
     l.asked[0] && l.asked[0].start_time],
-    [1, "recorder/statistics_during_period", [LIGHT], "hour", ["max"], "2020-01-01T00:00:00Z"]);
+    [1, "recorder/statistics_during_period", [LIGHT], "hour", ["min", "max", "mean"], "2020-01-01T00:00:00Z"]);
   await settle();
   const litRow = () => l.root.querySelectorAll(".brow").map((row) => {
     const el = row.querySelector(".dlit");
@@ -560,21 +576,95 @@ eq("[hero, days, week]: all three", [!!r.root.querySelector(".hero"), r.root.que
     const s = l.root.querySelectorAll(".lc-stat").find((x) => x.querySelector("b").textContent === k);
     return s ? s.querySelector("span").textContent.replace(/\s+/g, " ").trim() : null;
   };
-  eq("bar chart card rendered, 7d active by default",
-    [!!l.root.querySelector(".lightchart"), l.text(".lc-win"),
+  eq("single bar chart rendered without second periods chart, 7d active by default",
+    [!!l.root.querySelector(".lightchart"), !!l.root.querySelector(".lc-plot"),
+      !l.root.querySelector(".lc-plot-per"), !l.root.querySelector(".lc-subhead"),
+      l.text(".lc-win"),
       l.root.querySelectorAll(".lc-seg").find((b) => b.getAttribute("aria-pressed") === "true").getAttribute("data-val")],
-    [true, "last 7 days", "7d"]);
-  eq("7d draws 6 recorded bars (1 zero bar on Tu, gap on Su 11.10, today lit)",
+    [true, true, true, true, "last 7 days", "7d"]);
+  eq("7d draws 6 recorded bars (1 zero bar on Tu, 1 today)",
     [l.root.querySelectorAll(".lc-bar").length, l.root.querySelectorAll(".lc-bar.zero").length,
-      l.root.querySelectorAll(".lc-bar.today").length, l.root.querySelectorAll(".lc-val").map((v) => v.textContent)],
+      l.root.querySelectorAll(".lc-bar.today").length,
+      l.root.querySelectorAll(".lc-val").map((v) => v.textContent)],
     [6, 1, 1, ["20h30", "0h00", "0h45", "17h01", "3h48", "14h20"]]);
   eq("7d stats exclude partial today from Min/Max/Mean",
     [lcStat("Today"), lcStat("Min"), lcStat("Max"), lcStat("Mean")],
     ["14h 20m", "0h 0m 13.10", "20h 30m 12.10", "8h 25m"]);
 
+  // Hover preview + click-to-open large 24h modal with horizontal timeline & segment inspector.
+  const dn = (d) => Math.round(Date.UTC(2026, 9, d) / 864e5);
+  const plot = l.root.querySelector(".lc-plot");
+  plot.getBoundingClientRect = () => ({ left: 0, top: 0, width: 700, height: 148 });
+  const tip = plot.querySelector(".lc-tip");
+  const hv = plot.querySelector(".lc-hv");
+  const modal = l.root.querySelector(".lc-modal-backdrop");
+  // 7d spans 11.10..17.10 -> slot 5 (x=550) is Fr 16.10.
+  l.card._onLcHover({ clientX: 550 });
+  eq("hover opens non-interactive preview with % ON, delta, 24h bar, tariff split & est note",
+    [tip.classList.contains("on"), hv.classList.contains("on"),
+      /Fr 16\.10\.2026/.test(tip.textContent), /16% ON/.test(tip.textContent),
+      !/\bLIT\b|EST\./.test(tip.textContent),
+      /−4h 37m vs avg/.test(tip.textContent),
+      /Day 07–23: 3h 48m · Night 23–07: 0h 0m/.test(tip.textContent),
+      /18:48–22:36/.test(tip.textContent),
+      /Estimated from inverter voltage/.test(tip.textContent),
+      !!tip.querySelector(".lct-tl-bar"),
+      tip.querySelectorAll(".lct-seg.lit").length,
+      tip.querySelectorAll(".lct-seg.dark").length],
+    [true, true, true, true, true, true, true, true, true, true, 1, 2]);
+
+  // Click on the bar opens the large 24h modal and closes the hover tip.
+  fire(plot, "pointerdown", { pointerId: 1, clientX: 550 });
+  fire(plot, "pointerup", { pointerId: 1, clientX: 550 });
+  eq("click opens large modal with KPIs, timeline & chronological rows, hiding hover tip",
+    [modal.hidden, !!modal.querySelector(".lc-modal"), tip.classList.contains("on"),
+      hv.classList.contains("pin"), modal.querySelectorAll(".lcm-kpi").length,
+      !!modal.querySelector(".lcm-tl-bar"), modal.querySelectorAll(".lcm-seg.lit").length,
+      modal.querySelectorAll(".lcm-seg.dark").length, modal.querySelectorAll(".lcm-row").length],
+    [false, true, false, true, 4, true, 1, 2, 3]);
+
+  // Auto-refresh while modal is open keeps the modal intact and preserves the chart DOM node.
+  const nextStates = Object.assign({}, l.card._hass.states, lit("14.5000"));
+  l.card.hass = { states: nextStates, callWS: l.card._hass.callWS };
+  l.card._fingerprint = null;
+  l.card._render();
+  eq("auto-refresh while modal open keeps modal visible & defers render",
+    [modal.hidden, l.card._lcModalDn, l.root.querySelector(".lc-plot") === plot],
+    [false, dn(16), true]);
+
+  // Clicking dark/light modal segments updates fixed-height inspector with continuity & reliability.
+  fire(modal.querySelectorAll(".lcm-seg.dark")[0], "click");
+  const insp = () => modal.querySelector(".lcm-inspect").textContent;
+  eq("dark segment shows NO GRID, span & cross-midnight continuous outage",
+    [/NO GRID/.test(insp()), /00:00 – 18:48/.test(insp()),
+      /Continuous: 15\.10 17:01 → 18:48 \(25h 47m\)/.test(insp())],
+    [true, true, true]);
+  fire(modal.querySelectorAll(".lcm-seg.lit")[0], "click");
+  eq("light segment shows POWER ON, exact span & hourly reliability",
+    [/POWER ON/.test(insp()), /18:48 – 22:36 · 3h 48m/.test(insp()),
+      /At 20:00: power on 2 \/ 5 days \(40%\)/.test(insp())],
+    [true, true, true]);
+
+  // Stepping to previous day, closing modal, flushing deferred update, and in-place refresh.
+  fire(modal.querySelector('[data-act="lc-prev"]'), "click");
+  eq("prev steps modal to Th 15.10",
+    [/Th 15\.10\.2026/.test(modal.textContent), /71% ON/.test(modal.textContent), /17h 1m/.test(modal.textContent)],
+    [true, true, true]);
+  fire(modal.querySelector('[data-act="lc-close"]'), "click");
+  eq("close hides modal, flushes deferred state & keeps same chart DOM element",
+    [modal.hidden, hv.classList.contains("on"), lcStat("Today"),
+      l.root.querySelector(".lc-plot") === plot],
+    [true, false, "14h 30m", true]);
+  const liveStates = Object.assign({}, l.card._hass.states, lit("14.3333"));
+  l.card.hass = { states: liveStates, callWS: l.card._hass.callWS };
+  eq("normal auto-refresh patches light chart in place without losing DOM node",
+    [lcStat("Today"), l.root.querySelector(".lc-plot") === plot],
+    ["14h 20m", true]);
+
   fire(l.root.querySelector('.lc-seg[data-val="14d"]'), "click");
-  eq("14d range widens window, hides per-bar values, adds 08.10 bar",
-    [l.text(".lc-win"), l.root.querySelectorAll(".lc-bar").length, l.root.querySelectorAll(".lc-val").length,
+  eq("14d range widens window, hides per-bar values & adds 08.10 bar",
+    [l.text(".lc-win"), l.root.querySelectorAll(".lc-bar").length,
+      l.root.querySelectorAll(".lc-val").length,
       l.root.querySelectorAll(".lc-seg").find((b) => b.getAttribute("aria-pressed") === "true").getAttribute("data-val")],
     ["last 14 days", 7, 0, "14d"]);
   fire(l.root.querySelector('.lc-seg[data-val="all"]'), "click");
@@ -582,14 +672,18 @@ eq("[hero, days, week]: all three", [!!r.root.querySelector(".hero"), r.root.que
     ["all recorded", 7]);
 
   // Panning into the past clears active preset and labels the date span; dblclick returns to today.
-  const dn = (d) => Math.round(Date.UTC(2026, 9, d) / 864e5);
   l.card._lcApplyView(dn(8), dn(14) + 1);
   eq("panned window labels date range and clears preset pressed state",
     [l.text(".lc-win"),
       l.root.querySelectorAll(".lc-seg").some((b) => b.getAttribute("aria-pressed") === "true"),
       l.root.querySelectorAll(".lc-val").map((v) => v.textContent)],
     ["08.10 – 14.10", false, ["10h30", "20h30", "0h00", "0h45"]]);
-  fire(l.root.querySelector(".lc-plot"), "dblclick");
+  l.card._onLcHover({ clientX: 50 });
+  eq("08.10 hover shows snapped 12:30–23:00 light window",
+    [/Th 08\.10\.2026/.test(tip.textContent), /12:30–23:00/.test(tip.textContent)],
+    [true, true]);
+  l.card._lcLeave();
+  fire(plot, "dblclick");
   eq("dblclick returns to live preset", [l.text(".lc-win"),
     l.root.querySelectorAll(".lc-seg").find((b) => b.getAttribute("aria-pressed") === "true").getAttribute("data-val")],
     ["all recorded", "all"]);

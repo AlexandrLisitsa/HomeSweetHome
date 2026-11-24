@@ -133,15 +133,26 @@ timeline, week]` and `[source]`.
   schedule is applied, because `plan_off` only withdraws the weekly table.
   Each row's dark-hours total has the day's measured light under it, in green.
   Below the weekly card sits **Light, measured at the meter**: an interactive
-  24-hour bar chart (`7d` / `14d` / `30d` / `All`) with drag-to-pan,
-  scroll/pinch-to-zoom, double-click to return to today, a hover readout per
-  day, and `Today / Min / Max / Mean` summary stats, shown whether DTEK
-  publishes a table or not. Past days come from one
-  `recorder/statistics_during_period` request (hourly `max` of the light sensor,
-  skipping `00:00` so `history_stats`'s midnight reset carry-over never bleeds
-  yesterday's total onto the next day), once a day and only while the card is
-  on screen; today is the live value. Without a light sensor (`light_entity:
-  null`, or a house with no meter) none of it is drawn.
+  daily hours bar chart (`0–24 h`, `7d` / `14d` / `30d` / `All`) with
+  drag-to-pan, scroll/pinch-to-zoom, double-click to return to today, and
+  `Today / Min / Max / Mean` summary stats, shown whether DTEK publishes a
+  table or not. Hovering any bar shows a lightweight day preview (delta vs
+  average, a horizontal `00:00–24:00` power/outage strip, light windows, and
+  day/night tariff split `07:00–23:00` / `23:00–07:00`); clicking any bar opens a
+  large centered 24-hour modal with four KPI cards, an interactive timeline with
+  night-tariff (`23:00–07:00`) and `now` markers, a fixed-height segment
+  inspector (cross-midnight continuous duration and hourly reliability
+  `At HH:00: power on X / N days`), a chronological intervals list, and
+  previous/next day navigation (plus keyboard `Escape` / arrow keys). Card blocks
+  render into persistent slots updated in place so periodic sensor refreshes
+  preserve scroll position and keep open modals undisturbed. Past days come from
+  one `recorder/statistics_during_period` request (`min`, `max`, `mean` hourly
+  statistics, skipping `00:00` on daily totals so `history_stats`'s midnight
+  reset carry-over never bleeds yesterday's total onto the next day, while
+  using the hourly `min`/`max`/`mean` ramp to reconstruct exact intervals),
+  re-read once an hour while on screen; today combines completed hours with the
+  live sensor. Without a light sensor (`light_entity: null`, or a house with
+  no meter) none of it is drawn.
 - `days`: today and tomorrow alone, as the week block draws them. Kept so an
   older config still renders; the dashboard no longer uses it.
 - `source`: where the data came from.

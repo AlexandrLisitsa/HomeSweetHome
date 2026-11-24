@@ -46,7 +46,7 @@
 const CARD = "dtek-shutdowns-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "2.9.0";
+const VERSION = "2.12.0";
 
 /*
  * The grid shows the NORMAL condition, not the exception: a cell is green when
@@ -250,9 +250,9 @@ const HELP = {
   day_light: "Hours that day the meter was lit, i.e. mains was there; green, under the plan.\n"
     + "E.g. 18h05 under 6h: DTEK planned six dark hours and the day had about six.\n"
     + "Blank: before the meter counted, or a day still to come.",
-  lc_name: "Daily hours of mains at the meter: drag to pan, scroll or pinch to zoom.\n"
-    + "E.g. Th 13.11: 9h 10m lit, so the grid was gone for almost 15 hours of that day.\n"
-    + "Tap: opens the sensor. Double-click the plot or pick a range to return to today.",
+  lc_name: "Daily hours of mains: hover a bar for periods, click for full 24h view.\n"
+    + "E.g. Mo 23.11: 3h 48m on in one window, 18:48–22:36.\n"
+    + "Drag to pan, scroll or pinch to zoom; double-click or pick a range for today.",
   lc_win: "The dates shown on the bar chart; days before 14.11.2026 come from inverter voltage.\n"
     + "E.g. last 14 days, or 02.11–08.11 after dragging back into earlier history.",
   lc_range: "Shows this span of daily light bars ending today and resets any pan or zoom.\n"
@@ -313,10 +313,15 @@ const LIGHT_RANGES = {
 };
 const LIGHT_RANGE_ORDER = ["7d", "14d", "30d", "all"];
 const LC_W = 1000;
-const LC_H = 180;
+const LC_H = 148;
 const LC_PAD_T = 22;
 const LC_PAD_B = 6;
 const LC_MIN_DAYS = 5;
+// Matches night_tariff_start / night_tariff_end in PowerStation/power-station.yaml.
+const NIGHT_START = 23;
+const NIGHT_END = 7;
+// Days before 14.11.2026 were estimated from inverter voltage (docs/electricity-meter.md).
+const EST_CUTOFF_DN = Math.round(Date.UTC(2026, 10, 14) / 864e5);
 // How often the timeline asks the recorder again while nothing it shows changed.
 const HISTORY_TTL = 5 * 60000;
 
@@ -453,31 +458,215 @@ function dateFromDayNum(n) {
   return new Date(u.getUTCFullYear(), u.getUTCMonth(), u.getUTCDate());
 }
 
+/** Format a fractional hour [0..24] as "HH:MM" (24 -> "24:00"). */
+function fmtClockH(h) {
+  const mins = Math.max(0, Math.min(1440, Math.round(h * 60)));
+  if (mins >= 1440) return "24:00";
+  return pad2(Math.floor(mins / 60)) + ":" + pad2(mins % 60);
+}
+
+/** Reconstruct [startH, endH] light intervals inside [0, 24] from hourly min/max/mean. */
+function reconstructDaySpans(hrs, fracs) {
+  const raw = [];
+  for (let h = 0; h < 24; h++) {
+    const d = fracs[h];
+    if (d === null || d < 0.01) continue;
+    if (d >= 0.98) {
+      raw.push([h, h + 1]);
+      continue;
+    }
+    const prevLit = h > 0 && fracs[h - 1] !== null && fracs[h - 1] >= 0.95;
+    const nextLit = h < 23 && fracs[h + 1] !== null && fracs[h + 1] >= 0.95;
+    if (h === 0) {
+      const a = nextLit ? 1 - d : 0;
+      raw.push([a, a + d]);
+      continue;
+    }
+    const row = hrs[h];
+    const mn = row && row.min !== null ? row.min : null;
+    const mean = row && row.mean !== null ? row.mean : null;
+    let a;
+    if (mn !== null && mean !== null && d > 0.02) {
+      const ratio = (mean - mn) / d;
+      // Pre-14.11 backfilled rows use midpoint mean = (min+max)/2; snap to lit neighbor.
+      if (Math.abs(ratio - 0.5) < 0.003 && prevLit !== nextLit) {
+        a = nextLit ? 1 - d : 0;
+      } else {
+        a = Math.max(0, Math.min(1 - d, 1 - d / 2 - ratio));
+      }
+    } else if (nextLit && !prevLit) {
+      a = 1 - d;
+    } else if (prevLit && !nextLit) {
+      a = 0;
+    } else {
+      a = (1 - d) / 2;
+    }
+    raw.push([h + a, h + a + d]);
+  }
+  const merged = [];
+  raw.forEach(([s, e]) => {
+    if (merged.length && s - merged[merged.length - 1][1] <= 0.05) {
+      merged[merged.length - 1][1] = Math.max(merged[merged.length - 1][1], e);
+    } else {
+      merged.push([s, e]);
+    }
+  });
+  return merged;
+}
+
 /**
- * Daily hours of light from hourly `max` statistics.
+ * Daily hours of light and reconstructed 00–24 periods from hourly statistics.
  *
  * sensor.grid_light_today (history_stats) resets shortly after midnight
  * (00:00:xx), so the 00:00–01:00 bucket carries yesterday's final total as its
- * `max`. Skipping hour 00 leaves 01:00–23:00; because the counter is
- * monotonically non-decreasing after midnight's reset, that still preserves
- * any light recorded between 00:00 and 01:00.
+ * `max`. Skipping hour 00 for the daily total leaves 01:00–23:00; because the
+ * counter is monotonically non-decreasing after midnight's reset, that still
+ * preserves any light recorded between 00:00 and 01:00.
  */
 function dailyLightFromHours(rows) {
   const days = {};
+  const hrsByDay = {};
+  const spans = {};
+  const hourFracs = {};
   let firstDay = null;
-  if (!Array.isArray(rows)) return { days, firstDay };
+  if (!Array.isArray(rows)) return { days, spans, hourFracs, firstDay };
+  const numOrNull = (v) => {
+    if (v === null || v === undefined || v === "") return null;
+    const n = typeof v === "number" ? v : parseFloat(v);
+    return Number.isFinite(n) ? n : null;
+  };
   rows.forEach((row) => {
     if (!row) return;
     const start = typeof row.start === "number" ? new Date(row.start) : parseDate(row.start);
-    const val = typeof row.max === "number" ? row.max : parseFloat(row.max);
-    if (!start || !Number.isFinite(val)) return;
-    if (start.getHours() === 0) return;
+    const mx = numOrNull(row.max);
+    if (!start || mx === null) return;
     const key = dayKey(start);
-    if (days[key] === undefined || val > days[key]) days[key] = val;
+    const h = start.getHours();
+    const mn = numOrNull(row.min);
+    const mean = numOrNull(row.mean);
+    const dayHrs = hrsByDay[key] || (hrsByDay[key] = {});
+    const prev = dayHrs[h];
+    if (!prev) {
+      dayHrs[h] = { min: mn, max: mx, mean, n: mean !== null ? 1 : 0 };
+    } else {
+      if (mn !== null) prev.min = prev.min === null ? mn : Math.min(prev.min, mn);
+      prev.max = Math.max(prev.max, mx);
+      if (mean !== null) {
+        prev.mean = prev.mean === null ? mean : (prev.mean * prev.n + mean) / (prev.n + 1);
+        prev.n += 1;
+      }
+    }
+    if (h === 0) return;
+    if (days[key] === undefined || mx > days[key]) days[key] = mx;
     const dn = dayNum(start);
     if (firstDay === null || dn < firstDay) firstDay = dn;
   });
-  return { days, firstDay };
+
+  Object.keys(days).forEach((key) => {
+    const hrs = hrsByDay[key] || {};
+    const fracs = new Array(24).fill(null);
+    if (hrs[1] && hrs[1].min !== null) {
+      fracs[0] = Math.max(0, Math.min(1, hrs[1].min));
+    } else if (hrs[0] && hrs[0].max !== null && hrs[0].max <= 1.01) {
+      fracs[0] = Math.max(0, Math.min(1, hrs[0].max));
+    }
+    for (let h = 1; h < 24; h++) {
+      if (!hrs[h] || hrs[h].max === null) continue;
+      if (hrs[h].min !== null) {
+        fracs[h] = Math.max(0, Math.min(1, hrs[h].max - hrs[h].min));
+      } else if (h >= 2 && hrs[h - 1] && hrs[h - 1].max !== null) {
+        fracs[h] = Math.max(0, Math.min(1, hrs[h].max - hrs[h - 1].max));
+      }
+    }
+    hourFracs[key] = fracs;
+    spans[key] = reconstructDaySpans(hrs, fracs);
+  });
+
+  return { days, spans, hourFracs, firstDay };
+}
+
+/** Hours of light falling in Day (07:00–23:00) vs Night (23:00–07:00). */
+function tariffSplit(spans) {
+  let day = 0, night = 0;
+  const ov = (a, b, c, d) => Math.max(0, Math.min(b, d) - Math.max(a, c));
+  (spans || []).forEach(([s, e]) => {
+    day += ov(s, e, NIGHT_END, NIGHT_START);
+    night += ov(s, e, 0, NIGHT_END) + ov(s, e, NIGHT_START, 24);
+  });
+  return { day, night };
+}
+
+/** Complement dark stretches inside [0, endH], dropping slivers under ~0.6 min. */
+function darkSpansOf(lightSpans, endH) {
+  const out = [];
+  let cur = 0;
+  (lightSpans || []).forEach(([s, e]) => {
+    const a = Math.max(0, Math.min(endH, s));
+    const b = Math.max(0, Math.min(endH, e));
+    if (a - cur > 0.01) out.push([cur, a]);
+    if (b > cur) cur = b;
+  });
+  if (endH - cur > 0.01) out.push([cur, endH]);
+  return out;
+}
+
+/** Full continuous light or dark stretch when a segment crosses midnight. */
+function continuousSpan(dn, kind, localSpan, getDaySpans, todayN, nowH) {
+  const spansOf = (d) => {
+    const ls = getDaySpans(d);
+    if (!ls) return null;
+    if (kind === "light") return ls;
+    return darkSpansOf(ls, d === todayN ? nowH : 24);
+  };
+  let startDn = dn, startH = localSpan[0];
+  let endDn = dn, endH = localSpan[1];
+  let cur = dn;
+  while (startH <= 0.05 && dn - cur < 14) {
+    const prevList = spansOf(cur - 1);
+    if (!prevList || !prevList.length) break;
+    const prevLast = prevList[prevList.length - 1];
+    if (prevLast[1] < 23.95) break;
+    startDn = cur - 1;
+    startH = prevLast[0];
+    cur--;
+  }
+  cur = dn;
+  while (endH >= 23.95 && cur < todayN && cur - dn < 14) {
+    const nextList = spansOf(cur + 1);
+    if (!nextList || !nextList.length) break;
+    const nextFirst = nextList[0];
+    if (nextFirst[0] > 0.05) break;
+    endDn = cur + 1;
+    endH = nextFirst[1];
+    cur++;
+  }
+  return {
+    startDn, startH, endDn, endH,
+    hours: Math.max(0, (endDn - startDn) * 24 + (endH - startH)),
+    crosses: startDn < dn || endDn > dn,
+  };
+}
+
+/** Share of visible recorded days that had light for >= 30 min in `hour`. */
+function hourReliability(hour, items, todayN, nowH) {
+  let lit = 0, total = 0;
+  (items || []).forEach((item) => {
+    if (typeof item.h !== "number") return;
+    if (item.isToday) {
+      if (hour > Math.floor(nowH) || (hour === Math.floor(nowH) && nowH - hour < 0.5)) return;
+    }
+    total++;
+    let frac = item.hourFracs ? item.hourFracs[hour] : null;
+    if (frac === null || frac === undefined) {
+      let ov = 0;
+      (item.spans || []).forEach(([s, e]) => {
+        ov += Math.max(0, Math.min(e, hour + 1) - Math.max(s, hour));
+      });
+      frac = ov;
+    }
+    if (frac >= 0.5) lit++;
+  });
+  return total ? { hour, lit, total, pct: Math.round((lit / total) * 100) } : null;
 }
 
 /** Cell index to a wall clock reading, half meaning the :30 boundary. */
@@ -642,27 +831,78 @@ class DtekShutdownsCard extends HTMLElement {
     this._lcGesture = null;
     this._lcDragging = false;
     this._lcMoved = false;
-    this._lcHovering = false;
-    this._lcHoverX = null;
+    this._shell = null;
+    this._lcHover = null;
+    this._lcModalDn = null;
+    this._lcModalSeg = null;
+    this._lcHoverSeg = null;
     this._lcDeferredRender = false;
     // Off screen or in a hidden tab: nothing moves and nothing is fetched.
     this._offscreen = false;
     this._onVisibility = () => this._pause();
+    this._onDocKey = (ev) => {
+      if (this._lcModalDn === null || ev.defaultPrevented) return;
+      if (ev.key === "Escape") {
+        this._closeLcModal();
+        if (typeof ev.preventDefault === "function") ev.preventDefault();
+      } else if (ev.key === "ArrowLeft") {
+        this._stepLcModal(-1);
+        if (typeof ev.preventDefault === "function") ev.preventDefault();
+      } else if (ev.key === "ArrowRight") {
+        this._stepLcModal(1);
+        if (typeof ev.preventDefault === "function") ev.preventDefault();
+      }
+    };
     // Anything carrying data-more opens HA's own dialog for that entity, as the
     // stock history-graph's rows did. data-act="lrange" switches the light
-    // chart preset. One listener on the root: innerHTML is replaced on redraw.
+    // chart preset; lc-* controls manage the 24h day modal.
     const act = (ev) => {
+      if (ev.type === "click" && this._lcModalDn !== null && this._shell && ev.target === this._shell.modal) {
+        this._closeLcModal();
+        return true;
+      }
       let el = ev.target;
       while (el && el !== this.shadowRoot) {
         if (el.getAttribute) {
-          if (el.getAttribute("data-act") === "lrange") {
+          const da = el.getAttribute("data-act");
+          if (da === "lrange") {
             const val = el.getAttribute("data-val");
             if (LIGHT_RANGES[val]) {
               this._lcRange = val;
               this._lcView = null;
+              this._resetLcModalDom();
               this._patchLightChart(new Date());
+              if (this._lcDeferredRender) {
+                this._lcDeferredRender = false;
+                this._render();
+              }
               return true;
             }
+          }
+          if (da === "lc-prev") {
+            if (!el.disabled && !el.hasAttribute("disabled")) this._stepLcModal(-1);
+            return true;
+          }
+          if (da === "lc-next") {
+            if (!el.disabled && !el.hasAttribute("disabled")) this._stepLcModal(1);
+            return true;
+          }
+          if (da === "lc-close") {
+            this._closeLcModal();
+            return true;
+          }
+          if (da === "lc-seg") {
+            if (this._lcModalDn === null) return false;
+            const kind = el.getAttribute("data-kind");
+            const idx = Number(el.getAttribute("data-idx"));
+            if (this._lcModalSeg && this._lcModalSeg.kind === kind && this._lcModalSeg.idx === idx) {
+              this._lcModalSeg = null;
+            } else {
+              this._lcModalSeg = { kind, idx };
+            }
+            this._lcHoverSeg = this._lcModalSeg;
+            this._renderLcModalSeg(this._lcModalSeg);
+            return true;
           }
           const more = el.getAttribute("data-more");
           if (more) {
@@ -678,6 +918,23 @@ class DtekShutdownsCard extends HTMLElement {
     };
     this.shadowRoot.addEventListener("click", act);
     this.shadowRoot.addEventListener("keydown", (ev) => {
+      if (this._lcModalDn !== null && !ev.defaultPrevented) {
+        if (ev.key === "Escape") {
+          this._closeLcModal();
+          if (typeof ev.preventDefault === "function") ev.preventDefault();
+          return;
+        }
+        if (ev.key === "ArrowLeft") {
+          this._stepLcModal(-1);
+          if (typeof ev.preventDefault === "function") ev.preventDefault();
+          return;
+        }
+        if (ev.key === "ArrowRight") {
+          this._stepLcModal(1);
+          if (typeof ev.preventDefault === "function") ev.preventDefault();
+          return;
+        }
+      }
       if ((ev.key === "Enter" || ev.key === " ") && act(ev)) ev.preventDefault();
     });
   }
@@ -707,6 +964,7 @@ class DtekShutdownsCard extends HTMLElement {
     }
     this._config = cfg;
     this._fingerprint = null;
+    if (this._shell) this._shell.slotKey = null;
     if (this._hass) this._render();
   }
 
@@ -728,6 +986,7 @@ class DtekShutdownsCard extends HTMLElement {
     if (this._seen) this._seen.observe(this);
     if (typeof document.addEventListener === "function") {
       document.addEventListener("visibilitychange", this._onVisibility);
+      document.addEventListener("keydown", this._onDocKey);
     }
   }
 
@@ -737,6 +996,7 @@ class DtekShutdownsCard extends HTMLElement {
     if (this._seen) this._seen.disconnect();
     if (typeof document.removeEventListener === "function") {
       document.removeEventListener("visibilitychange", this._onVisibility);
+      document.removeEventListener("keydown", this._onDocKey);
     }
     this._lcPointers.clear();
     this._lcDragging = false;
@@ -817,8 +1077,9 @@ class DtekShutdownsCard extends HTMLElement {
   }
 
   /**
-   * Whether to ask for the past days' light: once a day, and again after a
-   * failed answer once HISTORY_TTL has gone by. Never while hidden or asking.
+   * Whether to ask for the light statistics: once a day, when the current hour
+   * rolls over (so Today's completed hours update), and after a failure once
+   * HISTORY_TTL has gone by. Never while hidden or asking.
    */
   _wantLight(now) {
     const blocks = this._config.blocks;
@@ -826,18 +1087,21 @@ class DtekShutdownsCard extends HTMLElement {
     if (!this._lightObj()) return false;
     if (this._paused || this._lightBusy || !this._hass || typeof this._hass.callWS !== "function") return false;
     const l = this._light;
-    return !l || l.day !== now.toDateString() || (l.failed && now.getTime() - l.at > HISTORY_TTL);
+    return !l || l.day !== now.toDateString() || l.hour !== now.getHours()
+      || (l.failed && now.getTime() - l.at > HISTORY_TTL);
   }
 
   /**
-   * One hourly statistics request for all recorded history: daily totals are
-   * built from hours 01:00–23:00 so history_stats's midnight reset carry-over
-   * into hour 00:00 never bleeds yesterday's value onto today.
+   * One hourly statistics request for all recorded history (`min`, `max`,
+   * `mean`): daily totals skip hour 00 to avoid history_stats's midnight
+   * carry-over, while min/max/mean reconstruct 00–24 light intervals.
    */
   async _loadLight(now) {
     this._lightBusy = true;
     const id = this._config.light_entity;
     let days = {};
+    let spans = {};
+    let hourFracs = {};
     let firstDay = null;
     let failed = false;
     try {
@@ -846,17 +1110,78 @@ class DtekShutdownsCard extends HTMLElement {
         start_time: "2020-01-01T00:00:00Z",
         statistic_ids: [id],
         period: "hour",
-        types: ["max"],
+        types: ["min", "max", "mean"],
       });
       const parsed = dailyLightFromHours((reply || {})[id]);
       days = parsed.days;
+      spans = parsed.spans;
+      hourFracs = parsed.hourFracs;
       firstDay = parsed.firstDay;
     } catch (err) {
       failed = true;
     }
-    this._light = { day: now.toDateString(), at: Date.now(), days, firstDay, failed };
+    this._light = {
+      day: now.toDateString(), hour: now.getHours(), at: Date.now(),
+      days, spans, hourFracs, firstDay, failed,
+    };
     this._lightBusy = false;
     this._render();
+  }
+
+  /** Today's light intervals: completed-hour statistics plus live sensor tail. */
+  _todayLightSpans(now) {
+    const liveH = this._lightToday();
+    if (liveH === null || liveH < 0.01) return [];
+    const curH = now.getHours();
+    const nowH = Math.max(0, Math.min(24, curH + now.getMinutes() / 60));
+    const key = dayKey(now);
+    const statSpans = (this._light && this._light.spans && this._light.spans[key]) || [];
+    const done = [];
+    let doneSum = 0;
+    statSpans.forEach(([s, e]) => {
+      if (s >= curH) return;
+      const a = Math.max(0, s);
+      const b = Math.min(curH, e);
+      if (b - a > 0.01) {
+        done.push([a, b]);
+        doneSum += b - a;
+      }
+    });
+    const extra = Math.max(0, liveH - doneSum);
+    if (extra > 0.01 && nowH > 0.01) {
+      const last = done[done.length - 1];
+      const touchesCurH = last && Math.abs(last[1] - curH) <= 0.05;
+      const gridDown = this._state(this._config.grid_entity) === "on";
+      if (extra <= nowH - curH + 0.01 && touchesCurH && gridDown) {
+        done.push([curH, Math.min(nowH, curH + extra)]);
+      } else {
+        done.push([Math.max(0, nowH - extra), nowH]);
+      }
+    }
+    const merged = [];
+    done.forEach(([s, e]) => {
+      if (merged.length && s - merged[merged.length - 1][1] <= 0.05) {
+        merged[merged.length - 1][1] = Math.max(merged[merged.length - 1][1], e);
+      } else {
+        merged.push([s, e]);
+      }
+    });
+    return merged;
+  }
+
+  _todayHourFracs(spans, nowH) {
+    const fracs = new Array(24).fill(null);
+    for (let h = 0; h < 24; h++) {
+      if (h > Math.floor(nowH)) break;
+      const avail = Math.min(1, nowH - h);
+      if (avail <= 0.01) continue;
+      let ov = 0;
+      spans.forEach(([s, e]) => {
+        ov += Math.max(0, Math.min(e, h + 1) - Math.max(s, h));
+      });
+      fracs[h] = Math.max(0, Math.min(1, ov / avail));
+    }
+    return fracs;
   }
 
   /** Hours of light on a date: live for today, the statistics before it, null after. */
@@ -867,6 +1192,27 @@ class DtekShutdownsCard extends HTMLElement {
     if (dayNum(date) > dayNum(now)) return null;
     const v = this._light && this._light.days[key];
     return typeof v === "number" ? v : null;
+  }
+
+  _lightSpansOn(date, now) {
+    if (!this._lightObj()) return null;
+    const key = dayKey(date);
+    if (key === dayKey(now)) return this._todayLightSpans(now);
+    if (dayNum(date) > dayNum(now)) return null;
+    const s = this._light && this._light.spans && this._light.spans[key];
+    return Array.isArray(s) ? s : null;
+  }
+
+  _lightHourFracsOn(date, now) {
+    if (!this._lightObj()) return null;
+    const key = dayKey(date);
+    if (key === dayKey(now)) {
+      const nowH = now.getHours() + now.getMinutes() / 60;
+      return this._todayHourFracs(this._todayLightSpans(now), nowH);
+    }
+    if (dayNum(date) > dayNum(now)) return null;
+    const f = this._light && this._light.hourFracs && this._light.hourFracs[key];
+    return Array.isArray(f) ? f : null;
   }
 
   // --- the timeline's history ----------------------------------------------
@@ -920,9 +1266,24 @@ class DtekShutdownsCard extends HTMLElement {
     this._render();
   }
 
+  _ensureShell() {
+    if (this._shell) return this._shell;
+    this.shadowRoot.innerHTML = "<style>" + STYLE + "</style>"
+      + '<div class="wrap"></div>'
+      + '<div class="lc-modal-backdrop" hidden></div>';
+    this._shell = {
+      wrap: this.shadowRoot.querySelector(".wrap"),
+      modal: this.shadowRoot.querySelector(".lc-modal-backdrop"),
+      slotKey: null,
+      slots: {},
+    };
+    this._wireLcModal();
+    return this._shell;
+  }
+
   _render() {
     if (!this._hass || !this._config) return;
-    if (this._lcDragging) {
+    if (this._lcDragging || this._lcModalDn !== null) {
       this._lcDeferredRender = true;
       return;
     }
@@ -933,20 +1294,95 @@ class DtekShutdownsCard extends HTMLElement {
     if (print === this._fingerprint) return;
     this._fingerprint = print;
 
-    // innerHTML is replaced wholesale, which would otherwise scroll a
-    // horizontally panned grid back to Monday once a minute.
-    const previous = this.shadowRoot.querySelector(".grid, .bulbs");
-    const scrollLeft = previous ? previous.scrollLeft : 0;
-
-    this.shadowRoot.innerHTML = "<style>" + STYLE + "</style>" + this._body(now);
-
-    const grid = this.shadowRoot.querySelector(".grid, .bulbs");
-    if (grid && scrollLeft) grid.scrollLeft = scrollLeft;
-
-    this._wireLightChart();
-    if (this._lcHovering && this._lcHoverX !== null) {
-      this._onLcHover({ clientX: this._lcHoverX });
+    const shell = this._ensureShell();
+    const wrap = shell.wrap;
+    const cfg = this._config;
+    const main = this._stateObj(cfg.entity);
+    if (!main) {
+      wrap.className = "wrap k-warn";
+      wrap.style.removeProperty("--accent");
+      if (shell.slotKey !== "!main") {
+        wrap.innerHTML = '<ha-card><div class="pad"><h2>DTEK Shutdowns</h2>'
+          + '<p class="note err">' + esc(cfg.entity) + " does not exist. Is "
+          + "packages/dtek_shutdowns.yaml loaded?</p></div></ha-card>";
+        shell.slotKey = "!main";
+        shell.slots = {};
+        this._lcDom = null;
+        this._lcData = null;
+      }
+      return;
     }
+
+    const d = this._derive(now, main.attributes || {});
+    wrap.className = "wrap k-" + d.kind;
+    wrap.style.setProperty("--accent", d.accent);
+
+    const keys = [];
+    cfg.blocks.forEach((b) => {
+      keys.push(b);
+      if (b === "week") keys.push("light");
+    });
+    const sk = keys.join(",");
+    if (shell.slotKey !== sk) {
+      wrap.innerHTML = keys.map((k) => '<div class="ds-slot" data-slot="' + k + '"></div>').join("");
+      shell.slotKey = sk;
+      shell.slots = {};
+      wrap.querySelectorAll(".ds-slot").forEach((el) => {
+        shell.slots[el.getAttribute("data-slot")] = el;
+      });
+      this._lcDom = null;
+      this._lcData = null;
+    }
+
+    const draw = {
+      hero: () => this._hero(d),
+      timeline: () => this._timelineCard(d, now),
+      days: () => this._daysCard(d),
+      week: () => this._weekCard(d, now),
+      source: () => this._sourceCard(d),
+    };
+    const unlockH = (el) => { el.style.minHeight = ""; };
+
+    keys.forEach((k) => {
+      const slot = shell.slots[k];
+      if (!slot) return;
+      if (k === "light") {
+        if (!this._lightObj()) {
+          slot.hidden = true;
+          if (slot._mounted) {
+            slot.innerHTML = "";
+            slot._mounted = false;
+            this._lcDom = null;
+            this._lcData = null;
+          }
+        } else {
+          slot.hidden = false;
+          if (!slot._mounted) {
+            slot.innerHTML = this._lightCard(now);
+            slot._mounted = true;
+            this._wireLightChart();
+          } else {
+            this._patchLightChart(now);
+          }
+        }
+        return;
+      }
+      const html = draw[k]();
+      if (slot._html === html) return;
+      // Hold height briefly across slot replacement so scroll position never jumps.
+      const prevH = slot.offsetHeight;
+      if (prevH) slot.style.minHeight = prevH + "px";
+      const previous = slot.querySelector(".grid, .bulbs");
+      const scrollLeft = previous ? previous.scrollLeft : 0;
+      slot.innerHTML = html;
+      slot._html = html;
+      const grid = slot.querySelector(".grid, .bulbs");
+      if (grid && scrollLeft) grid.scrollLeft = scrollLeft;
+      if (prevH) {
+        if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => unlockH(slot));
+        else unlockH(slot);
+      }
+    });
   }
 
   // --- deriving ------------------------------------------------------------
@@ -1448,25 +1884,6 @@ class DtekShutdownsCard extends HTMLElement {
 
   // --- drawing -------------------------------------------------------------
 
-  _body(now) {
-    const cfg = this._config;
-    const main = this._stateObj(cfg.entity);
-    if (!main) {
-      return '<div class="wrap k-warn"><ha-card><div class="pad"><h2>DTEK Shutdowns</h2>'
-        + '<p class="note err">' + esc(cfg.entity) + " does not exist. Is "
-        + "packages/dtek_shutdowns.yaml loaded?</p></div></ha-card></div>";
-    }
-    this._lcDom = null;
-    this._lcData = null;
-    const d = this._derive(now, main.attributes || {});
-    const draw = { hero: () => this._hero(d), timeline: () => this._timelineCard(d, now),
-                   days: () => this._daysCard(d), week: () => this._weekCard(d, now),
-                   source: () => this._sourceCard(d) };
-    return '<div class="wrap k-' + d.kind + '" style="--accent:' + d.accent + '">'
-      + this._config.blocks.map((b) => draw[b]()).join("")
-      + "</div>";
-  }
-
   _hero(d) {
     // One tooltip per tile; the label, value and sub-line inherit it.
     const tile = (k, v, s, key, color) =>
@@ -1829,7 +2246,7 @@ class DtekShutdownsCard extends HTMLElement {
       + '<span class="stamp"' + tip("Schedule published", d.published, "published")
       + ">Published " + esc(d.published) + "</span></div>"
       + (blurb === null ? "" : '<p class="blurb">' + esc(blurb) + "</p>")
-      + inner + "</div></ha-card>" + this._lightCard(now);
+      + inner + "</div></ha-card>";
   }
 
   // --- light history bar chart ---------------------------------------------
@@ -1890,6 +2307,7 @@ class DtekShutdownsCard extends HTMLElement {
       winLabel = fmtD(statD0, cross) + " " + DASH + " " + fmtD(statD1, cross);
     }
 
+    const nowH = Math.max(0, Math.min(24, now.getHours() + now.getMinutes() / 60));
     const barD0 = Math.floor(t0 + 0.001);
     const barD1 = Math.max(barD0, Math.ceil(t1 - 0.001) - 1);
     const bars = [];
@@ -1898,7 +2316,9 @@ class DtekShutdownsCard extends HTMLElement {
       const date = dateFromDayNum(dn);
       const isToday = dn === todayN;
       const h = isToday ? this._lightToday() : this._lightOn(date, now);
-      const item = { dn, date, isToday, h };
+      const spans = this._lightSpansOn(date, now);
+      const hourFracs = this._lightHourFracsOn(date, now);
+      const item = { dn, date, isToday, h, spans, hourFracs, est: dn < EST_CUTOFF_DN };
       bars.push(item);
       byDn[dn] = item;
     }
@@ -1911,6 +2331,9 @@ class DtekShutdownsCard extends HTMLElement {
         date,
         isToday: dn === todayN,
         h: dn === todayN ? this._lightToday() : this._lightOn(date, now),
+        spans: this._lightSpansOn(date, now),
+        hourFracs: this._lightHourFracsOn(date, now),
+        est: dn < EST_CUTOFF_DN,
       };
       statItems.push(item);
     }
@@ -1932,9 +2355,16 @@ class DtekShutdownsCard extends HTMLElement {
       note = "Light history unavailable";
     }
 
+    const getDaySpans = (d) => {
+      if (byDn[d]) return byDn[d].spans;
+      if (d === todayN) return this._todayLightSpans(now);
+      return this._lightSpansOn(dateFromDayNum(d), now);
+    };
+
+    const minStart = Math.min(bounds.firstN, bounds.maxEnd - bounds.totalDays);
     return {
-      t0, t1, span, todayN, winLabel, bars, byDn,
-      todayH, minItem, maxItem, mean, note, fmtD,
+      t0, t1, span, todayN, minStart, nowH, winLabel, bars, byDn, statItems,
+      todayH, minItem, maxItem, mean, note, fmtD, getDaySpans,
     };
   }
 
@@ -2034,7 +2464,7 @@ class DtekShutdownsCard extends HTMLElement {
     return { barsSvg, valsHtml, xaxHtml, statsHtml, xaxTwoLine: d.span <= 10.5 };
   }
 
-  /** Daily light bar chart card with range presets, pan/zoom and hover readout. */
+  /** Daily light bar chart with hover preview & click-to-open 24h modal. */
   _lightCard(now) {
     if (!this._lightObj()) return "";
     const d = this._lcCompute(now);
@@ -2048,6 +2478,7 @@ class DtekShutdownsCard extends HTMLElement {
       return '<line' + cls + ' x1="0" x2="' + LC_W + '" y1="' + y + '" y2="' + y
         + '" vector-effect="non-scaling-stroke"></line>';
     }).join("");
+
     const segs = LIGHT_RANGE_ORDER.map((r) => {
       const pressed = !this._lcView && this._lcRange === r;
       const label = r === "all" ? "All" : r;
@@ -2067,7 +2498,7 @@ class DtekShutdownsCard extends HTMLElement {
       + '<div class="lc-segs">' + segs + "</div>"
       + "</div>"
       + '<div class="lc-chart">'
-      + '<div class="lc-yax"><span>24h</span><span>18h</span><span>12h</span><span>6h</span><span>0h</span></div>'
+      + '<div class="lc-yax"><span>24h</span><span>12h</span><span>0h</span></div>'
       + '<div class="lc-plot">'
       + '<svg class="lc-svg" viewBox="0 0 ' + LC_W + " " + LC_H + '" preserveAspectRatio="none">'
       + '<defs><clipPath id="lcclip"><rect x="0" y="0" width="' + LC_W + '" height="' + LC_H + '"></rect></clipPath></defs>'
@@ -2081,7 +2512,7 @@ class DtekShutdownsCard extends HTMLElement {
       + '<div class="lc-xax' + (p.xaxTwoLine ? " two" : "") + '">' + p.xaxHtml + "</div>"
       + "</div></div>"
       + '<div class="lc-stats">' + p.statsHtml + "</div>"
-      + '<div class="lc-foot">Drag to pan, pinch or scroll to zoom; double-click or pick a range for today.</div>'
+      + '<div class="lc-foot">Hover a bar for periods, click for full 24h view · Drag to pan, scroll or pinch to zoom.</div>'
       + "</div></ha-card>";
   }
 
@@ -2122,8 +2553,10 @@ class DtekShutdownsCard extends HTMLElement {
     if (statsEl) statsEl.innerHTML = p.statsHtml;
 
     if (this._fingerprint !== null) this._fingerprint = this._fingerprintOf(now);
-    if (this._lcHovering && !this._lcDragging && this._lcHoverX !== null) {
-      this._onLcHover({ clientX: this._lcHoverX });
+    if (this._lcModalDn !== null) {
+      this._setLcColHv(d, this._lcModalDn, true);
+    } else if (this._lcHover && !this._lcDragging) {
+      this._onLcHover(this._lcHover);
     } else {
       this._hideLcHover();
     }
@@ -2201,6 +2634,7 @@ class DtekShutdownsCard extends HTMLElement {
     if (xs.length >= 2) {
       const dist = Math.abs(xs[0] - xs[1]);
       if (g.dist > 8 && dist > 8) {
+        this._hideLcHover();
         this._lcZoomFrom(g.base, this._lcDayAt(g.mid, g.rect, g.base), dist / g.dist);
       }
       return;
@@ -2228,8 +2662,14 @@ class DtekShutdownsCard extends HTMLElement {
     this._lcDragging = false;
     this._lcMoved = false;
     ev.currentTarget.classList.remove("grabbing");
-    if (!wasMoved && ev.pointerType && ev.pointerType !== "mouse") {
-      this._onLcHover(ev);
+    if (!wasMoved && ev.type === "pointerup" && this._lcData) {
+      const plot = this.shadowRoot.querySelector(".lc-plot");
+      const rect = plot && plot.getBoundingClientRect ? plot.getBoundingClientRect() : null;
+      if (rect && rect.width && ev.clientX !== undefined) {
+        const d = this._lcData;
+        const dn = Math.floor(d.t0 + ((ev.clientX - rect.left) / rect.width) * d.span);
+        if (d.byDn[dn]) this._openLcModal(dn);
+      }
     }
     if (this._lcDeferredRender) {
       this._lcDeferredRender = false;
@@ -2248,29 +2688,94 @@ class DtekShutdownsCard extends HTMLElement {
     this._lcZoomFrom(base, this._lcDayAt(ev.clientX, rect, base), f);
   }
 
-  _onLcHover(ev) {
-    const d = this._lcData;
+  _lcItemFor(d, dn) {
+    if (d.byDn[dn]) return d.byDn[dn];
+    const now = new Date();
+    const date = dateFromDayNum(dn);
+    const isToday = dn === d.todayN;
+    return {
+      dn,
+      date,
+      isToday,
+      h: isToday ? this._lightToday() : this._lightOn(date, now),
+      spans: this._lightSpansOn(date, now),
+      hourFracs: this._lightHourFracsOn(date, now),
+      est: dn < EST_CUTOFF_DN,
+    };
+  }
+
+  _setLcColHv(d, dn, pinned) {
     const plot = this.shadowRoot.querySelector(".lc-plot");
-    if (!d || !plot || this._lcDragging) return;
-    const rect = plot.getBoundingClientRect ? plot.getBoundingClientRect() : null;
-    if (!rect || !rect.width) return;
-    this._lcHovering = true;
-    this._lcHoverX = ev.clientX;
-    const dPos = d.t0 + ((ev.clientX - rect.left) / rect.width) * d.span;
-    const dn = Math.floor(dPos);
-    const item = d.byDn[dn];
-    if (!item) { this._hideLcHover(); return; }
-
-    const hv = plot.querySelector(".lc-hv");
-    const tipEl = plot.querySelector(".lc-tip");
-    if (!hv || !tipEl) return;
-
+    const hv = plot && plot.querySelector(".lc-hv");
+    if (!hv || !d) return false;
     const leftPct = Math.max(0, ((dn - d.t0) / d.span) * 100);
     const rightPct = Math.min(100, ((dn + 1 - d.t0) / d.span) * 100);
-    if (rightPct <= leftPct) { this._hideLcHover(); return; }
+    if (rightPct <= leftPct) {
+      hv.classList.remove("on");
+      hv.classList.remove("pin");
+      return false;
+    }
     hv.style.left = leftPct.toFixed(3) + "%";
     hv.style.width = (rightPct - leftPct).toFixed(3) + "%";
     hv.classList.add("on");
+    hv.classList.toggle("pin", !!pinned);
+    return true;
+  }
+
+  _buildLcTimelineHtml(d, item, clsPrefix, segExtraFn) {
+    const lightList = item.spans || [];
+    const endH = item.isToday ? Math.max(0, Math.min(24, d.nowH)) : 24;
+    const darkList = darkSpansOf(lightList, endH);
+    let inner = "";
+    const tickHours = clsPrefix === "lcm" ? [3, 6, 9, 12, 15, 18, 21] : [6, 12, 18];
+    tickHours.forEach((h) => {
+      inner += '<i class="' + clsPrefix + '-tl-tick" style="left:'
+        + ((h / 24) * 100).toFixed(3) + '%"></i>';
+    });
+    [NIGHT_END, NIGHT_START].forEach((h) => {
+      inner += '<i class="' + clsPrefix + '-tl-nt" style="left:'
+        + ((h / 24) * 100).toFixed(3) + '%"></i>';
+    });
+    if (item.isToday && d.nowH < 23.99) {
+      const aLeft = ((d.nowH / 24) * 100).toFixed(3);
+      const aW = (((24 - d.nowH) / 24) * 100).toFixed(3);
+      inner += '<span class="' + clsPrefix + '-tl-ahead" style="left:' + aLeft
+        + '%;width:' + aW + '%"></span>';
+    }
+    const segTag = (seg, kind, idx) => {
+      const left = (seg[0] / 24) * 100;
+      const width = ((seg[1] - seg[0]) / 24) * 100;
+      const extra = segExtraFn ? segExtraFn(seg, kind, idx, width) : { cls: "", body: "" };
+      const todayCls = item.isToday && kind === "light" ? " today" : "";
+      return '<span class="' + clsPrefix + "-seg " + (kind === "light" ? "lit" : "dark")
+        + todayCls + (extra.cls || "")
+        + '" data-act="lc-seg" data-kind="' + kind + '" data-idx="' + idx
+        + '" style="left:' + left.toFixed(3) + "%;width:" + Math.max(0.6, width).toFixed(3)
+        + '%">' + (extra.body || "") + "</span>";
+    };
+    darkList.forEach((seg, i) => { inner += segTag(seg, "dark", i); });
+    lightList.forEach((seg, i) => { inner += segTag(seg, "light", i); });
+    if (item.isToday) {
+      inner += '<i class="' + clsPrefix + '-tl-now" style="left:'
+        + ((d.nowH / 24) * 100).toFixed(3) + '%"></i>';
+    }
+    return { lightList, darkList, inner };
+  }
+
+  _onLcHover(ev) {
+    if (this._lcModalDn !== null || !this._lcData || this._lcDragging) return;
+    const plot = this.shadowRoot.querySelector(".lc-plot");
+    if (!plot) return;
+    const rect = plot.getBoundingClientRect ? plot.getBoundingClientRect() : null;
+    if (!rect || !rect.width) return;
+    const d = this._lcData;
+    const dn = Math.floor(d.t0 + ((ev.clientX - rect.left) / rect.width) * d.span);
+    const item = d.byDn[dn];
+    if (!item || !this._setLcColHv(d, dn, false)) { this._hideLcHover(); return; }
+    this._lcHover = { clientX: ev.clientX };
+
+    const tipEl = plot.querySelector(".lc-tip");
+    if (!tipEl) return;
 
     const dt = item.date;
     const dStr = pad2(dt.getDate()) + "." + pad2(dt.getMonth() + 1) + "." + dt.getFullYear();
@@ -2281,41 +2786,346 @@ class DtekShutdownsCard extends HTMLElement {
     let yTop;
     if (typeof item.h === "number") {
       const val = Math.max(0, Math.min(24, item.h));
-      const dark = item.isToday
-        ? Math.max(0, (new Date().getHours() + new Date().getMinutes() / 60) - val)
-        : Math.max(0, 24 - val);
       const pct = Math.round((val / 24) * 100);
-      const sub = item.isToday
-        ? fmtHM(dark) + " dark so far"
-        : fmtHM(dark) + " dark · " + pct + "% lit";
-      tipEl.innerHTML = "<b>" + esc(fmtHM(val)) + "</b><i>" + esc(dayLabel)
-        + "</i><i>" + esc(sub) + "</i>";
-      yTop = val === 0 ? LC_PAD_T + plotH - 3 : yOf(val);
+      const tone = item.isToday ? "ok" : pct >= 50 ? "ok" : pct >= 25 ? "warn" : "bad";
+      const pillHtml = '<span class="lct-pill ' + tone + '"><i></i>'
+        + (item.isToday ? "LIVE" : pct + "% ON") + "</span>";
+
+      let deltaHtml = "";
+      if (!item.isToday && d.mean !== null) {
+        const diff = val - d.mean;
+        const absDiff = Math.abs(diff);
+        const cls = diff >= 0.5 ? "ok" : diff <= -0.5 ? "bad" : "";
+        const txt = absDiff < 0.02 ? "on avg"
+          : (diff > 0 ? "+" : "−") + fmtHM(absDiff) + " vs avg";
+        deltaHtml = '<span class="lct-delta ' + cls + '">' + esc(txt) + "</span>";
+      }
+
+      const dark = item.isToday ? Math.max(0, d.nowH - val) : Math.max(0, 24 - val);
+      const darkText = item.isToday ? fmtHM(dark) + " off so far" : fmtHM(dark) + " off";
+      const { lightList, inner } = this._buildLcTimelineHtml(d, item, "lct");
+
+      const tlHtml = '<div class="lct-tl">'
+        + '<div class="lct-tl-head"><span>00:00' + DASH + '24:00</span>'
+        + '<span class="lct-tl-leg"><span><i class="sw-lit"></i>Power</span>'
+        + '<span><i class="sw-off"></i>Off</span></span></div>'
+        + '<div class="lct-tl-bar">' + inner + "</div>"
+        + '<div class="lct-tl-axis"><span>00</span><span>06</span><span>12</span><span>18</span><span>24</span></div>'
+        + "</div>";
+
+      let winsHtml;
+      if (!lightList.length) {
+        winsHtml = '<div class="lct-wins">No power all day</div>';
+      } else {
+        const shown = lightList.length <= 4 ? lightList : lightList.slice(0, 3);
+        const chips = shown.map(([s, e]) =>
+          '<span class="lct-wchip">' + esc(fmtClockH(s) + DASH + fmtClockH(e)
+            + " (" + fmtHM(e - s) + ")") + "</span>").join("");
+        const more = lightList.length > 4
+          ? '<span class="lct-wchip more">+' + (lightList.length - 3) + " more</span>" : "";
+        winsHtml = '<div class="lct-wins"><div class="lct-wlist">' + chips + more + "</div></div>";
+      }
+
+      const split = tariffSplit(lightList);
+      const splitText = "Day 07–23: " + fmtHM(split.day) + " · Night 23–07: " + fmtHM(split.night);
+      const estHtml = item.est ? '<div class="lct-est">Estimated from inverter voltage</div>' : "";
+
+      tipEl.innerHTML =
+        '<div class="lct-hd"><span class="lct-date">' + esc(dayLabel)
+        + '</span><span class="lct-hd-r">' + pillHtml + "</span></div>"
+        + '<div class="lct-main"><span class="lct-big">' + esc(fmtHM(val)) + "</span>"
+        + deltaHtml + "</div>"
+        + '<div class="lct-sub">' + esc(darkText) + "</div>"
+        + tlHtml
+        + '<div class="lct-rule">'
+        + winsHtml
+        + '<div class="lct-split">' + esc(splitText) + "</div>"
+        + estHtml
+        + '<div class="lct-hint">Click bar for full 24h view</div>'
+        + "</div>";
+      yTop = val <= 0 ? LC_PAD_T + plotH - 3 : yOf(val);
     } else {
-      tipEl.innerHTML = "<b>Not recorded</b><i>" + esc(dayLabel)
-        + "</i><i>no statistics for this day</i>";
-      yTop = LC_PAD_T + plotH - 40;
+      tipEl.innerHTML =
+        '<div class="lct-hd"><span class="lct-date">' + esc(dayLabel)
+        + '</span><span class="lct-hd-r"><span class="lct-pill idle"><i></i>NO DATA</span></span></div>'
+        + '<div class="lct-main"><span class="lct-big">Not recorded</span></div>'
+        + '<div class="lct-sub">No statistics for this day</div>';
+      yTop = LC_PAD_T + plotH - 36;
     }
 
     const cxPx = ((dn + 0.5 - d.t0) / d.span) * rect.width;
-    tipEl.style.left = Math.max(60, Math.min(rect.width - 60, cxPx)) + "px";
-    tipEl.style.top = Math.max(50, yTop - 8) + "px";
+    const halfW = Math.min(rect.width / 2, (tipEl.offsetWidth || 286) / 2 + 6);
+    tipEl.style.left = Math.max(halfW, Math.min(rect.width - halfW, cxPx)).toFixed(1) + "px";
+    const flip = yTop < 76;
+    tipEl.classList.toggle("below", flip);
+    tipEl.style.top = (flip ? Math.min(LC_H - 8, yTop + 10) : Math.max(10, yTop - 10)).toFixed(1) + "px";
     tipEl.classList.add("on");
   }
 
+  _wireLcModal() {
+    const backdrop = this._shell && this._shell.modal;
+    if (!backdrop) return;
+    const segAt = (node) => {
+      let n = node;
+      while (n && n !== backdrop) {
+        if (n.classList && (n.classList.contains("lcm-seg") || n.classList.contains("lcm-row"))) {
+          return { kind: n.getAttribute("data-kind"), idx: Number(n.getAttribute("data-idx")) };
+        }
+        n = n.parentNode;
+      }
+      return null;
+    };
+    const same = (a, b) => (!a && !b) || (!!a && !!b && a.kind === b.kind && a.idx === b.idx);
+    backdrop.addEventListener("mousemove", (e) => {
+      if (this._lcModalDn === null) return;
+      const seg = segAt(e.target);
+      const next = seg || this._lcModalSeg;
+      if (!same(this._lcHoverSeg, next)) {
+        this._lcHoverSeg = next;
+        this._renderLcModalSeg(next);
+      }
+    });
+    backdrop.addEventListener("mouseleave", () => {
+      if (this._lcModalDn === null) return;
+      if (!same(this._lcHoverSeg, this._lcModalSeg)) {
+        this._lcHoverSeg = this._lcModalSeg;
+        this._renderLcModalSeg(this._lcModalSeg);
+      }
+    });
+  }
+
+  _buildLcModalInspectHtml(d, item, segRef) {
+    const lightList = item.spans || [];
+    const endH = item.isToday ? Math.max(0, Math.min(24, d.nowH)) : 24;
+    const darkList = darkSpansOf(lightList, endH);
+    if (!segRef || typeof item.h !== "number") {
+      const wc = lightList.length;
+      const oc = darkList.length;
+      return '<div class="lcm-insp-idle">Hover or click any segment on the timeline or list below</div>'
+        + '<div class="lcm-insp-meta">'
+        + wc + " power " + (wc === 1 ? "window" : "windows")
+        + " · " + oc + " " + (oc === 1 ? "outage" : "outages")
+        + " · Use ‹ Prev / Next › or arrow keys</div>";
+    }
+    const list = segRef.kind === "light" ? lightList : darkList;
+    const seg = list[segRef.idx];
+    if (!seg) return this._buildLcModalInspectHtml(d, item, null);
+    const pill = segRef.kind === "light"
+      ? '<span class="lct-pill ok"><i></i>POWER ON</span>'
+      : '<span class="lct-pill bad"><i></i>NO GRID</span>';
+    const order = (segRef.kind === "light" ? "Window " : "Outage ") + (segRef.idx + 1) + " of " + list.length;
+    const spanText = fmtClockH(seg[0]) + " " + DASH + " " + fmtClockH(seg[1]) + " · " + fmtHM(seg[1] - seg[0]);
+    const cont = continuousSpan(item.dn, segRef.kind, seg, d.getDaySpans, d.todayN, d.nowH);
+    const midH = Math.min(23, Math.floor((seg[0] + seg[1]) / 2));
+    const rel = hourReliability(midH, d.statItems, d.todayN, d.nowH);
+    const meta = [];
+    if (cont.crosses) {
+      meta.push("<span>Continuous: "
+        + esc((cont.startDn !== item.dn ? d.fmtD(cont.startDn, false) + " " : "")
+        + fmtClockH(cont.startH) + " → "
+        + (cont.endDn !== item.dn ? d.fmtD(cont.endDn, false) + " " : "")
+        + fmtClockH(cont.endH) + " (" + fmtHM(cont.hours) + ")")
+        + "</span>");
+    }
+    if (rel) {
+      meta.push("<span>At " + pad2(rel.hour) + ":00: power on " + rel.lit + " / "
+        + rel.total + " days (" + rel.pct + "%)</span>");
+    }
+    return '<div class="lcm-insp-top">' + pill
+      + '<span class="lcm-insp-span">' + esc(spanText) + "</span>"
+      + '<span class="lcm-insp-ord">' + esc(order) + "</span></div>"
+      + '<div class="lcm-insp-meta">' + meta.join("") + "</div>";
+  }
+
+  _renderLcModalSeg(segRef) {
+    const backdrop = this._shell && this._shell.modal;
+    const d = this._lcData;
+    if (!backdrop || !d || this._lcModalDn === null) return;
+    backdrop.querySelectorAll(".lcm-seg, .lcm-row").forEach((el) => {
+      const match = !!segRef
+        && el.getAttribute("data-kind") === segRef.kind
+        && Number(el.getAttribute("data-idx")) === segRef.idx;
+      el.classList.toggle("sel", match);
+    });
+    const box = backdrop.querySelector(".lcm-inspect");
+    if (box) {
+      box.innerHTML = this._buildLcModalInspectHtml(d, this._lcItemFor(d, this._lcModalDn), segRef);
+    }
+  }
+
+  _openLcModal(dn) {
+    const shell = this._ensureShell();
+    const d = this._lcData;
+    const backdrop = shell && shell.modal;
+    if (!d || !backdrop) return;
+
+    this._lcHover = null;
+    const plot = this.shadowRoot.querySelector(".lc-plot");
+    const tipEl = plot && plot.querySelector(".lc-tip");
+    if (tipEl) tipEl.classList.remove("on");
+    this._setLcColHv(d, dn, true);
+
+    this._lcModalDn = dn;
+    this._lcModalSeg = null;
+    this._lcHoverSeg = null;
+
+    const item = this._lcItemFor(d, dn);
+    const dt = item.date;
+    const dStr = pad2(dt.getDate()) + "." + pad2(dt.getMonth() + 1) + "." + dt.getFullYear();
+    const dayLabel = item.isToday ? "Today · " + dStr : DAY_SHORT[(dt.getDay() + 6) % 7] + " " + dStr;
+    const navHtml =
+      '<button class="lcm-btn" data-act="lc-prev" aria-label="Previous day"'
+      + (dn <= d.minStart ? " disabled" : "") + ">‹ Prev</button>"
+      + '<button class="lcm-btn" data-act="lc-next" aria-label="Next day"'
+      + (dn >= d.todayN ? " disabled" : "") + ">Next ›</button>"
+      + '<button class="lcm-btn lcm-x" data-act="lc-close" aria-label="Close modal">×</button>';
+
+    let bodyHtml;
+    let headPill;
+    const estHtml = item.est ? '<span class="lcm-est">Estimated from inverter voltage</span>' : "";
+
+    if (typeof item.h === "number") {
+      const val = Math.max(0, Math.min(24, item.h));
+      const pct = Math.round((val / 24) * 100);
+      const tone = item.isToday ? "ok" : pct >= 50 ? "ok" : pct >= 25 ? "warn" : "bad";
+      headPill = '<span class="lct-pill ' + tone + '"><i></i>'
+        + (item.isToday ? "LIVE" : pct + "% ON") + "</span>";
+
+      const dark = item.isToday ? Math.max(0, d.nowH - val) : Math.max(0, 24 - val);
+      let deltaSub = item.isToday ? "live total" : "no window avg";
+      let deltaCls = "";
+      if (!item.isToday && d.mean !== null) {
+        const diff = val - d.mean;
+        const absDiff = Math.abs(diff);
+        deltaCls = diff >= 0.5 ? " ok" : diff <= -0.5 ? " bad" : "";
+        deltaSub = absDiff < 0.02 ? "on window avg"
+          : (diff > 0 ? "+" : "−") + fmtHM(absDiff) + " vs avg";
+      }
+
+      const { lightList, darkList, inner } = this._buildLcTimelineHtml(d, item, "lcm", (_s, _k, _i, width) => ({
+        cls: "",
+        body: width >= 10 ? '<span class="lcm-seg-lbl">' + esc(fmtHM((_s[1] - _s[0]), true)) + "</span>" : "",
+      }));
+      const split = tariffSplit(lightList);
+
+      const kpi = (lbl, big, sub, valCls) =>
+        '<div class="lcm-kpi"><span class="lcm-kl">' + esc(lbl) + "</span>"
+        + '<strong class="lcm-kv">' + esc(big) + "</strong>"
+        + '<small class="lcm-ks' + (valCls || "") + '">' + esc(sub) + "</small></div>";
+      const kpisHtml = '<div class="lcm-kpis">'
+        + kpi("Power on", fmtHM(val), deltaSub, deltaCls)
+        + kpi("No grid", fmtHM(dark), item.isToday ? "off so far" : (100 - pct) + "% of day", "")
+        + kpi("Day 07–23", fmtHM(split.day), "day tariff", "")
+        + kpi("Night 23–07", fmtHM(split.night), "night tariff", "")
+        + "</div>";
+
+      const tlHtml = '<div class="lcm-tl">'
+        + '<div class="lcm-tl-head">'
+        + '<span class="lcm-tl-title">24-hour timeline · 00:00' + DASH + '24:00</span>'
+        + '<span class="lcm-tl-leg">'
+        + '<span><i class="sw-lit"></i>Power on</span>'
+        + '<span><i class="sw-off"></i>No grid</span>'
+        + '<span><i class="sw-night"></i>Night tariff 23–07</span>'
+        + "</span></div>"
+        + '<div class="lcm-tl-tariff">'
+        + '<span style="left:0%;width:29.167%"></span>'
+        + '<span style="left:95.833%;width:4.167%"></span>'
+        + "</div>"
+        + '<div class="lcm-tl-bar">' + inner + "</div>"
+        + '<div class="lcm-tl-axis"><span>00:00</span><span>03:00</span><span>06:00</span>'
+        + '<span>09:00</span><span>12:00</span><span>15:00</span><span>18:00</span>'
+        + '<span>21:00</span><span>24:00</span></div>'
+        + "</div>";
+
+      const inspectHtml = '<div class="lcm-inspect">'
+        + this._buildLcModalInspectHtml(d, item, null) + "</div>";
+
+      const entries = [];
+      lightList.forEach((seg, idx) => entries.push({ kind: "light", idx, seg }));
+      darkList.forEach((seg, idx) => entries.push({ kind: "dark", idx, seg }));
+      entries.sort((a, b) => a.seg[0] - b.seg[0]);
+
+      const rowsHtml = entries.map((e) => {
+        const cont = continuousSpan(dn, e.kind, e.seg, d.getDaySpans, d.todayN, d.nowH);
+        return '<div class="lcm-row ' + (e.kind === "light" ? "lit" : "dark")
+          + '" data-act="lc-seg" data-kind="' + e.kind + '" data-idx="' + e.idx + '">'
+          + '<span class="lcm-row-kind"><i></i>' + (e.kind === "light" ? "Power on" : "No grid") + "</span>"
+          + '<span class="lcm-row-span">' + esc(fmtClockH(e.seg[0]) + " " + DASH + " " + fmtClockH(e.seg[1])) + "</span>"
+          + '<span class="lcm-row-dur">' + esc(fmtHM(e.seg[1] - e.seg[0])) + "</span>"
+          + (cont.crosses ? '<span class="lcm-row-cont">Continuous ' + esc(fmtHM(cont.hours)) + "</span>" : "")
+          + "</div>";
+      }).join("");
+
+      bodyHtml = kpisHtml + tlHtml + inspectHtml + '<div class="lcm-list">' + rowsHtml + "</div>";
+    } else {
+      headPill = '<span class="lct-pill idle"><i></i>NO DATA</span>';
+      bodyHtml = '<div class="lcm-empty"><strong>Not recorded</strong>'
+        + "<span>No hourly statistics were recorded for this day.</span></div>";
+    }
+
+    backdrop.innerHTML =
+      '<div class="lc-modal" role="dialog" aria-modal="true" aria-label="24-hour mains timeline">'
+      + '<div class="lcm-hd">'
+      + '<div class="lcm-title-grp"><span class="lcm-date">' + esc(dayLabel) + "</span>"
+      + headPill + estHtml + "</div>"
+      + '<div class="lcm-nav">' + navHtml + "</div>"
+      + "</div>"
+      + bodyHtml
+      + "</div>";
+    backdrop.hidden = false;
+  }
+
+  _stepLcModal(delta) {
+    const d = this._lcData;
+    if (!d || this._lcModalDn === null) return;
+    const nextDn = Math.max(d.minStart, Math.min(d.todayN, this._lcModalDn + delta));
+    if (nextDn === this._lcModalDn) return;
+    this._lcModalDn = nextDn;
+    this._lcModalSeg = null;
+    this._lcHoverSeg = null;
+    if (nextDn < d.t0) {
+      this._lcApplyView(nextDn, nextDn + d.span);
+    } else if (nextDn + 1 > d.t1) {
+      this._lcApplyView(nextDn + 1 - d.span, nextDn + 1);
+    }
+    this._openLcModal(nextDn);
+  }
+
+  _resetLcModalDom() {
+    this._lcModalDn = null;
+    this._lcModalSeg = null;
+    this._lcHoverSeg = null;
+    if (this._shell && this._shell.modal) {
+      this._shell.modal.hidden = true;
+      this._shell.modal.innerHTML = "";
+    }
+  }
+
+  _closeLcModal() {
+    this._resetLcModalDom();
+    this._lcHover = null;
+    this._hideLcHover();
+    if (this._lcDeferredRender) {
+      this._lcDeferredRender = false;
+      this._render();
+    }
+  }
+
   _lcLeave() {
-    this._lcHovering = false;
-    this._lcHoverX = null;
+    this._lcHover = null;
     this._hideLcHover();
   }
 
   _hideLcHover() {
     const plot = this.shadowRoot.querySelector(".lc-plot");
     if (!plot) return;
-    const hv = plot.querySelector(".lc-hv");
     const tipEl = plot.querySelector(".lc-tip");
-    if (hv) hv.classList.remove("on");
     if (tipEl) tipEl.classList.remove("on");
+    const hv = plot.querySelector(".lc-hv");
+    if (hv && this._lcModalDn === null) {
+      hv.classList.remove("on");
+      hv.classList.remove("pin");
+    }
   }
 
   _sourceCard(d) {
@@ -2390,6 +3200,8 @@ const STYLE = `
 }
 .wrap.k-warn { --k: var(--ds-warn); --k-hi: var(--ds-warn-hi); }
 .wrap.k-bad { --k: var(--ds-bad); --k-hi: var(--ds-bad-hi); }
+.ds-slot { display: flex; flex-direction: column; gap: 12px; }
+.ds-slot[hidden] { display: none; }
 /* Outer-tree rules win over ha-card's own :host styles, border included. */
 ha-card {
   display: block; background: var(--ds-panel); color: var(--ds-text);
@@ -2658,16 +3470,232 @@ svg.lc-svg { width: 100%; height: ${LC_H}px; display: block; }
   pointer-events: none; opacity: 0; transition: opacity .1s; z-index: 1;
 }
 .lc-hv.on { opacity: 1; }
+.lc-hv.pin {
+  background: rgba(98, 214, 168, .10);
+  box-shadow: inset 0 0 0 1px rgba(98, 214, 168, .28);
+}
 .lc-tip {
   position: absolute; pointer-events: none; opacity: 0; transition: opacity .1s;
-  transform: translate(-50%, -100%); z-index: 2;
-  background: var(--ds-inner); border: 1px solid var(--ds-line2); border-radius: 8px; padding: 6px 10px;
-  font: 500 11.5px/1.3 var(--ds-mono); color: var(--ds-text); white-space: nowrap;
-  box-shadow: 0 10px 26px rgba(0, 0, 0, .55);
+  transform: translate(-50%, -100%); z-index: 3; min-width: 268px; max-width: min(320px, calc(100% - 8px));
+  background: #1A2028; border: 1px solid #2E3844; border-radius: 8px; padding: 10px 12px;
+  font-family: var(--ds-sans); color: #F1F4F8; white-space: normal;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(255, 255, 255, .04);
 }
+.lc-tip.below { transform: translate(-50%, 0); }
 .lc-tip.on { opacity: 1; }
-.lc-tip b { display: block; font-size: 13px; color: var(--ds-ok-hi); }
-.lc-tip i { display: block; font-style: normal; font-size: 10.5px; color: var(--ds-text2); margin-top: 2px; }
+.lct-hd { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.lct-date { font: 600 12px/1.3 var(--ds-sans); color: #F1F4F8; }
+.lct-hd-r { display: inline-flex; align-items: center; gap: 5px; }
+.lct-pill {
+  display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border-radius: 999px;
+  font: 600 10px/1.3 var(--ds-mono); letter-spacing: .05em; text-transform: uppercase;
+}
+.lct-pill i { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.lct-pill.ok { color: #62D6A8; background: rgba(63, 182, 139, .14); }
+.lct-pill.warn { color: #F2BE62; background: rgba(224, 163, 58, .15); }
+.lct-pill.bad { color: #FF928A; background: rgba(229, 83, 75, .17); }
+.lct-pill.idle { color: #A9B5C3; background: rgba(169, 181, 195, .12); }
+.lct-main { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-top: 5px; }
+.lct-big { font: 600 14px/1.2 var(--ds-mono); font-variant-numeric: tabular-nums; color: #F1F4F8; }
+.lct-delta { font: 500 11px/1.2 var(--ds-mono); font-variant-numeric: tabular-nums; color: #A9B5C3; }
+.lct-delta.ok { color: #62D6A8; }
+.lct-delta.bad { color: #FF928A; }
+.lct-sub { font: 400 11px/1.35 var(--ds-mono); color: #A9B5C3; margin-top: 3px; }
+/* Horizontal 00:00–24:00 preview timeline inside hover tooltip */
+.lct-tl { margin-top: 8px; }
+.lct-tl-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  font: 500 10px/1.2 var(--ds-mono); color: #93A0AF; margin-bottom: 4px;
+}
+.lct-tl-leg { display: inline-flex; align-items: center; gap: 9px; }
+.lct-tl-leg > span { display: inline-flex; align-items: center; gap: 4px; }
+.lct-tl-leg i { display: inline-block; width: 7px; height: 7px; border-radius: 2px; }
+.lct-tl-leg .sw-lit { background: var(--ds-ok); }
+.lct-tl-leg .sw-off { background: rgba(187, 99, 91, .45); border: 1px solid rgba(255, 146, 138, .35); }
+.lct-tl-bar {
+  position: relative; height: 16px; border-radius: 5px; overflow: hidden;
+  background: #12161C; border: 1px solid #29323D;
+}
+.lct-seg { position: absolute; top: 0; bottom: 0; border-radius: 1.5px; }
+.lct-seg.lit { background: color-mix(in srgb, var(--ds-ok) 85%, transparent); }
+.lct-seg.lit.today { background: var(--ds-ok-hi); }
+.lct-seg.dark {
+  background: rgba(187, 99, 91, .30);
+  box-shadow: inset 0 0 0 1px rgba(255, 146, 138, .12);
+}
+.lct-tl-ahead { position: absolute; top: 0; bottom: 0; background: rgba(255, 255, 255, .04); pointer-events: none; }
+.lct-tl-tick {
+  position: absolute; top: 0; bottom: 0; width: 1px;
+  background: rgba(255, 255, 255, .08); pointer-events: none; z-index: 1;
+}
+.lct-tl-nt {
+  position: absolute; top: 0; bottom: 0; width: 1px;
+  border-left: 1px dashed rgba(134, 179, 227, .38); pointer-events: none; z-index: 1;
+}
+.lct-tl-now {
+  position: absolute; top: 0; bottom: 0; width: 1.5px;
+  background: #F1F4F8; pointer-events: none; z-index: 3;
+}
+.lct-tl-axis {
+  position: relative; display: flex; justify-content: space-between;
+  font: 500 9.5px/1.2 var(--ds-mono); color: #8A95A5; margin-top: 3px;
+}
+.lct-rule {
+  border-top: 1px solid #29323D; margin-top: 8px; padding-top: 6px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.lct-wlist { display: flex; flex-wrap: wrap; gap: 4px; }
+.lct-wchip {
+  padding: 2px 6px; border-radius: 4px; background: #232B35; border: 1px solid #2E3844;
+  font: 500 10.5px/1.3 var(--ds-mono); font-variant-numeric: tabular-nums; color: #D3DAE3;
+}
+.lct-wchip.more { color: #93A0AF; }
+.lct-split { font: 500 10.5px/1.3 var(--ds-mono); font-variant-numeric: tabular-nums; color: #D3DAE3; }
+.lct-wins { font: 400 10.5px/1.35 var(--ds-mono); font-variant-numeric: tabular-nums; color: #93A0AF; }
+.lct-est, .lct-hint { font: 400 10px/1.3 var(--ds-mono); color: #8A95A5; }
+/* Large centered 24-hour modal */
+.lc-modal-backdrop {
+  position: fixed; inset: 0; z-index: 9998;
+  background: rgba(6, 8, 11, .76);
+  backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px; box-sizing: border-box;
+}
+.lc-modal-backdrop[hidden] { display: none; }
+.lc-modal {
+  width: min(760px, 100%); max-height: calc(100vh - 40px); overflow-y: auto;
+  background: #141920; border: 1px solid #2E3844; border-radius: 14px;
+  padding: 18px 20px; box-sizing: border-box;
+  font-family: var(--ds-sans); color: #F1F4F8;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, .65), inset 0 1px 0 rgba(255, 255, 255, .04);
+  display: flex; flex-direction: column; gap: 14px;
+}
+.lcm-hd { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 14px; }
+.lcm-title-grp { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+.lcm-date { font: 600 17px/1.25 var(--ds-sans); color: #F1F4F8; }
+.lcm-est { font: 400 11px/1.3 var(--ds-mono); color: #93A0AF; }
+.lcm-nav { display: inline-flex; align-items: center; gap: 6px; }
+.lcm-btn {
+  height: 28px; padding: 0 10px; border-radius: 7px;
+  border: 1px solid #2E3844; background: #0E1217; color: #D3DAE3;
+  font: 500 12px/1 var(--ds-mono); cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.lcm-btn.lcm-x { width: 28px; padding: 0; font-size: 15px; }
+.lcm-btn:hover:not(:disabled) { border-color: #4A5A6D; color: #F1F4F8; background: #232B35; }
+.lcm-btn:disabled { opacity: .35; cursor: default; }
+.lcm-btn:focus-visible { outline: 2px solid var(--ds-ok-hi); outline-offset: 2px; }
+.lcm-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 560px) {
+  .lcm-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.lcm-kpi {
+  background: #0E1217; border: 1px solid #232B35; border-radius: 9px; padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.lcm-kl {
+  font: 600 10px/1.2 var(--ds-mono); letter-spacing: .08em; text-transform: uppercase; color: #8A95A5;
+}
+.lcm-kv { font: 600 17px/1.2 var(--ds-mono); font-variant-numeric: tabular-nums; color: #F1F4F8; }
+.lcm-ks { font: 500 11px/1.25 var(--ds-mono); font-variant-numeric: tabular-nums; color: #93A0AF; }
+.lcm-ks.ok { color: #62D6A8; }
+.lcm-ks.bad { color: #FF928A; }
+.lcm-tl { display: flex; flex-direction: column; }
+.lcm-tl-head {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px;
+  margin-bottom: 6px;
+}
+.lcm-tl-title { font: 600 11px/1.2 var(--ds-mono); letter-spacing: .06em; text-transform: uppercase; color: #A9B5C3; }
+.lcm-tl-leg { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 12px; font: 500 11px var(--ds-mono); color: #93A0AF; }
+.lcm-tl-leg > span { display: inline-flex; align-items: center; gap: 5px; }
+.lcm-tl-leg i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; }
+.lcm-tl-leg .sw-lit { background: var(--ds-ok); }
+.lcm-tl-leg .sw-off { background: rgba(187, 99, 91, .45); border: 1px solid rgba(255, 146, 138, .35); }
+.lcm-tl-leg .sw-night { background: rgba(134, 179, 227, .22); border: 1px dashed rgba(134, 179, 227, .55); }
+.lcm-tl-tariff { position: relative; height: 4px; margin-bottom: 3px; border-radius: 2px; overflow: hidden; }
+.lcm-tl-tariff > span { position: absolute; top: 0; bottom: 0; background: rgba(134, 179, 227, .35); }
+.lcm-tl-bar {
+  position: relative; height: 44px; border-radius: 8px; overflow: hidden;
+  background: #0E1217; border: 1px solid #29323D;
+}
+.lcm-seg {
+  position: absolute; top: 0; bottom: 0; border-radius: 2px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+  transition: filter .1s;
+}
+.lcm-seg.lit { background: color-mix(in srgb, var(--ds-ok) 80%, transparent); }
+.lcm-seg.lit.today { background: var(--ds-ok-hi); color: #0B1410; }
+.lcm-seg.dark {
+  background: rgba(187, 99, 91, .28);
+  box-shadow: inset 0 0 0 1px rgba(255, 146, 138, .14);
+}
+.lcm-seg:hover { filter: brightness(1.16); }
+.lcm-seg.sel { box-shadow: inset 0 0 0 2px #F1F4F8; z-index: 2; }
+.lcm-seg-lbl {
+  font: 600 11px/1 var(--ds-mono); font-variant-numeric: tabular-nums;
+  color: #F1F4F8; pointer-events: none; white-space: nowrap; text-shadow: 0 1px 2px rgba(0, 0, 0, .45);
+}
+.lcm-seg.lit.today .lcm-seg-lbl { color: #091410; text-shadow: none; }
+.lcm-seg.dark .lcm-seg-lbl { color: #FFD3CF; }
+.lcm-tl-ahead { position: absolute; top: 0; bottom: 0; background: rgba(255, 255, 255, .04); pointer-events: none; }
+.lcm-tl-tick {
+  position: absolute; top: 0; bottom: 0; width: 1px;
+  background: rgba(255, 255, 255, .08); pointer-events: none; z-index: 1;
+}
+.lcm-tl-nt {
+  position: absolute; top: 0; bottom: 0; width: 1px;
+  border-left: 1px dashed rgba(134, 179, 227, .45); pointer-events: none; z-index: 1;
+}
+.lcm-tl-now {
+  position: absolute; top: 0; bottom: 0; width: 2px;
+  background: #F1F4F8; pointer-events: none; z-index: 3;
+}
+.lcm-tl-axis {
+  display: flex; justify-content: space-between; margin-top: 4px;
+  font: 500 10px/1.2 var(--ds-mono); font-variant-numeric: tabular-nums; color: #8A95A5;
+}
+/* Fixed height prevents cursor-driven layout shifts on segment hover/click. */
+.lcm-inspect {
+  height: 78px; box-sizing: border-box; overflow: hidden;
+  padding: 10px 12px; border-radius: 8px;
+  background: #0E1217; border: 1px solid #29323D;
+  display: flex; flex-direction: column; justify-content: center; gap: 4px;
+}
+.lcm-insp-idle { font: 500 12px/1.3 var(--ds-sans); color: #A9B5C3; }
+.lcm-insp-top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.lcm-insp-span { font: 600 13px/1.2 var(--ds-mono); font-variant-numeric: tabular-nums; color: #F1F4F8; }
+.lcm-insp-ord { margin-left: auto; font: 500 11px/1.2 var(--ds-mono); color: #93A0AF; }
+.lcm-insp-meta {
+  display: flex; flex-wrap: wrap; gap: 2px 14px;
+  font: 400 11px/1.35 var(--ds-mono); font-variant-numeric: tabular-nums; color: #93A0AF;
+}
+.lcm-list { display: flex; flex-direction: column; gap: 4px; }
+.lcm-row {
+  display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 7px;
+  background: #0E1217; border: 1px solid #232B35; cursor: pointer;
+  font: 500 12px/1.3 var(--ds-mono); font-variant-numeric: tabular-nums;
+  transition: background .1s, border-color .1s;
+}
+.lcm-row:hover { background: #1A212B; border-color: #364352; }
+.lcm-row.sel { background: #1E2733; border-color: #56687E; }
+.lcm-row-kind { display: inline-flex; align-items: center; gap: 6px; min-width: 84px; }
+.lcm-row-kind i { width: 7px; height: 7px; border-radius: 2px; }
+.lcm-row.lit .lcm-row-kind { color: #62D6A8; }
+.lcm-row.lit .lcm-row-kind i { background: var(--ds-ok); }
+.lcm-row.dark .lcm-row-kind { color: #FF928A; }
+.lcm-row.dark .lcm-row-kind i { background: var(--ds-bad); }
+.lcm-row-span { color: #F1F4F8; }
+.lcm-row-dur { color: #A9B5C3; margin-left: auto; }
+.lcm-row-cont {
+  padding: 1px 6px; border-radius: 4px; background: #232B35; color: #D3DAE3; font-size: 10.5px;
+}
+.lcm-empty {
+  padding: 28px 16px; border-radius: 9px; background: #0E1217; border: 1px solid #232B35;
+  display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center;
+}
+.lcm-empty strong { font: 600 15px/1.3 var(--ds-mono); color: #F1F4F8; }
+.lcm-empty span { font: 400 12px/1.4 var(--ds-sans); color: #93A0AF; }
 .lc-note {
   position: absolute; left: 0; right: 0; top: 0; height: ${LC_H}px;
   display: none; align-items: center; justify-content: center;

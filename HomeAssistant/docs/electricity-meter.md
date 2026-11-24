@@ -26,7 +26,7 @@ From [`config/packages/electricity_meter.yaml`](../config/packages/electricity_m
 | --- | --- |
 | `sensor.electricity_meter_tariff_day` / `_night` | The register split by zone, reset monthly. The Energy dashboard's two grid sources. |
 | `select.electricity_meter_tariff` | Which zone is counting. Switched by the clock: night 23:00–07:00, set again on every start. |
-| `sensor.grid_light_today` | Hours of light (mains) since midnight, a `history_stats` of the grid sensor. Its long-term statistics keep each day's total (hourly `max` over `01:00–23:00`, skipping `00:00`'s midnight carry-over); the Shutdowns card reads them. |
+| `sensor.grid_light_today` | Hours of light (mains) since midnight, a `history_stats` of the grid sensor. Its long-term statistics keep each day's total (hourly `max` over `01:00–23:00`, skipping `00:00`'s midnight carry-over) and hourly `min`/`max`/`mean` from which the Shutdowns card reconstructs exact `00:00–24:00` light periods for each day's preview and modal timeline. |
 
 **The light history before 14.11.2026 is an estimate.** The grid sensor came
 with firmware 2.3.0 that afternoon. The days 25.10–13.11 were imported into
