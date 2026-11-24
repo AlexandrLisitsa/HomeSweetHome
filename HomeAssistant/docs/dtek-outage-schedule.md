@@ -132,27 +132,30 @@ timeline, week]` and `[source]`.
   the reason takes its place, followed by just today and tomorrow when a
   schedule is applied, because `plan_off` only withdraws the weekly table.
   Each row's dark-hours total has the day's measured light under it, in green.
-  Below the weekly card sits **Light, measured at the meter**: an interactive
-  daily hours bar chart (`0–24 h`, `7d` / `14d` / `30d` / `All`) with
-  drag-to-pan, scroll/pinch-to-zoom, double-click to return to today, and
+  Below the weekly card sits **Light, measured at the meter**, with a
+  **Daily / Hourly** granularity toggle (`7d` / `14d` / `30d` / `All` and
   `Today / Min / Max / Mean` summary stats, shown whether DTEK publishes a
-  table or not. Hovering any bar shows a lightweight day preview (delta vs
-  average, a horizontal `00:00–24:00` power/outage strip, light windows, and
-  day/night tariff split `07:00–23:00` / `23:00–07:00`); clicking any bar opens a
-  large centered 24-hour modal with four KPI cards, an interactive timeline with
-  night-tariff (`23:00–07:00`) and `now` markers, a fixed-height segment
-  inspector (cross-midnight continuous duration and hourly reliability
+  table or not). In **Daily** mode it draws a `0–24 h` bar chart with
+  drag-to-pan, scroll/pinch-to-zoom, double-click to return to today, and a
+  lightweight hover preview (delta vs average, `00:00–24:00` strip, light
+  windows, and day/night tariff split `07:00–23:00` / `23:00–07:00`). In
+  **Hourly** mode it stacks days newest-first along a shared horizontal
+  `00:00–24:00` axis with night-tariff markers, an aggregate `Avg %` 24-hour
+  reliability bar, backward/forward/Today window paging, and a 2D hover
+  crosshair and tooltip. Clicking any bar or day row opens a large centered
+  24-hour modal with four KPI cards, an interactive timeline, a fixed-height
+  segment inspector (cross-midnight continuous duration and hourly reliability
   `At HH:00: power on X / N days`), a chronological intervals list, and
-  previous/next day navigation (plus keyboard `Escape` / arrow keys). Card blocks
-  render into persistent slots updated in place so periodic sensor refreshes
-  preserve scroll position and keep open modals undisturbed. Past days come from
-  one `recorder/statistics_during_period` request (`min`, `max`, `mean` hourly
-  statistics, skipping `00:00` on daily totals so `history_stats`'s midnight
-  reset carry-over never bleeds yesterday's total onto the next day, while
-  using the hourly `min`/`max`/`mean` ramp to reconstruct exact intervals),
-  re-read once an hour while on screen; today combines completed hours with the
-  live sensor. Without a light sensor (`light_entity: null`, or a house with
-  no meter) none of it is drawn.
+  previous/next day navigation (plus keyboard `Escape` / arrow keys). Card
+  blocks render into persistent slots updated in place so periodic sensor
+  refreshes preserve scroll position and keep open modals undisturbed. Past days
+  come from one `recorder/statistics_during_period` request (`min`, `max`,
+  `mean` hourly statistics, skipping `00:00` on daily totals so
+  `history_stats`'s midnight reset carry-over never bleeds yesterday's total
+  onto the next day, while using the hourly `min`/`max`/`mean` ramp to
+  reconstruct exact intervals), re-read once an hour while on screen; today
+  combines completed hours with the live sensor. Without a light sensor
+  (`light_entity: null`, or a house with no meter) none of it is drawn.
 - `days`: today and tomorrow alone, as the week block draws them. Kept so an
   older config still renders; the dashboard no longer uses it.
 - `source`: where the data came from.

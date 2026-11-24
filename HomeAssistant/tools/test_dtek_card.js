@@ -576,12 +576,14 @@ eq("[hero, days, week]: all three", [!!r.root.querySelector(".hero"), r.root.que
     const s = l.root.querySelectorAll(".lc-stat").find((x) => x.querySelector("b").textContent === k);
     return s ? s.querySelector("span").textContent.replace(/\s+/g, " ").trim() : null;
   };
-  eq("single bar chart rendered without second periods chart, 7d active by default",
+  eq("single bar chart rendered without second periods chart, 7d active & Daily mode by default",
     [!!l.root.querySelector(".lightchart"), !!l.root.querySelector(".lc-plot"),
       !l.root.querySelector(".lc-plot-per"), !l.root.querySelector(".lc-subhead"),
       l.text(".lc-win"),
+      l.root.querySelector('.lc-mode[data-val="daily"]').getAttribute("aria-pressed"),
+      l.root.querySelector(".lc-view-daily").hidden, l.root.querySelector(".lc-view-hourly").hidden,
       l.root.querySelectorAll(".lc-seg").find((b) => b.getAttribute("aria-pressed") === "true").getAttribute("data-val")],
-    [true, true, true, true, "last 7 days", "7d"]);
+    [true, true, true, true, "last 7 days", "true", false, true, "7d"]);
   eq("7d draws 6 recorded bars (1 zero bar on Tu, 1 today)",
     [l.root.querySelectorAll(".lc-bar").length, l.root.querySelectorAll(".lc-bar.zero").length,
       l.root.querySelectorAll(".lc-bar.today").length,
@@ -687,6 +689,72 @@ eq("[hero, days, week]: all three", [!!r.root.querySelector(".hero"), r.root.que
   eq("dblclick returns to live preset", [l.text(".lc-win"),
     l.root.querySelectorAll(".lc-seg").find((b) => b.getAttribute("aria-pressed") === "true").getAttribute("data-val")],
     ["all recorded", "all"]);
+
+  // Switch to 7d + Hourly 00:00-24:00 matrix mode: newest-first rows, Avg % bar, 2D hover, paging & modal.
+  fire(l.root.querySelector('.lc-seg[data-val="7d"]'), "click");
+  fire(l.root.querySelector('.lc-mode[data-val="hourly"]'), "click");
+  const hourly = l.root.querySelector(".lc-hourly");
+  const hRows = () => l.root.querySelectorAll(".lch-row");
+  eq("Hourly mode hides Daily plot, shows 7 newest-first day rows & 24 Avg % cells",
+    [l.root.querySelector(".lc-view-daily").hidden, l.root.querySelector(".lc-view-hourly").hidden,
+      l.root.querySelector('.lc-mode[data-val="hourly"]').getAttribute("aria-pressed"),
+      hRows().length, hRows()[0].querySelector(".lch-day").textContent,
+      hRows()[1].querySelector(".lch-tot").textContent, hRows()[4].querySelector(".lch-tot").textContent,
+      hRows()[6].querySelector(".lch-tot").textContent,
+      l.root.querySelectorAll(".lch-relcell").length],
+    [true, false, "true", 7, "Today", "3h48", "0h00", "—", 24]);
+
+  const hBody = hourly.querySelector(".lch-body");
+  const hTip = hourly.querySelector(".lch-tip");
+  hBody.getBoundingClientRect = () => ({ left: 0, top: 0, width: 600, height: 190 });
+  const frRow = hRows()[1];
+  frRow.getBoundingClientRect = () => ({ left: 0, top: 25, bottom: 47, width: 600, height: 22 });
+  frRow.querySelector(".lch-bar").getBoundingClientRect = () => ({ left: 82, top: 25, width: 466, height: 22 });
+  hourly.querySelector(".lch-relbar").getBoundingClientRect = () => ({ left: 82, top: 165, width: 466, height: 18 });
+
+  l.card._onLcHourlyHover({ target: frRow, clientX: 82 + (20.5 / 24) * 466 });
+  eq("Hourly row hover on light window shows POWER ON, span & hourly reliability",
+    [hTip.classList.contains("on"), /Fr 16\.10\.2026/.test(hTip.textContent),
+      /POWER ON/.test(hTip.textContent), /18:48 – 22:36 · 3h 48m/.test(hTip.textContent),
+      /At 20:00: power on 2 \/ 5 days \(40%\)/.test(hTip.textContent)],
+    [true, true, true, true, true]);
+
+  l.card._onLcHourlyHover({ target: frRow, clientX: 82 + (10 / 24) * 466 });
+  eq("Hourly row hover on dark gap shows NO GRID & cross-midnight continuous outage",
+    [/NO GRID/.test(hTip.textContent), /00:00 – 18:48/.test(hTip.textContent),
+      /Continuous: 15\.10 17:01 → 18:48 \(25h 47m\)/.test(hTip.textContent)],
+    [true, true, true]);
+
+  const rel20 = l.root.querySelectorAll(".lch-relcell")[20];
+  l.card._onLcHourlyHover({ target: rel20, clientX: 82 + (20.5 / 24) * 466 });
+  eq("Hourly Avg % bar hover shows hour range & reliability",
+    [hTip.classList.contains("on"), /20:00 – 21:00/.test(hTip.textContent),
+      /40% ON/.test(hTip.textContent), /Power on 2 \/ 5 days/.test(hTip.textContent)],
+    [true, true, true, true]);
+  l.card._lcHourlyLeave();
+
+  fire(frRow, "click");
+  eq("clicking Hourly row opens large 24h modal for that day",
+    [modal.hidden, /Fr 16\.10\.2026/.test(modal.textContent)], [false, true]);
+  fire(modal.querySelector('[data-act="lc-close"]'), "click");
+  eq("closing modal from Hourly mode hides modal", modal.hidden, true);
+
+  fire(l.root.querySelector('[data-act="lc-win-prev"]'), "click");
+  eq("Hourly prev pager steps window back to 08.10 – 14.10", l.text(".lc-win"), "08.10 – 14.10");
+  fire(l.root.querySelector('[data-act="lc-win-live"]'), "click");
+  eq("Hourly Today button returns to last 7 days", l.text(".lc-win"), "last 7 days");
+
+  fire(l.root.querySelector('.lc-seg[data-val="14d"]'), "click");
+  eq("14d in Hourly mode shows 14 compact rows including 08.10",
+    [hRows().length, l.root.querySelector(".lch-rows").classList.contains("compact"),
+      hRows().some((r) => /08\.10/.test(r.textContent))],
+    [14, true, true]);
+
+  fire(l.root.querySelector('.lc-mode[data-val="daily"]'), "click");
+  eq("switching back to Daily keeps persistent chart DOM node",
+    [l.root.querySelector(".lc-view-daily").hidden, l.root.querySelector(".lc-view-hourly").hidden,
+      l.root.querySelector(".lc-plot") === plot],
+    [false, true, true]);
 
   l.card._fingerprint = null;
   l.card._render();
