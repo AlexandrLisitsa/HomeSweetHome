@@ -132,12 +132,16 @@ timeline, week]` and `[source]`.
   the reason takes its place, followed by just today and tomorrow when a
   schedule is applied, because `plan_off` only withdraws the weekly table.
   Each row's dark-hours total has the day's measured light under it, in green.
-  Under the rows, **Light, measured at the meter**: the last seven days as bars
-  of 24 hours with the figure, whether DTEK publishes a table or not. Past days
-  come from one `recorder/statistics_during_period` request (daily `max` of
-  the light sensor), once a day and only while the card is on screen; today is
-  the live value. Without a light sensor (`light_entity: null`, or a house with
-  no meter) none of it is drawn.
+  Below the weekly card sits **Light, measured at the meter**: an interactive
+  24-hour bar chart (`7d` / `14d` / `30d` / `All`) with drag-to-pan,
+  scroll/pinch-to-zoom, double-click to return to today, a hover readout per
+  day, and `Today / Min / Max / Mean` summary stats, shown whether DTEK
+  publishes a table or not. Past days come from one
+  `recorder/statistics_during_period` request (hourly `max` of the light sensor,
+  skipping `00:00` so `history_stats`'s midnight reset carry-over never bleeds
+  yesterday's total onto the next day), once a day and only while the card is
+  on screen; today is the live value. Without a light sensor (`light_entity:
+  null`, or a house with no meter) none of it is drawn.
 - `days`: today and tomorrow alone, as the week block draws them. Kept so an
   older config still renders; the dashboard no longer uses it.
 - `source`: where the data came from.

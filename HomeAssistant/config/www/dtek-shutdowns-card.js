@@ -46,7 +46,7 @@
 const CARD = "dtek-shutdowns-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "2.8.1";
+const VERSION = "2.9.0";
 
 /*
  * The grid shows the NORMAL condition, not the exception: a cell is green when
@@ -250,9 +250,15 @@ const HELP = {
   day_light: "Hours that day the meter was lit, i.e. mains was there; green, under the plan.\n"
     + "E.g. 18h05 under 6h: DTEK planned six dark hours and the day had about six.\n"
     + "Blank: before the meter counted, or a day still to come.",
-  light_week: "Hours of mains on each of the last seven days, measured at the electricity meter.\n"
-    + "E.g. Th 13.11: 9h10 lit, so the grid was gone for almost 15 hours of that day.\n"
-    + "Days before 14.11.2026 are estimated from the inverter's hourly grid voltage.",
+  lc_name: "Daily hours of mains at the meter: drag to pan, scroll or pinch to zoom.\n"
+    + "E.g. Th 13.11: 9h 10m lit, so the grid was gone for almost 15 hours of that day.\n"
+    + "Tap: opens the sensor. Double-click the plot or pick a range to return to today.",
+  lc_win: "The dates shown on the bar chart; days before 14.11.2026 come from inverter voltage.\n"
+    + "E.g. last 14 days, or 02.11–08.11 after dragging back into earlier history.",
+  lc_range: "Shows this span of daily light bars ending today and resets any pan or zoom.\n"
+    + "E.g. 30d shows the last month of recorded days; All covers every day on record.",
+  lc_stat: "Today is live from the meter; Min, Max and Mean cover completed days in the window.\n"
+    + "E.g. 7d: Min 3h 48m, Max 22h 0m, Mean 15h 46m across the six finished days.",
 };
 
 const DAY_SHORT = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
@@ -298,6 +304,19 @@ const DEFAULTS = {
 };
 
 const BLOCKS = ["hero", "timeline", "days", "week", "source"];
+// Presets and geometry for the "Light, measured at the meter" history bar chart.
+const LIGHT_RANGES = {
+  "7d": { days: 7, label: "last 7 days" },
+  "14d": { days: 14, label: "last 14 days" },
+  "30d": { days: 30, label: "last 30 days" },
+  all: { days: null, label: "all recorded" },
+};
+const LIGHT_RANGE_ORDER = ["7d", "14d", "30d", "all"];
+const LC_W = 1000;
+const LC_H = 180;
+const LC_PAD_T = 22;
+const LC_PAD_B = 6;
+const LC_MIN_DAYS = 5;
 // How often the timeline asks the recorder again while nothing it shows changed.
 const HISTORY_TTL = 5 * 60000;
 
@@ -399,11 +418,15 @@ const pad2 = (n) => String(n).padStart(2, "0");
  * HELP[key]. Line 1 is clipped at 90 characters, because a reason or a drift
  * warning is free text off DTEK's site and a tooltip box is not a page.
  */
-function tip(name, state, key) {
+function tipText(name, state, key) {
   let first = state === null || state === undefined || state === ""
     ? name : name + " " + MDASH + " " + state;
   if (first.length > 90) first = first.slice(0, 89) + "…";
-  return ' data-tip="' + esc(first + "\n" + HELP[key]) + '"';
+  return first + "\n" + HELP[key];
+}
+
+function tip(name, state, key) {
+  return ' data-tip="' + esc(tipText(name, state, key)) + '"';
 }
 
 /** 17 -> "17h", 16.5 -> "16.5h". Half-hour states make the fractions real. */
@@ -420,6 +443,42 @@ function fmtHM(hours, tight) {
 
 /** A local date as "2026-11-14", the key the light statistics are kept under. */
 const dayKey = (d) => d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
+
+/** DST-safe integer UTC day number for a local calendar date. */
+const dayNum = (d) => Math.round(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 864e5);
+
+/** Local midnight Date for an integer dayNum(). */
+function dateFromDayNum(n) {
+  const u = new Date(n * 864e5);
+  return new Date(u.getUTCFullYear(), u.getUTCMonth(), u.getUTCDate());
+}
+
+/**
+ * Daily hours of light from hourly `max` statistics.
+ *
+ * sensor.grid_light_today (history_stats) resets shortly after midnight
+ * (00:00:xx), so the 00:00–01:00 bucket carries yesterday's final total as its
+ * `max`. Skipping hour 00 leaves 01:00–23:00; because the counter is
+ * monotonically non-decreasing after midnight's reset, that still preserves
+ * any light recorded between 00:00 and 01:00.
+ */
+function dailyLightFromHours(rows) {
+  const days = {};
+  let firstDay = null;
+  if (!Array.isArray(rows)) return { days, firstDay };
+  rows.forEach((row) => {
+    if (!row) return;
+    const start = typeof row.start === "number" ? new Date(row.start) : parseDate(row.start);
+    const val = typeof row.max === "number" ? row.max : parseFloat(row.max);
+    if (!start || !Number.isFinite(val)) return;
+    if (start.getHours() === 0) return;
+    const key = dayKey(start);
+    if (days[key] === undefined || val > days[key]) days[key] = val;
+    const dn = dayNum(start);
+    if (firstDay === null || dn < firstDay) firstDay = dn;
+  });
+  return { days, firstDay };
+}
 
 /** Cell index to a wall clock reading, half meaning the :30 boundary. */
 const clock = (h, half) => pad2(((h % 24) + 24) % 24) + (half ? ":30" : ":00");
@@ -574,26 +633,52 @@ class DtekShutdownsCard extends HTMLElement {
     // Today's history for the timeline: { day, key, at, spans, note } once fetched.
     this._hist = null;
     this._histBusy = false;
+    // Light history bar chart: live preset or custom { start, end } day-index viewport.
+    this._lcRange = "7d";
+    this._lcView = null;
+    this._lcDom = null;
+    this._lcData = null;
+    this._lcPointers = new Map();
+    this._lcGesture = null;
+    this._lcDragging = false;
+    this._lcMoved = false;
+    this._lcHovering = false;
+    this._lcHoverX = null;
+    this._lcDeferredRender = false;
     // Off screen or in a hidden tab: nothing moves and nothing is fetched.
     this._offscreen = false;
     this._onVisibility = () => this._pause();
     // Anything carrying data-more opens HA's own dialog for that entity, as the
-    // stock history-graph's rows did. One listener on the root: innerHTML is
-    // replaced on every redraw, so per-element listeners would be lost.
-    const open = (ev) => {
+    // stock history-graph's rows did. data-act="lrange" switches the light
+    // chart preset. One listener on the root: innerHTML is replaced on redraw.
+    const act = (ev) => {
       let el = ev.target;
-      while (el && el !== this.shadowRoot && !(el.getAttribute && el.getAttribute("data-more"))) {
+      while (el && el !== this.shadowRoot) {
+        if (el.getAttribute) {
+          if (el.getAttribute("data-act") === "lrange") {
+            const val = el.getAttribute("data-val");
+            if (LIGHT_RANGES[val]) {
+              this._lcRange = val;
+              this._lcView = null;
+              this._patchLightChart(new Date());
+              return true;
+            }
+          }
+          const more = el.getAttribute("data-more");
+          if (more) {
+            this.dispatchEvent(new CustomEvent("hass-more-info", {
+              detail: { entityId: more }, bubbles: true, composed: true,
+            }));
+            return true;
+          }
+        }
         el = el.parentNode;
       }
-      if (!el || el === this.shadowRoot) return false;
-      this.dispatchEvent(new CustomEvent("hass-more-info", {
-        detail: { entityId: el.getAttribute("data-more") }, bubbles: true, composed: true,
-      }));
-      return true;
+      return false;
     };
-    this.shadowRoot.addEventListener("click", open);
+    this.shadowRoot.addEventListener("click", act);
     this.shadowRoot.addEventListener("keydown", (ev) => {
-      if ((ev.key === "Enter" || ev.key === " ") && open(ev)) ev.preventDefault();
+      if ((ev.key === "Enter" || ev.key === " ") && act(ev)) ev.preventDefault();
     });
   }
 
@@ -653,6 +738,8 @@ class DtekShutdownsCard extends HTMLElement {
     if (typeof document.removeEventListener === "function") {
       document.removeEventListener("visibilitychange", this._onVisibility);
     }
+    this._lcPointers.clear();
+    this._lcDragging = false;
   }
 
   /** Every animation holds while no one can see the card; coming back catches up. */
@@ -710,6 +797,8 @@ class DtekShutdownsCard extends HTMLElement {
       cfg.debug_state, cfg.debug_banner, cfg.week_style,
       this._hist && [this._hist.at, this._hist.note],
       this._light && this._light.at,
+      this._lcRange,
+      this._lcView && [this._lcView.start, this._lcView.end],
     ]);
   }
 
@@ -741,32 +830,31 @@ class DtekShutdownsCard extends HTMLElement {
   }
 
   /**
-   * One statistics request for this week and last: each day's `max` of the
-   * light sensor is that day's total, because history_stats counts up from
-   * midnight. Keyed by local date; today is read live instead.
+   * One hourly statistics request for all recorded history: daily totals are
+   * built from hours 01:00–23:00 so history_stats's midnight reset carry-over
+   * into hour 00:00 never bleeds yesterday's value onto today.
    */
   async _loadLight(now) {
     this._lightBusy = true;
     const id = this._config.light_entity;
-    const from = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 13);
-    const days = {};
+    let days = {};
+    let firstDay = null;
     let failed = false;
     try {
       const reply = await this._hass.callWS({
         type: "recorder/statistics_during_period",
-        start_time: from.toISOString(),
+        start_time: "2020-01-01T00:00:00Z",
         statistic_ids: [id],
-        period: "day",
+        period: "hour",
         types: ["max"],
       });
-      ((reply || {})[id] || []).forEach((row) => {
-        const start = typeof row.start === "number" ? new Date(row.start) : parseDate(row.start);
-        if (start && typeof row.max === "number") days[dayKey(start)] = row.max;
-      });
+      const parsed = dailyLightFromHours((reply || {})[id]);
+      days = parsed.days;
+      firstDay = parsed.firstDay;
     } catch (err) {
       failed = true;
     }
-    this._light = { day: now.toDateString(), at: Date.now(), days, failed };
+    this._light = { day: now.toDateString(), at: Date.now(), days, firstDay, failed };
     this._lightBusy = false;
     this._render();
   }
@@ -776,7 +864,7 @@ class DtekShutdownsCard extends HTMLElement {
     if (!this._lightObj()) return null;
     const key = dayKey(date);
     if (key === dayKey(now)) return this._lightToday();
-    if (date > now) return null;
+    if (dayNum(date) > dayNum(now)) return null;
     const v = this._light && this._light.days[key];
     return typeof v === "number" ? v : null;
   }
@@ -834,6 +922,10 @@ class DtekShutdownsCard extends HTMLElement {
 
   _render() {
     if (!this._hass || !this._config) return;
+    if (this._lcDragging) {
+      this._lcDeferredRender = true;
+      return;
+    }
     const now = new Date();
     if (this._wantHistory(now)) this._loadHistory(now);
     if (this._wantLight(now)) this._loadLight(now);
@@ -850,6 +942,11 @@ class DtekShutdownsCard extends HTMLElement {
 
     const grid = this.shadowRoot.querySelector(".grid, .bulbs");
     if (grid && scrollLeft) grid.scrollLeft = scrollLeft;
+
+    this._wireLightChart();
+    if (this._lcHovering && this._lcHoverX !== null) {
+      this._onLcHover({ clientX: this._lcHoverX });
+    }
   }
 
   // --- deriving ------------------------------------------------------------
@@ -1323,14 +1420,6 @@ class DtekShutdownsCard extends HTMLElement {
       // Hours of light today at the meter: a number, null when the meter has
       // no answer, undefined when no light sensor is configured or present.
       lightToday: this._lightObj() ? this._lightToday() : undefined,
-      // The last seven days, oldest first, whatever DTEK publishes: the
-      // history the week block keeps even with DTEK's table withdrawn.
-      lightWeek: this._lightObj() ? [6, 5, 4, 3, 2, 1, 0].map((back) => {
-        const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() - back);
-        return { name: back ? DAY_SHORT[(date.getDay() + 6) % 7] : "Today",
-                 sub: pad2(date.getDate()) + "." + pad2(date.getMonth() + 1),
-                 h: this._lightOn(date, now) };
-      }) : null,
       // Null rather than "0h": both are computed from a pattern DTEK has
       // withdrawn, and a zero reads as a measured week with no outages in it.
       weekOff: weekLive ? fmtHours(weekOff) : null,
@@ -1367,9 +1456,11 @@ class DtekShutdownsCard extends HTMLElement {
         + '<p class="note err">' + esc(cfg.entity) + " does not exist. Is "
         + "packages/dtek_shutdowns.yaml loaded?</p></div></ha-card></div>";
     }
+    this._lcDom = null;
+    this._lcData = null;
     const d = this._derive(now, main.attributes || {});
     const draw = { hero: () => this._hero(d), timeline: () => this._timelineCard(d, now),
-                   days: () => this._daysCard(d), week: () => this._weekCard(d),
+                   days: () => this._daysCard(d), week: () => this._weekCard(d, now),
                    source: () => this._sourceCard(d) };
     return '<div class="wrap k-' + d.kind + '" style="--accent:' + d.accent + '">'
       + this._config.blocks.map((b) => draw[b]()).join("")
@@ -1706,7 +1797,7 @@ class DtekShutdownsCard extends HTMLElement {
       + inner + "</div></ha-card>";
   }
 
-  _weekCard(d) {
+  _weekCard(d, now) {
     // The card, its heading and the Published stamp stay in every branch.
     // DTEK does the same -- discon-schedule.js:708 empties #tableRenderElem and
     // leaves the section standing -- and on the one screen anybody opens during
@@ -1738,23 +1829,493 @@ class DtekShutdownsCard extends HTMLElement {
       + '<span class="stamp"' + tip("Schedule published", d.published, "published")
       + ">Published " + esc(d.published) + "</span></div>"
       + (blurb === null ? "" : '<p class="blurb">' + esc(blurb) + "</p>")
-      + inner + this._lightStrip(d) + "</div></ha-card>";
+      + inner + "</div></ha-card>" + this._lightCard(now);
   }
 
-  /** Seven days of measured light: a bar of the 24 hours and the figure, per day. */
-  _lightStrip(d) {
-    if (!d.lightWeek) return "";
-    const days = d.lightWeek.map((x) => {
-      const has = typeof x.h === "number";
-      const pct = has ? Math.max(0, Math.min(100, (x.h / 24) * 100)).toFixed(1) : "0";
-      return '<div class="lwday' + (x.name === "Today" ? " today" : "") + '"'
-        + tip(x.name + " " + x.sub, has ? fmtHM(x.h) + " of light" : "not counted", "light_week") + ">"
-        + '<span class="lwbar"><span style="height:' + pct + '%"></span></span>'
-        + '<span class="lwv' + (has ? "" : " dim") + '">' + (has ? fmtHM(x.h, true) : MDASH) + "</span>"
-        + '<span class="lwn">' + esc(x.name) + "<br>" + esc(x.sub) + "</span></div>";
+  // --- light history bar chart ---------------------------------------------
+
+  _lcBounds(now) {
+    const todayN = dayNum(now);
+    const maxEnd = todayN + 1;
+    const rawFirst = this._light && typeof this._light.firstDay === "number"
+      ? this._light.firstDay : todayN - 6;
+    const firstN = Math.min(rawFirst, todayN);
+    const totalDays = Math.max(7, maxEnd - firstN);
+    const maxDays = Math.max(30, totalDays);
+    return { todayN, maxEnd, firstN, totalDays, minDays: LC_MIN_DAYS, maxDays };
+  }
+
+  _lcDomain(now) {
+    const b = this._lcBounds(now);
+    if (this._lcView) return { t0: this._lcView.start, t1: this._lcView.end, bounds: b };
+    const rg = LIGHT_RANGES[this._lcRange] || LIGHT_RANGES["7d"];
+    const span = rg.days === null ? b.totalDays : rg.days;
+    return { t0: b.maxEnd - span, t1: b.maxEnd, bounds: b };
+  }
+
+  _lcSetView(start, end, now) {
+    const b = this._lcBounds(now);
+    const minStart = Math.min(b.firstN, b.maxEnd - b.totalDays);
+    const availMax = Math.max(b.minDays, b.maxEnd - minStart);
+    const span = Math.max(b.minDays, Math.min(Math.min(b.maxDays, availMax), end - start));
+    let t1 = Math.min(b.maxEnd, end);
+    let t0 = t1 - span;
+    if (t0 < minStart) { t0 = minStart; t1 = Math.min(b.maxEnd, t0 + span); }
+    this._lcView = { start: t0, end: t1 };
+  }
+
+  _lcCompute(now) {
+    const dom = this._lcDomain(now);
+    const { t0, t1, bounds } = dom;
+    const span = t1 - t0;
+    const todayN = bounds.todayN;
+    const fmtD = (dn, withYear) => {
+      const dt = dateFromDayNum(dn);
+      const base = pad2(dt.getDate()) + "." + pad2(dt.getMonth() + 1);
+      return withYear ? base + "." + String(dt.getFullYear()).slice(-2) : base;
+    };
+
+    const statD0 = Math.round(t0);
+    const statD1 = Math.max(statD0, Math.round(t1) - 1);
+    const isLiveEnd = t1 >= bounds.maxEnd - 0.05;
+    let winLabel;
+    if (!this._lcView) {
+      winLabel = (LIGHT_RANGES[this._lcRange] || LIGHT_RANGES["7d"]).label;
+    } else if (isLiveEnd) {
+      winLabel = "last " + Math.round(span) + " days";
+    } else {
+      const yNow = now.getFullYear();
+      const cross = dateFromDayNum(statD0).getFullYear() !== yNow
+        || dateFromDayNum(statD1).getFullYear() !== yNow;
+      winLabel = fmtD(statD0, cross) + " " + DASH + " " + fmtD(statD1, cross);
+    }
+
+    const barD0 = Math.floor(t0 + 0.001);
+    const barD1 = Math.max(barD0, Math.ceil(t1 - 0.001) - 1);
+    const bars = [];
+    const byDn = {};
+    for (let dn = barD0; dn <= barD1; dn++) {
+      const date = dateFromDayNum(dn);
+      const isToday = dn === todayN;
+      const h = isToday ? this._lightToday() : this._lightOn(date, now);
+      const item = { dn, date, isToday, h };
+      bars.push(item);
+      byDn[dn] = item;
+    }
+
+    const statItems = [];
+    for (let dn = statD0; dn <= statD1; dn++) {
+      const date = dateFromDayNum(dn);
+      const item = byDn[dn] || {
+        dn,
+        date,
+        isToday: dn === todayN,
+        h: dn === todayN ? this._lightToday() : this._lightOn(date, now),
+      };
+      statItems.push(item);
+    }
+    const completed = statItems.filter((x) => !x.isToday && typeof x.h === "number");
+    const pool = completed.length ? completed
+      : statItems.filter((x) => typeof x.h === "number");
+    let minItem = null, maxItem = null, sum = 0;
+    pool.forEach((x) => {
+      if (minItem === null || x.h < minItem.h) minItem = x;
+      if (maxItem === null || x.h > maxItem.h) maxItem = x;
+      sum += x.h;
+    });
+    const mean = pool.length ? sum / pool.length : null;
+    const todayH = this._lightToday();
+
+    let note = null;
+    if (!this._light) note = "Loading light history…";
+    else if (this._light.failed && !Object.keys(this._light.days).length) {
+      note = "Light history unavailable";
+    }
+
+    return {
+      t0, t1, span, todayN, winLabel, bars, byDn,
+      todayH, minItem, maxItem, mean, note, fmtD,
+    };
+  }
+
+  _lcRenderParts(d) {
+    const plotH = LC_H - LC_PAD_T - LC_PAD_B;
+    const yOf = (h) => LC_PAD_T + (1 - Math.max(0, Math.min(24, h)) / 24) * plotH;
+    const yBase = LC_PAD_T + plotH;
+    const slotW = LC_W / d.span;
+    const gap = Math.max(1.5, Math.min(24, slotW * 0.24));
+    const barW = Math.max(2, slotW - gap);
+
+    let barsSvg = "";
+    if (d.mean !== null) {
+      const ym = yOf(d.mean).toFixed(1);
+      barsSvg += '<line class="lc-mean" x1="0" x2="' + LC_W + '" y1="' + ym + '" y2="' + ym + '"></line>';
+    }
+    let valsHtml = "";
+    const showVals = d.span <= 10.5;
+
+    d.bars.forEach((b) => {
+      if (typeof b.h !== "number") return;
+      const val = Math.max(0, Math.min(24, b.h));
+      const xSlot = (b.dn - d.t0) * slotW;
+      const xBar = xSlot + (slotW - barW) / 2;
+      const cxPct = ((b.dn + 0.5 - d.t0) / d.span) * 100;
+      const todayCls = b.isToday ? " today" : "";
+      if (val === 0) {
+        const yZero = yBase - 3;
+        barsSvg += '<rect class="lc-bar zero' + todayCls + '" x="' + xBar.toFixed(1)
+          + '" y="' + yZero.toFixed(1) + '" width="' + barW.toFixed(1) + '" height="3" rx="1"></rect>';
+        if (showVals && cxPct >= 1 && cxPct <= 99) {
+          valsHtml += '<span class="lc-val' + todayCls + '" style="left:' + cxPct.toFixed(2)
+            + "%;top:" + Math.max(2, yZero - 16).toFixed(1) + 'px">' + fmtHM(0, true) + "</span>";
+        }
+      } else {
+        const yTop = yOf(val);
+        const hPx = Math.max(2, yBase - yTop);
+        barsSvg += '<rect class="lc-bar' + todayCls + '" x="' + xBar.toFixed(1)
+          + '" y="' + yTop.toFixed(1) + '" width="' + barW.toFixed(1)
+          + '" height="' + hPx.toFixed(1) + '" rx="2"></rect>';
+        barsSvg += '<rect class="lc-cap' + todayCls + '" x="' + xBar.toFixed(1)
+          + '" y="' + yTop.toFixed(1) + '" width="' + barW.toFixed(1)
+          + '" height="2" rx="1"></rect>';
+        if (showVals && cxPct >= 1 && cxPct <= 99) {
+          valsHtml += '<span class="lc-val' + todayCls + '" style="left:' + cxPct.toFixed(2)
+            + "%;top:" + Math.max(2, yTop - 16).toFixed(1) + 'px">' + fmtHM(val, true) + "</span>";
+        }
+      }
+    });
+
+    let xaxHtml = "";
+    if (d.span <= 10.5) {
+      d.bars.forEach((b) => {
+        const cxPct = ((b.dn + 0.5 - d.t0) / d.span) * 100;
+        if (cxPct < 1 || cxPct > 99) return;
+        const name = b.isToday ? "Today" : DAY_SHORT[(b.date.getDay() + 6) % 7];
+        const sub = pad2(b.date.getDate()) + "." + pad2(b.date.getMonth() + 1);
+        xaxHtml += '<span class="lc-xlab' + (b.isToday ? " today" : "") + '" style="left:'
+          + cxPct.toFixed(2) + '%">' + esc(name) + "<br>" + esc(sub) + "</span>";
+      });
+    } else {
+      const firstTick = Math.ceil(d.t0 - 0.5);
+      const lastTick = Math.floor(d.t1 - 0.5);
+      const count = Math.max(1, lastTick - firstTick + 1);
+      const target = 6;
+      const step = Math.max(1, Math.round((count - 1) / (target - 1)));
+      const ticks = [];
+      for (let dn = firstTick; dn <= lastTick; dn += step) ticks.push(dn);
+      if (ticks.length && lastTick - ticks[ticks.length - 1] >= Math.max(1, Math.floor(step / 2))) {
+        ticks.push(lastTick);
+      }
+      ticks.forEach((dn) => {
+        const cxPct = ((dn + 0.5 - d.t0) / d.span) * 100;
+        if (cxPct < 2 || cxPct > 98) return;
+        xaxHtml += '<span class="lc-xlab single' + (dn === d.todayN ? " today" : "")
+          + '" style="left:' + cxPct.toFixed(2) + '%">' + esc(d.fmtD(dn, false)) + "</span>";
+      });
+    }
+
+    const stat = (label, valStr, subStr, tipState) =>
+      '<div class="lc-stat"' + tip(label, tipState, "lc_stat") + ">"
+      + "<b>" + esc(label) + "</b>"
+      + "<span>" + esc(valStr) + (subStr ? " <small>" + esc(subStr) + "</small>" : "") + "</span>"
+      + "</div>";
+    const statsHtml =
+      stat("Today", d.todayH === null ? MDASH : fmtHM(d.todayH), null,
+           d.todayH === null ? "not counted" : fmtHM(d.todayH) + " so far")
+      + stat("Min", d.minItem ? fmtHM(d.minItem.h) : MDASH,
+             d.minItem ? d.fmtD(d.minItem.dn, false) : null,
+             d.minItem ? fmtHM(d.minItem.h) + " on " + d.fmtD(d.minItem.dn, false) : "no data")
+      + stat("Max", d.maxItem ? fmtHM(d.maxItem.h) : MDASH,
+             d.maxItem ? d.fmtD(d.maxItem.dn, false) : null,
+             d.maxItem ? fmtHM(d.maxItem.h) + " on " + d.fmtD(d.maxItem.dn, false) : "no data")
+      + stat("Mean", d.mean !== null ? fmtHM(d.mean) : MDASH, null,
+             d.mean !== null ? fmtHM(d.mean) + " per day" : "no data");
+
+    return { barsSvg, valsHtml, xaxHtml, statsHtml, xaxTwoLine: d.span <= 10.5 };
+  }
+
+  /** Daily light bar chart card with range presets, pan/zoom and hover readout. */
+  _lightCard(now) {
+    if (!this._lightObj()) return "";
+    const d = this._lcCompute(now);
+    this._lcDom = { t0: d.t0, t1: d.t1 };
+    this._lcData = d;
+    const p = this._lcRenderParts(d);
+    const plotH = LC_H - LC_PAD_T - LC_PAD_B;
+    const gy = [0, 1, 2, 3, 4].map((i) => {
+      const y = (LC_PAD_T + i * plotH / 4).toFixed(0);
+      const cls = i === 2 ? ' class="mid"' : i === 4 ? ' class="base"' : "";
+      return '<line' + cls + ' x1="0" x2="' + LC_W + '" y1="' + y + '" y2="' + y
+        + '" vector-effect="non-scaling-stroke"></line>';
     }).join("");
-    return '<div class="lightweek"><h3>Light, measured at the meter</h3>'
-      + '<div class="lwdays">' + days + "</div></div>";
+    const segs = LIGHT_RANGE_ORDER.map((r) => {
+      const pressed = !this._lcView && this._lcRange === r;
+      const label = r === "all" ? "All" : r;
+      return '<button class="lc-seg" data-act="lrange" data-val="' + r + '" aria-pressed="'
+        + String(pressed) + '"' + tip("Light range", LIGHT_RANGES[r].label, "lc_range")
+        + ">" + label + "</button>";
+    }).join("");
+
+    return '<ha-card class="lightchart"><div class="pad">'
+      + '<div class="lc-head">'
+      + '<div class="lc-title">'
+      + '<span class="lc-name" data-more="' + esc(this._config.light_entity)
+      + '" role="button" tabindex="0"' + tip("Light, measured at the meter", d.winLabel, "lc_name")
+      + '>Light, measured at the meter</span>'
+      + '<span class="lc-win"' + tip("Window", d.winLabel, "lc_win") + ">" + esc(d.winLabel) + "</span>"
+      + "</div>"
+      + '<div class="lc-segs">' + segs + "</div>"
+      + "</div>"
+      + '<div class="lc-chart">'
+      + '<div class="lc-yax"><span>24h</span><span>18h</span><span>12h</span><span>6h</span><span>0h</span></div>'
+      + '<div class="lc-plot">'
+      + '<svg class="lc-svg" viewBox="0 0 ' + LC_W + " " + LC_H + '" preserveAspectRatio="none">'
+      + '<defs><clipPath id="lcclip"><rect x="0" y="0" width="' + LC_W + '" height="' + LC_H + '"></rect></clipPath></defs>'
+      + '<g class="lc-grid">' + gy + "</g>"
+      + '<g class="lc-bars" clip-path="url(#lcclip)">' + p.barsSvg + "</g>"
+      + "</svg>"
+      + '<div class="lc-vals">' + p.valsHtml + "</div>"
+      + '<div class="lc-hv"></div>'
+      + '<div class="lc-tip"></div>'
+      + '<div class="lc-note' + (d.note ? " show" : "") + '">' + esc(d.note || "") + "</div>"
+      + '<div class="lc-xax' + (p.xaxTwoLine ? " two" : "") + '">' + p.xaxHtml + "</div>"
+      + "</div></div>"
+      + '<div class="lc-stats">' + p.statsHtml + "</div>"
+      + '<div class="lc-foot">Drag to pan, pinch or scroll to zoom; double-click or pick a range for today.</div>'
+      + "</div></ha-card>";
+  }
+
+  _patchLightChart(now) {
+    const card = this.shadowRoot.querySelector(".lightchart");
+    if (!card || !this._lightObj()) return;
+    const d = this._lcCompute(now);
+    this._lcDom = { t0: d.t0, t1: d.t1 };
+    this._lcData = d;
+    const p = this._lcRenderParts(d);
+
+    card.querySelectorAll(".lc-seg").forEach((b) => {
+      const pressed = !this._lcView && b.getAttribute("data-val") === this._lcRange;
+      b.setAttribute("aria-pressed", String(pressed));
+    });
+    const nameEl = card.querySelector(".lc-name");
+    if (nameEl) nameEl.setAttribute("data-tip", tipText("Light, measured at the meter", d.winLabel, "lc_name"));
+    const winEl = card.querySelector(".lc-win");
+    if (winEl) {
+      winEl.textContent = d.winLabel;
+      winEl.setAttribute("data-tip", tipText("Window", d.winLabel, "lc_win"));
+    }
+    const barsEl = card.querySelector(".lc-bars");
+    if (barsEl) barsEl.innerHTML = p.barsSvg;
+    const valsEl = card.querySelector(".lc-vals");
+    if (valsEl) valsEl.innerHTML = p.valsHtml;
+    const noteEl = card.querySelector(".lc-note");
+    if (noteEl) {
+      noteEl.textContent = d.note || "";
+      noteEl.classList.toggle("show", !!d.note);
+    }
+    const xaxEl = card.querySelector(".lc-xax");
+    if (xaxEl) {
+      xaxEl.innerHTML = p.xaxHtml;
+      xaxEl.classList.toggle("two", p.xaxTwoLine);
+    }
+    const statsEl = card.querySelector(".lc-stats");
+    if (statsEl) statsEl.innerHTML = p.statsHtml;
+
+    if (this._fingerprint !== null) this._fingerprint = this._fingerprintOf(now);
+    if (this._lcHovering && !this._lcDragging && this._lcHoverX !== null) {
+      this._onLcHover({ clientX: this._lcHoverX });
+    } else {
+      this._hideLcHover();
+    }
+  }
+
+  _wireLightChart() {
+    const plot = this.shadowRoot.querySelector(".lc-plot");
+    if (!plot) return;
+    plot.addEventListener("pointerdown", (e) => this._onLcPointerDown(e));
+    plot.addEventListener("pointermove", (e) => this._onLcPointerMove(e));
+    ["pointerup", "pointercancel"].forEach((n) =>
+      plot.addEventListener(n, (e) => this._onLcPointerUp(e)));
+    plot.addEventListener("wheel", (e) => this._onLcWheel(e), { passive: false });
+    plot.addEventListener("dblclick", () => this._resetLcView());
+    plot.addEventListener("mousemove", (e) => this._onLcHover(e));
+    ["mouseleave", "pointerleave", "pointercancel"].forEach((n) =>
+      plot.addEventListener(n, () => this._lcLeave()));
+  }
+
+  _lcDayAt(clientX, rect, base) {
+    return base.t0 + (clientX - rect.left) / Math.max(1, rect.width) * (base.t1 - base.t0);
+  }
+
+  _lcApplyView(start, end) {
+    const now = new Date();
+    this._lcSetView(start, end, now);
+    this._patchLightChart(now);
+  }
+
+  _lcZoomFrom(base, anchor, factor) {
+    const b = this._lcBounds(new Date());
+    const span = base.t1 - base.t0;
+    const next = Math.max(b.minDays, Math.min(b.maxDays, span / factor));
+    const frac = span > 0 ? (anchor - base.t0) / span : 0.5;
+    const t0 = anchor - frac * next;
+    this._lcApplyView(t0, t0 + next);
+  }
+
+  _resetLcView() {
+    this._lcView = null;
+    this._patchLightChart(new Date());
+  }
+
+  _onLcPointerDown(ev) {
+    if (!this._lcDom || (ev.button !== undefined && ev.button > 0)) return;
+    this._lcPointers.set(ev.pointerId, ev.clientX);
+    this._lcMoved = false;
+    try { ev.currentTarget.setPointerCapture(ev.pointerId); } catch (err) { /* not fatal */ }
+    this._lcBeginGesture(ev.currentTarget);
+  }
+
+  _lcBeginGesture(node) {
+    const xs = Array.from(this._lcPointers.values());
+    const rect = node.getBoundingClientRect ? node.getBoundingClientRect() : { left: 0, width: 1 };
+    this._lcGesture = {
+      base: { t0: this._lcDom.t0, t1: this._lcDom.t1 },
+      rect: rect,
+      xs: xs.slice(),
+      dist: xs.length > 1 ? Math.abs(xs[0] - xs[1]) : 0,
+      mid: xs.length > 1 ? (xs[0] + xs[1]) / 2 : xs[0],
+    };
+    if (xs.length >= 2) {
+      this._lcDragging = true;
+      this._lcMoved = true;
+      node.classList.add("grabbing");
+    }
+  }
+
+  _onLcPointerMove(ev) {
+    if (!this._lcPointers.has(ev.pointerId)) return;
+    this._lcPointers.set(ev.pointerId, ev.clientX);
+    const g = this._lcGesture;
+    if (!g) return;
+    const xs = Array.from(this._lcPointers.values());
+    if (xs.length >= 2) {
+      const dist = Math.abs(xs[0] - xs[1]);
+      if (g.dist > 8 && dist > 8) {
+        this._lcZoomFrom(g.base, this._lcDayAt(g.mid, g.rect, g.base), dist / g.dist);
+      }
+      return;
+    }
+    const dx = xs[0] - g.xs[0];
+    if (!this._lcDragging && Math.abs(dx) < 3) return;
+    this._lcDragging = true;
+    this._lcMoved = true;
+    ev.currentTarget.classList.add("grabbing");
+    this._hideLcHover();
+    const span = g.base.t1 - g.base.t0;
+    const dd = -(dx / Math.max(1, g.rect.width)) * span;
+    this._lcApplyView(g.base.t0 + dd, g.base.t1 + dd);
+  }
+
+  _onLcPointerUp(ev) {
+    if (!this._lcPointers.delete(ev.pointerId)) return;
+    try { ev.currentTarget.releasePointerCapture(ev.pointerId); } catch (err) { /* gone */ }
+    if (this._lcPointers.size) {
+      this._lcBeginGesture(ev.currentTarget);
+      return;
+    }
+    const wasMoved = this._lcMoved;
+    this._lcGesture = null;
+    this._lcDragging = false;
+    this._lcMoved = false;
+    ev.currentTarget.classList.remove("grabbing");
+    if (!wasMoved && ev.pointerType && ev.pointerType !== "mouse") {
+      this._onLcHover(ev);
+    }
+    if (this._lcDeferredRender) {
+      this._lcDeferredRender = false;
+      this._render();
+    }
+  }
+
+  _onLcWheel(ev) {
+    if (!this._lcDom) return;
+    if (typeof ev.preventDefault === "function") ev.preventDefault();
+    const rect = ev.currentTarget.getBoundingClientRect
+      ? ev.currentTarget.getBoundingClientRect() : { left: 0, width: 1 };
+    const base = { t0: this._lcDom.t0, t1: this._lcDom.t1 };
+    const step = ev.deltaMode === 1 ? 0.05 : ev.deltaMode === 2 ? 0.5 : 0.0022;
+    const f = Math.max(0.25, Math.min(4, Math.exp(-ev.deltaY * step)));
+    this._lcZoomFrom(base, this._lcDayAt(ev.clientX, rect, base), f);
+  }
+
+  _onLcHover(ev) {
+    const d = this._lcData;
+    const plot = this.shadowRoot.querySelector(".lc-plot");
+    if (!d || !plot || this._lcDragging) return;
+    const rect = plot.getBoundingClientRect ? plot.getBoundingClientRect() : null;
+    if (!rect || !rect.width) return;
+    this._lcHovering = true;
+    this._lcHoverX = ev.clientX;
+    const dPos = d.t0 + ((ev.clientX - rect.left) / rect.width) * d.span;
+    const dn = Math.floor(dPos);
+    const item = d.byDn[dn];
+    if (!item) { this._hideLcHover(); return; }
+
+    const hv = plot.querySelector(".lc-hv");
+    const tipEl = plot.querySelector(".lc-tip");
+    if (!hv || !tipEl) return;
+
+    const leftPct = Math.max(0, ((dn - d.t0) / d.span) * 100);
+    const rightPct = Math.min(100, ((dn + 1 - d.t0) / d.span) * 100);
+    if (rightPct <= leftPct) { this._hideLcHover(); return; }
+    hv.style.left = leftPct.toFixed(3) + "%";
+    hv.style.width = (rightPct - leftPct).toFixed(3) + "%";
+    hv.classList.add("on");
+
+    const dt = item.date;
+    const dStr = pad2(dt.getDate()) + "." + pad2(dt.getMonth() + 1) + "." + dt.getFullYear();
+    const dayLabel = item.isToday ? "Today · " + dStr : DAY_SHORT[(dt.getDay() + 6) % 7] + " " + dStr;
+    const plotH = LC_H - LC_PAD_T - LC_PAD_B;
+    const yOf = (h) => LC_PAD_T + (1 - Math.max(0, Math.min(24, h)) / 24) * plotH;
+
+    let yTop;
+    if (typeof item.h === "number") {
+      const val = Math.max(0, Math.min(24, item.h));
+      const dark = item.isToday
+        ? Math.max(0, (new Date().getHours() + new Date().getMinutes() / 60) - val)
+        : Math.max(0, 24 - val);
+      const pct = Math.round((val / 24) * 100);
+      const sub = item.isToday
+        ? fmtHM(dark) + " dark so far"
+        : fmtHM(dark) + " dark · " + pct + "% lit";
+      tipEl.innerHTML = "<b>" + esc(fmtHM(val)) + "</b><i>" + esc(dayLabel)
+        + "</i><i>" + esc(sub) + "</i>";
+      yTop = val === 0 ? LC_PAD_T + plotH - 3 : yOf(val);
+    } else {
+      tipEl.innerHTML = "<b>Not recorded</b><i>" + esc(dayLabel)
+        + "</i><i>no statistics for this day</i>";
+      yTop = LC_PAD_T + plotH - 40;
+    }
+
+    const cxPx = ((dn + 0.5 - d.t0) / d.span) * rect.width;
+    tipEl.style.left = Math.max(60, Math.min(rect.width - 60, cxPx)) + "px";
+    tipEl.style.top = Math.max(50, yTop - 8) + "px";
+    tipEl.classList.add("on");
+  }
+
+  _lcLeave() {
+    this._lcHovering = false;
+    this._lcHoverX = null;
+    this._hideLcHover();
+  }
+
+  _hideLcHover() {
+    const plot = this.shadowRoot.querySelector(".lc-plot");
+    if (!plot) return;
+    const hv = plot.querySelector(".lc-hv");
+    const tipEl = plot.querySelector(".lc-tip");
+    if (hv) hv.classList.remove("on");
+    if (tipEl) tipEl.classList.remove("on");
   }
 
   _sourceCard(d) {
@@ -2044,18 +2605,94 @@ a:hover { text-decoration: underline; }
 /* Under the plan's dark hours, the light the meter measured that day. */
 .dtots { display: flex; flex-direction: column; align-items: center; gap: 3px; }
 .dlit { font: 600 11px var(--ds-mono); font-variant-numeric: tabular-nums; color: var(--ds-ok-hi); }
-/* Seven days of measured light, under whatever DTEK's schedule shows. */
-.lightweek { margin-top: 14px; border-top: 1px solid var(--ds-line); padding-top: 12px; }
-.lightweek h3 { margin: 0 0 10px; font: 600 13px var(--ds-sans); color: var(--ds-text2); }
-.lwdays { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
-.lwday { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; padding: 6px 2px; border-radius: 8px; }
-.lwday.today { background: color-mix(in srgb, var(--ds-ok) 10%, transparent); }
-.lwbar { position: relative; width: 14px; height: 48px; border-radius: 4px; background: var(--ds-dim); overflow: hidden; }
-.lwbar > span { position: absolute; left: 0; right: 0; bottom: 0; background: var(--ds-ok); border-radius: 4px; }
-.lwv { font: 600 12px var(--ds-mono); font-variant-numeric: tabular-nums; color: var(--ds-ok-hi); }
-.lwv.dim { color: var(--ds-muted); }
-.lwn { font: 500 10px/1.3 var(--ds-mono); color: var(--ds-muted); text-align: center; }
-@container (max-width: 640px) { .lwdays { gap: 2px; } .lwv { font-size: 11px; } }
+/* --- light history bar chart -------------------------------------------- */
+.lc-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 14px; }
+.lc-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 10px; }
+.lc-name { font: 600 15px/1.3 var(--ds-sans); color: var(--ds-text); cursor: pointer; border-radius: 5px; }
+.lc-name:hover { text-decoration: underline; text-underline-offset: 4px; }
+.lc-win { font: 500 11.5px var(--ds-mono); color: var(--ds-muted); }
+.lc-segs {
+  display: flex; gap: 2px; padding: 3px; border-radius: 9px;
+  background: var(--ds-inner); border: 1px solid var(--ds-line);
+}
+.lc-seg {
+  padding: 5px 11px; border: 0; border-radius: 7px; cursor: pointer; background: transparent;
+  color: var(--ds-muted); font: 500 11.5px/1 var(--ds-mono); transition: background .15s, color .15s;
+}
+.lc-seg:hover { color: var(--ds-text); }
+.lc-seg[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--ds-ok) 22%, var(--ds-dim));
+  color: var(--ds-ok-hi);
+}
+.lc-seg:focus-visible, .lc-name:focus-visible { outline: 2px solid var(--ds-ok-hi); outline-offset: 2px; }
+.lc-chart { display: flex; gap: 10px; align-items: flex-start; margin-top: 2px; }
+.lc-yax {
+  display: flex; flex-direction: column; justify-content: space-between;
+  height: ${LC_H}px; padding: ${LC_PAD_T}px 0 ${LC_PAD_B}px; box-sizing: border-box;
+  font: 500 10.5px var(--ds-mono); font-variant-numeric: tabular-nums;
+  color: var(--ds-muted); text-align: right; min-width: 24px;
+}
+.lc-yax span { display: block; height: 0; line-height: 0; white-space: nowrap; }
+.lc-plot {
+  flex: 1; min-width: 0; position: relative;
+  touch-action: pan-y; cursor: grab; user-select: none; -webkit-user-select: none;
+}
+.lc-plot.grabbing { cursor: grabbing; }
+svg.lc-svg { width: 100%; height: ${LC_H}px; display: block; }
+.lc-grid line { stroke: var(--ds-line); stroke-width: 1; }
+.lc-grid line.mid, .lc-grid line.base { stroke: var(--ds-line2); }
+.lc-bar { fill: color-mix(in srgb, var(--ds-ok) 65%, transparent); }
+.lc-bar.today { fill: color-mix(in srgb, var(--ds-ok-hi) 68%, transparent); }
+.lc-bar.zero { fill: var(--ds-dim); }
+.lc-cap { fill: var(--ds-ok); }
+.lc-cap.today { fill: var(--ds-ok-hi); }
+.lc-mean { stroke: var(--ds-text2); stroke-width: 1; stroke-dasharray: 4 4; opacity: .55; vector-effect: non-scaling-stroke; }
+.lc-vals { position: absolute; left: 0; right: 0; top: 0; height: ${LC_H}px; pointer-events: none; overflow: hidden; }
+.lc-val {
+  position: absolute; transform: translateX(-50%); white-space: nowrap;
+  font: 600 11px/1 var(--ds-mono); font-variant-numeric: tabular-nums; color: var(--ds-ok-hi);
+}
+.lc-hv {
+  position: absolute; top: ${LC_PAD_T}px; height: ${LC_H - LC_PAD_T - LC_PAD_B}px;
+  background: rgba(255, 255, 255, .045); border-radius: 4px;
+  pointer-events: none; opacity: 0; transition: opacity .1s; z-index: 1;
+}
+.lc-hv.on { opacity: 1; }
+.lc-tip {
+  position: absolute; pointer-events: none; opacity: 0; transition: opacity .1s;
+  transform: translate(-50%, -100%); z-index: 2;
+  background: var(--ds-inner); border: 1px solid var(--ds-line2); border-radius: 8px; padding: 6px 10px;
+  font: 500 11.5px/1.3 var(--ds-mono); color: var(--ds-text); white-space: nowrap;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, .55);
+}
+.lc-tip.on { opacity: 1; }
+.lc-tip b { display: block; font-size: 13px; color: var(--ds-ok-hi); }
+.lc-tip i { display: block; font-style: normal; font-size: 10.5px; color: var(--ds-text2); margin-top: 2px; }
+.lc-note {
+  position: absolute; left: 0; right: 0; top: 0; height: ${LC_H}px;
+  display: none; align-items: center; justify-content: center;
+  font: 500 12px var(--ds-mono); color: var(--ds-muted); text-align: center; padding: 0 12px;
+  pointer-events: none;
+}
+.lc-note.show { display: flex; }
+.lc-xax { position: relative; height: 18px; margin-top: 6px; overflow: hidden; }
+.lc-xax.two { height: 28px; }
+.lc-xlab {
+  position: absolute; top: 0; transform: translateX(-50%); text-align: center; white-space: nowrap;
+  font: 500 10px/1.3 var(--ds-mono); color: var(--ds-muted);
+}
+.lc-xlab.today { color: var(--ds-ok-hi); }
+.lc-stats {
+  display: flex; flex-wrap: wrap; gap: 14px 28px;
+  border-top: 1px solid var(--ds-line); padding-top: 12px;
+}
+.lc-stat { display: flex; flex-direction: column; gap: 3px; }
+.lc-stat b {
+  font: 600 10px/1.2 var(--ds-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--ds-muted);
+}
+.lc-stat span { font: 600 15px/1.2 var(--ds-mono); font-variant-numeric: tabular-nums; color: var(--ds-text); }
+.lc-stat small { font: 500 11px var(--ds-mono); color: var(--ds-muted); }
+.lc-foot { font: 500 11px var(--ds-mono); color: var(--ds-muted); }
 .wire { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 2px; justify-items: center; }
 .bulb { position: relative; display: flex; justify-content: center; min-width: 0; width: 100%; }
 /* The grid's .on/.out/.now paint whatever carries them; on a bulb only the glass shows the state. */
@@ -2175,6 +2812,8 @@ a:hover { text-decoration: underline; }
   .hours { flex-basis: 18px; }
   .day { min-width: 0; padding: 5px 2px; }
   .dsub { font-size: 9px; }
+  .lc-val { font-size: 10px; }
+  .lc-stats { gap: 10px 20px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .dot, .hero::before { animation: none; }

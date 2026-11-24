@@ -519,38 +519,81 @@ eq("[hero, days, week]: all three", [!!r.root.querySelector(".hero"), r.root.que
   l = render("18:00", {}, { blocks: ["hero"], states: lit("3"), config: { light_entity: null } });
   eq("light_entity: null: no tile", l.tile("Light today"), null);
 
-  // Saturday 17.10.2026: Monday's and Friday's totals are in the statistics,
-  // today is live, Sunday is still to come.
+  // Saturday 17.10.2026: hourly statistics with midnight carry-over in 00:00,
+  // today live, Sunday still to come.
   const weekAttrs = { week: Array(7).fill("y".repeat(18) + "nnnnnn"), week_in_effect: true,
                       schedule_in_effect: false, today: null };
+  const hr = (d, h, max) => ({ start: new Date(2026, 9, d, h).getTime(), max });
   const stats = { [LIGHT]: [
-    { start: new Date(2026, 9, 12).getTime(), end: new Date(2026, 9, 13).getTime(), max: 20.5 },
-    { start: new Date(2026, 9, 16).toISOString(), max: 18.0833 },
-    { start: new Date(2026, 9, 17).getTime(), max: 2 },  // today's so far: the live value wins
+    hr(8, 22, 10.5),
+    hr(12, 23, 20.5),
+    // Tu 13.10: 00:00 carries Mo's 20.5; the real day has 0h00.
+    hr(13, 0, 20.5), hr(13, 1, 0), hr(13, 23, 0),
+    // We 14.10: all light fell inside 00:00-01:00; 00:00 carries 17.0, 01:00+ holds 0.75.
+    hr(14, 0, 17.0), hr(14, 1, 0.75), { start: new Date(2026, 9, 14, 23).toISOString(), max: 0.75 },
+    // Th 15.10: 17h01.
+    hr(15, 0, 0.75), hr(15, 23, 17.0167),
+    // Fr 16.10: 00:00 carries Th's 17.0167; the real day had only 3h48.
+    hr(16, 0, 17.0167), hr(16, 1, 0), hr(16, 18, 1.2), hr(16, 23, 3.8),
+    // Sa 17.10 (today): 00:00 carries Fr's 3.8; live state (14h20) wins for today.
+    hr(17, 0, 3.8), hr(17, 1, 0), hr(17, 18, 2),
   ] };
   l = render("18:00", weekAttrs, { blocks: ["week"], states: lit("14.3333"), history: stats,
                                    config: { week_style: "classic" } });
-  eq("one statistics request: two weeks of daily max", [l.asked.length, l.asked[0] && l.asked[0].type,
+  eq("one hourly statistics request for all recorded history", [l.asked.length, l.asked[0] && l.asked[0].type,
     l.asked[0] && l.asked[0].statistic_ids, l.asked[0] && l.asked[0].period, l.asked[0] && l.asked[0].types,
     l.asked[0] && l.asked[0].start_time],
-    [1, "recorder/statistics_during_period", [LIGHT], "day", ["max"], new Date(2026, 9, 4).toISOString()]);
+    [1, "recorder/statistics_during_period", [LIGHT], "hour", ["max"], "2020-01-01T00:00:00Z"]);
   await settle();
   const litRow = () => l.root.querySelectorAll(".brow").map((row) => {
     const el = row.querySelector(".dlit");
     return el ? el.textContent : null;
   });
-  eq("Mo and Fr from the statistics, Sa live, nothing ahead", litRow(),
-    ["20h30", null, null, null, "18h05", "14h20", null]);
+  eq("midnight carry-over skipped: Mo..Su totals use hours 01-23, Sa live", litRow(),
+    ["20h30", "0h00", "0h45", "17h01", "3h48", "14h20", null]);
   eq("under the plan's dark hours", l.root.querySelectorAll(".brow")[0].querySelector(".dtot").textContent, "6h");
   eq("the row figure's tooltip", l.root.querySelectorAll(".brow")[4].querySelector(".dlit")
-    .getAttribute("data-tip").split("\n")[0], "Fr light — 18h 5m measured");
+    .getAttribute("data-tip").split("\n")[0], "Fr light — 3h 48m measured");
   eq("a legend entry", /Light, measured/.test(l.text(".legend")), true);
-  const strip = () => l.root.querySelectorAll(".lwday").map((x) => [x.querySelector(".lwn").textContent,
-    x.querySelector(".lwv").textContent, x.querySelector(".lwbar span").getAttribute("style")]);
-  eq("the last seven days, oldest first", strip(), [
-    ["Su11.10", "—", "height:0%"], ["Mo12.10", "20h30", "height:85.4%"], ["Tu13.10", "—", "height:0%"],
-    ["We14.10", "—", "height:0%"], ["Th15.10", "—", "height:0%"], ["Fr16.10", "18h05", "height:75.3%"],
-    ["Today17.10", "14h20", "height:59.7%"]]);
+
+  const lcStat = (k) => {
+    const s = l.root.querySelectorAll(".lc-stat").find((x) => x.querySelector("b").textContent === k);
+    return s ? s.querySelector("span").textContent.replace(/\s+/g, " ").trim() : null;
+  };
+  eq("bar chart card rendered, 7d active by default",
+    [!!l.root.querySelector(".lightchart"), l.text(".lc-win"),
+      l.root.querySelectorAll(".lc-seg").find((b) => b.getAttribute("aria-pressed") === "true").getAttribute("data-val")],
+    [true, "last 7 days", "7d"]);
+  eq("7d draws 6 recorded bars (1 zero bar on Tu, gap on Su 11.10, today lit)",
+    [l.root.querySelectorAll(".lc-bar").length, l.root.querySelectorAll(".lc-bar.zero").length,
+      l.root.querySelectorAll(".lc-bar.today").length, l.root.querySelectorAll(".lc-val").map((v) => v.textContent)],
+    [6, 1, 1, ["20h30", "0h00", "0h45", "17h01", "3h48", "14h20"]]);
+  eq("7d stats exclude partial today from Min/Max/Mean",
+    [lcStat("Today"), lcStat("Min"), lcStat("Max"), lcStat("Mean")],
+    ["14h 20m", "0h 0m 13.10", "20h 30m 12.10", "8h 25m"]);
+
+  fire(l.root.querySelector('.lc-seg[data-val="14d"]'), "click");
+  eq("14d range widens window, hides per-bar values, adds 08.10 bar",
+    [l.text(".lc-win"), l.root.querySelectorAll(".lc-bar").length, l.root.querySelectorAll(".lc-val").length,
+      l.root.querySelectorAll(".lc-seg").find((b) => b.getAttribute("aria-pressed") === "true").getAttribute("data-val")],
+    ["last 14 days", 7, 0, "14d"]);
+  fire(l.root.querySelector('.lc-seg[data-val="all"]'), "click");
+  eq("all range shows all recorded", [l.text(".lc-win"), l.root.querySelectorAll(".lc-bar").length],
+    ["all recorded", 7]);
+
+  // Panning into the past clears active preset and labels the date span; dblclick returns to today.
+  const dn = (d) => Math.round(Date.UTC(2026, 9, d) / 864e5);
+  l.card._lcApplyView(dn(8), dn(14) + 1);
+  eq("panned window labels date range and clears preset pressed state",
+    [l.text(".lc-win"),
+      l.root.querySelectorAll(".lc-seg").some((b) => b.getAttribute("aria-pressed") === "true"),
+      l.root.querySelectorAll(".lc-val").map((v) => v.textContent)],
+    ["08.10 – 14.10", false, ["10h30", "20h30", "0h00", "0h45"]]);
+  fire(l.root.querySelector(".lc-plot"), "dblclick");
+  eq("dblclick returns to live preset", [l.text(".lc-win"),
+    l.root.querySelectorAll(".lc-seg").find((b) => b.getAttribute("aria-pressed") === "true").getAttribute("data-val")],
+    ["all recorded", "all"]);
+
   l.card._fingerprint = null;
   l.card._render();
   eq("the same day: not asked again", l.asked.length, 1);
@@ -558,16 +601,19 @@ eq("[hero, days, week]: all three", [!!r.root.querySelector(".hero"), r.root.que
   l = render("18:00", weekAttrs, { blocks: ["week"], states: lit("14.3333"), history: new Error("busy"),
                                    config: { week_style: "classic" } });
   await settle();
-  eq("statistics fail: today still shows", litRow(), [null, null, null, null, null, "14h20", null]);
+  eq("statistics fail: today still shows in row and chart with note",
+    [litRow()[5], l.root.querySelectorAll(".lc-bar").length, l.text(".lc-note")],
+    ["14h20", 1, "Light history unavailable"]);
   l = render("18:00", {}, { blocks: ["week"], states: lit("14.3333"), history: stats });
   await settle();
-  eq("DTEK's table withdrawn: the strip stays", [l.root.querySelectorAll(".brow").length,
-    l.root.querySelectorAll(".lwday").length, l.root.querySelectorAll(".lwv").map((x) => x.textContent).join(" ")],
-    [0, 7, "— 20h30 — — — 18h05 14h20"]);
+  eq("DTEK's table withdrawn: the bar chart stays", [l.root.querySelectorAll(".brow").length,
+    l.root.querySelectorAll(".lightchart").length, l.root.querySelectorAll(".lc-bar").length],
+    [0, 1, 6]);
   l = render("18:00", weekAttrs, { blocks: ["week"], config: { week_style: "classic" } });
-  eq("no light sensor: no request, no figures, no legend entry",
-    [l.asked.length, litRow().filter(Boolean).length, /Light, measured/.test(l.text(".legend")),
-     l.root.querySelectorAll(".lwday").length], [0, 0, false, 0]);
+  eq("no light sensor: no request, no chart, no figures, no legend entry",
+    [l.asked.length, l.root.querySelectorAll(".lightchart").length,
+      litRow().filter(Boolean).length, /Light, measured/.test(l.text(".legend"))],
+    [0, 0, 0, false]);
 
   t = render("13:39", {}, { blocks: ["timeline"], history, config: { grid_entity: null } });
   eq("grid_entity: null is left out of the request", t.asked[0] && t.asked[0].entity_ids, [OUT, SCHED, UNS]);
