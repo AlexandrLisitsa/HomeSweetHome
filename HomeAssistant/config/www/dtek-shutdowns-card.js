@@ -46,7 +46,7 @@
 const CARD = "dtek-shutdowns-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "2.15.0";
+const VERSION = "2.16.0";
 
 const MAP_CACHE = { url: null, data: null, busy: false, failed: false };
 
@@ -263,15 +263,21 @@ const HELP = {
     + "E.g. 30d shows the last month of recorded days; All covers every day on record.",
   lc_stat: "Today is live from the meter; Min, Max and Mean cover completed days in the window.\n"
     + "E.g. 7d: Min 3h 48m, Max 22h 0m, Mean 15h 46m across the six finished days.",
-  map_view: "Switch the hex map between Dnipropetrovsk Oblast and Dnipro city.\n"
-    + "E.g. Dnipro zooms into neighborhoods across both banks of the river.\n"
-    + "Tap to toggle between Oblast and Dnipro.",
-  map_mode: "Color hexes by the selected queue alone or all queues live outage share.\n"
-    + "E.g. All shows a heatmap of dark percentage across mixed neighborhoods.\n"
-    + "Tap to switch Selected vs All queues.",
-  map_hex: "Hex cluster of streets or settlements mapped to YASNO outage queues.\n"
-    + "E.g. Dnipro Center: 14.1 (68%) and 3.1 (32%), currently 68% off.\n"
-    + "Tap a hex to inspect its main queue on the card.",
+  map_view: "Fly the map between Dnipropetrovsk Region (86 hromadas) and Dnipro city.\n"
+    + "E.g. Dnipro zooms into 8 city districts and 37 microzones across both banks.\n"
+    + "Tap to fly camera; scroll wheel over the map zooms freely.",
+  map_lod: "Choose map region detail or let wheel zoom switch layers automatically.\n"
+    + "E.g. Auto shows 86 hromadas at 1x, 8 districts at 2.2x, microzones at 4.6x.\n"
+    + "Tap Auto, Hromadas, Districts or Microzones.",
+  map_zoom: "Zoom in, zoom out, or reset the regional map back to 1x view.\n"
+    + "E.g. wheel up over Dnipro zooms smoothly to cursor; drag to pan when zoomed.\n"
+    + "Tap +, - or 1x, or double-click the map.",
+  map_mode: "Color regions by the selected queue alone or all queues live outage share.\n"
+    + "E.g. All live shows a heatmap of dark percentage across mixed areas.\n"
+    + "Tap to switch Queue vs All live.",
+  map_region: "Administrative hromada, city district, or microzone mapped to YASNO queues.\n"
+    + "E.g. 14.1 (60% addr), 16.1 (40%): share of sampled addresses by outage queue.\n"
+    + "Tap to inspect its main queue; scroll wheel to zoom.",
   map_q: "Outage queue status now from DTEK and YASNO feeds.\n"
     + "E.g. 14.1 starred is this home; red dot means off, amber means soon.\n"
     + "Tap any queue to view its clock, timeline and bulbs.",
@@ -936,10 +942,17 @@ class DtekShutdownsCard extends HTMLElement {
     this._lcModalSeg = null;
     this._lcHoverSeg = null;
     this._lcDeferredRender = false;
-    // Interactive oblast/city hex-map state: null = home's own queue.
+    // Interactive regional/city map state: null = home's own queue.
     this._selectedQueue = null;
-    this._mapView = "oblast";
+    this._mapCam = { tx: 0, ty: 0, s: 1 };
+    this._mapLodMode = "auto";
     this._mapColorMode = "selected";
+    this._mapAnim = null;
+    this._mapDrag = null;
+    this._mapDragMoved = false;
+    this._mapPointers = new Map();
+    this._mapPinch = null;
+    this._mapMeta = null;
     // Off screen or in a hidden tab: nothing moves and nothing is fetched.
     this._offscreen = false;
     this._onVisibility = () => this._pause();
@@ -1027,7 +1040,8 @@ class DtekShutdownsCard extends HTMLElement {
             }
             return true;
           }
-          if (da === "map-hex") {
+          if (da === "map-region") {
+            if (this._mapDragMoved) return true;
             const val = el.getAttribute("data-val");
             if (val) {
               const home = this._homeQueueCode();
@@ -1046,13 +1060,36 @@ class DtekShutdownsCard extends HTMLElement {
             }
             return true;
           }
-          if (da === "map-view") {
+          if (da === "map-cam") {
             const val = el.getAttribute("data-val");
-            if (val === "oblast" || val === "dnipro") {
-              if (this._mapView !== val) {
-                this._mapView = val;
-                this._render();
-              }
+            if (val === "region") {
+              this._mapLodMode = "auto";
+              this._flyMapTo(310, 200, 1);
+            } else if (val === "dnipro") {
+              const dc = (this._mapMeta && this._mapMeta.dniproCam) || { cx: 316.88, cy: 170.34, scale: 6.62 };
+              this._mapLodMode = "auto";
+              this._flyMapTo(dc.cx, dc.cy, dc.scale);
+            }
+            return true;
+          }
+          if (da === "map-lod") {
+            const val = el.getAttribute("data-val");
+            if (val === "auto" || val === "hromadas" || val === "districts" || val === "quarters") {
+              this._mapLodMode = val;
+              this._applyMapCamera();
+            }
+            return true;
+          }
+          if (da === "map-zoom") {
+            const val = el.getAttribute("data-val");
+            const c = this._mapCam;
+            if (val === "in") {
+              this._flyMapTo((310 - c.tx) / c.s, (200 - c.ty) / c.s, Math.min(14, c.s * 1.8));
+            } else if (val === "out") {
+              this._flyMapTo((310 - c.tx) / c.s, (200 - c.ty) / c.s, Math.max(1, c.s / 1.8));
+            } else if (val === "reset") {
+              this._mapLodMode = "auto";
+              this._flyMapTo(310, 200, 1);
             }
             return true;
           }
@@ -1162,6 +1199,10 @@ class DtekShutdownsCard extends HTMLElement {
     }
     this._lcPointers.clear();
     this._lcDragging = false;
+    if (this._mapAnim && typeof cancelAnimationFrame === "function") cancelAnimationFrame(this._mapAnim);
+    this._mapAnim = null;
+    this._mapPointers.clear();
+    this._mapDrag = null;
   }
 
   /** Every animation holds while no one can see the card; coming back catches up. */
@@ -1264,7 +1305,7 @@ class DtekShutdownsCard extends HTMLElement {
       this._lcRange,
       this._lcView && [this._lcView.start, this._lcView.end],
       this._selectedQueue,
-      this._mapView,
+      this._mapLodMode,
       this._mapColorMode,
       mapLoaded,
     ]);
@@ -1584,6 +1625,7 @@ class DtekShutdownsCard extends HTMLElement {
       const scrollLeft = previous ? previous.scrollLeft : 0;
       slot.innerHTML = html;
       slot._html = html;
+      if (k === "hero") this._wireMap(d);
       const grid = slot.querySelector(".grid, .bulbs");
       if (grid && scrollLeft) grid.scrollLeft = scrollLeft;
       if (prevH) {
@@ -2103,7 +2145,7 @@ class DtekShutdownsCard extends HTMLElement {
       inspecting, homeCode, homeRef, homeTodayRow,
       allQueues: allQueuesRaw, queueCodes, mapData,
       selectedQueue: hasMap ? (inspecting ? selRef : (homeRef || code)) : null,
-      mapView: this._mapView, mapColorMode: this._mapColorMode,
+      mapLodMode: this._mapLodMode, mapColorMode: this._mapColorMode,
       // Hours of light today at the meter: a number, null when the meter has
       // no answer, undefined when no light sensor is configured or present.
       lightToday: this._lightObj() ? (inspecting ? null : this._lightToday()) : undefined,
@@ -2230,12 +2272,20 @@ class DtekShutdownsCard extends HTMLElement {
   }
 
   _mapPanel(d, statusByQ) {
-    const view = d.mapView === "dnipro" ? "dnipro" : "oblast";
     const mode = d.mapColorMode === "all" ? "all" : "selected";
-    const viewBtn = (val, label) => '<button type="button" class="map-btn'
-      + (view === val ? " active" : "") + '" data-act="map-view" data-val="' + val
-      + '" aria-pressed="' + (view === val ? "true" : "false") + '"'
-      + tip("Map view", view === val ? label + " active" : "switch to " + label, "map_view")
+    const lodMode = d.mapLodMode || "auto";
+    const camScale = this._mapCam ? this._mapCam.s : 1;
+    const activeCam = camScale >= 2.0 ? "dnipro" : "region";
+
+    const camBtn = (val, label, hintVal) => '<button type="button" class="map-btn'
+      + (activeCam === val ? " active" : "") + '" data-act="map-cam" data-val="' + val
+      + '" aria-pressed="' + (activeCam === val ? "true" : "false") + '"'
+      + tip("Map view", activeCam === val ? label + " active" : hintVal, "map_view")
+      + ">" + label + "</button>";
+    const lodBtn = (val, label) => '<button type="button" class="map-btn'
+      + (lodMode === val ? " active" : "") + '" data-act="map-lod" data-val="' + val
+      + '" aria-pressed="' + (lodMode === val ? "true" : "false") + '"'
+      + tip("Map detail", lodMode === val ? label + " active" : "switch layer to " + label, "map_lod")
       + ">" + label + "</button>";
     const modeBtn = (val, label) => '<button type="button" class="map-btn'
       + (mode === val ? " active" : "") + '" data-act="map-mode" data-val="' + val
@@ -2244,46 +2294,27 @@ class DtekShutdownsCard extends HTMLElement {
       + ">" + label + "</button>";
 
     const head = '<div class="map-head">'
-      + '<div class="map-seg">' + viewBtn("oblast", "Oblast") + viewBtn("dnipro", "Dnipro") + "</div>"
-      + '<div class="map-seg">' + modeBtn("selected", "Queue " + (d.selectedQueue || "")) + modeBtn("all", "All live") + "</div>"
+      + '<div class="map-seg">'
+      + camBtn("region", "Region", "fly to Region (1x)")
+      + camBtn("dnipro", "Dnipro", "fly to Dnipro city") + "</div>"
+      + '<div class="map-seg">'
+      + lodBtn("auto", "Auto") + lodBtn("hromadas", "Hromadas")
+      + lodBtn("districts", "Districts") + lodBtn("quarters", "Microzones") + "</div>"
+      + '<div class="map-seg">'
+      + modeBtn("selected", "Queue " + (d.selectedQueue || ""))
+      + modeBtn("all", "All live") + "</div>"
       + "</div>";
 
-    const layer = d.mapData && d.mapData[view] ? d.mapData[view] : null;
-    if (!layer || !Array.isArray(layer.vb) || !Array.isArray(layer.hexes)) {
+    const md = d.mapData;
+    if (!md || !Array.isArray(md.vb) || !Array.isArray(md.hromadas)) {
       return '<div class="map-slot">' + head
-        + '<div class="map-empty">Loading hex map…</div></div>';
-    }
-
-    const ptList = (arr) => arr.map((p) => p[0] + "," + p[1]).join(" ");
-    let bg = "";
-    if (view === "oblast") {
-      if (Array.isArray(layer.border) && layer.border.length > 2) {
-        bg += '<polygon class="map-border" points="' + ptList(layer.border) + '"/>';
-      }
-      if (Array.isArray(layer.raions)) {
-        layer.raions.forEach((r) => {
-          if (r && Array.isArray(r.ring) && r.ring.length > 2) {
-            bg += '<polyline class="map-raion" points="' + ptList(r.ring) + '"/>';
-          }
-        });
-      }
-      if (Array.isArray(layer.rivers)) {
-        layer.rivers.forEach((rv) => {
-          bg += '<polyline class="map-river" points="' + ptList(rv) + '"/>';
-        });
-      }
-    } else {
-      if (Array.isArray(layer.rivers)) {
-        layer.rivers.forEach((rv) => {
-          bg += '<polyline class="map-river wide" points="' + ptList(rv) + '"/>';
-        });
-      }
+        + '<div class="map-empty">Loading region map…</div></div>';
     }
 
     const selStatus = statusByQ[d.selectedQueue] || "none";
     const selClr = mapStatusColor(selStatus);
-    const hexes = layer.hexes.map((hx) => {
-      const shares = hx.s && typeof hx.s === "object" ? hx.s : {};
+    const renderRegions = (list, defSw, kindName) => (list || []).map((reg) => {
+      const shares = reg.s && typeof reg.s === "object" ? reg.s : {};
       const qs = Object.keys(shares).sort((a, b) => (shares[b] || 0) - (shares[a] || 0));
       const topQ = qs[0] || "";
       const topRef = topQ ? (resolveQueueRef(d.allQueues, topQ) || topQ) : "";
@@ -2301,22 +2332,23 @@ class DtekShutdownsCard extends HTMLElement {
         else if (st === "soon") soonShare += pct;
       });
 
-      let fill = "#171a20";
-      let fillOp = 1;
+      let fill = "#151820";
+      let fillOp = 0.92;
       let stroke = "#23262e";
-      let sw = 0.7;
+      let sw = defSw;
       if (!qs.length) {
-        fill = "#111318";
+        fill = "#13161c";
         fillOp = 0.7;
       } else if (mode === "selected") {
         if (selShare > 0) {
           fill = selClr.fill;
-          fillOp = Number((0.32 + 0.66 * Math.min(100, selShare) / 100).toFixed(2));
-          if (selShare >= 35) { stroke = selClr.hi; sw = 1.25; }
+          fillOp = Number((0.34 + 0.64 * Math.min(100, selShare) / 100).toFixed(2));
+          if (selShare >= 35) { stroke = selClr.hi; sw = Math.max(defSw, 1.2); }
+          else stroke = "#39404d";
         }
       } else {
         const darkShare = offShare + emergShare;
-        if (emergShare >= 40) {
+        if (emergShare >= 35) {
           fill = mapStatusColor("emerg").fill;
           fillOp = Number((0.45 + 0.55 * Math.min(100, emergShare) / 100).toFixed(2));
         } else if (darkShare >= 35) {
@@ -2327,51 +2359,321 @@ class DtekShutdownsCard extends HTMLElement {
           fillOp = Number((0.35 + 0.60 * Math.min(100, darkShare + soonShare) / 100).toFixed(2));
         } else {
           fill = mapStatusColor("on").fill;
-          fillOp = 0.68;
+          fillOp = 0.65;
         }
-        if (selShare >= 35) { stroke = "#e8eaed"; sw = 1.35; }
+        if (selShare >= 30) { stroke = "#e8eaed"; sw = 1.3; }
       }
 
-      const placeRaw = hx.p || (view === "dnipro" ? "Dnipro" : "Oblast");
-      const place = placeRaw.length > 24 ? placeRaw.slice(0, 23) + "…" : placeRaw;
-      const summary = qs.length
-        ? qs.slice(0, 2).map((q) => q + " " + shares[q] + "%").join(", ")
-          + (mode === "all" && offShare + emergShare > 0
-            ? " · " + Math.round(offShare + emergShare) + "% off" : "")
-        : "no YASNO samples";
-      const act = topRef
-        ? ' class="map-hex clickable' + (selShare > 0 ? " sel" : "") + '" data-act="map-hex"'
-          + ' data-val="' + esc(topRef) + '" role="button" tabindex="0"'
-          + tip(place, summary, "map_hex")
-        : ' class="map-hex empty"';
+      const placeRaw = reg.short || reg.name || kindName;
+      const place = placeRaw.length > 22 ? placeRaw.slice(0, 21) + "…" : placeRaw;
+      let summary;
+      if (!qs.length) summary = "no YASNO samples";
+      else if (qs.length === 1) summary = qs[0] + " (100% addr)";
+      else summary = qs[0] + " (" + shares[qs[0]] + "% addr), " + qs[1] + " (" + shares[qs[1]] + "%)";
+      if (mode === "all" && offShare + emergShare > 0) {
+        summary += " " + MIDDOT + " " + Math.round(offShare + emergShare) + "% off";
+      }
 
-      return '<polygon points="' + esc(hx.pts) + '" fill="' + fill + '" fill-opacity="'
+      const act = topRef
+        ? ' class="map-poly clickable' + (selShare > 0 ? " sel" : "") + '" data-act="map-region"'
+          + ' data-val="' + esc(topRef) + '" role="button" tabindex="0"'
+          + tip(place, summary, "map_region")
+        : ' class="map-poly empty"';
+
+      return '<path d="' + esc(reg.path) + '" fill="' + fill + '" fill-opacity="'
         + fillOp + '" stroke="' + stroke + '" stroke-width="' + sw + '"' + act + "/>";
     }).join("");
 
-    let fg = "";
-    if (view === "oblast" && Array.isArray(layer.cities)) {
-      fg = layer.cities.map((c) => '<circle class="map-dot' + (c.major ? " major" : "")
-        + '" cx="' + c.x + '" cy="' + c.y + '" r="' + (c.major ? 2.6 : 1.8) + '"/>'
-        + '<text class="map-city' + (c.major ? " major" : "") + '" x="' + (c.x + 4)
-        + '" y="' + (c.y - 3) + '">' + esc(c.name) + "</text>").join("");
-    } else if (view === "dnipro" && Array.isArray(layer.labels)) {
-      fg = layer.labels.map((lb) => '<text class="map-lbl" x="' + lb.x + '" y="' + lb.y
-        + '" text-anchor="middle">' + esc(lb.name) + "</text>").join("");
-    }
+    const raionPaths = (md.raions || []).map((p) => '<path class="map-raion" d="' + esc(p) + '"/>').join("");
+    const obRiverPaths = (md.ob_rivers || []).map((p) => '<path class="map-river" d="' + esc(p) + '"/>').join("");
+    const dnRiverPaths = (md.dn_rivers || []).map((p) => '<path class="map-river wide" d="' + esc(p) + '"/>').join("");
+    const distOutPaths = (md.districts || []).map((r) => '<path class="map-dout" d="' + esc(r.path) + '"/>').join("");
 
-    const svg = '<svg class="map-svg" viewBox="0 0 ' + layer.vb[0] + " " + layer.vb[1]
-      + '" role="img" aria-label="Dnipropetrovsk outage hex map">'
-      + '<defs><pattern id="ds-map-emerg" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'
-      + '<rect width="6" height="6" fill="#bb635b"/><rect width="2.5" height="6" fill="#ff928a"/></pattern></defs>'
-      + bg + hexes + fg + "</svg>";
+    const hrPins = (md.cities || []).map((c) => '<g class="map-pin" data-x="' + c.x + '" data-y="' + c.y
+      + '" data-tier="' + (c.tier || 1) + '" transform="translate(' + c.x + "," + c.y + ')">'
+      + '<circle class="map-dot' + (c.tier === 1 ? " t1" : "") + '" cx="0" cy="0" r="'
+      + (c.tier === 1 ? 2.6 : 1.9) + '"/>'
+      + '<text class="map-pin-txt' + (c.tier === 1 ? " t1" : "") + '" x="4" y="-3">'
+      + esc(c.name) + "</text></g>").join("");
+
+    const distPins = (md.districts || []).map((r) => '<g class="map-pin" data-x="' + r.cx + '" data-y="' + r.cy
+      + '" transform="translate(' + r.cx + "," + r.cy + ')">'
+      + '<text class="map-dist-lbl" x="0" y="3" text-anchor="middle">' + esc(r.short || r.name) + "</text></g>").join("");
+
+    const qtrPins = (md.quarters || []).map((q) => '<g class="map-pin" data-x="' + q.cx + '" data-y="' + q.cy
+      + '" transform="translate(' + q.cx + "," + q.cy + ')">'
+      + '<text class="map-q-lbl" x="0" y="2" text-anchor="middle">' + esc(q.name) + "</text></g>").join("");
+
+    const svg = '<svg class="map-svg" viewBox="0 0 ' + md.vb[0] + " " + md.vb[1]
+      + '" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Dnipropetrovsk outage map">'
+      + '<defs><pattern id="ds-map-emerg" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'
+      + '<rect width="5" height="5" fill="#bb635b"/><rect width="2" height="5" fill="#ff928a"/></pattern></defs>'
+      + '<g class="map-cam">'
+      + '<g class="map-l-hr">' + renderRegions(md.hromadas, 0.65, "Hromada") + "</g>"
+      + '<g class="map-l-raion">' + raionPaths + "</g>"
+      + '<g class="map-l-obriv">' + obRiverPaths + "</g>"
+      + '<g class="map-l-dist">' + renderRegions(md.districts, 0.9, "District") + "</g>"
+      + '<g class="map-l-qtr">' + renderRegions(md.quarters, 0.75, "Microzone") + "</g>"
+      + '<g class="map-l-dnriv">' + dnRiverPaths + "</g>"
+      + '<g class="map-l-dout">' + distOutPaths + "</g>"
+      + '<g class="map-l-lbl-hr">' + hrPins + "</g>"
+      + '<g class="map-l-lbl-dist">' + distPins + "</g>"
+      + '<g class="map-l-lbl-qtr">' + qtrPins + "</g>"
+      + "</g></svg>";
+
+    const zoomBtn = (val, label, desc) => '<button type="button" data-act="map-zoom" data-val="' + val + '"'
+      + tip("Map zoom", desc, "map_zoom") + ">" + label + "</button>";
+    const hud = '<div class="map-hud">'
+      + '<span class="map-hud-badge map-lod-badge">86 hromadas</span>'
+      + '<span class="map-hud-badge map-zoom-badge">1.0×</span>'
+      + '<div class="map-zpad">'
+      + zoomBtn("out", "−", "zoom out")
+      + zoomBtn("in", "+", "zoom in")
+      + zoomBtn("reset", "1×", "reset to 1x")
+      + "</div></div>";
 
     const sw = (cls, text) => '<span><span class="map-sw ' + cls + '"></span>' + esc(text) + "</span>";
-    const leg = '<div class="map-leg">'
+    const foot = '<div class="map-foot">'
+      + '<span class="map-hint">Wheel to zoom · Drag to pan</span>'
+      + '<div class="map-leg">'
       + sw("on", "On") + sw("soon", "Soon") + sw("off", "Off") + sw("emerg", "Emerg")
-      + "</div>";
+      + "</div></div>";
 
-    return '<div class="map-slot">' + head + '<div class="map-stage">' + svg + "</div>" + leg + "</div>";
+    return '<div class="map-slot">' + head + '<div class="map-stage">' + svg + hud + "</div>" + foot + "</div>";
+  }
+
+  _clampMapCam(tx, ty, s) {
+    const ns = Math.max(1, Math.min(14, s));
+    if (ns <= 1.001) return { tx: 0, ty: 0, s: 1 };
+    const minTx = 620 * (1 - ns);
+    const minTy = 400 * (1 - ns);
+    return {
+      tx: Math.min(0, Math.max(minTx, tx)),
+      ty: Math.min(0, Math.max(minTy, ty)),
+      s: ns,
+    };
+  }
+
+  _currentMapLod() {
+    if (this._mapLodMode !== "auto") return this._mapLodMode;
+    if (this._mapCam.s >= 4.6) return "quarters";
+    if (this._mapCam.s >= 2.2) return "districts";
+    return "hromadas";
+  }
+
+  _mapSvgPoint(svg, clientX, clientY) {
+    if (svg && typeof svg.getScreenCTM === "function" && typeof svg.createSVGPoint === "function") {
+      const ctm = svg.getScreenCTM();
+      if (ctm && typeof ctm.inverse === "function") {
+        const p = svg.createSVGPoint();
+        p.x = clientX;
+        p.y = clientY;
+        return p.matrixTransform(ctm.inverse());
+      }
+    }
+    const r = svg && typeof svg.getBoundingClientRect === "function" ? svg.getBoundingClientRect() : null;
+    if (r && r.width > 0 && r.height > 0) {
+      return { x: ((clientX - r.left) * 620) / r.width, y: ((clientY - r.top) * 400) / r.height };
+    }
+    return { x: 310, y: 200 };
+  }
+
+  _applyMapCamera() {
+    const slot = this._shell && this._shell.slots && this._shell.slots.hero;
+    if (!slot) return;
+    const camGroup = slot.querySelector(".map-cam");
+    if (!camGroup) return;
+    const cam = this._mapCam;
+    camGroup.setAttribute("transform", "translate(" + cam.tx.toFixed(2) + "," + cam.ty.toFixed(2)
+      + ") scale(" + cam.s.toFixed(4) + ")");
+
+    const zoomBadge = slot.querySelector(".map-zoom-badge");
+    if (zoomBadge) zoomBadge.textContent = cam.s.toFixed(1) + "×";
+
+    const lod = this._currentMapLod();
+    const showDist = lod === "districts" || lod === "quarters";
+    const showQtr = lod === "quarters";
+
+    const setSt = (sel, prop, val) => {
+      const el = slot.querySelector(sel);
+      if (el && el.style) el.style[prop] = val;
+    };
+    setSt(".map-l-hr", "opacity", lod === "hromadas" ? "1" : "0.28");
+    setSt(".map-l-hr", "pointerEvents", lod === "hromadas" ? "auto" : "none");
+    setSt(".map-l-dist", "display", showDist && !showQtr ? "block" : "none");
+    setSt(".map-l-dist", "pointerEvents", lod === "districts" ? "auto" : "none");
+    setSt(".map-l-qtr", "display", showQtr ? "block" : "none");
+    setSt(".map-l-qtr", "pointerEvents", showQtr ? "auto" : "none");
+    setSt(".map-l-dout", "display", showQtr ? "block" : "none");
+    setSt(".map-l-dnriv", "display", showDist ? "block" : "none");
+    setSt(".map-l-obriv", "display", showDist ? "none" : "block");
+    setSt(".map-l-lbl-hr", "display", lod === "hromadas" ? "block" : "none");
+    setSt(".map-l-lbl-dist", "display", lod === "districts" ? "block" : "none");
+    setSt(".map-l-lbl-qtr", "display", lod === "quarters" ? "block" : "none");
+
+    const inv = 1 / Math.pow(cam.s, 0.88);
+    const activeLblSel = lod === "hromadas" ? ".map-l-lbl-hr .map-pin"
+      : lod === "districts" ? ".map-l-lbl-dist .map-pin" : ".map-l-lbl-qtr .map-pin";
+    slot.querySelectorAll(activeLblSel).forEach((pin) => {
+      const tier = pin.getAttribute("data-tier");
+      if (pin.style) pin.style.display = tier === "2" && cam.s < 1.45 ? "none" : "";
+      const x = pin.getAttribute("data-x");
+      const y = pin.getAttribute("data-y");
+      pin.setAttribute("transform", "translate(" + x + "," + y + ") scale(" + inv.toFixed(3) + ")");
+    });
+
+    const meta = this._mapMeta || { hr: 86, dist: 8, qtr: 37 };
+    const lodBadge = slot.querySelector(".map-lod-badge");
+    if (lodBadge) {
+      lodBadge.textContent = lod === "quarters" ? meta.qtr + " microzones"
+        : lod === "districts" ? meta.dist + " Dnipro districts" : meta.hr + " hromadas";
+    }
+
+    slot.querySelectorAll('[data-act="map-cam"]').forEach((b) => {
+      const val = b.getAttribute("data-val");
+      const on = val === (cam.s >= 2.0 ? "dnipro" : "region");
+      if (b.classList) b.classList.toggle("active", on);
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+    slot.querySelectorAll('[data-act="map-lod"]').forEach((b) => {
+      const on = b.getAttribute("data-val") === this._mapLodMode;
+      if (b.classList) b.classList.toggle("active", on);
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+  }
+
+  _flyMapTo(cx, cy, scale) {
+    if (this._mapAnim && typeof cancelAnimationFrame === "function") cancelAnimationFrame(this._mapAnim);
+    this._mapAnim = null;
+    const s1 = Math.max(1, Math.min(14, scale));
+    const dest = this._clampMapCam(310 - cx * s1, 200 - cy * s1, s1);
+    if (typeof requestAnimationFrame !== "function" || typeof performance === "undefined") {
+      this._mapCam = dest;
+      this._applyMapCamera();
+      return;
+    }
+    const start = { tx: this._mapCam.tx, ty: this._mapCam.ty, s: this._mapCam.s };
+    const t0 = performance.now();
+    const step = (now) => {
+      const p = Math.min(1, (now - t0) / 300);
+      const e = 1 - Math.pow(1 - p, 3);
+      this._mapCam = {
+        tx: start.tx + (dest.tx - start.tx) * e,
+        ty: start.ty + (dest.ty - start.ty) * e,
+        s: start.s + (dest.s - start.s) * e,
+      };
+      this._applyMapCamera();
+      if (p < 1) this._mapAnim = requestAnimationFrame(step);
+      else this._mapAnim = null;
+    };
+    this._mapAnim = requestAnimationFrame(step);
+  }
+
+  _wireMap(d) {
+    const slot = this._shell && this._shell.slots && this._shell.slots.hero;
+    if (!slot) return;
+    const stage = slot.querySelector(".map-stage");
+    const svg = slot.querySelector(".map-svg");
+    if (!stage || !svg) return;
+    const md = d && d.mapData;
+    if (md) {
+      this._mapMeta = {
+        hr: Array.isArray(md.hromadas) ? md.hromadas.length : 0,
+        dist: Array.isArray(md.districts) ? md.districts.length : 0,
+        qtr: Array.isArray(md.quarters) ? md.quarters.length : 0,
+        dniproCam: md.dnipro_cam || { cx: 316.88, cy: 170.34, scale: 6.62 },
+      };
+    }
+    this._applyMapCamera();
+    if (stage._dsMapWired || typeof stage.addEventListener !== "function") return;
+    stage._dsMapWired = true;
+
+    stage.addEventListener("wheel", (ev) => {
+      if (ev.deltaY > 0 && this._mapCam.s <= 1.005) return;
+      if (typeof ev.preventDefault === "function") ev.preventDefault();
+      if (this._mapAnim && typeof cancelAnimationFrame === "function") cancelAnimationFrame(this._mapAnim);
+      this._mapAnim = null;
+      const pt = this._mapSvgPoint(svg, ev.clientX || 0, ev.clientY || 0);
+      const wx = (pt.x - this._mapCam.tx) / this._mapCam.s;
+      const wy = (pt.y - this._mapCam.ty) / this._mapCam.s;
+      const newS = Math.max(1, Math.min(14, this._mapCam.s * Math.exp(-ev.deltaY * 0.0022)));
+      this._mapCam = this._clampMapCam(pt.x - wx * newS, pt.y - wy * newS, newS);
+      this._applyMapCamera();
+    }, { passive: false });
+
+    stage.addEventListener("pointerdown", (ev) => {
+      if (ev.target && ev.target.closest && ev.target.closest(".map-hud")) return;
+      this._mapPointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+      if (this._mapPointers.size === 2) {
+        const pts = Array.from(this._mapPointers.values());
+        this._mapPinch = {
+          dist: Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y) || 1,
+          mid: this._mapSvgPoint(svg, (pts[0].x + pts[1].x) / 2, (pts[0].y + pts[1].y) / 2),
+          cam: { ...this._mapCam },
+        };
+        this._mapDrag = null;
+        this._mapDragMoved = true;
+        return;
+      }
+      if (this._mapCam.s <= 1.01) return;
+      this._mapDrag = {
+        start: this._mapSvgPoint(svg, ev.clientX, ev.clientY),
+        cam: { ...this._mapCam },
+      };
+      this._mapDragMoved = false;
+      if (stage.classList) stage.classList.add("panning");
+      if (typeof stage.setPointerCapture === "function") {
+        try { stage.setPointerCapture(ev.pointerId); } catch (_) {}
+      }
+    });
+
+    stage.addEventListener("pointermove", (ev) => {
+      if (this._mapPointers.has(ev.pointerId)) {
+        this._mapPointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+      }
+      if (this._mapPointers.size === 2 && this._mapPinch) {
+        const pts = Array.from(this._mapPointers.values());
+        const dNow = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y) || 1;
+        const factor = dNow / this._mapPinch.dist;
+        const newS = Math.max(1, Math.min(14, this._mapPinch.cam.s * factor));
+        const wx = (this._mapPinch.mid.x - this._mapPinch.cam.tx) / this._mapPinch.cam.s;
+        const wy = (this._mapPinch.mid.y - this._mapPinch.cam.ty) / this._mapPinch.cam.s;
+        const midNow = this._mapSvgPoint(svg, (pts[0].x + pts[1].x) / 2, (pts[0].y + pts[1].y) / 2);
+        this._mapCam = this._clampMapCam(midNow.x - wx * newS, midNow.y - wy * newS, newS);
+        this._applyMapCamera();
+        return;
+      }
+      if (!this._mapDrag) return;
+      const cur = this._mapSvgPoint(svg, ev.clientX, ev.clientY);
+      const dx = cur.x - this._mapDrag.start.x;
+      const dy = cur.y - this._mapDrag.start.y;
+      if (Math.hypot(dx, dy) > 4) this._mapDragMoved = true;
+      const next = this._clampMapCam(this._mapDrag.cam.tx + dx, this._mapDrag.cam.ty + dy, this._mapDrag.cam.s);
+      this._mapCam.tx = next.tx;
+      this._mapCam.ty = next.ty;
+      this._applyMapCamera();
+    });
+
+    const endPtr = (ev) => {
+      this._mapPointers.delete(ev.pointerId);
+      if (this._mapPointers.size < 2) this._mapPinch = null;
+      if (this._mapDrag && this._mapPointers.size === 0) {
+        this._mapDrag = null;
+        if (stage.classList) stage.classList.remove("panning");
+        setTimeout(() => { this._mapDragMoved = false; }, 30);
+      }
+    };
+    stage.addEventListener("pointerup", endPtr);
+    stage.addEventListener("pointercancel", endPtr);
+
+    stage.addEventListener("dblclick", (ev) => {
+      if (ev.target && ev.target.closest && ev.target.closest(".map-hud")) return;
+      const pt = this._mapSvgPoint(svg, ev.clientX, ev.clientY);
+      const wx = (pt.x - this._mapCam.tx) / this._mapCam.s;
+      const wy = (pt.y - this._mapCam.ty) / this._mapCam.s;
+      if (this._mapCam.s >= 7) this._flyMapTo(310, 200, 1);
+      else this._flyMapTo(wx, wy, Math.min(14, this._mapCam.s * 2.4));
+    });
   }
 
   /**
@@ -4014,7 +4316,7 @@ a:hover { text-decoration: underline; }
   background: var(--ds-inner); border: 1px solid var(--ds-line2); border-radius: 10px;
   padding: 10px 12px;
 }
-.map-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.map-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; flex-wrap: wrap; }
 .map-seg {
   display: inline-flex; padding: 2px; border-radius: 7px;
   background: var(--ds-ground); border: 1px solid var(--ds-line2); gap: 2px;
@@ -4022,33 +4324,70 @@ a:hover { text-decoration: underline; }
 .map-btn {
   appearance: none; border: 0; border-radius: 5px; background: transparent;
   color: var(--ds-muted); font: 600 10.5px/1 var(--ds-mono);
-  padding: 5px 8px; cursor: pointer;
+  padding: 5px 7px; cursor: pointer; white-space: nowrap;
 }
 .map-btn:hover { color: var(--ds-text); }
 .map-btn.active { background: var(--ds-line2); color: var(--ds-text); }
 .map-btn:focus-visible { outline: 2px solid var(--ds-ok-hi); outline-offset: 1px; }
-.map-stage { position: relative; width: 100%; }
-.map-svg { display: block; width: 100%; height: auto; }
-.map-border { fill: #101216; stroke: var(--ds-line2); stroke-width: 1.2; }
-.map-raion { fill: none; stroke: var(--ds-line2); stroke-width: 0.7; stroke-dasharray: 2 2; opacity: 0.7; }
-.map-river { fill: none; stroke: #233346; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
-.map-river.wide { stroke-width: 7; opacity: 0.65; }
-.map-hex { transition: fill-opacity .15s ease, stroke .15s ease; }
-.map-hex.clickable { cursor: pointer; }
-.map-hex.clickable:hover { stroke: var(--ds-text); stroke-width: 1.4; }
-.map-hex.clickable:focus-visible { outline: 2px solid var(--ds-ok-hi); }
-.map-dot { fill: var(--ds-text2); pointer-events: none; }
-.map-dot.major { fill: var(--ds-text); }
-.map-city, .map-lbl {
+.map-stage {
+  position: relative; width: 100%; aspect-ratio: 620 / 400;
+  background: radial-gradient(circle at 55% 42%, #11151d 0%, #090b0e 100%);
+  border: 1px solid var(--ds-line); border-radius: 8px;
+  overflow: hidden; touch-action: none; user-select: none;
+}
+.map-stage.panning .map-svg { cursor: grabbing; }
+.map-svg { display: block; width: 100%; height: 100%; cursor: grab; }
+.map-poly { vector-effect: non-scaling-stroke; transition: fill-opacity .15s ease, stroke .12s ease; }
+.map-poly.clickable { cursor: pointer; }
+.map-poly.clickable:hover { stroke: var(--ds-text); stroke-width: 1.7; }
+.map-poly.clickable:focus-visible { outline: 2px solid var(--ds-ok-hi); }
+.map-raion {
+  fill: none; stroke: rgba(169, 181, 195, .28); stroke-width: 1.1; stroke-dasharray: 3 3;
+  pointer-events: none; vector-effect: non-scaling-stroke;
+}
+.map-river {
+  fill: none; stroke: #243b55; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round;
+  pointer-events: none; vector-effect: non-scaling-stroke; opacity: .75;
+}
+.map-river.wide { stroke: #1c334d; stroke-width: 8; opacity: .55; }
+.map-dout {
+  fill: none; stroke: rgba(232, 234, 237, .42); stroke-width: 1.25;
+  pointer-events: none; vector-effect: non-scaling-stroke;
+}
+.map-pin { pointer-events: none; }
+.map-dot { fill: var(--ds-text2); }
+.map-dot.t1 { fill: var(--ds-text); }
+.map-pin-txt, .map-dist-lbl, .map-q-lbl {
   fill: var(--ds-text2); font: 500 9.5px var(--ds-sans); pointer-events: none;
   paint-order: stroke; stroke: var(--ds-ground); stroke-width: 3px; stroke-linejoin: round;
 }
-.map-city.major { fill: var(--ds-text); font-weight: 600; font-size: 10.5px; }
-.map-lbl { fill: var(--ds-text); font-size: 10px; font-weight: 600; opacity: 0.88; }
-.map-leg {
-  display: flex; flex-wrap: wrap; gap: 6px 12px; justify-content: flex-end;
-  font: 500 10.5px var(--ds-mono); color: var(--ds-muted);
+.map-pin-txt.t1 { fill: var(--ds-text); font-weight: 600; font-size: 10.5px; }
+.map-dist-lbl { fill: var(--ds-text); font-size: 9.5px; font-weight: 600; }
+.map-q-lbl { fill: var(--ds-text2); font-size: 8.5px; stroke-width: 2.5px; }
+.map-hud {
+  position: absolute; right: 8px; bottom: 8px;
+  display: flex; align-items: center; gap: 5px; pointer-events: auto;
 }
+.map-hud-badge {
+  background: rgba(11, 12, 15, .90); border: 1px solid var(--ds-line2);
+  border-radius: 6px; padding: 4px 8px; font: 600 10px/1 var(--ds-mono); color: var(--ds-text2);
+}
+.map-zpad {
+  display: inline-flex; background: rgba(11, 12, 15, .92);
+  border: 1px solid var(--ds-line2); border-radius: 6px; overflow: hidden;
+}
+.map-zpad button {
+  appearance: none; background: transparent; border: 0; border-right: 1px solid var(--ds-line2);
+  color: var(--ds-text); font: 600 12px/1 var(--ds-mono); padding: 5px 8px; cursor: pointer;
+}
+.map-zpad button:last-child { border-right: 0; font-size: 10.5px; }
+.map-zpad button:hover { background: var(--ds-line2); }
+.map-zpad button:focus-visible { outline: 2px solid var(--ds-ok-hi); outline-offset: -1px; }
+.map-foot {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 6px 10px; font: 500 10.5px var(--ds-mono); color: var(--ds-muted);
+}
+.map-leg { display: flex; flex-wrap: wrap; gap: 6px 12px; justify-content: flex-end; }
 .map-leg > span { display: inline-flex; align-items: center; gap: 5px; }
 .map-sw { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
 .map-sw.on { background: var(--ds-ok); }

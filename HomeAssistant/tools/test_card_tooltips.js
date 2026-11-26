@@ -559,27 +559,38 @@ hoverSurvivesUpdate("load-shedding-card.js", cfgOf("load-shedding-card.js"),
   FIXTURES["load-shedding-card.js"](), ".tile",
   { "sensor.jkbms_gateway_bms_state_of_charge": S("47") });
 
-// Verify interactive hex map + inspected queue mode tooltips on dtek-shutdowns-card.js.
+// Verify interactive v2 region map + inspected queue mode tooltips on dtek-shutdowns-card.js.
 {
   const L = loadCard("dtek-shutdowns-card.js");
   const card = new L.Card();
   card.setConfig({
     blocks: ["hero", "timeline", "week"],
     map_data: {
-      oblast: {
-        vb: [620, 400], border: [[10, 10], [600, 10], [600, 390]], raions: [], rivers: [],
-        cities: [{ name: "Дніпро", x: 310, y: 200, major: true }],
-        hexes: [
-          { id: "h0", pts: "10,0 20,5 20,15 10,20 0,15 0,5", cx: 10, cy: 10, p: "Кам'янське", d: "8.1", s: { "8.1": 80, "14.1": 20 }, n: 5 },
-          { id: "h1", pts: "40,0 50,5 50,15 40,20 30,15 30,5", cx: 40, cy: 10, p: "Дніпро", d: "14.1", s: { "14.1": 100 }, n: 4 },
-        ],
-      },
-      dnipro: { vb: [620, 400], rivers: [], labels: [], hexes: [] },
+      version: 2,
+      vb: [620, 400],
+      dnipro_cam: { cx: 316.88, cy: 170.34, scale: 6.62 },
+      raions: ["M0,0 L100,0 Z"],
+      ob_rivers: ["M10,10 L100,10"],
+      dn_rivers: ["M20,20 L80,20"],
+      cities: [{ name: "Дніпро", x: 310, y: 200, tier: 1 }],
+      hromadas: [
+        { id: "h0", short: "Кам'янська", name: "Кам'янська міська громада", rayon: "Кам'янський", path: "M10,0 L30,0 L30,20 L10,20 Z", cx: 20, cy: 10, d: "8.1", s: { "8.1": 80, "14.1": 20 }, n: 5 },
+        { id: "h1", short: "Дніпровська", name: "Дніпровська міська громада", rayon: "Дніпровський", path: "M40,0 L60,0 L60,20 L40,20 Z", cx: 50, cy: 10, d: "14.1", s: { "14.1": 100 }, n: 4 },
+      ],
+      districts: [
+        { id: "d0", short: "Центральний", name: "Центральний район", bank: false, path: "M40,0 L60,0 L60,20 L40,20 Z", cx: 50, cy: 10, d: "14.1", s: { "14.1": 65, "3.1": 35 }, n: 10 },
+      ],
+      quarters: [
+        { id: "q0_0", name: "Центр", district: "Центральний", streets: "просп. Яворницького", path: "M45,5 L55,5 L55,15 L45,15 Z", cx: 50, cy: 10, d: "8.1", s: { "8.1": 100 }, n: 3 },
+      ],
     },
   });
   card.hass = mkHass(house(FIXTURES["dtek-shutdowns-card.js"]({})));
   L.flushTimers();
   const root = card.shadowRoot;
+  if (root.querySelectorAll("[title], title").length) {
+    fail("dtek-shutdowns-card.js#map-inspect", "title", ["native title rendered on map"]);
+  }
   const pill8 = root.querySelector('.q-pill[data-val="8.1"]');
   if (pill8) pill8.click();
   inScope(root, "dtek-shutdowns-card.js").forEach((el) => {

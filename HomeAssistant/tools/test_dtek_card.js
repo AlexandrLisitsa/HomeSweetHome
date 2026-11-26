@@ -793,7 +793,7 @@ eq("[hero, days, week]: all three", [!!r.root.querySelector(".hero"), r.root.que
   eq("... and the four rows stay in place", [rows().length, blocks(0).length, blocks(3).map((b) => b[0])],
     [4, 0, ["blk warn"]]);
 
-  console.log("hex map and dynamic multi-queue inspection (18 queues, home 14.1)");
+  console.log("v2 regional map, wheel zoom, LOD and multi-queue inspection (18 queues, home 14.1)");
   {
     const queues18 = {};
     for (let q = 1; q <= 18; q++) {
@@ -804,26 +804,27 @@ eq("[hero, days, week]: all three", [!!r.root.querySelector(".hero"), r.root.que
       };
     }
     const sampleMap = {
+      version: 2,
+      vb: [620, 400],
+      dnipro_cam: { cx: 316.88, cy: 170.34, scale: 6.62 },
       queues_seen: Object.keys(queues18),
-      oblast: {
-        vb: [620, 400],
-        border: [[10, 10], [610, 10], [610, 390], [10, 390]],
-        raions: [{ name: "Дніпровський", ring: [[100, 100], [200, 100], [200, 200]] }],
-        rivers: [[[50, 200], [550, 200]]],
-        cities: [{ name: "Дніпро", x: 310, y: 200, major: true }],
-        hexes: [
-          { id: "h0", pts: "10,0 20,5 20,15 10,20 0,15 0,5", cx: 10, cy: 10, p: "Кам'янське", d: "8.1", s: { "8.1": 80, "14.1": 20 }, n: 5 },
-          { id: "h1", pts: "40,0 50,5 50,15 40,20 30,15 30,5", cx: 40, cy: 10, p: "Дніпро", d: "14.1", s: { "14.1": 100 }, n: 4 },
-        ],
-      },
-      dnipro: {
-        vb: [620, 400],
-        rivers: [[[0, 200], [620, 200]]],
-        labels: [{ name: "Центр", x: 310, y: 200, bank: false }],
-        hexes: [
-          { id: "d0", pts: "10,0 20,5 20,15 10,20 0,15 0,5", cx: 10, cy: 10, p: "Просп. Яворницького", d: "18.1", s: { "18.1": 100 }, n: 3 },
-        ],
-      },
+      raions: ["M0,0 L100,0 Z"],
+      ob_rivers: ["M10,10 L100,10"],
+      dn_rivers: ["M20,20 L80,20"],
+      cities: [
+        { name: "Дніпро", x: 310, y: 200, tier: 1 },
+        { name: "Покров", x: 200, y: 300, tier: 2 },
+      ],
+      hromadas: [
+        { id: "h0", short: "Кам'янська", name: "Кам'янська міська громада", rayon: "Кам'янський", path: "M10,0 L30,0 L30,20 L10,20 Z", cx: 20, cy: 10, d: "8.1", s: { "8.1": 80, "14.1": 20 }, n: 5 },
+        { id: "h1", short: "Дніпровська", name: "Дніпровська міська громада", rayon: "Дніпровський", path: "M40,0 L60,0 L60,20 L40,20 Z", cx: 50, cy: 10, d: "14.1", s: { "14.1": 100 }, n: 4 },
+      ],
+      districts: [
+        { id: "d0", short: "Центральний", name: "Центральний район", bank: false, path: "M40,0 L60,0 L60,20 L40,20 Z", cx: 50, cy: 10, d: "8.1", s: { "8.1": 60, "14.1": 40 }, n: 10 },
+      ],
+      quarters: [
+        { id: "q0_0", name: "Центр", district: "Центральний", streets: "просп. Яворницького", path: "M45,5 L55,5 L55,15 L45,15 Z", cx: 50, cy: 10, d: "18.1", s: { "18.1": 100 }, n: 3 },
+      ],
     };
     const m = render("13:39", {
       queue: "14.1", queue_code: "GPV14.1", queues: ["GPV14.1"], all_queues: queues18,
@@ -840,12 +841,15 @@ eq("[hero, days, week]: all three", [!!r.root.querySelector(".hero"), r.root.que
     const pills = m.root.querySelectorAll(".q-pill").map((p) => p.getAttribute("data-val"));
     eq("renders all 18 queues in numeric order", [pills.length, pills[0], pills[9], pills[13], pills[17]],
       [18, "1.1", "10.1", "14.1", "18.1"]);
-    eq("home queue 14.1 active and starred by default; light meter visible",
+    eq("home queue 14.1 active and starred by default; light meter visible; zero native title attrs",
       [m.root.querySelector(".q-pill.active").getAttribute("data-val"),
         m.root.querySelector(".q-pill.home").getAttribute("data-val"),
         m.tile("Light today"),
-        m.root.querySelectorAll(".timeline .bar").length],
-      ["14.1", "14.1", ["14h 20m", "since 00:00, at the meter"], 4]);
+        m.root.querySelectorAll(".timeline .bar").length,
+        m.root.querySelectorAll("[title], title").length],
+      ["14.1", "14.1", ["14h 20m", "since 00:00, at the meter"], 4, 0]);
+    const hrTip = m.root.querySelector('.map-l-hr [data-act="map-region"]').getAttribute("data-tip") || "";
+    eq("region tooltip clearly marks address share (% addr)", /% addr/.test(hrTip), true);
 
     // Click queue pill 8.1 -> inspect mode
     fire(m.root.querySelector('.q-pill[data-val="8.1"]'), "click");
@@ -859,15 +863,39 @@ eq("[hero, days, week]: all three", [!!r.root.querySelector(".hero"), r.root.que
         m.root.querySelectorAll(".timeline .tlname").map((x) => x.textContent.split("schedule")[0].slice(0, 12))],
       ["8.1", "(8.1)", true, false, ["—", "home meter only"], 2, ["Queue 8.1app", "My queue (14"]]);
 
-    // Toggle Dnipro view and click hex h->d0 (18.1, emergency in fixture)
-    fire(m.root.querySelector('[data-act="map-view"][data-val="dnipro"]'), "click");
-    eq("map-view switches to Dnipro hexes and labels",
-      [m.root.querySelectorAll(".map-lbl").length, m.root.querySelectorAll(".map-hex.clickable").length],
-      [1, 1]);
-    fire(m.root.querySelector('.map-hex[data-val="18.1"]'), "click");
-    eq("clicking Dnipro hex 18.1 inspects queue 18.1 emergency status",
+    // Wheel scroll-down at 1x must NOT call preventDefault(); wheel-up zooms in & switches LOD
+    const stage = m.root.querySelector(".map-stage");
+    let pDown = false;
+    (stage._listeners.wheel || []).forEach((fn) => fn({
+      deltaY: 120, clientX: 310, clientY: 200, preventDefault: () => { pDown = true; },
+    }));
+    eq("wheel down at 1x lets page scroll pass (no preventDefault)", [pDown, m.card._mapCam.s], [false, 1]);
+
+    let pUp = false;
+    (stage._listeners.wheel || []).forEach((fn) => fn({
+      deltaY: -600, clientX: 310, clientY: 200, preventDefault: () => { pUp = true; },
+    }));
+    eq("wheel up zooms in, prevents page scroll, and advances LOD past hromadas",
+      [pUp, m.card._mapCam.s > 2.2, m.card._currentMapLod() !== "hromadas"],
+      [true, true, true]);
+
+    // Manual LOD switch to Microzones and click quarter 18.1
+    fire(m.root.querySelector('[data-act="map-lod"][data-val="quarters"]'), "click");
+    eq("map-lod switches to Microzones badge", m.text(".map-lod-badge"), "1 microzones");
+    fire(m.root.querySelector('.map-l-qtr [data-act="map-region"][data-val="18.1"]'), "click");
+    eq("clicking Dnipro microzone 18.1 inspects emergency outages",
       [m.text("h1"), m.wrap.classList.contains("k-warn"), m.root.querySelector(".q-pill.active").getAttribute("data-val")],
       ["Emergency outages.", true, "18.1"]);
+
+    // Camera presets & zoom buttons
+    fire(m.root.querySelector('[data-act="map-cam"][data-val="dnipro"]'), "click");
+    eq("map-cam dnipro zooms to city", m.card._mapCam.s > 2.0, true);
+    fire(m.root.querySelector('[data-act="map-cam"][data-val="region"]'), "click");
+    eq("map-cam region resets to 1x", m.card._mapCam.s, 1);
+    fire(m.root.querySelector('[data-act="map-zoom"][data-val="in"]'), "click");
+    eq("map-zoom in increases scale", m.card._mapCam.s > 1, true);
+    fire(m.root.querySelector('[data-act="map-zoom"][data-val="reset"]'), "click");
+    eq("map-zoom reset restores 1x", m.card._mapCam.s, 1);
 
     // Toggle Selected vs All live color mode
     fire(m.root.querySelector('[data-act="map-mode"][data-val="all"]'), "click");

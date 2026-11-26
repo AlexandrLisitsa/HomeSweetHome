@@ -1,18 +1,18 @@
-"""Build static hex-mosaic geometry and YASNO queue mapping for the DTEK map.
+"""Build unified regional & Dnipro polygon geometry and YASNO queue mapping (v2).
 
     python HomeAssistant/tools/build_dtek_map.py
     python HomeAssistant/tools/build_dtek_map.py --refresh   # ignore cached HTTP lookups
 
 Generates HomeAssistant/config/www/dtek-map-data.json from:
-  1. Official Ukrainian oblast & 7-raion boundaries (GeoJSON on GitHub).
-  2. GeoNames UA.zip populated places in Dnipropetrovsk Oblast (admin1=04).
-  3. YASNO public address lookup API (regionId=3, dsoId=301) for settlements,
-     major cities, and sampled streets across Dnipro.
-  4. OSM Nominatim geocoder for street-level coordinates inside Dnipro and major
-     oblast cities (and fallback for small settlements missing in GeoNames).
+  1. Official Ukrainian hromada (86 Dnipropetrovsk hromadas) and 7-raion boundaries.
+  2. Real OSM administrative boundaries for all 8 Dnipro districts (Nominatim).
+  3. GeoNames UA.zip populated places in Dnipropetrovsk Oblast (admin1=04).
+  4. YASNO public address lookup API (regionId=3, dsoId=301) for settlements,
+     major cities, and sampled streets across Dnipro (clustered into clipped
+     Voronoi microzones inside each Dnipro district).
 
 Intermediate downloads and API caches live under HomeAssistant/.state/ (which is
-gitignored), so re-runs resume cleanly and only the aggregated, non-personal hex
+gitignored), so re-runs resume cleanly and only the aggregated, non-personal map
 file HomeAssistant/config/www/dtek-map-data.json is committed.
 """
 import argparse
@@ -38,11 +38,55 @@ OUT_PATH = ROOT / "config" / "www" / "dtek-map-data.json"
 
 REGIONY_URL = "https://raw.githubusercontent.com/slawomirmatuszak/ukrainian_geodata/main/regiony.geojson"
 RAYONY_URL = "https://raw.githubusercontent.com/slawomirmatuszak/ukrainian_geodata/main/rayony.geojson"
+HROMADY_URL = "https://raw.githubusercontent.com/slawomirmatuszak/ukrainian_geodata/main/hromady.geojson"
 GEONAMES_UA_URL = "https://download.geonames.org/export/dump/UA.zip"
 YASNO_ADDR_BASE = "https://app.yasno.ua/api/blackout-service/public/shutdowns/addresses/v2"
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 _LAST_NOMINATIM_AT = 0.0
 _NOMINATIM_MISSES = 0
+
+DNIPRO_DISTRICTS = [
+    ("Амур-Нижньодніпровський район", "АНД", True),
+    ("Індустріальний район", "Індустріальний", True),
+    ("Самарський район", "Самарський", True),
+    ("Соборний район", "Соборний", False),
+    ("Центральний район", "Центральний", False),
+    ("Шевченківський район", "Шевченківський", False),
+    ("Чечелівський район", "Чечелівський", False),
+    ("Новокодацький район", "Новокодацький", False),
+]
+
+NEIGHBORHOOD_ANCHORS = [
+    ("Центр", 35.046, 48.464),
+    ("Набережна / Поля", 35.028, 48.470),
+    ("Перемога 1–3", 35.072, 48.435),
+    ("Перемога 4–6", 35.066, 48.414),
+    ("Сокіл", 35.044, 48.404),
+    ("Тополя 1–3", 35.015, 48.399),
+    ("Підстанція / Гагаріна", 35.026, 48.427),
+    ("Титова / Кірова", 35.004, 48.433),
+    ("Робоча", 34.996, 48.450),
+    ("Вокзал / Озерка", 35.012, 48.474),
+    ("Парус / Покровський", 34.925, 48.484),
+    ("Червоний Камінь", 34.953, 48.479),
+    ("Діївка", 34.900, 48.468),
+    ("Західний", 34.950, 48.457),
+    ("Таромське", 34.805, 48.462),
+    ("Мазепи / Київська", 34.972, 48.448),
+    ("Краснопілля", 34.953, 48.407),
+    ("12-й квартал", 35.000, 48.407),
+    ("Калинова", 35.076, 48.513),
+    ("Слобожанський", 35.069, 48.500),
+    ("Лівобережний", 35.035, 48.532),
+    ("Березинка", 35.055, 48.528),
+    ("Фрунзенський / Ломівка", 34.990, 48.512),
+    ("Мануйлівка / Воронцова", 35.058, 48.485),
+    ("Сонячний", 35.083, 48.477),
+    ("Північний", 35.118, 48.515),
+    ("Придніпровськ", 35.125, 48.401),
+    ("Ігрень", 35.165, 48.450),
+    ("Одинківка", 35.155, 48.478),
+]
 
 MAJOR_CITY_STREET_CAP = {
     "Кривий Ріг": 12,
@@ -89,17 +133,19 @@ DNIPRO_RIVERS = [
 ]
 
 REFERENCE_CITIES = [
-    {"name": "Дніпро", "lon": 35.046, "lat": 48.465, "major": True},
-    {"name": "Кривий Ріг", "lon": 33.394, "lat": 47.906, "major": True},
-    {"name": "Кам'янське", "lon": 34.606, "lat": 48.517, "major": True},
-    {"name": "Павлоград", "lon": 35.869, "lat": 48.532, "major": True},
-    {"name": "Нікополь", "lon": 34.391, "lat": 47.568, "major": True},
-    {"name": "Самар", "lon": 35.259, "lat": 48.629, "major": False},
-    {"name": "Синельникове", "lon": 35.526, "lat": 48.324, "major": False},
-    {"name": "Жовті Води", "lon": 33.497, "lat": 48.345, "major": False},
-    {"name": "Марганець", "lon": 34.625, "lat": 47.631, "major": False},
-    {"name": "Покров", "lon": 34.115, "lat": 47.654, "major": False},
-    {"name": "Шахтарське", "lon": 36.396, "lat": 48.348, "major": False},
+    {"name": "Дніпро", "lon": 35.046, "lat": 48.465, "tier": 1},
+    {"name": "Кривий Ріг", "lon": 33.394, "lat": 47.906, "tier": 1},
+    {"name": "Кам'янське", "lon": 34.606, "lat": 48.517, "tier": 1},
+    {"name": "Павлоград", "lon": 35.869, "lat": 48.532, "tier": 1},
+    {"name": "Нікополь", "lon": 34.391, "lat": 47.568, "tier": 1},
+    {"name": "Самар", "lon": 35.259, "lat": 48.629, "tier": 1},
+    {"name": "Синельникове", "lon": 35.526, "lat": 48.324, "tier": 2},
+    {"name": "Жовті Води", "lon": 33.497, "lat": 48.345, "tier": 2},
+    {"name": "Марганець", "lon": 34.625, "lat": 47.631, "tier": 2},
+    {"name": "Покров", "lon": 34.115, "lat": 47.654, "tier": 2},
+    {"name": "Шахтарське", "lon": 36.396, "lat": 48.348, "tier": 2},
+    {"name": "Підгороднє", "lon": 35.106, "lat": 48.575, "tier": 2},
+    {"name": "Тернівка", "lon": 36.082, "lat": 48.524, "tier": 2},
 ]
 
 # Multi-hex oblast cities where street-level geocoding enriches spatial fidelity
@@ -277,17 +323,120 @@ def make_projector(bounds, vb_w, vb_h, pad):
     def proj(lon, lat):
         x = ox + (lon - min_lon) * cos_lat * scale
         y = vb_h - (oy + (lat - min_lat) * scale)
-        return [round(x, 1), round(y, 1)]
+        return (x, y)
 
     return proj
 
 
-def hex_points_str(cx, cy, r):
-    pts = []
-    for k in range(6):
-        ang = math.radians(60 * k - 30)
-        pts.append(f"{cx + r * math.cos(ang):.1f},{cy + r * math.sin(ang):.1f}")
-    return " ".join(pts)
+def ring_area_centroid(pts):
+    if len(pts) < 3:
+        return 0.0, (pts[0][0], pts[0][1]) if pts else (0.0, 0.0)
+    a2 = cx = cy = 0.0
+    n = len(pts)
+    for i in range(n):
+        x0, y0 = pts[i]
+        x1, y1 = pts[(i + 1) % n]
+        cross = x0 * y1 - x1 * y0
+        a2 += cross
+        cx += (x0 + x1) * cross
+        cy += (y0 + y1) * cross
+    area = a2 * 0.5
+    if abs(area) < 1e-12:
+        return 0.0, (sum(p[0] for p in pts) / n, sum(p[1] for p in pts) / n)
+    return abs(area), (cx / (3.0 * a2), cy / (3.0 * a2))
+
+
+def point_in_rings(x, y, rings):
+    return any(point_in_poly(x, y, r) for r in rings)
+
+
+def rings_to_svg_path(rings_xy, dec=1):
+    parts = []
+    fmt = f"{{:.{dec}f}},{{:.{dec}f}}"
+    for r in rings_xy:
+        if len(r) < 3:
+            continue
+        segs = [fmt.format(r[0][0], r[0][1])]
+        for x, y in r[1:]:
+            segs.append("L" + fmt.format(x, y))
+        parts.append("M" + "".join(segs) + "Z")
+    return "".join(parts)
+
+
+def shorten_hromada(name):
+    s = re.sub(r"\s+(міська|сільська|селищна|територіальна)\s+громада$", "", name or "").strip()
+    return s or name
+
+
+def _rings_in_dnipro(rings):
+    if not rings:
+        return False
+    pts = [p for r in rings for p in r]
+    if len(pts) < 4:
+        return False
+    lons = [p[0] for p in pts]
+    lats = [p[1] for p in pts]
+    if max(lons) - min(lons) < 0.025 or max(lats) - min(lats) < 0.02:
+        return False
+    cx = sum(lons) / len(lons)
+    cy = sum(lats) / len(lats)
+    return 34.65 <= cx <= 35.35 and 48.25 <= cy <= 48.68
+
+
+def load_hromadas(refresh=False):
+    raw = json.loads(cached_download("hromady.geojson", HROMADY_URL, refresh=refresh))
+    feats = [f for f in raw["features"] if (f.get("properties") or {}).get("region") == "Дніпропетровська область"]
+    log(f"Loaded {len(feats)} Dnipropetrovsk hromadas")
+    return feats
+
+
+def load_dnipro_districts(refresh=False):
+    cached = {} if refresh else load_json_cache("dnipro_districts.json", {})
+    updated = False
+    out = []
+    for full_name, short_name, left_bank in DNIPRO_DISTRICTS:
+        rec = cached.get(full_name)
+        if not rec or not _rings_in_dnipro(rec.get("rings")):
+            rings = []
+            for q in (f"{full_name}, Дніпро, Дніпропетровська область", f"{full_name}, Дніпро"):
+                time.sleep(1.1)
+                params = {
+                    "q": q, "format": "json", "polygon_geojson": 1, "limit": 8,
+                    "viewbox": "34.70,48.62,35.30,48.32", "bounded": 1,
+                }
+                req = urllib.request.Request(
+                    NOMINATIM_URL + "?" + urllib.parse.urlencode(params),
+                    headers={
+                        "User-Agent": "HomeSweetHome-dtek-map-builder/1.0 (local-ha-tool)",
+                        "Accept": "application/json",
+                        "Accept-Language": "uk",
+                    },
+                )
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    res = json.loads(resp.read().decode("utf-8", "replace"))
+                res_sorted = sorted(res or [], key=lambda it: 0 if it.get("class") == "boundary" else 1)
+                for item in res_sorted:
+                    g = item.get("geojson") or {}
+                    gt = g.get("type")
+                    coords = g.get("coordinates") or []
+                    cand = []
+                    if gt == "Polygon" and coords:
+                        cand = [coords[0]]
+                    elif gt == "MultiPolygon" and coords:
+                        cand = [poly[0] for poly in coords if poly and poly[0]]
+                    if _rings_in_dnipro(cand):
+                        rings = cand
+                        break
+                if rings:
+                    break
+            rec = {"name": full_name, "short": short_name, "bank": left_bank, "rings": rings}
+            cached[full_name] = rec
+            updated = True
+            log(f"Loaded district {full_name}: {len(rings)} ring(s)")
+        out.append(rec)
+    if updated:
+        save_json_cache("dnipro_districts.json", cached)
+    return out
 
 
 def load_boundaries(refresh=False):
@@ -729,13 +878,93 @@ def collect_dnipro_samples(streets, refresh=False):
     return samples, geocoded
 
 
-# --- Hex binning ---
+# --- Unified v2 Region & Microzone Geometry ---
+
+def clip_poly_halfplane(poly, ax, ay, bx, by):
+    """Clip polygon against half-plane closer to (ax, ay) than (bx, by)."""
+    if not poly:
+        return []
+    mx, my = (ax + bx) * 0.5, (ay + by) * 0.5
+    vx, vy = bx - ax, by - ay
+
+    def inside(pt):
+        return (pt[0] - mx) * vx + (pt[1] - my) * vy <= 1e-9
+
+    def intersect(p1, p2):
+        d1 = (p1[0] - mx) * vx + (p1[1] - my) * vy
+        d2 = (p2[0] - mx) * vx + (p2[1] - my) * vy
+        denom = d1 - d2
+        if abs(denom) < 1e-12:
+            return p1
+        t = d1 / denom
+        return (p1[0] + t * (p2[0] - p1[0]), p1[1] + t * (p2[1] - p1[1]))
+
+    out = []
+    prev = poly[-1]
+    prev_in = inside(prev)
+    for cur in poly:
+        cur_in = inside(cur)
+        if cur_in:
+            if not prev_in:
+                out.append(intersect(prev, cur))
+            out.append(cur)
+        elif prev_in:
+            out.append(intersect(prev, cur))
+        prev, prev_in = cur, cur_in
+    return out
+
+
+def cluster_district_samples(pts, min_sep_deg=0.0155):
+    if not pts:
+        return []
+    by_coord = defaultdict(list)
+    for s in pts:
+        by_coord[(round(s["lon"], 4), round(s["lat"], 4))].append(s)
+    nodes = [{"lon": lo, "lat": la, "items": list(items)} for (lo, la), items in by_coord.items()]
+    while len(nodes) > 1:
+        best_d2 = min_sep_deg ** 2
+        pair = None
+        for i in range(len(nodes)):
+            for j in range(i + 1, len(nodes)):
+                dx = (nodes[i]["lon"] - nodes[j]["lon"]) * 0.663
+                dy = nodes[i]["lat"] - nodes[j]["lat"]
+                d2 = dx * dx + dy * dy
+                if d2 < best_d2:
+                    best_d2 = d2
+                    pair = (i, j)
+        if pair is None:
+            break
+        i, j = pair
+        a, b = nodes[i], nodes[j]
+        na, nb = len(a["items"]), len(b["items"])
+        tot = na + nb
+        nodes[i] = {
+            "lon": (a["lon"] * na + b["lon"] * nb) / tot,
+            "lat": (a["lat"] * na + b["lat"] * nb) / tot,
+            "items": a["items"] + b["items"],
+        }
+        nodes.pop(j)
+    return nodes
+
+
+def name_quarter(lon, lat, items):
+    best_name, best_d = None, 0.022
+    for aname, alon, alat in NEIGHBORHOOD_ANCHORS:
+        d = math.hypot((lon - alon) * 0.663, lat - alat)
+        if d < best_d:
+            best_d = d
+            best_name = aname
+    if best_name:
+        return best_name
+    raw = Counter(it["place"] for it in items).most_common(1)[0][0]
+    return re.sub(r"^(вул\.|просп\.|пров\.|ж/м|наб\.|пл\.)\s*", "", raw, flags=re.I)
+
 
 def shares_from_counts(counts):
     total = sum(counts.values())
     if total <= 0:
         return {}, None
-    top = sorted(counts.items(), key=lambda kv: (-kv[1], queue_sort_key(kv[0])))[:4]
+    top = sorted(counts.items(), key=lambda kv: (-kv[1], queue_sort_key(kv[0])))[:5]
     sub_tot = sum(v for _, v in top)
     raw_pcts = [(k, v * 100.0 / sub_tot) for k, v in top]
     ints = {k: int(math.floor(p)) for k, p in raw_pcts}
@@ -746,161 +975,173 @@ def shares_from_counts(counts):
         ints[k] += 1
         rem -= 1
     ints = {k: v for k, v in sorted(ints.items(), key=lambda kv: (-kv[1], queue_sort_key(kv[0]))) if v > 0}
-    dom = next(iter(ints))
+    dom = next(iter(ints)) if ints else None
     return ints, dom
 
 
-def build_oblast_hexes(border_xy, samples, proj):
-    vb_w, vb_h = 620, 400
-    r = 12.8
-    dx = math.sqrt(3) * r
-    dy = 1.5 * r
+def build_hromadas(hr_feats, samples, proj):
+    hr_polys = []
+    for idx, f in enumerate(hr_feats):
+        g = f["geometry"]
+        props = f["properties"] or {}
+        rings = [g["coordinates"][0]] if g["type"] == "Polygon" else [p[0] for p in g["coordinates"]]
+        clean_rings = [[(pt[0], pt[1]) for pt in r[:-1]] for r in rings if len(r) >= 4]
+        areas_c = [ring_area_centroid(r) for r in clean_rings]
+        main_idx = max(range(len(areas_c)), key=lambda i: areas_c[i][0])
+        _, (clon, clat) = areas_c[main_idx]
+        hr_polys.append({
+            "id": f"h{idx}",
+            "name": props.get("hromada", f"Hromada {idx}"),
+            "short": shorten_hromada(props.get("hromada", "")),
+            "rayon": props.get("rayon", ""),
+            "rings_geo": clean_rings,
+            "clon": clon,
+            "clat": clat,
+            "counts": Counter(),
+        })
 
-    pts_xy = []
     for s in samples:
-        x, y = proj(s["lon"], s["lat"])
-        pts_xy.append((x, y, s["q"], s["place"]))
-
-    hexes = []
-    idx = 0
-    for row in range(32):
-        cy = 10.0 + row * dy
-        if cy > vb_h - 6:
-            break
-        off = (row % 2) * (dx / 2.0)
-        for col in range(36):
-            cx = 10.0 + off + col * dx
-            if cx > vb_w - 6:
+        lo, la, q = s["lon"], s["lat"], s["q"]
+        hit = None
+        for h in hr_polys:
+            if point_in_rings(lo, la, h["rings_geo"]):
+                hit = h
                 break
-            if not point_in_poly(cx, cy, border_xy):
-                continue
-            hexes.append({"id": f"o{idx}", "cx": round(cx, 1), "cy": round(cy, 1), "counts": Counter(), "places": Counter()})
-            idx += 1
+        if hit is None:
+            best = min(hr_polys, key=lambda h: (h["clon"] - lo) ** 2 + (h["clat"] - la) ** 2)
+            if (best["clon"] - lo) ** 2 + (best["clat"] - la) ** 2 <= 0.09 ** 2:
+                hit = best
+        if hit is not None:
+            hit["counts"][q] += 1
 
-    # Assign each sample to nearest hex center within hex radius * 1.15
-    max_d2 = (r * 1.15) ** 2
-    for x, y, q, place in pts_xy:
-        best = None
-        best_d2 = max_d2
-        for h in hexes:
-            d2 = (x - h["cx"]) ** 2 + (y - h["cy"]) ** 2
-            if d2 <= best_d2:
-                best_d2 = d2
-                best = h
-        if best is not None:
-            best["counts"][q] += 1
-            best["places"][place] += 1
-
+    sampled_hr = [h for h in hr_polys if h["counts"]]
     out = []
-    sampled_hexes = [h for h in hexes if h["counts"]]
-    for h in hexes:
+    for h in hr_polys:
         n = sum(h["counts"].values())
         if n > 0:
             shares, dom = shares_from_counts(h["counts"])
-            place = h["places"].most_common(1)[0][0]
         else:
-            # Interpolate from up to 3 nearest sampled hexes (<= 55 px)
             dists = sorted(
-                (((h["cx"] - s["cx"]) ** 2 + (h["cy"] - s["cy"]) ** 2, s) for s in sampled_hexes),
+                (((h["clon"] - s["clon"]) ** 2 + (h["clat"] - s["clat"]) ** 2, s) for s in sampled_hr),
                 key=lambda it: it[0],
-            )
-            near = [(d2, s) for d2, s in dists[:3] if d2 <= 65 ** 2]
-            if not near:
-                near = dists[:1]
+            )[:3]
             w_counts = defaultdict(float)
-            for d2, s in near:
-                w = 1.0 / (math.sqrt(d2) + 8.0)
+            for d2, s in dists:
+                w = 1.0 / (math.sqrt(d2) + 0.04)
                 for q, cnt in s["counts"].items():
                     w_counts[q] += w * cnt
             shares, dom = shares_from_counts(w_counts)
-            nearest_place = near[0][1]["places"].most_common(1)[0][0] if near else "Дніпропетровська обл."
-            place = f"Near {nearest_place}"
-
+        simp_geo = [dp_simplify(r, 0.0038) for r in h["rings_geo"]]
+        rings_xy = [[proj(lo, la) for lo, la in r] for r in simp_geo if len(r) >= 4]
+        cx, cy = proj(h["clon"], h["clat"])
         out.append({
             "id": h["id"],
-            "pts": hex_points_str(h["cx"], h["cy"], r - 0.9),
-            "cx": h["cx"],
-            "cy": h["cy"],
-            "p": place,
-            "d": dom,
+            "name": h["name"],
+            "short": h["short"],
+            "rayon": h["rayon"],
+            "path": rings_to_svg_path(rings_xy, dec=1),
+            "cx": round(cx, 1),
+            "cy": round(cy, 1),
             "s": shares,
+            "d": dom,
             "n": n,
         })
     return out
 
 
-def build_dnipro_hexes(samples, proj):
-    vb_w, vb_h = 620, 400
-    r = 18.0
-    dx = math.sqrt(3) * r
-    dy = 1.5 * r
+def build_dnipro_layers(districts_raw, dnipro_samples, proj):
+    districts_out = []
+    quarters_out = []
+    dn_minx, dn_miny, dn_maxx, dn_maxy = 9999.0, 9999.0, -9999.0, -9999.0
 
-    pts_xy = []
-    for s in samples:
-        x, y = proj(s["lon"], s["lat"])
-        if 10 <= x <= vb_w - 10 and 10 <= y <= vb_h - 10:
-            pts_xy.append((x, y, s["q"], s["place"]))
+    for idx, d in enumerate(districts_raw):
+        clean_rings = [[(pt[0], pt[1]) for pt in r[:-1]] for r in d["rings"] if len(r) >= 4]
+        if not clean_rings:
+            continue
+        simp_geo = [dp_simplify(r, 0.00075) for r in clean_rings]
+        rings_xy = [[proj(lo, la) for lo, la in r] for r in simp_geo if len(r) >= 4]
+        for rxy in rings_xy:
+            for x, y in rxy:
+                dn_minx = min(dn_minx, x)
+                dn_maxx = max(dn_maxx, x)
+                dn_miny = min(dn_miny, y)
+                dn_maxy = max(dn_maxy, y)
+        areas_c = [ring_area_centroid(r) for r in clean_rings]
+        main_i = max(range(len(areas_c)), key=lambda i: areas_c[i][0])
+        _, (clon, clat) = areas_c[main_i]
+        cx, cy = proj(clon, clat)
 
-    grid = {}
-    idx = 0
-    for row in range(20):
-        cy = 24.0 + row * dy
-        if cy > vb_h - 18:
-            break
-        off = (row % 2) * (dx / 2.0)
-        for col in range(24):
-            cx = 24.0 + off + col * dx
-            if cx > vb_w - 18:
-                break
-            grid[(row, col)] = {"id": f"d{idx}", "row": row, "col": col, "cx": round(cx, 1), "cy": round(cy, 1),
-                                "counts": Counter(), "places": Counter()}
-            idx += 1
+        d_pts = [s for s in dnipro_samples if point_in_rings(s["lon"], s["lat"], clean_rings)]
+        d_counts = Counter(s["q"] for s in d_pts)
+        d_shares, d_dom = shares_from_counts(d_counts)
 
-    max_d2 = (r * 1.15) ** 2
-    for x, y, q, place in pts_xy:
-        best = None
-        best_d2 = max_d2
-        for h in grid.values():
-            d2 = (x - h["cx"]) ** 2 + (y - h["cy"]) ** 2
-            if d2 <= best_d2:
-                best_d2 = d2
-                best = h
-        if best is not None:
-            best["counts"][q] += 1
-            best["places"][place] += 1
+        districts_out.append({
+            "id": f"d{idx}",
+            "name": d["name"],
+            "short": d["short"],
+            "bank": d["bank"],
+            "path": rings_to_svg_path(rings_xy, dec=2),
+            "cx": round(cx, 2),
+            "cy": round(cy, 2),
+            "s": d_shares,
+            "d": d_dom,
+            "n": len(d_pts),
+        })
 
-    def neighbors(row, col):
-        if row % 2 == 0:
-            offs = [(-1, -1), (-1, 0), (0, -1), (0, 1), (1, -1), (1, 0)]
-        else:
-            offs = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, 0), (1, 1)]
-        return [grid[(row + dr, col + dc)] for dr, dc in offs if (row + dr, col + dc) in grid]
+        clusters = cluster_district_samples(d_pts, min_sep_deg=0.0155)
+        if not clusters:
+            clusters = [{"lon": clon, "lat": clat, "items": d_pts}]
 
-    kept = []
-    for (row, col), h in grid.items():
-        n = sum(h["counts"].values())
-        if n > 0:
-            shares, dom = shares_from_counts(h["counts"])
-            top_places = [p for p, _ in h["places"].most_common(2)]
-            kept.append({
-                "id": h["id"], "pts": hex_points_str(h["cx"], h["cy"], r - 1.3),
-                "cx": h["cx"], "cy": h["cy"], "p": " / ".join(top_places),
-                "d": dom, "s": shares, "n": n,
+        c_xy = [(proj(c["lon"], c["lat"]), c) for c in clusters]
+        used_names = Counter()
+        for ci, ((ax, ay), c) in enumerate(c_xy):
+            clipped_rings = []
+            for rxy in rings_xy:
+                area0, _ = ring_area_centroid(rxy)
+                if area0 < 0.01:
+                    continue
+                poly = list(rxy)
+                for cj, ((bx, by), _) in enumerate(c_xy):
+                    if cj == ci:
+                        continue
+                    poly = clip_poly_halfplane(poly, ax, ay, bx, by)
+                    if len(poly) < 3:
+                        break
+                if len(poly) >= 3:
+                    a_sub, _ = ring_area_centroid(poly)
+                    if a_sub >= 0.005:
+                        clipped_rings.append(poly)
+            if not clipped_rings:
+                continue
+            max_r = max(clipped_rings, key=lambda pr: ring_area_centroid(pr)[0])
+            _, (qcx, qcy) = ring_area_centroid(max_r)
+            q_counts = Counter(it["q"] for it in c["items"])
+            q_shares, q_dom = shares_from_counts(q_counts)
+            if not q_shares:
+                q_shares, q_dom = d_shares, d_dom
+            qname = name_quarter(c["lon"], c["lat"], c["items"])
+            used_names[qname] += 1
+            if used_names[qname] > 1:
+                qname = f"{qname} #{used_names[qname]}"
+            top_streets = [p for p, _ in Counter(it["place"] for it in c["items"]).most_common(2)]
+            quarters_out.append({
+                "id": f"q{idx}_{ci}",
+                "name": qname,
+                "district": d["short"],
+                "streets": ", ".join(top_streets),
+                "path": rings_to_svg_path(clipped_rings, dec=2),
+                "cx": round(qcx, 2),
+                "cy": round(qcy, 2),
+                "s": q_shares,
+                "d": q_dom,
+                "n": len(c["items"]),
             })
-        else:
-            nb_sampled = [nb for nb in neighbors(row, col) if nb["counts"]]
-            if len(nb_sampled) >= 2:
-                w_counts = Counter()
-                for nb in nb_sampled:
-                    w_counts.update(nb["counts"])
-                shares, dom = shares_from_counts(w_counts)
-                near_p = nb_sampled[0]["places"].most_common(1)[0][0]
-                kept.append({
-                    "id": h["id"], "pts": hex_points_str(h["cx"], h["cy"], r - 1.3),
-                    "cx": h["cx"], "cy": h["cy"], "p": f"Near {near_p}",
-                    "d": dom, "s": shares, "n": 0,
-                })
-    return kept
+
+    dn_cx = (dn_minx + dn_maxx) * 0.5
+    dn_cy = (dn_miny + dn_maxy) * 0.5
+    dn_scale = min(620.0 / max(10.0, (dn_maxx - dn_minx) * 1.18), 400.0 / max(10.0, (dn_maxy - dn_miny) * 1.22))
+    dnipro_cam = {"cx": round(dn_cx, 2), "cy": round(dn_cy, 2), "scale": round(dn_scale, 2)}
+    return districts_out, quarters_out, dnipro_cam
 
 
 def main(argv=None):
@@ -909,6 +1150,8 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     border_geo, raions_geo = load_boundaries(refresh=args.refresh)
+    hr_feats = load_hromadas(refresh=args.refresh)
+    districts_raw = load_dnipro_districts(refresh=args.refresh)
     geonames_idx, _ = load_geonames(border_geo, refresh=args.refresh)
     cities = fetch_all_yasno_cities(refresh=args.refresh)
 
@@ -919,29 +1162,40 @@ def main(argv=None):
 
     all_oblast_samples = oblast_samples + major_samples + dnipro_samples
 
-    lons = [p[0] for p in border_geo]
-    lats = [p[1] for p in border_geo]
-    oblast_bounds = (min(lons), min(lats), max(lons), max(lats))
-    proj_ob = make_projector(oblast_bounds, 620, 400, 14)
+    # Unified projection across all Dnipropetrovsk hromadas so Region <-> Dnipro zoom is continuous
+    all_lons, all_lats = [p[0] for p in border_geo], [p[1] for p in border_geo]
+    for f in hr_feats:
+        g = f["geometry"]
+        rings = [g["coordinates"][0]] if g["type"] == "Polygon" else [p[0] for p in g["coordinates"]]
+        for r in rings:
+            for pt in r:
+                all_lons.append(pt[0])
+                all_lats.append(pt[1])
+    proj = make_projector((min(all_lons), min(all_lats), max(all_lons), max(all_lats)), 620.0, 400.0, 12.0)
 
-    border_xy = [proj_ob(lo, la) for lo, la in border_geo]
-    raions_xy = [{"name": r["name"], "ring": [proj_ob(lo, la) for lo, la in r["ring"]]} for r in raions_geo]
-    rivers_ob_xy = [[proj_ob(lo, la) for lo, la in rv] for rv in OBLAST_RIVERS]
-    cities_ob_xy = [{"name": c["name"], "x": proj_ob(c["lon"], c["lat"])[0],
-                     "y": proj_ob(c["lon"], c["lat"])[1], "major": c["major"]} for c in REFERENCE_CITIES]
-    oblast_hexes = build_oblast_hexes(border_xy, all_oblast_samples, proj_ob)
+    hromadas = build_hromadas(hr_feats, all_oblast_samples, proj)
+    districts, quarters, dnipro_cam = build_dnipro_layers(districts_raw, dnipro_samples, proj)
+    raions_paths = [rings_to_svg_path([[proj(lo, la) for lo, la in r["ring"]]], dec=1) for r in raions_geo]
+    ob_rivers = [
+        "M" + " L".join(f"{x:.1f},{y:.1f}" for x, y in (proj(lo, la) for lo, la in rv))
+        for rv in OBLAST_RIVERS
+    ]
+    dn_rivers = [
+        "M" + " L".join(f"{x:.2f},{y:.2f}" for x, y in (proj(lo, la) for lo, la in rv))
+        for rv in DNIPRO_RIVERS
+    ]
+    cities_xy = []
+    for c in REFERENCE_CITIES:
+        x, y = proj(c["lon"], c["lat"])
+        cities_xy.append({"name": c["name"], "x": round(x, 2), "y": round(y, 2), "tier": c["tier"]})
 
-    proj_dn = make_projector(DNIPRO_ZOOM_BOUNDS, 620, 400, 14)
-    rivers_dn_xy = [[proj_dn(lo, la) for lo, la in rv] for rv in DNIPRO_RIVERS]
-    labels_dn_xy = [{"name": lb["name"], "x": proj_dn(lb["lon"], lb["lat"])[0],
-                     "y": proj_dn(lb["lon"], lb["lat"])[1], "bank": bool(lb.get("bank"))}
-                    for lb in DNIPRO_DISTRICT_LABELS]
-    dnipro_hexes = build_dnipro_hexes(dnipro_samples, proj_dn)
-
-    queues_seen = sorted({q for h in oblast_hexes + dnipro_hexes for q in h["s"]}, key=queue_sort_key)
+    queues_seen = sorted(
+        {q for r in hromadas + districts + quarters for q in r["s"]},
+        key=queue_sort_key,
+    )
 
     payload = {
-        "version": 1,
+        "version": 2,
         "generated_at": datetime.now(KYIV).replace(microsecond=0).isoformat(),
         "queues_seen": queues_seen,
         "stats": {
@@ -950,25 +1204,20 @@ def main(argv=None):
             "oblast_samples": len(all_oblast_samples),
             "dnipro_streets_listed": len(dnipro_streets),
             "dnipro_streets_geocoded": dnipro_geocoded,
-            "oblast_hexes": len(oblast_hexes),
-            "oblast_hexes_verified": sum(1 for h in oblast_hexes if h["n"] > 0),
-            "dnipro_hexes": len(dnipro_hexes),
-            "dnipro_hexes_verified": sum(1 for h in dnipro_hexes if h["n"] > 0),
+            "hromadas": len(hromadas),
+            "hromadas_verified": sum(1 for h in hromadas if h["n"] > 0),
+            "districts": len(districts),
+            "quarters": len(quarters),
         },
-        "oblast": {
-            "vb": [620, 400],
-            "border": border_xy,
-            "raions": raions_xy,
-            "rivers": rivers_ob_xy,
-            "cities": cities_ob_xy,
-            "hexes": oblast_hexes,
-        },
-        "dnipro": {
-            "vb": [620, 400],
-            "rivers": rivers_dn_xy,
-            "labels": labels_dn_xy,
-            "hexes": dnipro_hexes,
-        },
+        "vb": [620, 400],
+        "dnipro_cam": dnipro_cam,
+        "hromadas": hromadas,
+        "raions": raions_paths,
+        "districts": districts,
+        "quarters": quarters,
+        "ob_rivers": ob_rivers,
+        "dn_rivers": dn_rivers,
+        "cities": cities_xy,
     }
 
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
