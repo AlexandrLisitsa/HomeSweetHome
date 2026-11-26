@@ -888,5 +888,60 @@ for label, bad_data in [
     check("absent house with %s still raises RuntimeError" % label, got, True)
 
 
+# --- 18. dynamic all_queues (18 queues, 12 queues, YASNO merge) -------------
+print("\n18. all_queues across 12 and 18 queues + YASNO merge")
+q18_day = {f"GPV{i}.1": day(["yes"] * (i % 12) + ["no"] * 4 + ["yes"] * (20 - (i % 12)))
+           for i in range(1, 19)}
+q18_day["GPV1001.1"] = day(["no"] * 24)  # CEK queue must stay separate for a DTEK house
+fact18 = fact_from({today: q18_day, today + timedelta(days=1): {"GPV14.1": day(["yes"] * 24)}})
+r18 = p.resolve(entry(["GPV14.1"]), {}, fact18, {"sch_names": {"GPV14.1": "Черга 14.1"}},
+                datetime(2026, 6, 10, 12, 0, tzinfo=KYIV))
+check("18 DTEK queues present, CEK excluded", len(r18["all_queues"]), 18)
+check("queues sorted numerically (2.1 before 10.1, 14.1 present)",
+      [list(r18["all_queues"].keys())[1], list(r18["all_queues"].keys())[9], "14.1" in r18["all_queues"]],
+      ["2.1", "10.1", True])
+check("14.1 today string populated", len(r18["all_queues"]["14.1"]["t"]), 24)
+
+# YASNO slots -> 24-char string (including half hours)
+slot_day = p.yasno_slots_to_day({
+    "date": "2026-11-04T00:00:00+02:00",
+    "status": "ScheduleApplies",
+    "slots": [{"start": 90, "end": 330, "type": "Definite"}],
+}, date(2026, 11, 4))
+check("YASNO 01:30-05:30 Definite -> s,n,n,n,f", slot_day, "ysnnnf" + "y" * 18)
+check("YASNO WaitingForSchedule -> None",
+      p.yasno_slots_to_day({"date": "2026-11-04T00:00:00+02:00", "status": "WaitingForSchedule",
+                            "slots": [{"start": 0, "end": 60, "type": "Definite"}]},
+                           date(2026, 11, 4)), None)
+
+# apply_yasno merges EmergencyShutdowns and slot schedules even when fact.data is empty
+y18_raw = {
+    f"{i}.1": {
+        "today": {"date": "2026-11-26T00:00:00+02:00",
+                  "status": "EmergencyShutdowns" if i == 8 else "ScheduleApplies",
+                  "slots": [{"start": 600, "end": 960, "type": "Definite"}]},
+        "tomorrow": {"date": "2026-11-27T00:00:00+02:00", "status": "WaitingForSchedule", "slots": []},
+    }
+    for i in range(1, 19)
+}
+saved_y18 = (p.fetch_yasno, p.save_yasno_capture, p.fetch_yasno_notice)
+p.fetch_yasno = lambda: y18_raw
+p.save_yasno_capture = lambda raw, verdict, now: None
+p.fetch_yasno_notice = lambda: ""
+try:
+    pl18 = p.resolve(entry(["GPV14.1"]), {}, {"data": [], "update": "24.07.2026 08:30"},
+                     {"sch_names": {"GPV14.1": "Черга 14.1"}},
+                     datetime(2026, 11, 26, 12, 0, tzinfo=KYIV))
+    p.apply_yasno(pl18, {}, datetime(2026, 11, 26, 12, 0, tzinfo=KYIV), "м. Дніпро")
+finally:
+    p.fetch_yasno, p.save_yasno_capture, p.fetch_yasno_notice = saved_y18
+check("apply_yasno populates all 18 queues when fact is empty", len(pl18["all_queues"]), 18)
+check("queue 8.1 marked EmergencyShutdowns", pl18["all_queues"]["8.1"].get("y"), "EmergencyShutdowns")
+check("queue 14.1 got slot schedule fallback", pl18["all_queues"]["14.1"].get("t"),
+      "y" * 10 + "n" * 6 + "y" * 8)
+check("serialized all_queues fits well inside HA 16KB limit",
+      len(json.dumps(pl18["all_queues"], separators=(",", ":"))) < 12000, True)
+
+
 print("\n%s" % ("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed"))
 sys.exit(1 if FAILED else 0)

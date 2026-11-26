@@ -793,6 +793,160 @@ eq("[hero, days, week]: all three", [!!r.root.querySelector(".hero"), r.root.que
   eq("... and the four rows stay in place", [rows().length, blocks(0).length, blocks(3).map((b) => b[0])],
     [4, 0, ["blk warn"]]);
 
+  console.log("v2 regional map, wheel zoom, LOD and multi-queue inspection (18 queues, home 14.1)");
+  {
+    const queues18 = {};
+    for (let q = 1; q <= 18; q++) {
+      queues18[q + ".1"] = {
+        t: q === 8 ? "nnnnnnnyyyyyyyyyyyyyyyyy" : q === 14 ? TODAY : "yyyyyyyyyyyyyyyyyyyyyyyy",
+        m: q === 8 ? "yyyyyyyyyyyyyyyyynnnnyyy" : null,
+        y: q === 18 ? "EmergencyShutdowns" : null,
+      };
+    }
+    const sampleMap = {
+      version: 2,
+      vb: [620, 400],
+      dnipro_cam: { cx: 316.88, cy: 170.34, scale: 6.62 },
+      queues_seen: Object.keys(queues18),
+      raions: ["M0,0 L100,0 Z"],
+      ob_rivers: ["M10,10 L100,10"],
+      dn_rivers: ["M20,20 L80,20"],
+      cities: [
+        { name: "Дніпро", x: 310, y: 200, tier: 1 },
+        { name: "Покров", x: 200, y: 300, tier: 2 },
+      ],
+      hromadas: [
+        { id: "h0", short: "Кам'янська", name: "Кам'янська міська громада", rayon: "Кам'янський", path: "M10,0 L30,0 L30,20 L10,20 Z", cx: 20, cy: 10, d: "8.1", s: { "8.1": 80, "14.1": 20 }, c: { "8.1": 4, "14.1": 1 }, n: 5 },
+        { id: "h1", short: "Дніпровська", name: "Дніпровська міська громада", rayon: "Дніпровський", path: "M40,0 L60,0 L60,20 L40,20 Z", cx: 50, cy: 10, d: "14.1", s: { "14.1": 100 }, c: { "14.1": 4 }, n: 4 },
+      ],
+      districts: [
+        { id: "d0", short: "Центральний", name: "Центральний район", bank: false, path: "M40,0 L60,0 L60,20 L40,20 Z", cx: 50, cy: 10, d: "8.1", s: { "8.1": 60, "14.1": 40 }, c: { "8.1": 6, "14.1": 4 }, n: 10 },
+      ],
+      quarters: [
+        { id: "q0_0", name: "Центр", district: "Центральний", streets: "просп. Яворницького", path: "M45,5 L55,5 L55,15 L45,15 Z", cx: 50, cy: 10, d: "18.1", s: { "18.1": 100 }, c: { "18.1": 3 }, n: 3 },
+      ],
+    };
+    const m = render("13:39", {
+      queue: "14.1", queue_code: "GPV14.1", queues: ["GPV14.1"], all_queues: queues18,
+    }, {
+      blocks: ["hero", "timeline", "week"],
+      states: { "sensor.grid_light_today": S("14.3333", { unit_of_measurement: "h" }) },
+      history: {
+        [GRID]: [{ s: "off", lu: lu(0) }], [OUT]: [{ s: "off", lu: lu(0) }],
+        [SCHED]: [{ s: "off", lu: lu(0) }], [UNS]: [{ s: "off", lu: lu(0) }],
+      },
+      config: { map_data: sampleMap },
+    });
+    await settle();
+    const pills = m.root.querySelectorAll(".q-pill").map((p) => p.getAttribute("data-val"));
+    eq("renders all 18 queues in numeric order", [pills.length, pills[0], pills[9], pills[13], pills[17]],
+      [18, "1.1", "10.1", "14.1", "18.1"]);
+    eq("home queue 14.1 active and starred by default; light meter visible; zero native title attrs",
+      [m.root.querySelector(".q-pill.active").getAttribute("data-val"),
+        m.root.querySelector(".q-pill.home").getAttribute("data-val"),
+        m.tile("Light today"),
+        m.root.querySelectorAll(".timeline .bar").length,
+        m.root.querySelectorAll("[title], title").length],
+      ["14.1", "14.1", ["14h 20m", "since 00:00, at the meter"], 4, 0]);
+    const h0El = m.root.querySelector('.map-l-hr [data-reg-q="8.1"]');
+    eq("map polygon carries no native or card-tip attribute",
+      [!!h0El, h0El && h0El.hasAttribute("data-tip"), h0El && h0El.hasAttribute("title")],
+      [true, false, false]);
+    m.card._onMapHover({ target: h0El, clientX: 200, clientY: 200, pointerType: "mouse" });
+    const hCard = m.root.querySelector(".map-hcard");
+    const hRows = hCard.querySelectorAll(".mh-row").map((r) => r.textContent);
+    const qRows = hCard.querySelectorAll(".mh-qrow").map((r) => r.textContent);
+    const hFoot = hCard.querySelector(".mh-foot");
+    eq("hover card shows houses with %, status bar, queue breakdown and click hint",
+      [hCard.hidden, /Кам'янська міська громада/.test(hCard.textContent),
+        hRows, !!hCard.querySelector(".mh-bar"),
+        qRows.length,
+        qRows.some((t) => /^8\.1/.test(t) && /4 \(80%\)/.test(t) && /On|Off/.test(t)),
+        qRows.some((t) => /^14\.1 ★/.test(t) && /1 \(20%\)/.test(t) && /Off until|Off at|On/.test(t)),
+        hFoot && hFoot.textContent],
+      [false, true,
+        ["Houses checked5", "Houses off1(20%)", "Off soon (<1h)0(0%)", "Houses on4(80%)"],
+        true, 2, true, true,
+        "Click to inspect queue 8.1YASNO sample"]);
+    const q0El = m.root.querySelector('[data-reg-q="18.1"]');
+    m.card._onMapHover({ target: q0El, clientX: 220, clientY: 220, pointerType: "mouse" });
+    const qRowsEmerg = hCard.querySelectorAll(".mh-row").map((r) => r.textContent);
+    const qStreets = hCard.querySelector(".mh-streets");
+    eq("microzone hover card renders sampled streets and emergency off count with %",
+      [qRowsEmerg.includes("Emergency off3(100%)"),
+        qStreets && qStreets.textContent,
+        hCard.querySelectorAll(".mh-qrow").some((r) => /^18\.1/.test(r.textContent) && /Emergency/.test(r.textContent))],
+      [true, "Sampled: просп. Яворницького", true]);
+    m.card._hideMapHover();
+    eq("hideMapHover hides floating hover card", hCard.hidden, true);
+
+    // Click queue pill 8.1 -> inspect mode
+    fire(m.root.querySelector('.q-pill[data-val="8.1"]'), "click");
+    eq("inspecting queue 8.1 switches hero, hides meter, shows 2-row timeline comparison",
+      [m.root.querySelector(".q-pill.active").getAttribute("data-val"),
+        m.text(".ident"),
+        /8\.1/.test(m.text(".lede")),
+        /inverter/.test(m.text(".lede")),
+        m.tile("Light today"),
+        m.root.querySelectorAll(".timeline .bar").length,
+        m.root.querySelectorAll(".timeline .tlname").map((x) => x.textContent.split("schedule")[0].slice(0, 12))],
+      ["8.1", "(8.1)", true, false, ["—", "home meter only"], 2, ["Queue 8.1app", "My queue (14"]]);
+
+    // Wheel scroll-down at 1x still prevents page scroll over the map; wheel-up zooms in & switches LOD
+    const stage = m.root.querySelector(".map-stage");
+    let pDown = false;
+    (stage._listeners.wheel || []).forEach((fn) => fn({
+      deltaY: 120, clientX: 310, clientY: 200, preventDefault: () => { pDown = true; },
+    }));
+    eq("wheel down at 1x blocks page scroll while staying at 1x", [pDown, m.card._mapCam.s], [true, 1]);
+
+    let pUp = false;
+    (stage._listeners.wheel || []).forEach((fn) => fn({
+      deltaY: -600, clientX: 310, clientY: 200, preventDefault: () => { pUp = true; },
+    }));
+    eq("wheel up zooms in, prevents page scroll, and advances LOD past hromadas",
+      [pUp, m.card._mapCam.s > 2.2, m.card._currentMapLod() !== "hromadas"],
+      [true, true, true]);
+
+    // Manual LOD switch to Microzones and click quarter 18.1
+    fire(m.root.querySelector('[data-act="map-lod"][data-val="quarters"]'), "click");
+    eq("map-lod switches to Microzones badge", m.text(".map-lod-badge"), "1 microzones");
+    fire(m.root.querySelector('.map-l-qtr [data-reg-q="18.1"]'), "click");
+    eq("clicking Dnipro microzone 18.1 inspects emergency outages",
+      [m.text("h1"), m.wrap.classList.contains("k-warn"), m.root.querySelector(".q-pill.active").getAttribute("data-val")],
+      ["Emergency outages.", true, "18.1"]);
+
+    // Camera presets & zoom buttons
+    fire(m.root.querySelector('[data-act="map-cam"][data-val="dnipro"]'), "click");
+    eq("map-cam dnipro zooms to city", m.card._mapCam.s > 2.0, true);
+    fire(m.root.querySelector('[data-act="map-cam"][data-val="region"]'), "click");
+    eq("map-cam region resets to 1x", m.card._mapCam.s, 1);
+    fire(m.root.querySelector('[data-act="map-zoom"][data-val="in"]'), "click");
+    eq("map-zoom in increases scale", m.card._mapCam.s > 1, true);
+    fire(m.root.querySelector('[data-act="map-zoom"][data-val="reset"]'), "click");
+    eq("map-zoom reset restores 1x", m.card._mapCam.s, 1);
+
+    // Toggle Selected vs All live color mode
+    fire(m.root.querySelector('[data-act="map-mode"][data-val="all"]'), "click");
+    eq("map-mode switches to All live",
+      m.root.querySelector('[data-act="map-mode"][data-val="all"]').getAttribute("aria-pressed"), "true");
+
+    // Click <- My queue (14.1) to return home
+    fire(m.root.querySelector('[data-act="map-home"]'), "click");
+    eq("map-home returns to home queue 14.1 with meter and 4 timeline rows",
+      [m.root.querySelector(".q-pill.active").getAttribute("data-val"),
+        !!m.root.querySelector('[data-act="map-home"]'),
+        m.tile("Light today"),
+        m.root.querySelectorAll(".timeline .bar").length],
+      ["14.1", false, ["14h 20m", "since 00:00, at the meter"], 4]);
+
+    // Without all_queues, map and strip are omitted
+    const plain = render("13:39", {}, { blocks: ["hero"] });
+    eq("no all_queues leaves hero without .has-map",
+      [!!plain.root.querySelector(".hero.has-map"), plain.root.querySelectorAll(".q-pill").length],
+      [false, 0]);
+  }
+
   console.log(failed ? "test_dtek_card: " + failed + " FAILED, " + passed + " passed"
     : "test_dtek_card: ok — " + passed + " checks passed");
   process.exit(failed ? 1 : 0);

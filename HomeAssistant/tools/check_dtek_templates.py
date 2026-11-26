@@ -158,7 +158,8 @@ def base_attrs(**over):
             "yasno_notice_text": None, "yasno_notice_scope": None,
             "yasno_notice_emergency": False,
             "yasno_notice_checked_at": "2026-09-01T12:00:00+03:00",
-            "yasno_notice_error": None}
+            "yasno_notice_error": None,
+            "all_queues": {}}
     data.update(over)
     return {(SENSOR, k): v for k, v in data.items()}
 

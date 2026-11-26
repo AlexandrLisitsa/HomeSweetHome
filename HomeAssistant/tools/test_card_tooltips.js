@@ -209,6 +209,12 @@ const FIXTURES = {
         banner_title: "Шановні клієнти!", banner_scope: "city", banner_emergency: true,
         banner_text: "За рішенням Укренерго запроваджено екстрені відключення по місту Дніпро.",
         banner_checked_at: new Date(now).toISOString(), banner_error: null,
+        all_queues: {
+          "1.1": { t: "nnnnnnyyyyyyyyyyyyyyyyyy", m: null, y: null },
+          "3.1": { t: "yyyyyyyyyyyyysnnnyyyyyyy", m: null, y: null },
+          "8.1": { t: "yyyyyyyynnnnyyyyyyyyyyyy", m: null, y: null },
+          "14.1": { t: "yyyyyyyyyyyyyyyyynnnnyyy", m: null, y: "EmergencyShutdowns" },
+        },
       }),
       "binary_sensor.dtek_emergency_shutdowns": S("on", {}),
       "binary_sensor.grid_down": S("off", {}),
@@ -552,6 +558,48 @@ hoverSurvivesUpdate("powmr-inverter-console-card.js", cfgOf("powmr-inverter-cons
 hoverSurvivesUpdate("load-shedding-card.js", cfgOf("load-shedding-card.js"),
   FIXTURES["load-shedding-card.js"](), ".tile",
   { "sensor.jkbms_gateway_bms_state_of_charge": S("47") });
+
+// Verify interactive v2 region map + inspected queue mode tooltips on dtek-shutdowns-card.js.
+{
+  const L = loadCard("dtek-shutdowns-card.js");
+  const card = new L.Card();
+  card.setConfig({
+    blocks: ["hero", "timeline", "week"],
+    map_data: {
+      version: 2,
+      vb: [620, 400],
+      dnipro_cam: { cx: 316.88, cy: 170.34, scale: 6.62 },
+      raions: ["M0,0 L100,0 Z"],
+      ob_rivers: ["M10,10 L100,10"],
+      dn_rivers: ["M20,20 L80,20"],
+      cities: [{ name: "Дніпро", x: 310, y: 200, tier: 1 }],
+      hromadas: [
+        { id: "h0", short: "Кам'янська", name: "Кам'янська міська громада", rayon: "Кам'янський", path: "M10,0 L30,0 L30,20 L10,20 Z", cx: 20, cy: 10, d: "8.1", s: { "8.1": 80, "14.1": 20 }, c: { "8.1": 4, "14.1": 1 }, n: 5 },
+        { id: "h1", short: "Дніпровська", name: "Дніпровська міська громада", rayon: "Дніпровський", path: "M40,0 L60,0 L60,20 L40,20 Z", cx: 50, cy: 10, d: "14.1", s: { "14.1": 100 }, c: { "14.1": 4 }, n: 4 },
+        { id: "h2", short: "Солонянська", name: "Солонянська громада", rayon: "Дніпровський", path: "M70,0 L90,0 L90,20 L70,20 Z", cx: 80, cy: 10, d: "3.1", s: { "3.1": 65, "8.1": 35 }, c: {}, n: 0 },
+      ],
+      districts: [
+        { id: "d0", short: "Центральний", name: "Центральний район", bank: false, path: "M40,0 L60,0 L60,20 L40,20 Z", cx: 50, cy: 10, d: "14.1", s: { "14.1": 65, "3.1": 35 }, c: { "14.1": 6, "3.1": 3 }, n: 10 },
+      ],
+      quarters: [
+        { id: "q0_0", name: "Центр", district: "Центральний", streets: "просп. Яворницького", path: "M45,5 L55,5 L55,15 L45,15 Z", cx: 50, cy: 10, d: "8.1", s: { "8.1": 100 }, c: { "8.1": 3 }, n: 3 },
+      ],
+    },
+  });
+  card.hass = mkHass(house(FIXTURES["dtek-shutdowns-card.js"]({})));
+  L.flushTimers();
+  const root = card.shadowRoot;
+  if (root.querySelectorAll("[title], title").length) {
+    fail("dtek-shutdowns-card.js#map-inspect", "title", ["native title rendered on map"]);
+  }
+  const pill8 = root.querySelector('.q-pill[data-val="8.1"]');
+  if (pill8) pill8.click();
+  inScope(root, "dtek-shutdowns-card.js").forEach((el) => {
+    checked++;
+    const p = tipProblems(tipOf(el));
+    if (p.length) fail("dtek-shutdowns-card.js#map-inspect", describe(el), p);
+  });
+}
 
 if (failures.length) {
   console.log("test_card_tooltips: " + failures.length + " problem(s) in " + checked + " checks");

@@ -509,3 +509,23 @@ Anything with a new window goes on `DTEK emergency starts`. Each message has the
 tag `dtek_schedule`, so a schedule revised three times in one evening leaves one
 notification on the phone. Section 5g of `check_dtek_templates.py` replays
 26.10, and section 13 of `test_dtek_schedule.py` pins the list itself.
+
+## Interactive regional map and multi-queue selector
+
+`config/dtek/dtek_poll.py` also publishes `all_queues` inside `sensor.dtek_shutdowns`
+— a compact per-queue map (`t` today, `m` tomorrow, `y` YASNO status, optional `w`
+recurring week) merged across DTEK's region-wide `fact` / `preset` (filtered to exclude
+CEK sub-queues `>= 1000`) and YASNO's `planned-outages` endpoint. Queue counts are
+never hardcoded (e.g. 12 or 18+ queues sort numerically by `(major, minor)`).
+
+The static vector geometry lives in `config/www/dtek-map-data.json` (`version: 2`),
+generated locally by `tools/build_dtek_map.py` (with resumable caches in
+`.state/dtek-map-cache/`) using 86 official hromadas, 7 raions, all 8 OSM administrative
+districts of Dnipro, GeoNames places, and YASNO `addresses/v2` samples clustered into
+clipped Voronoi microzones inside each Dnipro district. The hero card embeds a 3-column
+Cockpit selector (`Region` / `Dnipro` camera presets, cursor-centered wheel zoom with
+anti-scroll-jacking at `1×`, automatic/manual LOD across hromadas → districts →
+microzones, `Queue` / `All live` color modes, clickable regions, and queue pills):
+clicking any region or queue switches the hero, clock, timeline comparison, and week
+schedule to that queue while hiding home-only inverter and meter readings until you
+return via `← My queue`.
