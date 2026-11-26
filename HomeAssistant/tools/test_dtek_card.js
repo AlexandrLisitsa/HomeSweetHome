@@ -880,6 +880,40 @@ eq("[hero, days, week]: all three", [!!r.root.querySelector(".hero"), r.root.que
     m.card._hideMapHover();
     eq("hideMapHover hides floating hover card", hCard.hidden, true);
 
+    // Touch has no hover: first tap previews, second tap on the same region inspects.
+    m.card._mapLastPtr = "touch";
+    m.card._mapTapPt = { x: 120, y: 160 };
+    fire(h0El, "click", { clientX: 120, clientY: 160 });
+    eq("first tap on a phone opens the region card and keeps the home queue",
+      [hCard.hidden, hCard.querySelector(".mh-foot").textContent,
+        m.root.querySelector(".q-pill.active").getAttribute("data-val")],
+      [false, "Tap again to inspect queue 8.1YASNO sample", "14.1"]);
+    fire(h0El, "click", { clientX: 120, clientY: 160 });
+    eq("second tap on the same region inspects its queue and closes the card",
+      [m.root.querySelector(".q-pill.active").getAttribute("data-val"), hCard.hidden],
+      ["8.1", true]);
+    fire(m.root.querySelector('[data-act="map-home"]'), "click");
+    const h0Again = m.root.querySelector('.map-l-hr [data-reg-q="8.1"]');
+    fire(h0Again, "click", { clientX: 120, clientY: 160 });
+    fire(m.root.querySelector(".map-stage"), "click");
+    eq("a tap on open map ground closes a touch preview", hCard.hidden, true);
+    m.card._mapLastPtr = null;
+
+    // The minute tick redraws the hero but must keep the same map node and camera.
+    const stageBefore = m.root.querySelector(".map-stage");
+    m.card._mapCam = { tx: -120, ty: -80, s: 2.5 };
+    m.card._applyMapCamera();
+    m.card._shell.slots.hero._html = "stale";
+    m.card._fingerprint = null;
+    m.card._render();
+    eq("hero redraw keeps the map node, its camera, and one placeholder-free map",
+      [m.root.querySelector(".map-stage") === stageBefore,
+        m.root.querySelector(".map-cam").getAttribute("transform"),
+        m.root.querySelectorAll(".map-slot").length, !!m.root.querySelector(".map-host")],
+      [true, "translate(-120.00,-80.00) scale(2.5000)", 1, false]);
+    m.card._mapCam = { tx: 0, ty: 0, s: 1 };
+    m.card._applyMapCamera();
+
     // Click queue pill 8.1 -> inspect mode
     fire(m.root.querySelector('.q-pill[data-val="8.1"]'), "click");
     eq("inspecting queue 8.1 switches hero, hides meter, shows 2-row timeline comparison",
@@ -945,6 +979,43 @@ eq("[hero, days, week]: all three", [!!r.root.querySelector(".hero"), r.root.que
     eq("no all_queues leaves hero without .has-map",
       [!!plain.root.querySelector(".hero.has-map"), plain.root.querySelectorAll(".q-pill").length],
       [false, 0]);
+
+    // HA rebuilds cards (app back from background, dashboard reload): the view survives.
+    const store = {};
+    const L2 = loadCard(FILE, { Date: pinnedDate(13, 39) });
+    L2.sandbox.window.localStorage = {
+      getItem: (k) => (Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null),
+      setItem: (k, v) => { store[k] = String(v); },
+      removeItem: (k) => { delete store[k]; },
+    };
+    const mkCard = () => {
+      const c = new L2.Card();
+      c.setConfig({ blocks: ["hero"], map_data: sampleMap });
+      c.hass = mkHass({
+        "sensor.dtek_shutdowns": S("ok", {
+          queue: "14.1", queue_code: "GPV14.1", queues: ["GPV14.1"], all_queues: queues18,
+          outage_active: false, schedule_in_effect: true, today: TODAY, tomorrow: null,
+          week: null, week_in_effect: false, fetched_at: new Date(2026, 9, 17, 13, 39).toISOString(),
+        }),
+        [GRID]: S("off"),
+      });
+      return c;
+    };
+    const c1 = mkCard();
+    fire(c1.shadowRoot.querySelector('.q-pill[data-val="8.1"]'), "click");
+    fire(c1.shadowRoot.querySelector('[data-act="map-mode"][data-val="all"]'), "click");
+    c1._mapCam = { tx: -50, ty: -40, s: 3 };
+    c1._saveView();
+    L2.flushTimers();
+    const c2 = mkCard();
+    eq("a rebuilt card restores inspected queue, colour mode and camera from localStorage",
+      [Object.keys(store).length,
+        c2.shadowRoot.querySelector(".q-pill.active").getAttribute("data-val"),
+        c2._mapColorMode, c2._mapCam],
+      [1, "8.1", "all", { tx: -50, ty: -40, s: 3 }]);
+    fire(c2.shadowRoot.querySelector('[data-act="map-home"]'), "click");
+    L2.flushTimers();
+    eq("returning home is saved too", JSON.parse(Object.values(store)[0]).q, null);
   }
 
   console.log(failed ? "test_dtek_card: " + failed + " FAILED, " + passed + " passed"

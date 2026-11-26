@@ -46,7 +46,7 @@
 const CARD = "dtek-shutdowns-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "2.17.2";
+const VERSION = "2.18.0";
 
 const MAP_CACHE = { url: null, data: null, busy: false, failed: false };
 
@@ -952,9 +952,30 @@ class DtekShutdownsCard extends HTMLElement {
     this._mapMeta = null;
     this._mapHoverCtx = null;
     this._mapHoverKey = null;
+    // Touch has no hover: the first tap on a region previews it, a second tap
+    // on the same region inspects its queue.
+    this._mapLastPtr = null;
+    this._mapTapPt = null;
+    this._mapHoverTouch = false;
+    // HA rebuilds cards when the app comes back from the background or the
+    // dashboard reloads; the chosen queue and camera survive in localStorage.
+    this._viewKey = null;
+    this._viewSaveT = null;
     // Off screen or in a hidden tab: nothing moves and nothing is fetched.
     this._offscreen = false;
     this._onVisibility = () => this._pause();
+    this._onDocPointer = (ev) => {
+      const tipEl = this._shell && this._shell.mapTip;
+      if (!tipEl || tipEl.hidden) return;
+      const slot = this._shell.slots && this._shell.slots.hero;
+      const stage = slot && slot.querySelector(".map-stage");
+      const path = ev && typeof ev.composedPath === "function" ? ev.composedPath() : [];
+      if (!stage || path.indexOf(stage) < 0) this._hideMapHover();
+    };
+    this._onDocScroll = () => {
+      const tipEl = this._shell && this._shell.mapTip;
+      if (tipEl && !tipEl.hidden) this._hideMapHover();
+    };
     this._onDocKey = (ev) => {
       if (this._lcModalDn === null || ev.defaultPrevented) return;
       if (ev.key === "Escape") {
@@ -1035,6 +1056,7 @@ class DtekShutdownsCard extends HTMLElement {
             if (val) {
               const home = this._homeQueueCode();
               this._selectedQueue = (this._selectedQueue === val || val === home) ? null : val;
+              this._saveView();
               this._render();
             }
             return true;
@@ -1042,18 +1064,30 @@ class DtekShutdownsCard extends HTMLElement {
           const regQ = el.getAttribute("data-reg-q");
           if (regQ) {
             if (this._mapDragMoved) return true;
+            // Touch: the first tap shows the region's card, the second inspects.
+            if (ev.type === "click" && (this._mapLastPtr === "touch" || this._mapLastPtr === "pen")) {
+              const key = el.getAttribute("data-reg-kind") + ":" + el.getAttribute("data-reg-idx") + ":t";
+              const tipEl = this._shell && this._shell.mapTip;
+              if (!tipEl || tipEl.hidden || this._mapHoverKey !== key) {
+                const pt = this._mapTapPt || { x: ev.clientX || 0, y: ev.clientY || 0 };
+                this._onMapHover({ target: el, clientX: pt.x, clientY: pt.y, pointerType: "touch" });
+                return true;
+              }
+            }
             this._hideMapHover();
             const home = this._homeQueueCode();
             const main = this._stateObj(this._config.entity);
             const aq = (main && main.attributes && main.attributes.all_queues) || null;
             const target = resolveQueueRef(aq, regQ) || regQ;
             this._selectedQueue = (this._selectedQueue === target || target === home) ? null : target;
+            this._saveView();
             this._render();
             return true;
           }
           if (da === "map-home") {
             if (this._selectedQueue !== null) {
               this._selectedQueue = null;
+              this._saveView();
               this._render();
             }
             return true;
@@ -1075,6 +1109,7 @@ class DtekShutdownsCard extends HTMLElement {
             if (val === "auto" || val === "hromadas" || val === "districts" || val === "quarters") {
               this._mapLodMode = val;
               this._applyMapCamera();
+              this._saveView();
             }
             return true;
           }
@@ -1096,6 +1131,7 @@ class DtekShutdownsCard extends HTMLElement {
             if (val === "selected" || val === "all") {
               if (this._mapColorMode !== val) {
                 this._mapColorMode = val;
+                this._saveView();
                 this._render();
               }
             }
@@ -1162,7 +1198,59 @@ class DtekShutdownsCard extends HTMLElement {
     this._config = cfg;
     this._fingerprint = null;
     if (this._shell) this._shell.slotKey = null;
+    this._loadView();
     if (this._hass) this._render();
+  }
+
+  // --- the chosen view, kept across card rebuilds --------------------------
+
+  _viewStoreKey() {
+    return CARD + ":view:" + ((this._config && this._config.entity) || "");
+  }
+
+  /** Restores queue, camera, layer and colour mode saved by _saveView, once per entity. */
+  _loadView() {
+    const key = this._viewStoreKey();
+    if (this._viewKey === key) return;
+    this._viewKey = key;
+    let v = null;
+    try {
+      const ls = typeof window !== "undefined" ? window.localStorage : null;
+      const raw = ls ? ls.getItem(key) : null;
+      v = raw ? JSON.parse(raw) : null;
+    } catch (_) {
+      v = null;
+    }
+    if (!v || typeof v !== "object") return;
+    if (typeof v.q === "string" && v.q) this._selectedQueue = v.q;
+    if (["auto", "hromadas", "districts", "quarters"].indexOf(v.lod) >= 0) this._mapLodMode = v.lod;
+    if (v.mode === "selected" || v.mode === "all") this._mapColorMode = v.mode;
+    const c = v.cam;
+    if (c && [c.tx, c.ty, c.s].every((n) => typeof n === "number" && isFinite(n))) {
+      this._mapCam = this._clampMapCam(c.tx, c.ty, c.s);
+    }
+  }
+
+  /** Writes the view at most every 400 ms; the pending write reads the latest state. */
+  _saveView() {
+    if (!this._viewKey) return;
+    const w = typeof window !== "undefined" ? window : null;
+    if (!w || !w.localStorage) return;
+    const write = () => {
+      this._viewSaveT = null;
+      const c = this._mapCam || { tx: 0, ty: 0, s: 1 };
+      try {
+        w.localStorage.setItem(this._viewKey, JSON.stringify({
+          q: this._selectedQueue, lod: this._mapLodMode, mode: this._mapColorMode,
+          cam: { tx: Math.round(c.tx * 100) / 100, ty: Math.round(c.ty * 100) / 100, s: Math.round(c.s * 1e4) / 1e4 },
+        }));
+      } catch (_) { /* private mode or quota: the view just is not kept */ }
+    };
+    if (typeof w.setTimeout !== "function") {
+      write();
+      return;
+    }
+    if (!this._viewSaveT) this._viewSaveT = w.setTimeout(write, 400);
   }
 
   set hass(hass) {
@@ -1184,6 +1272,10 @@ class DtekShutdownsCard extends HTMLElement {
     if (typeof document.addEventListener === "function") {
       document.addEventListener("visibilitychange", this._onVisibility);
       document.addEventListener("keydown", this._onDocKey);
+      document.addEventListener("pointerdown", this._onDocPointer, true);
+    }
+    if (typeof window.addEventListener === "function") {
+      window.addEventListener("scroll", this._onDocScroll, { capture: true, passive: true });
     }
   }
 
@@ -1194,6 +1286,10 @@ class DtekShutdownsCard extends HTMLElement {
     if (typeof document.removeEventListener === "function") {
       document.removeEventListener("visibilitychange", this._onVisibility);
       document.removeEventListener("keydown", this._onDocKey);
+      document.removeEventListener("pointerdown", this._onDocPointer, true);
+    }
+    if (typeof window.removeEventListener === "function") {
+      window.removeEventListener("scroll", this._onDocScroll, { capture: true });
     }
     this._lcPointers.clear();
     this._lcDragging = false;
@@ -1622,6 +1718,10 @@ class DtekShutdownsCard extends HTMLElement {
         return;
       }
       const html = draw[k]();
+      if (k === "hero") {
+        this._mountHero(slot, html, d, now);
+        return;
+      }
       if (slot._html === html) return;
       // Hold height briefly across slot replacement so scroll position never jumps.
       const prevH = slot.offsetHeight;
@@ -1630,7 +1730,6 @@ class DtekShutdownsCard extends HTMLElement {
       const scrollLeft = previous ? previous.scrollLeft : 0;
       slot.innerHTML = html;
       slot._html = html;
-      if (k === "hero") this._wireMap(d, now);
       const grid = slot.querySelector(".grid, .bulbs");
       if (grid && scrollLeft) grid.scrollLeft = scrollLeft;
       if (prevH) {
@@ -2199,6 +2298,9 @@ class DtekShutdownsCard extends HTMLElement {
         statusByQ[q] = queueStatusNow(q, d.allQueues, now);
       });
     }
+    // The map is mounted on its own by _mountHero: its 100+ KB of paths and
+    // its camera survive the once-a-minute redraw of the clock and tiles.
+    this._heroMapHtml = hasMap ? this._mapPanel(d, statusByQ) : null;
     const qStrip = hasMap
       ? '<div class="q-strip">'
         + d.queueCodes.map((q) => {
@@ -2252,7 +2354,7 @@ class DtekShutdownsCard extends HTMLElement {
         + '<span class="k">' + esc(k) + '</span><span class="v">' + esc(v)
         + "</span></div>").join("")
       + "</div>"
-      + (hasMap ? this._mapPanel(d, statusByQ) : "")
+      + (hasMap ? '<div class="map-slot map-host"></div>' : "")
       + this._clock(d)
       + qStrip
       + '<div class="tiles' + (d.lightToday === undefined ? "" : " four") + '">'
@@ -2279,13 +2381,12 @@ class DtekShutdownsCard extends HTMLElement {
   _mapPanel(d, statusByQ) {
     const mode = d.mapColorMode === "all" ? "all" : "selected";
     const lodMode = d.mapLodMode || "auto";
-    const camScale = this._mapCam ? this._mapCam.s : 1;
-    const activeCam = camScale >= 2.0 ? "dnipro" : "region";
-
+    // Which preset is lit follows the live camera; _applyMapCamera toggles it,
+    // so zooming never changes this markup and never forces a rebuild.
     const camBtn = (val, label, hintVal) => '<button type="button" class="map-btn'
-      + (activeCam === val ? " active" : "") + '" data-act="map-cam" data-val="' + val
-      + '" aria-pressed="' + (activeCam === val ? "true" : "false") + '"'
-      + tip("Map view", activeCam === val ? label + " active" : hintVal, "map_view")
+      + (val === "region" ? " active" : "") + '" data-act="map-cam" data-val="' + val
+      + '" aria-pressed="' + (val === "region" ? "true" : "false") + '"'
+      + tip("Map view", hintVal, "map_view")
       + ">" + label + "</button>";
     const lodBtn = (val, label) => '<button type="button" class="map-btn'
       + (lodMode === val ? " active" : "") + '" data-act="map-lod" data-val="' + val
@@ -2533,6 +2634,56 @@ class DtekShutdownsCard extends HTMLElement {
       if (b.classList) b.classList.toggle("active", on);
       b.setAttribute("aria-pressed", on ? "true" : "false");
     });
+    this._saveView();
+  }
+
+  /**
+   * Puts the hero's markup in place without rebuilding the map unless the
+   * map's own markup changed. The map node is lifted out before the hero is
+   * redrawn and dropped back into its placeholder, so the camera, listeners
+   * and an open hover card all live through the minute tick.
+   */
+  _mountHero(slot, html, d, now) {
+    const mapHtml = this._heroMapHtml;
+    const prevMap = slot._mapNode || null;
+    if (slot._html !== html) {
+      const prevH = slot.offsetHeight;
+      if (prevH) slot.style.minHeight = prevH + "px";
+      if (prevMap && prevMap.parentNode) prevMap.parentNode.removeChild(prevMap);
+      slot.innerHTML = html;
+      slot._html = html;
+      const host = slot.querySelector(".map-host");
+      if (host && prevMap && mapHtml !== null && slot._mapHtml === mapHtml) {
+        host.parentNode.insertBefore(prevMap, host);
+        host.parentNode.removeChild(host);
+      }
+      if (prevH) {
+        const unlock = () => { slot.style.minHeight = ""; };
+        if (typeof requestAnimationFrame === "function") requestAnimationFrame(unlock);
+        else unlock();
+      }
+    }
+    if (mapHtml === null) {
+      slot._mapNode = null;
+      slot._mapHtml = null;
+      return;
+    }
+    const host = slot.querySelector(".map-host");
+    let rebuilt = false;
+    if (host || slot._mapHtml !== mapHtml || !slot._mapNode) {
+      const target = host || slot._mapNode;
+      if (!target || !target.parentNode) return;
+      const tmp = document.createElement("div");
+      tmp.innerHTML = mapHtml;
+      const node = tmp.firstElementChild;
+      if (!node) return;
+      target.parentNode.insertBefore(node, target);
+      target.parentNode.removeChild(target);
+      slot._mapNode = node;
+      slot._mapHtml = mapHtml;
+      rebuilt = true;
+    }
+    this._wireMap(d, now, rebuilt);
   }
 
   _flyMapTo(cx, cy, scale) {
@@ -2696,7 +2847,7 @@ class DtekShutdownsCard extends HTMLElement {
       ? '<div class="mh-streets">Sampled: ' + esc(item.streets) + "</div>"
       : "";
     const foot = '<div class="mh-foot"><span>'
-      + (st.domRef ? "Click to inspect queue " + esc(st.domRef) : "YASNO coverage area")
+      + (st.domRef ? (this._mapHoverTouch ? "Tap again to inspect queue " : "Click to inspect queue ") + esc(st.domRef) : "YASNO coverage area")
       + "</span><span>" + (isEst ? "Neighbor est." : "YASNO sample") + "</span></div>";
 
     return '<div class="mh-top"><div><div class="mh-title">' + esc(title) + "</div>"
@@ -2736,8 +2887,10 @@ class DtekShutdownsCard extends HTMLElement {
       this._hideMapHover();
       return;
     }
-    const key = kind + ":" + idx;
+    const touch = !!(ev && (ev.pointerType === "touch" || ev.pointerType === "pen"));
+    const key = kind + ":" + idx + (touch ? ":t" : ":m");
     if (this._mapHoverKey !== key) {
+      this._mapHoverTouch = touch;
       tipEl.innerHTML = this._renderMapHover(item, kind);
       this._mapHoverKey = key;
     }
@@ -2746,7 +2899,7 @@ class DtekShutdownsCard extends HTMLElement {
     this._placeMapHover(ev.clientX, ev.clientY);
   }
 
-  _wireMap(d, now) {
+  _wireMap(d, now, rebuilt) {
     const slot = this._shell && this._shell.slots && this._shell.slots.hero;
     if (!slot) return;
     const stage = slot.querySelector(".map-stage");
@@ -2761,7 +2914,9 @@ class DtekShutdownsCard extends HTMLElement {
       mapData: md, allQueues: d && d.allQueues, statusByQ,
       homeRef: d && d.homeRef, homeCode: d && d.homeCode, now,
     };
-    this._hideMapHover();
+    // A kept map keeps its open card; its text is redrawn on the next move or tap.
+    if (rebuilt !== false) this._hideMapHover();
+    else this._mapHoverKey = null;
     if (md) {
       this._mapMeta = {
         hr: Array.isArray(md.hromadas) ? md.hromadas.length : 0,
@@ -2791,9 +2946,13 @@ class DtekShutdownsCard extends HTMLElement {
 
     stage.addEventListener("pointerdown", (ev) => {
       if (ev.target && ev.target.closest && ev.target.closest(".map-hud")) return;
-      this._hideMapHover();
+      this._mapLastPtr = ev.pointerType || "mouse";
+      this._mapTapPt = { x: ev.clientX, y: ev.clientY };
+      // A touch preview stays up so the second tap can inspect its queue.
+      if (ev.pointerType !== "touch" && ev.pointerType !== "pen") this._hideMapHover();
       this._mapPointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
       if (this._mapPointers.size === 2) {
+        this._hideMapHover();
         const pts = Array.from(this._mapPointers.values());
         this._mapPinch = {
           dist: Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y) || 1,
@@ -2836,7 +2995,10 @@ class DtekShutdownsCard extends HTMLElement {
         const cur = this._mapSvgPoint(svg, ev.clientX, ev.clientY);
         const dx = cur.x - this._mapDrag.start.x;
         const dy = cur.y - this._mapDrag.start.y;
-        if (Math.hypot(dx, dy) > 4) this._mapDragMoved = true;
+        if (Math.hypot(dx, dy) > 4 && !this._mapDragMoved) {
+          this._mapDragMoved = true;
+          this._hideMapHover();
+        }
         const next = this._clampMapCam(this._mapDrag.cam.tx + dx, this._mapDrag.cam.ty + dy, this._mapDrag.cam.s);
         this._mapCam.tx = next.tx;
         this._mapCam.ty = next.ty;
@@ -2846,7 +3008,19 @@ class DtekShutdownsCard extends HTMLElement {
       if (ev.pointerType !== "touch") this._onMapHover(ev);
     });
 
-    stage.addEventListener("pointerleave", () => this._hideMapHover());
+    stage.addEventListener("pointerleave", (ev) => {
+      if (!ev || ev.pointerType !== "touch") this._hideMapHover();
+    });
+
+    // A tap on open ground (no region) closes a touch preview.
+    stage.addEventListener("click", (ev) => {
+      let el = ev && ev.target;
+      while (el && el !== stage) {
+        if (el.getAttribute && (el.getAttribute("data-reg-kind") || el.classList && el.classList.contains("map-hud"))) return;
+        el = el.parentNode;
+      }
+      this._hideMapHover();
+    });
 
     const endPtr = (ev) => {
       this._mapPointers.delete(ev.pointerId);
