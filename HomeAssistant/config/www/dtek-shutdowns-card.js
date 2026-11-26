@@ -46,7 +46,7 @@
 const CARD = "dtek-shutdowns-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "2.16.1";
+const VERSION = "2.17.0";
 
 const MAP_CACHE = { url: null, data: null, busy: false, failed: false };
 
@@ -275,9 +275,6 @@ const HELP = {
   map_mode: "Color regions by the selected queue alone or all queues live outage share.\n"
     + "E.g. All live shows a heatmap of dark percentage across mixed areas.\n"
     + "Tap to switch Queue vs All live.",
-  map_region: "Region mapped to YASNO outage queues by checked houses (sampled, not all).\n"
-    + "E.g. 16.1: 12, 14.1: 4 (17 houses): 12 of 17 checked houses are in queue 16.1.\n"
-    + "Tap to inspect its main queue; scroll wheel to zoom.",
   map_q: "Outage queue status now from DTEK and YASNO feeds.\n"
     + "E.g. 14.1 starred is this home; red dot means off, amber means soon.\n"
     + "Tap any queue to view its clock, timeline and bulbs.",
@@ -953,6 +950,8 @@ class DtekShutdownsCard extends HTMLElement {
     this._mapPointers = new Map();
     this._mapPinch = null;
     this._mapMeta = null;
+    this._mapHoverCtx = null;
+    this._mapHoverKey = null;
     // Off screen or in a hidden tab: nothing moves and nothing is fetched.
     this._offscreen = false;
     this._onVisibility = () => this._pause();
@@ -1040,17 +1039,16 @@ class DtekShutdownsCard extends HTMLElement {
             }
             return true;
           }
-          if (da === "map-region") {
+          const regQ = el.getAttribute("data-reg-q");
+          if (regQ) {
             if (this._mapDragMoved) return true;
-            const val = el.getAttribute("data-val");
-            if (val) {
-              const home = this._homeQueueCode();
-              const main = this._stateObj(this._config.entity);
-              const aq = (main && main.attributes && main.attributes.all_queues) || null;
-              const target = resolveQueueRef(aq, val) || val;
-              this._selectedQueue = (this._selectedQueue === target || target === home) ? null : target;
-              this._render();
-            }
+            this._hideMapHover();
+            const home = this._homeQueueCode();
+            const main = this._stateObj(this._config.entity);
+            const aq = (main && main.attributes && main.attributes.all_queues) || null;
+            const target = resolveQueueRef(aq, regQ) || regQ;
+            this._selectedQueue = (this._selectedQueue === target || target === home) ? null : target;
+            this._render();
             return true;
           }
           if (da === "map-home") {
@@ -1203,13 +1201,18 @@ class DtekShutdownsCard extends HTMLElement {
     this._mapAnim = null;
     this._mapPointers.clear();
     this._mapDrag = null;
+    this._hideMapHover();
   }
 
   /** Every animation holds while no one can see the card; coming back catches up. */
   _pause() {
     const paused = this._offscreen || !!document.hidden;
-    if (paused) this.setAttribute("paused", "");
-    else this.removeAttribute("paused");
+    if (paused) {
+      this.setAttribute("paused", "");
+      this._hideMapHover();
+    } else {
+      this.removeAttribute("paused");
+    }
     if (!paused) this._render();
   }
 
@@ -1519,10 +1522,12 @@ class DtekShutdownsCard extends HTMLElement {
     if (this._shell) return this._shell;
     this.shadowRoot.innerHTML = "<style>" + STYLE + "</style>"
       + '<div class="wrap"></div>'
-      + '<div class="lc-modal-backdrop" hidden></div>';
+      + '<div class="lc-modal-backdrop" hidden></div>'
+      + '<div class="map-hcard" hidden></div>';
     this._shell = {
       wrap: this.shadowRoot.querySelector(".wrap"),
       modal: this.shadowRoot.querySelector(".lc-modal-backdrop"),
+      mapTip: this.shadowRoot.querySelector(".map-hcard"),
       slotKey: null,
       slots: {},
     };
@@ -1625,7 +1630,7 @@ class DtekShutdownsCard extends HTMLElement {
       const scrollLeft = previous ? previous.scrollLeft : 0;
       slot.innerHTML = html;
       slot._html = html;
-      if (k === "hero") this._wireMap(d);
+      if (k === "hero") this._wireMap(d, now);
       const grid = slot.querySelector(".grid, .bulbs");
       if (grid && scrollLeft) grid.scrollLeft = scrollLeft;
       if (prevH) {
@@ -2313,7 +2318,7 @@ class DtekShutdownsCard extends HTMLElement {
 
     const selStatus = statusByQ[d.selectedQueue] || "none";
     const selClr = mapStatusColor(selStatus);
-    const renderRegions = (list, defSw, kindName) => (list || []).map((reg) => {
+    const renderRegions = (list, defSw, kindKey) => (list || []).map((reg, idx) => {
       const shares = reg.s && typeof reg.s === "object" ? reg.s : {};
       const qs = Object.keys(shares).sort((a, b) => (shares[b] || 0) - (shares[a] || 0));
       const topQ = qs[0] || "";
@@ -2364,35 +2369,12 @@ class DtekShutdownsCard extends HTMLElement {
         if (selShare >= 30) { stroke = "#e8eaed"; sw = 1.3; }
       }
 
-      const placeRaw = reg.short || reg.name || kindName;
-      const place = placeRaw.length > 22 ? placeRaw.slice(0, 21) + "…" : placeRaw;
-      const n = Number(reg.n) || 0;
-      const cntMap = reg.c && typeof reg.c === "object" ? reg.c : null;
-      const cntOf = (q) => (cntMap && typeof cntMap[q] === "number"
-        ? cntMap[q] : Math.max(1, Math.round((Number(shares[q]) || 0) * n / 100)));
-      const offNote = mode === "all" && offShare + emergShare > 0
-        ? " " + MIDDOT + " " + Math.round(offShare + emergShare) + "% off" : "";
-      let summary;
-      if (!qs.length) {
-        summary = "no YASNO samples";
-      } else if (n <= 0) {
-        summary = "~" + qs.slice(0, 2).map((q) => q + " " + shares[q] + "%").join(", ")
-          + " (est.)" + offNote;
-      } else if (qs.length === 1) {
-        summary = qs[0] + " (" + n + (n === 1 ? " house)" : " houses)") + offNote;
-      } else {
-        summary = qs.slice(0, 2).map((q) => q + ": " + cntOf(q)).join(", ")
-          + " (" + n + " houses" + offNote + ")";
-      }
-
-      const act = topRef
-        ? ' class="map-poly clickable' + (selShare > 0 ? " sel" : "") + '" data-act="map-region"'
-          + ' data-val="' + esc(topRef) + '" role="button" tabindex="0"'
-          + tip(place, summary, "map_region")
-        : ' class="map-poly empty"';
+      const cls = topRef ? "map-poly clickable" + (selShare > 0 ? " sel" : "") : "map-poly empty";
+      const attrs = ' class="' + cls + '" data-reg-kind="' + kindKey + '" data-reg-idx="' + idx + '"'
+        + (topRef ? ' data-reg-q="' + esc(topRef) + '"' : "");
 
       return '<path d="' + esc(reg.path) + '" fill="' + fill + '" fill-opacity="'
-        + fillOp + '" stroke="' + stroke + '" stroke-width="' + sw + '"' + act + "/>";
+        + fillOp + '" stroke="' + stroke + '" stroke-width="' + sw + '"' + attrs + "/>";
     }).join("");
 
     const raionPaths = (md.raions || []).map((p) => '<path class="map-raion" d="' + esc(p) + '"/>').join("");
@@ -2420,11 +2402,11 @@ class DtekShutdownsCard extends HTMLElement {
       + '<defs><pattern id="ds-map-emerg" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'
       + '<rect width="5" height="5" fill="#bb635b"/><rect width="2" height="5" fill="#ff928a"/></pattern></defs>'
       + '<g class="map-cam">'
-      + '<g class="map-l-hr">' + renderRegions(md.hromadas, 0.65, "Hromada") + "</g>"
+      + '<g class="map-l-hr">' + renderRegions(md.hromadas, 0.65, "hromadas") + "</g>"
       + '<g class="map-l-raion">' + raionPaths + "</g>"
       + '<g class="map-l-obriv">' + obRiverPaths + "</g>"
-      + '<g class="map-l-dist">' + renderRegions(md.districts, 0.9, "District") + "</g>"
-      + '<g class="map-l-qtr">' + renderRegions(md.quarters, 0.75, "Microzone") + "</g>"
+      + '<g class="map-l-dist">' + renderRegions(md.districts, 0.9, "districts") + "</g>"
+      + '<g class="map-l-qtr">' + renderRegions(md.quarters, 0.75, "quarters") + "</g>"
       + '<g class="map-l-dnriv">' + dnRiverPaths + "</g>"
       + '<g class="map-l-dout">' + distOutPaths + "</g>"
       + '<g class="map-l-lbl-hr">' + hrPins + "</g>"
@@ -2580,13 +2562,145 @@ class DtekShutdownsCard extends HTMLElement {
     this._mapAnim = requestAnimationFrame(step);
   }
 
-  _wireMap(d) {
+  _hideMapHover() {
+    const tipEl = this._shell && this._shell.mapTip;
+    if (tipEl) {
+      tipEl.hidden = true;
+      if (typeof tipEl.setAttribute === "function") tipEl.setAttribute("hidden", "");
+    }
+    this._mapHoverKey = null;
+  }
+
+  _mapRegionStats(item) {
+    const ctx = this._mapHoverCtx || {};
+    const allQueues = ctx.allQueues || null;
+    const statusByQ = ctx.statusByQ || {};
+    const shares = item && item.s && typeof item.s === "object" ? item.s : {};
+    const counts = item && item.c && typeof item.c === "object" ? item.c : {};
+    const n = Number(item && item.n) || 0;
+    const qs = Object.keys(shares).sort((a, b) => (shares[b] || 0) - (shares[a] || 0));
+
+    let offN = 0, soonN = 0, onN = 0, emergN = 0;
+    let offP = 0, soonP = 0, onP = 0, emergP = 0;
+    qs.forEach((q) => {
+      const ref = resolveQueueRef(allQueues, q) || q;
+      const st = statusByQ[ref] || "none";
+      const pct = Number(shares[q]) || 0;
+      const cnt = n > 0 ? (typeof counts[q] === "number" ? counts[q] : Math.round(pct * n / 100)) : 0;
+      if (st === "off") { offN += cnt; offP += pct; }
+      else if (st === "emerg") { emergN += cnt; emergP += pct; }
+      else if (st === "soon") { soonN += cnt; soonP += pct; }
+      else { onN += cnt; onP += pct; }
+    });
+    if (n > 0 && qs.length) {
+      const sum = offN + emergN + soonN + onN;
+      if (sum !== n) onN = Math.max(0, onN + (n - sum));
+    }
+    const domRef = item && item.d ? (resolveQueueRef(allQueues, item.d) || item.d) : null;
+    const domSt = domRef ? (statusByQ[domRef] || "none") : "none";
+    return { n, offN, soonN, onN, emergN, offP, soonP, onP, emergP, domRef, domSt };
+  }
+
+  _renderMapHover(item, kind) {
+    const ctx = this._mapHoverCtx || {};
+    const st = this._mapRegionStats(item);
+    const title = item.name || item.short || "Area";
+    const sub = item.rayon ? item.rayon
+      : item.district ? item.district + " район"
+      : kind === "districts" ? "Dnipro district"
+      : kind === "quarters" ? "Microzone" : "Hromada";
+    const isHome = st.domRef && (st.domRef === ctx.homeRef || st.domRef === ctx.homeCode);
+    const badge = st.domRef
+      ? '<span class="mh-pill ' + st.domSt + '">Main: ' + esc(st.domRef) + (isHome ? " ★" : "") + "</span>"
+      : "";
+    const isEst = st.n <= 0;
+    const fmt = (cnt, p) => (isEst ? "~" + Math.round(p) + "%" : String(cnt));
+    const row = (cls, dot, label, val) => '<div class="mh-row ' + cls + '">'
+      + '<span class="mh-k"><span class="mh-dot ' + dot + '"></span>' + esc(label) + "</span>"
+      + '<span class="mh-v">' + esc(val) + "</span></div>";
+
+    let rows = '<div class="mh-rows">';
+    rows += isEst
+      ? '<div class="mh-row total"><span class="mh-k">Coverage estimate</span><span class="mh-v">neighbors</span></div>'
+      : '<div class="mh-row total"><span class="mh-k">Houses checked</span><span class="mh-v">' + st.n + "</span></div>";
+    if (st.emergN > 0 || (isEst && st.emergP > 0)) {
+      rows += row("c-off", "emerg", "Emergency off", fmt(st.emergN, st.emergP));
+    }
+    rows += row("c-off", "off", "Houses off", fmt(st.offN, st.offP));
+    rows += row("c-soon", "soon", "Off soon (<1h)", fmt(st.soonN, st.soonP));
+    rows += row("c-on", "on", "Houses on", fmt(st.onN, st.onP));
+    rows += "</div>";
+
+    const w = (cnt, p) => (isEst ? p : st.n > 0 ? (cnt * 100) / st.n : 0).toFixed(1);
+    const bar = '<div class="mh-bar">'
+      + '<div class="seg-emerg" style="width:' + w(st.emergN, st.emergP) + '%"></div>'
+      + '<div class="seg-off" style="width:' + w(st.offN, st.offP) + '%"></div>'
+      + '<div class="seg-soon" style="width:' + w(st.soonN, st.soonP) + '%"></div>'
+      + '<div class="seg-on" style="width:' + w(st.onN, st.onP) + '%"></div>'
+      + "</div>";
+
+    return '<div class="mh-top"><div><div class="mh-title">' + esc(title) + "</div>"
+      + '<div class="mh-sub">' + esc(sub) + "</div></div>" + badge + "</div>" + rows + bar;
+  }
+
+  _placeMapHover(clientX, clientY) {
+    const tipEl = this._shell && this._shell.mapTip;
+    if (!tipEl || tipEl.hidden) return;
+    const vw = typeof window !== "undefined" && window.innerWidth ? window.innerWidth : 1024;
+    const vh = typeof window !== "undefined" && window.innerHeight ? window.innerHeight : 768;
+    const w = Math.min(344, vw - 16);
+    const h = tipEl.offsetHeight || 190;
+    const cx = Number(clientX) || 0;
+    const cy = Number(clientY) || 0;
+    const left = cx + 16 + w > vw - 8 ? Math.max(8, cx - w - 14) : Math.max(8, cx + 16);
+    const top = cy + 14 + h > vh - 8 ? Math.max(8, vh - h - 10) : Math.max(8, cy + 14);
+    tipEl.style.left = left + "px";
+    tipEl.style.top = top + "px";
+  }
+
+  _onMapHover(ev) {
+    const tipEl = this._shell && this._shell.mapTip;
+    const ctx = this._mapHoverCtx;
+    if (!tipEl || !ctx || !ctx.mapData) return;
+    let el = ev && ev.target;
+    while (el && el !== this.shadowRoot) {
+      if (el.getAttribute && el.getAttribute("data-reg-kind")) break;
+      el = el.parentNode;
+    }
+    const kind = el && el.getAttribute ? el.getAttribute("data-reg-kind") : null;
+    const idx = el && el.getAttribute ? Number(el.getAttribute("data-reg-idx")) : -1;
+    const list = kind && ctx.mapData[kind];
+    const item = Array.isArray(list) && idx >= 0 ? list[idx] : null;
+    if (!item) {
+      this._hideMapHover();
+      return;
+    }
+    const key = kind + ":" + idx;
+    if (this._mapHoverKey !== key) {
+      tipEl.innerHTML = this._renderMapHover(item, kind);
+      this._mapHoverKey = key;
+    }
+    tipEl.hidden = false;
+    if (typeof tipEl.removeAttribute === "function") tipEl.removeAttribute("hidden");
+    this._placeMapHover(ev.clientX, ev.clientY);
+  }
+
+  _wireMap(d, now) {
     const slot = this._shell && this._shell.slots && this._shell.slots.hero;
     if (!slot) return;
     const stage = slot.querySelector(".map-stage");
     const svg = slot.querySelector(".map-svg");
     if (!stage || !svg) return;
     const md = d && d.mapData;
+    const statusByQ = {};
+    if (d && Array.isArray(d.queueCodes) && d.allQueues && now) {
+      d.queueCodes.forEach((q) => { statusByQ[q] = queueStatusNow(q, d.allQueues, now); });
+    }
+    this._mapHoverCtx = {
+      mapData: md, allQueues: d && d.allQueues, statusByQ,
+      homeRef: d && d.homeRef, homeCode: d && d.homeCode,
+    };
+    this._hideMapHover();
     if (md) {
       this._mapMeta = {
         hr: Array.isArray(md.hromadas) ? md.hromadas.length : 0,
@@ -2602,6 +2716,7 @@ class DtekShutdownsCard extends HTMLElement {
     stage.addEventListener("wheel", (ev) => {
       if (ev.deltaY > 0 && this._mapCam.s <= 1.005) return;
       if (typeof ev.preventDefault === "function") ev.preventDefault();
+      this._hideMapHover();
       if (this._mapAnim && typeof cancelAnimationFrame === "function") cancelAnimationFrame(this._mapAnim);
       this._mapAnim = null;
       const pt = this._mapSvgPoint(svg, ev.clientX || 0, ev.clientY || 0);
@@ -2614,6 +2729,7 @@ class DtekShutdownsCard extends HTMLElement {
 
     stage.addEventListener("pointerdown", (ev) => {
       if (ev.target && ev.target.closest && ev.target.closest(".map-hud")) return;
+      this._hideMapHover();
       this._mapPointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
       if (this._mapPointers.size === 2) {
         const pts = Array.from(this._mapPointers.values());
@@ -2654,16 +2770,21 @@ class DtekShutdownsCard extends HTMLElement {
         this._applyMapCamera();
         return;
       }
-      if (!this._mapDrag) return;
-      const cur = this._mapSvgPoint(svg, ev.clientX, ev.clientY);
-      const dx = cur.x - this._mapDrag.start.x;
-      const dy = cur.y - this._mapDrag.start.y;
-      if (Math.hypot(dx, dy) > 4) this._mapDragMoved = true;
-      const next = this._clampMapCam(this._mapDrag.cam.tx + dx, this._mapDrag.cam.ty + dy, this._mapDrag.cam.s);
-      this._mapCam.tx = next.tx;
-      this._mapCam.ty = next.ty;
-      this._applyMapCamera();
+      if (this._mapDrag) {
+        const cur = this._mapSvgPoint(svg, ev.clientX, ev.clientY);
+        const dx = cur.x - this._mapDrag.start.x;
+        const dy = cur.y - this._mapDrag.start.y;
+        if (Math.hypot(dx, dy) > 4) this._mapDragMoved = true;
+        const next = this._clampMapCam(this._mapDrag.cam.tx + dx, this._mapDrag.cam.ty + dy, this._mapDrag.cam.s);
+        this._mapCam.tx = next.tx;
+        this._mapCam.ty = next.ty;
+        this._applyMapCamera();
+        return;
+      }
+      if (ev.pointerType !== "touch") this._onMapHover(ev);
     });
+
+    stage.addEventListener("pointerleave", () => this._hideMapHover());
 
     const endPtr = (ev) => {
       this._mapPointers.delete(ev.pointerId);
@@ -4409,6 +4530,51 @@ a:hover { text-decoration: underline; }
   min-height: 150px; display: grid; place-items: center;
   color: var(--ds-muted); font: 500 12px var(--ds-mono);
 }
+/* Floating 344px Clean Rows map hover card */
+.map-hcard {
+  position: fixed; z-index: 9999; pointer-events: none; box-sizing: border-box;
+  width: 344px; max-width: calc(100vw - 16px);
+  padding: 13px 14px; border-radius: 10px;
+  background: rgba(12, 14, 19, .97); border: 1px solid var(--ds-line2);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .58); backdrop-filter: blur(8px);
+  color: var(--ds-text); font-family: var(--ds-sans);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.map-hcard[hidden] { display: none; }
+.mh-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.mh-title { font: 600 15px/1.2 var(--ds-sans); color: var(--ds-text); }
+.mh-sub { font: 500 11px/1.3 var(--ds-sans); color: var(--ds-muted); margin-top: 2px; }
+.mh-pill {
+  flex: 0 0 auto; padding: 3px 8px; border-radius: 999px;
+  font: 600 10.5px/1.2 var(--ds-mono);
+  border: 1px solid var(--ds-line2); background: var(--ds-inner); color: var(--ds-text2);
+}
+.mh-pill.off, .mh-pill.emerg { color: var(--ds-bad-hi); border-color: color-mix(in srgb, var(--ds-bad) 50%, var(--ds-line2)); }
+.mh-pill.soon { color: var(--ds-warn-hi); border-color: color-mix(in srgb, var(--ds-warn) 50%, var(--ds-line2)); }
+.mh-pill.on { color: var(--ds-ok-hi); border-color: color-mix(in srgb, var(--ds-ok) 50%, var(--ds-line2)); }
+.mh-rows {
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 8px 10px; border-radius: 8px;
+  background: var(--ds-ground); border: 1px solid var(--ds-line);
+}
+.mh-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-size: 13px; }
+.mh-row.total { padding-bottom: 5px; margin-bottom: 2px; border-bottom: 1px solid var(--ds-line); font-weight: 600; }
+.mh-k { display: inline-flex; align-items: center; gap: 7px; color: var(--ds-text2); }
+.mh-row.total .mh-k { color: var(--ds-text); }
+.mh-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.mh-dot.off { background: var(--ds-bad-hi); }
+.mh-dot.emerg { background: var(--ds-bad-hi); box-shadow: 0 0 6px var(--ds-bad); }
+.mh-dot.soon { background: var(--ds-warn-hi); }
+.mh-dot.on { background: var(--ds-ok-hi); }
+.mh-v { font: 600 13.5px/1 var(--ds-mono); font-variant-numeric: tabular-nums; color: var(--ds-text); }
+.mh-row.c-off .mh-v { color: var(--ds-bad-hi); }
+.mh-row.c-soon .mh-v { color: var(--ds-warn-hi); }
+.mh-row.c-on .mh-v { color: var(--ds-ok-hi); }
+.mh-bar { display: flex; height: 7px; border-radius: 999px; overflow: hidden; background: var(--ds-line); gap: 1px; }
+.mh-bar .seg-emerg { background: var(--ds-bad-hi); }
+.mh-bar .seg-off { background: var(--ds-bad); }
+.mh-bar .seg-soon { background: var(--ds-warn); }
+.mh-bar .seg-on { background: var(--ds-ok); }
 .q-strip { grid-area: queues; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .q-pill {
   appearance: none; display: inline-flex; align-items: center; gap: 6px;

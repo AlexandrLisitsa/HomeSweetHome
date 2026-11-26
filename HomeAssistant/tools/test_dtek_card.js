@@ -848,8 +848,19 @@ eq("[hero, days, week]: all three", [!!r.root.querySelector(".hero"), r.root.que
         m.root.querySelectorAll(".timeline .bar").length,
         m.root.querySelectorAll("[title], title").length],
       ["14.1", "14.1", ["14h 20m", "since 00:00, at the meter"], 4, 0]);
-    const hrTip = m.root.querySelector('.map-l-hr [data-act="map-region"]').getAttribute("data-tip") || "";
-    eq("region tooltip shows exact house counts per queue", /8\.1: 4, 14\.1: 1 \(5 houses\)/.test(hrTip), true);
+    const h0El = m.root.querySelector('.map-l-hr [data-reg-q="8.1"]');
+    eq("map polygon carries no native or card-tip attribute",
+      [!!h0El, h0El && h0El.hasAttribute("data-tip"), h0El && h0El.hasAttribute("title")],
+      [true, false, false]);
+    m.card._onMapHover({ target: h0El, clientX: 200, clientY: 200, pointerType: "mouse" });
+    const hCard = m.root.querySelector(".map-hcard");
+    const hRows = hCard.querySelectorAll(".mh-row").map((r) => r.textContent);
+    eq("344px Clean Rows hover card shows exact integer house counts and status bar without %",
+      [hCard.hidden, /Кам'янська міська громада/.test(hCard.textContent),
+        hRows, !!hCard.querySelector(".mh-bar"), /%/.test(hRows.join(" "))],
+      [false, true, ["Houses checked5", "Houses off1", "Off soon (<1h)0", "Houses on4"], true, false]);
+    m.card._hideMapHover();
+    eq("hideMapHover hides floating hover card", hCard.hidden, true);
 
     // Click queue pill 8.1 -> inspect mode
     fire(m.root.querySelector('.q-pill[data-val="8.1"]'), "click");
@@ -882,7 +893,7 @@ eq("[hero, days, week]: all three", [!!r.root.querySelector(".hero"), r.root.que
     // Manual LOD switch to Microzones and click quarter 18.1
     fire(m.root.querySelector('[data-act="map-lod"][data-val="quarters"]'), "click");
     eq("map-lod switches to Microzones badge", m.text(".map-lod-badge"), "1 microzones");
-    fire(m.root.querySelector('.map-l-qtr [data-act="map-region"][data-val="18.1"]'), "click");
+    fire(m.root.querySelector('.map-l-qtr [data-reg-q="18.1"]'), "click");
     eq("clicking Dnipro microzone 18.1 inspects emergency outages",
       [m.text("h1"), m.wrap.classList.contains("k-warn"), m.root.querySelector(".q-pill.active").getAttribute("data-val")],
       ["Emergency outages.", true, "18.1"]);
