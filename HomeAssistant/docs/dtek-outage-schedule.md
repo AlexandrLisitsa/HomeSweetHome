@@ -52,6 +52,16 @@ stale with an error that names what came back (`DTEK answered 200 text/html, …
 not JSON: <page title>`). The body is kept as `captures/nonjson_*.txt` (last
 10). `dtek_poll.py`'s docstring is the protocol manual.
 
+During Ukrenergo emergency outages (first seen 26.11.2026), DTEK also switches
+affected streets in `getHomeNum` to an outage-only list: `data` drops every
+unaffected building and leaves `sub_type_reason` empty (`[]`) on the ones
+still listed, or comes back as `{}` / `[]`. When our house is missing from an
+outage-only answer, `fetch_entry()` (`outage_only_street()`) treats it as no
+outage with `queues: []` instead of going stale, so `schedule_in_effect` stays
+false even if `fact` still carries a schedule. Misspelt house numbers on a
+normal full-roster street (any inactive entry or populated queue) still raise
+`no house …`.
+
 ## DTEK decides what gets drawn, and says so
 
 The `getHomeNum` answer carries six booleans next to the address data, and
@@ -408,8 +418,8 @@ is on the dashboard whatever the flag says.
 1. **One sentence at a time** (`banner_emergency()`). A sentence counts only
    if it has all four:
    - the outage words (`екстрен… відключен…`, one н or two);
-   - a now-in-force verb: запроваджено, застосовано, діють, тривають,
-     введено, оголошено…;
+   - a now-in-force verb: запроваджено, впроваджено, застосовано, діють,
+     тривають, введено, оголошено…;
    - none of the not-now words: скасовано, завершено, припинено, не діють,
      більше не, вчора, минул…, запобігання, уникнути, можливі, загроза,
      ризик;

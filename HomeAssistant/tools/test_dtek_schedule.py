@@ -375,6 +375,10 @@ check("no street data -> scope unknown", p.street_scope({}), (None, None))
 print("\n12. automatic captures")
 with tempfile.TemporaryDirectory() as tmp:
     p.CAPTURE_DIR = Path(tmp) / "captures"
+    p.CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+    for i in range(p.CAPTURE_KEEP):
+        (p.CAPTURE_DIR / ("yasno_20261108T%02d0000_EmergencyShutdowns.json" % i)).write_text(
+            "{}", encoding="utf-8")
 
     class _Session:
         fact, preset = GOLDEN["fact"], GOLDEN["preset"]
@@ -383,8 +387,11 @@ with tempfile.TemporaryDirectory() as tmp:
     for i in range(p.CAPTURE_KEEP + 3):
         payload["fetched_at"] = "2026-09-29T14:%02d:00+03:00" % i
         p.save_capture(ans, payload, _Session, "1")
-    files = sorted(p.CAPTURE_DIR.glob("*.json"))
+    files = sorted(f for f in p.CAPTURE_DIR.glob("*.json")
+                   if not f.name.startswith("yasno_"))
+    yasno_files = sorted(p.CAPTURE_DIR.glob("yasno_*.json"))
     check("keeps the last %d" % p.CAPTURE_KEEP, len(files), p.CAPTURE_KEEP)
+    check("yasno captures survive DTEK rotation", len(yasno_files), p.CAPTURE_KEEP)
     got = json.loads(files[-1].read_text(encoding="utf-8"))
     check("fixture-shaped", sorted(got), ["_meta", "fact", "getHomeNum", "preset"])
     check("the banner rides in _meta", sorted(got["_meta"]["banner"]),
@@ -494,6 +501,9 @@ def said(text, city="м. Дніпро"):
 for text, want in [
     ("Діють екстрені відключення у Дніпрі.", ("city", True)),
     ("Екстренні відключення світла в Дніпрі тривають.", ("city", True)),
+    ("За розпорядженням НЕК Укренерго в Дніпрі, а також Дніпровському, "
+     "Павлоградському, Синельниківському та Самарівському районах впровадженні "
+     "екстрені відключення світла. Графіки тут не працюють.", ("city", True)),
     ("Діють екстрені відключення по Дніпропетровській області.", ("region", True)),
     ("На Дніпропетровщині застосовано екстрені відключення.", ("region", True)),
     # Country-wide, or no place named: DTEK's own popup, so it includes us.
@@ -800,6 +810,82 @@ with tempfile.TemporaryDirectory() as tmp:
         got = "NotJson"
     check("two in a row: the poll fails, no third try", (got, queue), ("NotJson", []))
     p.time.sleep = saved_sleep
+
+
+# --- 17. outage-only getHomeNum answers (26.11.2026) ----------------------
+print("\n17. outage-only getHomeNum answers")
+OUTAGE_ENTRY = {
+    "sub_type": p.EMERGENCY_SUB_TYPE,
+    "start_date": "12:39 26.11.2026",
+    "end_date": "15:53 26.11.2026",
+    "type": "2",
+    "sub_type_reason": [],
+    "voluntarily": None,
+    "cek": None,
+}
+check("active entries with empty sub_type_reason -> outage-only",
+      p.outage_only_street({"10": OUTAGE_ENTRY, "11": OUTAGE_ENTRY}), True)
+check("empty dict -> outage-only", p.outage_only_street({}), True)
+check("empty list -> outage-only", p.outage_only_street([]), True)
+check("inactive entry (even without queues) -> full roster",
+      p.outage_only_street({"10": OUTAGE_ENTRY, "11": entry([])}), False)
+check("active entries carrying queues -> full roster",
+      p.outage_only_street({"10": dict(OUTAGE_ENTRY, sub_type_reason=["GPV3.1"])}), False)
+check("None -> False", p.outage_only_street(None), False)
+
+
+class _OutageOnlySession:
+    def __init__(self, payload):
+        self.payload = payload
+        self.bootstrapped = True
+
+    def post(self, _fields):
+        return self.payload
+
+    def bootstrap(self):
+        pass
+
+
+oo_answer = {
+    "result": True,
+    "data": {"10": OUTAGE_ENTRY, "11": OUTAGE_ENTRY},
+    "showCurOutageParam": True,
+    "showCurSchedule": True,
+    "showTableSchedule": True,
+    "showTablePlan": False,
+    "showTableFact": True,
+    "showUserGroup": False,
+    "updateTimestamp": "14:32 26.11.2026",
+}
+oo_entry, _ = p.fetch_entry(_OutageOnlySession(oo_answer), "м. Дніпро", "вул. Тестова", "1")
+check("absent house on outage-only street returns empty entry", oo_entry["sub_type_reason"], [])
+fact_with_sched = fact_from({today: {"GPV1.1": day(["yes"] * 10 + ["no"] * 4 + ["yes"] * 10)}})
+oo_resolved = p.resolve(oo_entry, oo_answer, fact_with_sched, preset,
+                        datetime(2026, 6, 10, 12, 0, tzinfo=KYIV))
+check("outage-only absent house status", p.status_for(oo_resolved), "ok")
+check("outage-only absent house outage_active", oo_resolved["outage_active"], False)
+check("outage-only absent house keeps queues empty", oo_resolved["queues"], [])
+check("outage-only absent house does not apply cached/fact schedule",
+      oo_resolved["schedule_in_effect"], False)
+check("outage-only absent house has no drift warnings", oo_resolved["warnings"], [])
+
+empty_answer = {"result": True, "data": [], "updateTimestamp": "14:32 26.11.2026"}
+empty_entry, _ = p.fetch_entry(_OutageOnlySession(empty_answer), "м. Дніпро", "вул. Тестова", "1")
+check("absent house when data=[] resolves to ok",
+      p.status_for(p.resolve(empty_entry, empty_answer, fact_with_sched, preset,
+                             datetime(2026, 6, 10, 12, 0, tzinfo=KYIV))), "ok")
+
+for label, bad_data in [
+    ("inactive houses present", {"10": OUTAGE_ENTRY, "11": entry([])}),
+    ("sub_type_reason populated", {"10": dict(OUTAGE_ENTRY, sub_type_reason=["GPV1.1"])}),
+]:
+    try:
+        p.fetch_entry(_OutageOnlySession({"result": True, "data": bad_data}),
+                      "м. Дніпро", "вул. Тестова", "1")
+        got = "no error"
+    except RuntimeError as exc:
+        got = "no house" in str(exc)
+    check("absent house with %s still raises RuntimeError" % label, got, True)
 
 
 print("\n%s" % ("FAILED: " + ", ".join(FAILED) if FAILED else "all checks passed"))
