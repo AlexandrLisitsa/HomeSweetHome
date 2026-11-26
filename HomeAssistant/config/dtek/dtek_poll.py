@@ -57,6 +57,13 @@ region, which still ran schedules, so it never marks a city-only emergency.
 The notice is judged by banner_emergency(), the banner's own strict rules.
 See apply_yasno().
 
+During emergency outages (first seen 26.11.2026), DTEK can also drop the full
+street roster and queue assignments from getHomeNum on affected streets,
+returning only houses with an active outage (all with `sub_type_reason: []`)
+or an empty `data` map. When our house is absent from such an outage-only
+answer, fetch_entry() treats it as "no outage recorded" with `queues: []`
+rather than failing as a misspelt address; see outage_only_street().
+
 THE OTHER THING THAT IS NOT OBVIOUS: the getHomeNum answer carries six booleans
 next to `data` -- showCurOutageParam, showCurSchedule, showTableSchedule,
 showTablePlan, showTableFact, showUserGroup -- and DTEK's own page draws nothing
@@ -204,7 +211,7 @@ OTHER_PLACE_RE = re.compile(
 # same phrase into advice, history or an all-clear -- "щоб уникнути екстрених
 # відключень, економте", "вчора діяли", "скасовано". Stems, any ending.
 BANNER_ACTIVE_RE = re.compile(
-    r"запровадж|застосов|(?<!\w)ді[юєя]|трива|введен|вводят|оголош|розпочат"
+    r"запровадж|впровадж|застосов|(?<!\w)ді[юєя]|трива|введен|вводят|оголош|розпочат"
     r"|продовжу", re.IGNORECASE)
 BANNER_NOT_NOW_RE = re.compile(
     r"скасов|відмін|заверш|припин|(?<!\w)не\s+ді|більше\s+не|вчора|минул"
@@ -637,6 +644,13 @@ def drift_warnings(entry, answer, start, end):
     return out
 
 
+def _entry_active(entry):
+    """True when a getHomeNum house record carries an active outage."""
+    return isinstance(entry, dict) and any(
+        (entry.get(k) or "").strip()
+        for k in ("sub_type", "start_date", "end_date"))
+
+
 def street_scope(answer):
     """(houses with an outage record, houses listed) for the whole street.
 
@@ -647,8 +661,7 @@ def street_scope(answer):
     data = (answer or {}).get("data")
     if not isinstance(data, dict) or not data:
         return None, None
-    hit = sum(1 for e in data.values() if isinstance(e, dict) and any(
-        (e.get(k) or "").strip() for k in ("sub_type", "start_date", "end_date")))
+    hit = sum(1 for e in data.values() if _entry_active(e))
     return hit, len(data)
 
 
@@ -763,6 +776,29 @@ def house_entry(data, house):
     return None
 
 
+def outage_only_street(data):
+    """True when getHomeNum sent only active outage records, not the full street.
+
+    Observed 26.11.2026 during Dnipro emergency outages: DTEK stopped carrying
+    the schedule/queue address roster for streets under emergency outages, so
+    `data` shrank from 287 houses to only those with a live outage (all with
+    `sub_type_reason: []`). Once our house's own outage cleared, it vanished
+    from `data`. An empty dict or list with result=True is the 0-outage limit
+    of the same mode.
+
+    On a normal street, entries carry `sub_type_reason` and/or inactive houses,
+    so this returns False and a misspelt house number still fails loudly.
+    """
+    if data in ({}, []):
+        return True
+    if not isinstance(data, dict):
+        return False
+    return all(
+        _entry_active(v) and not any(v.get("sub_type_reason") or ())
+        for v in data.values()
+    )
+
+
 def fetch_entry(session, city, street, house):
     """getHomeNum -> (entry, answer), re-establishing a stale session once.
 
@@ -788,11 +824,21 @@ def fetch_entry(session, city, street, house):
             continue
 
         if answer.get("result"):
-            entry = house_entry(answer.get("data"), house)
+            data = answer.get("data")
+            entry = house_entry(data, house)
             if entry is None:
-                raise RuntimeError(
-                    "no house %r on %r in %r -- check the spelling against "
-                    "--find" % (house, street, city))
+                if outage_only_street(data):
+                    # Leave sub_type_reason empty intentionally: DTEK's `fact`
+                    # can still hold a schedule while emergency outages void it.
+                    log("house %r absent from outage-only answer (%d entries) "
+                        "-- treating as no outage" % (house, len(data)))
+                    entry = {"sub_type": "", "start_date": "", "end_date": "",
+                             "type": "", "sub_type_reason": [],
+                             "voluntarily": None, "cek": None}
+                else:
+                    raise RuntimeError(
+                        "no house %r on %r in %r -- check the spelling against "
+                        "--find" % (house, street, city))
             # The answer, not just the entry: the visibility flags sit beside
             # `data` and are the whole point of visibility().
             return entry, answer
@@ -1128,8 +1174,7 @@ def apply_yasno(payload, cache, now, city=None):
 
 def save_yasno_capture(raw, verdict, now, label=None):
     """The raw YASNO answer whenever our status (or the notice) changes. Best
-    effort. Named so it sorts after DTEK's captures and survives their
-    rotation."""
+    effort. Rotated independently of DTEK's own captures."""
     stamp = now.isoformat()[:19].replace(":", "").replace("-", "")
     try:
         CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
@@ -1177,7 +1222,9 @@ def save_capture(answer, payload, session, house):
         path.write_text(json.dumps(body, ensure_ascii=False, indent=1),
                         encoding="utf-8")
         log("captured %s" % path.name)
-        for old in sorted(CAPTURE_DIR.glob("*.json"))[:-CAPTURE_KEEP]:
+        dtek_caps = sorted(p for p in CAPTURE_DIR.glob("*.json")
+                           if not p.name.startswith("yasno_"))
+        for old in dtek_caps[:-CAPTURE_KEEP]:
             old.unlink()
     except OSError as exc:
         log("capture not written: %s" % exc)
