@@ -979,6 +979,10 @@ def shares_from_counts(counts):
     return ints, dom
 
 
+def counts_for_shares(counts, shares):
+    return {q: int(counts[q]) for q in shares if counts.get(q)}
+
+
 def build_hromadas(hr_feats, samples, proj):
     hr_polys = []
     for idx, f in enumerate(hr_feats):
@@ -1043,6 +1047,7 @@ def build_hromadas(hr_feats, samples, proj):
             "cx": round(cx, 1),
             "cy": round(cy, 1),
             "s": shares,
+            "c": counts_for_shares(h["counts"], shares) if n > 0 else {},
             "d": dom,
             "n": n,
         })
@@ -1084,6 +1089,7 @@ def build_dnipro_layers(districts_raw, dnipro_samples, proj):
             "cx": round(cx, 2),
             "cy": round(cy, 2),
             "s": d_shares,
+            "c": counts_for_shares(d_counts, d_shares),
             "d": d_dom,
             "n": len(d_pts),
         })
@@ -1133,6 +1139,7 @@ def build_dnipro_layers(districts_raw, dnipro_samples, proj):
                 "cx": round(qcx, 2),
                 "cy": round(qcy, 2),
                 "s": q_shares,
+                "c": counts_for_shares(q_counts, q_shares) if c["items"] else {},
                 "d": q_dom,
                 "n": len(c["items"]),
             })

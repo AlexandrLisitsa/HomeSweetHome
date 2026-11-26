@@ -46,7 +46,7 @@
 const CARD = "dtek-shutdowns-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "2.16.0";
+const VERSION = "2.16.1";
 
 const MAP_CACHE = { url: null, data: null, busy: false, failed: false };
 
@@ -275,8 +275,8 @@ const HELP = {
   map_mode: "Color regions by the selected queue alone or all queues live outage share.\n"
     + "E.g. All live shows a heatmap of dark percentage across mixed areas.\n"
     + "Tap to switch Queue vs All live.",
-  map_region: "Administrative hromada, city district, or microzone mapped to YASNO queues.\n"
-    + "E.g. 14.1 (60% addr), 16.1 (40%): share of sampled addresses by outage queue.\n"
+  map_region: "Region mapped to YASNO outage queues by checked houses (sampled, not all).\n"
+    + "E.g. 16.1: 12, 14.1: 4 (17 houses): 12 of 17 checked houses are in queue 16.1.\n"
     + "Tap to inspect its main queue; scroll wheel to zoom.",
   map_q: "Outage queue status now from DTEK and YASNO feeds.\n"
     + "E.g. 14.1 starred is this home; red dot means off, amber means soon.\n"
@@ -2366,12 +2366,23 @@ class DtekShutdownsCard extends HTMLElement {
 
       const placeRaw = reg.short || reg.name || kindName;
       const place = placeRaw.length > 22 ? placeRaw.slice(0, 21) + "…" : placeRaw;
+      const n = Number(reg.n) || 0;
+      const cntMap = reg.c && typeof reg.c === "object" ? reg.c : null;
+      const cntOf = (q) => (cntMap && typeof cntMap[q] === "number"
+        ? cntMap[q] : Math.max(1, Math.round((Number(shares[q]) || 0) * n / 100)));
+      const offNote = mode === "all" && offShare + emergShare > 0
+        ? " " + MIDDOT + " " + Math.round(offShare + emergShare) + "% off" : "";
       let summary;
-      if (!qs.length) summary = "no YASNO samples";
-      else if (qs.length === 1) summary = qs[0] + " (100% addr)";
-      else summary = qs[0] + " (" + shares[qs[0]] + "% addr), " + qs[1] + " (" + shares[qs[1]] + "%)";
-      if (mode === "all" && offShare + emergShare > 0) {
-        summary += " " + MIDDOT + " " + Math.round(offShare + emergShare) + "% off";
+      if (!qs.length) {
+        summary = "no YASNO samples";
+      } else if (n <= 0) {
+        summary = "~" + qs.slice(0, 2).map((q) => q + " " + shares[q] + "%").join(", ")
+          + " (est.)" + offNote;
+      } else if (qs.length === 1) {
+        summary = qs[0] + " (" + n + (n === 1 ? " house)" : " houses)") + offNote;
+      } else {
+        summary = qs.slice(0, 2).map((q) => q + ": " + cntOf(q)).join(", ")
+          + " (" + n + " houses" + offNote + ")";
       }
 
       const act = topRef

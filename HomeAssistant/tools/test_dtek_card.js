@@ -816,14 +816,14 @@ eq("[hero, days, week]: all three", [!!r.root.querySelector(".hero"), r.root.que
         { name: "Покров", x: 200, y: 300, tier: 2 },
       ],
       hromadas: [
-        { id: "h0", short: "Кам'янська", name: "Кам'янська міська громада", rayon: "Кам'янський", path: "M10,0 L30,0 L30,20 L10,20 Z", cx: 20, cy: 10, d: "8.1", s: { "8.1": 80, "14.1": 20 }, n: 5 },
-        { id: "h1", short: "Дніпровська", name: "Дніпровська міська громада", rayon: "Дніпровський", path: "M40,0 L60,0 L60,20 L40,20 Z", cx: 50, cy: 10, d: "14.1", s: { "14.1": 100 }, n: 4 },
+        { id: "h0", short: "Кам'янська", name: "Кам'янська міська громада", rayon: "Кам'янський", path: "M10,0 L30,0 L30,20 L10,20 Z", cx: 20, cy: 10, d: "8.1", s: { "8.1": 80, "14.1": 20 }, c: { "8.1": 4, "14.1": 1 }, n: 5 },
+        { id: "h1", short: "Дніпровська", name: "Дніпровська міська громада", rayon: "Дніпровський", path: "M40,0 L60,0 L60,20 L40,20 Z", cx: 50, cy: 10, d: "14.1", s: { "14.1": 100 }, c: { "14.1": 4 }, n: 4 },
       ],
       districts: [
-        { id: "d0", short: "Центральний", name: "Центральний район", bank: false, path: "M40,0 L60,0 L60,20 L40,20 Z", cx: 50, cy: 10, d: "8.1", s: { "8.1": 60, "14.1": 40 }, n: 10 },
+        { id: "d0", short: "Центральний", name: "Центральний район", bank: false, path: "M40,0 L60,0 L60,20 L40,20 Z", cx: 50, cy: 10, d: "8.1", s: { "8.1": 60, "14.1": 40 }, c: { "8.1": 6, "14.1": 4 }, n: 10 },
       ],
       quarters: [
-        { id: "q0_0", name: "Центр", district: "Центральний", streets: "просп. Яворницького", path: "M45,5 L55,5 L55,15 L45,15 Z", cx: 50, cy: 10, d: "18.1", s: { "18.1": 100 }, n: 3 },
+        { id: "q0_0", name: "Центр", district: "Центральний", streets: "просп. Яворницького", path: "M45,5 L55,5 L55,15 L45,15 Z", cx: 50, cy: 10, d: "18.1", s: { "18.1": 100 }, c: { "18.1": 3 }, n: 3 },
       ],
     };
     const m = render("13:39", {
@@ -849,7 +849,7 @@ eq("[hero, days, week]: all three", [!!r.root.querySelector(".hero"), r.root.que
         m.root.querySelectorAll("[title], title").length],
       ["14.1", "14.1", ["14h 20m", "since 00:00, at the meter"], 4, 0]);
     const hrTip = m.root.querySelector('.map-l-hr [data-act="map-region"]').getAttribute("data-tip") || "";
-    eq("region tooltip clearly marks address share (% addr)", /% addr/.test(hrTip), true);
+    eq("region tooltip shows exact house counts per queue", /8\.1: 4, 14\.1: 1 \(5 houses\)/.test(hrTip), true);
 
     // Click queue pill 8.1 -> inspect mode
     fire(m.root.querySelector('.q-pill[data-val="8.1"]'), "click");
