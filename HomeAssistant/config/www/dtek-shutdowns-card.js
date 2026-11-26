@@ -46,7 +46,7 @@
 const CARD = "dtek-shutdowns-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "2.17.1";
+const VERSION = "2.17.2";
 
 const MAP_CACHE = { url: null, data: null, busy: false, failed: false };
 
@@ -2775,8 +2775,9 @@ class DtekShutdownsCard extends HTMLElement {
     stage._dsMapWired = true;
 
     stage.addEventListener("wheel", (ev) => {
-      if (ev.deltaY > 0 && this._mapCam.s <= 1.005) return;
       if (typeof ev.preventDefault === "function") ev.preventDefault();
+      if (typeof ev.stopPropagation === "function") ev.stopPropagation();
+      if (ev.deltaY > 0 && this._mapCam.s <= 1.005) return;
       this._hideMapHover();
       if (this._mapAnim && typeof cancelAnimationFrame === "function") cancelAnimationFrame(this._mapAnim);
       this._mapAnim = null;
@@ -4526,7 +4527,7 @@ a:hover { text-decoration: underline; }
   position: relative; width: 100%; aspect-ratio: 620 / 400;
   background: radial-gradient(circle at 55% 42%, #11151d 0%, #090b0e 100%);
   border: 1px solid var(--ds-line); border-radius: 8px;
-  overflow: hidden; touch-action: none; user-select: none;
+  overflow: hidden; overscroll-behavior: contain; touch-action: none; user-select: none;
 }
 .map-stage.panning .map-svg { cursor: grabbing; }
 .map-svg { display: block; width: 100%; height: 100%; cursor: grab; }

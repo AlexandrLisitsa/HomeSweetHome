@@ -892,13 +892,13 @@ eq("[hero, days, week]: all three", [!!r.root.querySelector(".hero"), r.root.que
         m.root.querySelectorAll(".timeline .tlname").map((x) => x.textContent.split("schedule")[0].slice(0, 12))],
       ["8.1", "(8.1)", true, false, ["—", "home meter only"], 2, ["Queue 8.1app", "My queue (14"]]);
 
-    // Wheel scroll-down at 1x must NOT call preventDefault(); wheel-up zooms in & switches LOD
+    // Wheel scroll-down at 1x still prevents page scroll over the map; wheel-up zooms in & switches LOD
     const stage = m.root.querySelector(".map-stage");
     let pDown = false;
     (stage._listeners.wheel || []).forEach((fn) => fn({
       deltaY: 120, clientX: 310, clientY: 200, preventDefault: () => { pDown = true; },
     }));
-    eq("wheel down at 1x lets page scroll pass (no preventDefault)", [pDown, m.card._mapCam.s], [false, 1]);
+    eq("wheel down at 1x blocks page scroll while staying at 1x", [pDown, m.card._mapCam.s], [true, 1]);
 
     let pUp = false;
     (stage._listeners.wheel || []).forEach((fn) => fn({
