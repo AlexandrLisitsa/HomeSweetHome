@@ -855,10 +855,28 @@ eq("[hero, days, week]: all three", [!!r.root.querySelector(".hero"), r.root.que
     m.card._onMapHover({ target: h0El, clientX: 200, clientY: 200, pointerType: "mouse" });
     const hCard = m.root.querySelector(".map-hcard");
     const hRows = hCard.querySelectorAll(".mh-row").map((r) => r.textContent);
-    eq("344px Clean Rows hover card shows exact integer house counts and status bar without %",
+    const qRows = hCard.querySelectorAll(".mh-qrow").map((r) => r.textContent);
+    const hFoot = hCard.querySelector(".mh-foot");
+    eq("hover card shows houses with %, status bar, queue breakdown and click hint",
       [hCard.hidden, /Кам'янська міська громада/.test(hCard.textContent),
-        hRows, !!hCard.querySelector(".mh-bar"), /%/.test(hRows.join(" "))],
-      [false, true, ["Houses checked5", "Houses off1", "Off soon (<1h)0", "Houses on4"], true, false]);
+        hRows, !!hCard.querySelector(".mh-bar"),
+        qRows.length,
+        qRows.some((t) => /^8\.1/.test(t) && /4 \(80%\)/.test(t) && /On|Off/.test(t)),
+        qRows.some((t) => /^14\.1 ★/.test(t) && /1 \(20%\)/.test(t) && /Off until|Off at|On/.test(t)),
+        hFoot && hFoot.textContent],
+      [false, true,
+        ["Houses checked5", "Houses off1(20%)", "Off soon (<1h)0(0%)", "Houses on4(80%)"],
+        true, 2, true, true,
+        "Click to inspect queue 8.1YASNO sample"]);
+    const q0El = m.root.querySelector('[data-reg-q="18.1"]');
+    m.card._onMapHover({ target: q0El, clientX: 220, clientY: 220, pointerType: "mouse" });
+    const qRowsEmerg = hCard.querySelectorAll(".mh-row").map((r) => r.textContent);
+    const qStreets = hCard.querySelector(".mh-streets");
+    eq("microzone hover card renders sampled streets and emergency off count with %",
+      [qRowsEmerg.includes("Emergency off3(100%)"),
+        qStreets && qStreets.textContent,
+        hCard.querySelectorAll(".mh-qrow").some((r) => /^18\.1/.test(r.textContent) && /Emergency/.test(r.textContent))],
+      [true, "Sampled: просп. Яворницького", true]);
     m.card._hideMapHover();
     eq("hideMapHover hides floating hover card", hCard.hidden, true);
 

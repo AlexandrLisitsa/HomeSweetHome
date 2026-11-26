@@ -46,7 +46,7 @@
 const CARD = "dtek-shutdowns-card";
 import { cardTip } from "./card-tip.js?v=1.0.0";
 
-const VERSION = "2.17.0";
+const VERSION = "2.17.1";
 
 const MAP_CACHE = { url: null, data: null, busy: false, failed: false };
 
@@ -2571,34 +2571,70 @@ class DtekShutdownsCard extends HTMLElement {
     this._mapHoverKey = null;
   }
 
+  _queueNextHint(q, st, allQueues, now) {
+    if (st === "emerg") return "Emergency";
+    const ref = resolveQueueRef(allQueues, q);
+    const info = ref ? allQueues[ref] : null;
+    const today = info && typeof info.t === "string" && info.t.length === 24 ? info.t : null;
+    const tmrw = info && typeof info.m === "string" && info.m.length === 24 ? info.m : null;
+    if (!today) return "No data";
+    const fmtHr = (dt) => pad2(dt.getHours()) + ":" + pad2(dt.getMinutes());
+    if (st === "off") {
+      const win = now ? scheduleWindow(today, tmrw, now) : null;
+      return win && win.end ? "Off until " + fmtHr(win.end) : "Off now";
+    }
+    const nxt = now ? queueNextWindow(today, tmrw, now) : null;
+    if (st === "soon") {
+      return nxt && nxt.start ? "Off at " + fmtHr(nxt.start) : "Off soon";
+    }
+    return nxt && nxt.start ? "On " + MIDDOT + " next " + fmtHr(nxt.start) : "On all day";
+  }
+
   _mapRegionStats(item) {
     const ctx = this._mapHoverCtx || {};
     const allQueues = ctx.allQueues || null;
     const statusByQ = ctx.statusByQ || {};
+    const now = ctx.now || new Date();
     const shares = item && item.s && typeof item.s === "object" ? item.s : {};
     const counts = item && item.c && typeof item.c === "object" ? item.c : {};
     const n = Number(item && item.n) || 0;
-    const qs = Object.keys(shares).sort((a, b) => (shares[b] || 0) - (shares[a] || 0));
+
+    const byRef = {};
+    Object.keys(shares).forEach((q) => {
+      const ref = resolveQueueRef(allQueues, q) || q;
+      const pct = Number(shares[q]) || 0;
+      const cnt = n > 0 ? (typeof counts[q] === "number" ? counts[q] : Math.round(pct * n / 100)) : 0;
+      if (!byRef[ref]) byRef[ref] = { q: ref, pct: 0, cnt: 0 };
+      byRef[ref].pct += pct;
+      byRef[ref].cnt += cnt;
+    });
 
     let offN = 0, soonN = 0, onN = 0, emergN = 0;
     let offP = 0, soonP = 0, onP = 0, emergP = 0;
-    qs.forEach((q) => {
-      const ref = resolveQueueRef(allQueues, q) || q;
-      const st = statusByQ[ref] || "none";
-      const pct = Number(shares[q]) || 0;
-      const cnt = n > 0 ? (typeof counts[q] === "number" ? counts[q] : Math.round(pct * n / 100)) : 0;
-      if (st === "off") { offN += cnt; offP += pct; }
-      else if (st === "emerg") { emergN += cnt; emergP += pct; }
-      else if (st === "soon") { soonN += cnt; soonP += pct; }
-      else { onN += cnt; onP += pct; }
-    });
-    if (n > 0 && qs.length) {
+    const rows = Object.values(byRef)
+      .sort((a, b) => b.pct - a.pct)
+      .map((entry) => {
+        const st = statusByQ[entry.q] || "none";
+        if (st === "off") { offN += entry.cnt; offP += entry.pct; }
+        else if (st === "emerg") { emergN += entry.cnt; emergP += entry.pct; }
+        else if (st === "soon") { soonN += entry.cnt; soonP += entry.pct; }
+        else { onN += entry.cnt; onP += entry.pct; }
+        return {
+          q: entry.q,
+          pct: Math.round(entry.pct),
+          cnt: entry.cnt,
+          st,
+          next: this._queueNextHint(entry.q, st, allQueues, now),
+          home: entry.q === ctx.homeRef || entry.q === ctx.homeCode,
+        };
+      });
+    if (n > 0 && rows.length) {
       const sum = offN + emergN + soonN + onN;
       if (sum !== n) onN = Math.max(0, onN + (n - sum));
     }
     const domRef = item && item.d ? (resolveQueueRef(allQueues, item.d) || item.d) : null;
     const domSt = domRef ? (statusByQ[domRef] || "none") : "none";
-    return { n, offN, soonN, onN, emergN, offP, soonP, onP, emergP, domRef, domSt };
+    return { n, offN, soonN, onN, emergN, offP, soonP, onP, emergP, rows, domRef, domSt };
   }
 
   _renderMapHover(item, kind) {
@@ -2615,20 +2651,22 @@ class DtekShutdownsCard extends HTMLElement {
       : "";
     const isEst = st.n <= 0;
     const fmt = (cnt, p) => (isEst ? "~" + Math.round(p) + "%" : String(cnt));
-    const row = (cls, dot, label, val) => '<div class="mh-row ' + cls + '">'
+    const pctEl = (cnt, p) => (isEst ? ""
+      : '<span class="mh-pct">(' + Math.round(st.n > 0 ? (cnt * 100) / st.n : p) + "%)</span>");
+    const row = (cls, dot, label, val, pctHtml) => '<div class="mh-row ' + cls + '">'
       + '<span class="mh-k"><span class="mh-dot ' + dot + '"></span>' + esc(label) + "</span>"
-      + '<span class="mh-v">' + esc(val) + "</span></div>";
+      + '<span><span class="mh-v">' + esc(val) + "</span>" + (pctHtml || "") + "</span></div>";
 
     let rows = '<div class="mh-rows">';
     rows += isEst
       ? '<div class="mh-row total"><span class="mh-k">Coverage estimate</span><span class="mh-v">neighbors</span></div>'
       : '<div class="mh-row total"><span class="mh-k">Houses checked</span><span class="mh-v">' + st.n + "</span></div>";
     if (st.emergN > 0 || (isEst && st.emergP > 0)) {
-      rows += row("c-off", "emerg", "Emergency off", fmt(st.emergN, st.emergP));
+      rows += row("c-off", "emerg", "Emergency off", fmt(st.emergN, st.emergP), pctEl(st.emergN, st.emergP));
     }
-    rows += row("c-off", "off", "Houses off", fmt(st.offN, st.offP));
-    rows += row("c-soon", "soon", "Off soon (<1h)", fmt(st.soonN, st.soonP));
-    rows += row("c-on", "on", "Houses on", fmt(st.onN, st.onP));
+    rows += row("c-off", "off", "Houses off", fmt(st.offN, st.offP), pctEl(st.offN, st.offP));
+    rows += row("c-soon", "soon", "Off soon (<1h)", fmt(st.soonN, st.soonP), pctEl(st.soonN, st.soonP));
+    rows += row("c-on", "on", "Houses on", fmt(st.onN, st.onP), pctEl(st.onN, st.onP));
     rows += "</div>";
 
     const w = (cnt, p) => (isEst ? p : st.n > 0 ? (cnt * 100) / st.n : 0).toFixed(1);
@@ -2639,8 +2677,31 @@ class DtekShutdownsCard extends HTMLElement {
       + '<div class="seg-on" style="width:' + w(st.onN, st.onP) + '%"></div>'
       + "</div>";
 
+    let qlist = "";
+    if (st.rows.length) {
+      qlist = '<div class="mh-qlist"><div class="mh-qhdr">Queues in this area</div>';
+      st.rows.slice(0, 5).forEach((r) => {
+        const meta = isEst
+          ? r.pct + "% " + MIDDOT + " " + r.next
+          : r.cnt + " (" + r.pct + "%) " + MIDDOT + " " + r.next;
+        qlist += '<div class="mh-qrow">'
+          + '<span class="mh-qname"><span class="mh-dot ' + r.st + '"></span>' + esc(r.q) + (r.home ? " ★" : "") + "</span>"
+          + '<div class="mh-qtrack"><div class="mh-qfill ' + r.st + '" style="width:' + Math.min(100, Math.max(0, r.pct)) + '%"></div></div>'
+          + '<span class="mh-qmeta">' + esc(meta) + "</span></div>";
+      });
+      qlist += "</div>";
+    }
+
+    const streets = item.streets
+      ? '<div class="mh-streets">Sampled: ' + esc(item.streets) + "</div>"
+      : "";
+    const foot = '<div class="mh-foot"><span>'
+      + (st.domRef ? "Click to inspect queue " + esc(st.domRef) : "YASNO coverage area")
+      + "</span><span>" + (isEst ? "Neighbor est." : "YASNO sample") + "</span></div>";
+
     return '<div class="mh-top"><div><div class="mh-title">' + esc(title) + "</div>"
-      + '<div class="mh-sub">' + esc(sub) + "</div></div>" + badge + "</div>" + rows + bar;
+      + '<div class="mh-sub">' + esc(sub) + "</div></div>" + badge + "</div>"
+      + rows + bar + qlist + streets + foot;
   }
 
   _placeMapHover(clientX, clientY) {
@@ -2698,7 +2759,7 @@ class DtekShutdownsCard extends HTMLElement {
     }
     this._mapHoverCtx = {
       mapData: md, allQueues: d && d.allQueues, statusByQ,
-      homeRef: d && d.homeRef, homeCode: d && d.homeCode,
+      homeRef: d && d.homeRef, homeCode: d && d.homeCode, now,
     };
     this._hideMapHover();
     if (md) {
@@ -4575,6 +4636,19 @@ a:hover { text-decoration: underline; }
 .mh-bar .seg-off { background: var(--ds-bad); }
 .mh-bar .seg-soon { background: var(--ds-warn); }
 .mh-bar .seg-on { background: var(--ds-ok); }
+.mh-pct { font: 500 11.5px/1 var(--ds-mono); color: var(--ds-muted); margin-left: 5px; }
+.mh-qlist { display: flex; flex-direction: column; gap: 4px; }
+.mh-qhdr { font: 600 10px/1 var(--ds-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--ds-muted); margin-bottom: 1px; }
+.mh-qrow { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px; font-size: 12px; padding: 3px 0; }
+.mh-qname { font: 600 12px/1 var(--ds-mono); color: var(--ds-text); display: inline-flex; align-items: center; gap: 5px; min-width: 56px; }
+.mh-qtrack { height: 5px; border-radius: 999px; background: var(--ds-line); overflow: hidden; }
+.mh-qfill { height: 100%; border-radius: 999px; }
+.mh-qfill.off, .mh-qfill.emerg { background: var(--ds-bad); }
+.mh-qfill.soon { background: var(--ds-warn); }
+.mh-qfill.on { background: var(--ds-ok); }
+.mh-qmeta { font: 500 11px/1 var(--ds-mono); color: var(--ds-text2); text-align: right; white-space: nowrap; }
+.mh-streets { font: 500 11px/1.35 var(--ds-sans); color: var(--ds-muted); padding-top: 6px; border-top: 1px solid var(--ds-line); }
+.mh-foot { font: 500 11px/1.2 var(--ds-mono); color: var(--ds-link); display: flex; justify-content: space-between; gap: 8px; }
 .q-strip { grid-area: queues; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .q-pill {
   appearance: none; display: inline-flex; align-items: center; gap: 6px;
