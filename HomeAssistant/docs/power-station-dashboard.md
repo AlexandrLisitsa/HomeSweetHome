@@ -8,8 +8,8 @@ BMS gateway.
 
 | Tab | Card | Version | Side of the system |
 | --- | --- | --- | --- |
-| Inverter | `config/www/powmr-inverter-console-card.js` (`custom:powmr-inverter-console-card`) | 2.10.0 | AC: grid → inverter → house |
-| Battery (`/battery`) | `config/www/jkbms-battery-console-card.js` (`custom:jkbms-battery-console-card`) | 1.6.0 | DC: inverter bus ↔ battery pack |
+| Inverter | `config/www/powmr-inverter-console-card.js` (`custom:powmr-inverter-console-card`) | 2.15.0 | AC: grid → inverter → house |
+| Battery (`/battery`) | `config/www/jkbms-battery-console-card.js` (`custom:jkbms-battery-console-card`) | 1.9.0 | DC: inverter bus ↔ battery pack |
 
 ## Why custom cards
 
@@ -33,7 +33,7 @@ Blocks, top to bottom (`blocks:` in the card config chooses and orders them):
 | `header` | the device name and lifetime uptime, and a status pill: **Grid connected** (green), **Grid down** (red), or **Grid returning** with a countdown (amber) |
 | `flow` | a live flow diagram: grid → inverter → house, plus the battery leg under the inverter and the **Meter** under the grid, each run's speed scaled to its power |
 | `controls` | the inverter's switches as three chips (**Auto** tariff, **Protect** grid, **AC charge**, which also carries **Night only**, adaptive charge and **Pre-charge** as icons) and its three selects (power priority, AC input mode, max AC charge current), plus the electricity meter's day and night kWh this month with their cost, and its lifetime total |
-| `history` | grid, load and battery power over 30 min, 1 h, 24 h, 7 or 14 days, from the recorder |
+| `history` | grid, load and battery power over 30 min, 6 h, 12 h, 24 h, 7 or 14 days, from the recorder |
 
 **The electricity meter** ([electricity-meter.md](electricity-meter.md)) is
 the truth about the grid; the inverter's `grid_real_power_calculated` is an
