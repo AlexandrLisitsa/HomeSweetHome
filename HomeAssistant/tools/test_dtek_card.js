@@ -793,6 +793,103 @@ eq("[hero, days, week]: all three", [!!r.root.querySelector(".hero"), r.root.que
   eq("... and the four rows stay in place", [rows().length, blocks(0).length, blocks(3).map((b) => b[0])],
     [4, 0, ["blk warn"]]);
 
+  console.log("hex map and dynamic multi-queue inspection (18 queues, home 14.1)");
+  {
+    const queues18 = {};
+    for (let q = 1; q <= 18; q++) {
+      queues18[q + ".1"] = {
+        t: q === 8 ? "nnnnnnnyyyyyyyyyyyyyyyyy" : q === 14 ? TODAY : "yyyyyyyyyyyyyyyyyyyyyyyy",
+        m: q === 8 ? "yyyyyyyyyyyyyyyyynnnnyyy" : null,
+        y: q === 18 ? "EmergencyShutdowns" : null,
+      };
+    }
+    const sampleMap = {
+      queues_seen: Object.keys(queues18),
+      oblast: {
+        vb: [620, 400],
+        border: [[10, 10], [610, 10], [610, 390], [10, 390]],
+        raions: [{ name: "Дніпровський", ring: [[100, 100], [200, 100], [200, 200]] }],
+        rivers: [[[50, 200], [550, 200]]],
+        cities: [{ name: "Дніпро", x: 310, y: 200, major: true }],
+        hexes: [
+          { id: "h0", pts: "10,0 20,5 20,15 10,20 0,15 0,5", cx: 10, cy: 10, p: "Кам'янське", d: "8.1", s: { "8.1": 80, "14.1": 20 }, n: 5 },
+          { id: "h1", pts: "40,0 50,5 50,15 40,20 30,15 30,5", cx: 40, cy: 10, p: "Дніпро", d: "14.1", s: { "14.1": 100 }, n: 4 },
+        ],
+      },
+      dnipro: {
+        vb: [620, 400],
+        rivers: [[[0, 200], [620, 200]]],
+        labels: [{ name: "Центр", x: 310, y: 200, bank: false }],
+        hexes: [
+          { id: "d0", pts: "10,0 20,5 20,15 10,20 0,15 0,5", cx: 10, cy: 10, p: "Просп. Яворницького", d: "18.1", s: { "18.1": 100 }, n: 3 },
+        ],
+      },
+    };
+    const m = render("13:39", {
+      queue: "14.1", queue_code: "GPV14.1", queues: ["GPV14.1"], all_queues: queues18,
+    }, {
+      blocks: ["hero", "timeline", "week"],
+      states: { "sensor.grid_light_today": S("14.3333", { unit_of_measurement: "h" }) },
+      history: {
+        [GRID]: [{ s: "off", lu: lu(0) }], [OUT]: [{ s: "off", lu: lu(0) }],
+        [SCHED]: [{ s: "off", lu: lu(0) }], [UNS]: [{ s: "off", lu: lu(0) }],
+      },
+      config: { map_data: sampleMap },
+    });
+    await settle();
+    const pills = m.root.querySelectorAll(".q-pill").map((p) => p.getAttribute("data-val"));
+    eq("renders all 18 queues in numeric order", [pills.length, pills[0], pills[9], pills[13], pills[17]],
+      [18, "1.1", "10.1", "14.1", "18.1"]);
+    eq("home queue 14.1 active and starred by default; light meter visible",
+      [m.root.querySelector(".q-pill.active").getAttribute("data-val"),
+        m.root.querySelector(".q-pill.home").getAttribute("data-val"),
+        m.tile("Light today"),
+        m.root.querySelectorAll(".timeline .bar").length],
+      ["14.1", "14.1", ["14h 20m", "since 00:00, at the meter"], 4]);
+
+    // Click queue pill 8.1 -> inspect mode
+    fire(m.root.querySelector('.q-pill[data-val="8.1"]'), "click");
+    eq("inspecting queue 8.1 switches hero, hides meter, shows 2-row timeline comparison",
+      [m.root.querySelector(".q-pill.active").getAttribute("data-val"),
+        m.text(".ident"),
+        /8\.1/.test(m.text(".lede")),
+        /inverter/.test(m.text(".lede")),
+        m.tile("Light today"),
+        m.root.querySelectorAll(".timeline .bar").length,
+        m.root.querySelectorAll(".timeline .tlname").map((x) => x.textContent.split("schedule")[0].slice(0, 12))],
+      ["8.1", "(8.1)", true, false, ["—", "home meter only"], 2, ["Queue 8.1app", "My queue (14"]]);
+
+    // Toggle Dnipro view and click hex h->d0 (18.1, emergency in fixture)
+    fire(m.root.querySelector('[data-act="map-view"][data-val="dnipro"]'), "click");
+    eq("map-view switches to Dnipro hexes and labels",
+      [m.root.querySelectorAll(".map-lbl").length, m.root.querySelectorAll(".map-hex.clickable").length],
+      [1, 1]);
+    fire(m.root.querySelector('.map-hex[data-val="18.1"]'), "click");
+    eq("clicking Dnipro hex 18.1 inspects queue 18.1 emergency status",
+      [m.text("h1"), m.wrap.classList.contains("k-warn"), m.root.querySelector(".q-pill.active").getAttribute("data-val")],
+      ["Emergency outages.", true, "18.1"]);
+
+    // Toggle Selected vs All live color mode
+    fire(m.root.querySelector('[data-act="map-mode"][data-val="all"]'), "click");
+    eq("map-mode switches to All live",
+      m.root.querySelector('[data-act="map-mode"][data-val="all"]').getAttribute("aria-pressed"), "true");
+
+    // Click <- My queue (14.1) to return home
+    fire(m.root.querySelector('[data-act="map-home"]'), "click");
+    eq("map-home returns to home queue 14.1 with meter and 4 timeline rows",
+      [m.root.querySelector(".q-pill.active").getAttribute("data-val"),
+        !!m.root.querySelector('[data-act="map-home"]'),
+        m.tile("Light today"),
+        m.root.querySelectorAll(".timeline .bar").length],
+      ["14.1", false, ["14h 20m", "since 00:00, at the meter"], 4]);
+
+    // Without all_queues, map and strip are omitted
+    const plain = render("13:39", {}, { blocks: ["hero"] });
+    eq("no all_queues leaves hero without .has-map",
+      [!!plain.root.querySelector(".hero.has-map"), plain.root.querySelectorAll(".q-pill").length],
+      [false, 0]);
+  }
+
   console.log(failed ? "test_dtek_card: " + failed + " FAILED, " + passed + " passed"
     : "test_dtek_card: ok — " + passed + " checks passed");
   process.exit(failed ? 1 : 0);

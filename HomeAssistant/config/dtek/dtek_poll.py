@@ -665,6 +665,121 @@ def street_scope(answer):
     return hit, len(data)
 
 
+def queue_sort_key(code):
+    """Numeric sort key so '2.1' precedes '10.1' and '14.1'."""
+    clean = str(code).replace("GPV", "")
+    m = re.match(r"^(\d+)\.(\d+)$", clean)
+    if m:
+        return (0, int(m.group(1)), int(m.group(2)), clean)
+    return (1, 0, 0, clean)
+
+
+def is_cek_queue(code):
+    """True for CEK queues (GPV1001.1..GPV1006.2), kept separate from DTEK."""
+    clean = str(code).replace("GPV", "")
+    m = re.match(r"^(\d+)\.", clean)
+    return bool(m and int(m.group(1)) >= 1000)
+
+
+def yasno_slots_to_day(day_block, expected_date):
+    """Convert a YASNO day slot list into a 24-char DTEK letter string, or None."""
+    if not isinstance(day_block, dict):
+        return None
+    if day_block.get("status") != "ScheduleApplies":
+        return None
+    if str(day_block.get("date") or "")[:10] != expected_date.isoformat():
+        return None
+    slots = day_block.get("slots")
+    if not isinstance(slots, list) or not slots:
+        return None
+
+    halves = ["yes"] * 48
+    for sl in slots:
+        if not isinstance(sl, dict):
+            continue
+        stype = sl.get("type")
+        if stype in ("Definite", "Outage", "No"):
+            kind = "no"
+        elif stype in ("Possible", "Maybe"):
+            kind = "maybe"
+        else:
+            continue
+        start = max(0, min(1440, int(sl.get("start") or 0)))
+        end = max(0, min(1440, int(sl.get("end") or 0)))
+        for idx in range(48):
+            a, b = idx * 30, (idx + 1) * 30
+            if start < b and end > a:
+                if halves[idx] != "no":
+                    halves[idx] = kind
+
+    out = []
+    for hour in range(24):
+        h0, h1 = halves[hour * 2], halves[hour * 2 + 1]
+        if h0 == "yes" and h1 == "yes":
+            st = "yes"
+        elif h0 == "no" and h1 == "no":
+            st = "no"
+        elif h0 != "yes" and h1 != "yes":
+            st = "maybe"
+        elif h0 == "no":
+            st = "first"
+        elif h1 == "no":
+            st = "second"
+        elif h0 == "maybe":
+            st = "mfirst"
+        else:
+            st = "msecond"
+        out.append(STATE_LETTER[st])
+    return "".join(out)
+
+
+def build_all_queues(fact, preset, now, week_ok, is_cek):
+    """Build compact per-queue schedules across every published queue for the map."""
+    days = (fact or {}).get("data") or {}
+    pdata = (preset or {}).get("data") or {}
+    codes = set()
+    if isinstance(days, dict) and days:
+        for day_map in days.values():
+            if isinstance(day_map, dict):
+                codes.update(day_map.keys())
+    if week_ok and isinstance(pdata, dict) and pdata:
+        codes.update(pdata.keys())
+
+    codes = sorted((c for c in codes if is_cek_queue(c) == bool(is_cek)),
+                   key=queue_sort_key)
+    if not codes:
+        return {}
+
+    today_day = tmrw_day = None
+    if isinstance(days, dict) and days:
+        keys = sorted(days, key=int)
+        dates = [datetime.fromtimestamp(int(k), KYIV).date() for k in keys]
+        today_idx = next((i for i, d in enumerate(dates) if d == now.date()), None)
+        if today_idx is not None:
+            today_day = days[keys[today_idx]]
+            if today_idx + 1 < len(keys) and dates[today_idx + 1] == now.date() + timedelta(days=1):
+                tmrw_day = days[keys[today_idx + 1]]
+
+    out = {}
+    for code in codes:
+        q = code.replace("GPV", "")
+        rec = {}
+        if today_day is not None:
+            t_str = encode_day(day_states(today_day, [code]))
+            if t_str and not (set(t_str) <= {"?"}):
+                rec["t"] = t_str
+        if tmrw_day is not None:
+            m_str = encode_day(day_states(tmrw_day, [code]))
+            if m_str and not (set(m_str) <= {"?"}):
+                rec["m"] = m_str
+        if week_ok:
+            w = week_states(preset, [code])
+            if w:
+                rec["w"] = w
+        out[q] = rec
+    return out
+
+
 def resolve(entry, answer, fact, preset, now):
     """Turn one getHomeNum entry plus the current fact/preset into the payload."""
     queues = [q for q in (entry.get("sub_type_reason") or []) if q]
@@ -716,6 +831,7 @@ def resolve(entry, answer, fact, preset, now):
         # has read 24.07.2026 since the day they suspended them.
         updated_at=(answer or {}).get("updateTimestamp"),
         dtek_flags=flags,
+        all_queues=build_all_queues(fact, preset, now, week_ok, bool(entry.get("cek"))),
     )
 
     # fact.data is [] whenever stabilisation schedules are not in force, which
@@ -1112,6 +1228,33 @@ YASNO_FIELDS = ("yasno_status_today", "yasno_status_tomorrow", "yasno_updated_on
                 "yasno_emergency", "yasno_emergency_queues")
 
 
+def yasno_all_queues(data, today):
+    """Extract per-queue YASNO status and 24-char schedule fallback for every queue."""
+    if not isinstance(data, dict):
+        return {}
+    tomorrow = today + timedelta(days=1)
+    out = {}
+    for name in sorted(data, key=queue_sort_key):
+        block = data.get(name) or {}
+        if not isinstance(block, dict):
+            continue
+        t_blk = block.get("today") or {}
+        m_blk = block.get("tomorrow") or {}
+        rec = {}
+        if str(t_blk.get("date") or "")[:10] == today.isoformat() and t_blk.get("status"):
+            rec["y"] = t_blk.get("status")
+        if str(m_blk.get("date") or "")[:10] == tomorrow.isoformat() and m_blk.get("status"):
+            rec["yt"] = m_blk.get("status")
+        t_str = yasno_slots_to_day(t_blk, today)
+        if t_str:
+            rec["t"] = t_str
+        m_str = yasno_slots_to_day(m_blk, tomorrow)
+        if m_str:
+            rec["m"] = m_str
+        out[name] = rec
+    return out
+
+
 def apply_yasno(payload, cache, now, city=None):
     """Read YASNO and publish its verdict on `payload`, whether the DTEK poll
     worked or not -- the two sources fail independently.
@@ -1149,9 +1292,11 @@ def apply_yasno(payload, cache, now, city=None):
     try:
         raw = fetch_yasno()
         verdict = yasno_verdict(raw, payload.get("queues") or [], now.date())
+        y_queues = yasno_all_queues(raw, now.date())
         prev = (cache.get("yasno") or {}).get("yasno_status_today")
         prev_em = (cache.get("yasno") or {}).get("yasno_emergency")
         cache["yasno"] = verdict
+        cache["yasno_queues"] = y_queues
         cache["yasno_checked_at"] = now.isoformat()
         payload["yasno_error"] = None
         if (prev, prev_em) != (verdict["yasno_status_today"], verdict["yasno_emergency"]):
@@ -1164,6 +1309,22 @@ def apply_yasno(payload, cache, now, city=None):
         payload[key] = verdict.get(key)
     payload["yasno_emergency"] = bool(verdict.get("yasno_emergency"))
     payload["yasno_checked_at"] = cache.get("yasno_checked_at")
+
+    base_queues = payload.get("all_queues") or {}
+    yq_map = {} if payload.get("cek") else (cache.get("yasno_queues") or {})
+    merged_queues = {}
+    for q in sorted(set(base_queues) | set(yq_map), key=queue_sort_key):
+        merged = dict(base_queues.get(q) or {})
+        yq = yq_map.get(q) or {}
+        for k in ("y", "yt"):
+            if yq.get(k) is not None:
+                merged[k] = yq[k]
+        for k in ("t", "m"):
+            if not merged.get(k) and yq.get(k):
+                merged[k] = yq[k]
+        merged_queues[q] = merged
+    payload["all_queues"] = merged_queues
+
     # Replace, never accumulate: a stale payload is last run's, YASNO's old
     # warnings included.
     payload["warnings"] = [w for w in payload.get("warnings") or []

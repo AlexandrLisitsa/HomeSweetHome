@@ -192,6 +192,10 @@ command_line:
         - yasno_notice_emergency
         - yasno_notice_checked_at
         - yasno_notice_error
+        # Compact per-queue today/tomorrow/YASNO map across every active DTEK
+        # queue (e.g. 1.1..18.1), so the dashboard map inspects any queue with
+        # zero extra polls.
+        - all_queues
         - fetched_at
         - stale
         - error

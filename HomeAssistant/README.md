@@ -150,6 +150,7 @@ sh tools/ha_get.sh /api/config
 | `tools/test_card_tooltips.js` | renders every custom card and checks each meaningful element's tooltip against [the standard](docs/dashboard-tooltips.md); `tools/fake_dom.js` is the small DOM it, `test_power_cards.js` and `test_floorplan_card.js` share | no — pure local |
 | `tools/test_router_card.js` | the router console card: units, the status pill, the WAN address's kind, today's peak and average, the statistics ranges, no timer off the page | no — pure local |
 | `tools/test_floorplan_card.js` | the Home floor plan card with its real config: room tints, the power path's streams and labels, the DTEK chip, outage mode with load shedding's marks, patching and taps | no — pure local |
+| `tools/build_dtek_map.py` | builds the static `config/www/dtek-map-data.json` hex mosaic for Dnipropetrovsk Oblast and Dnipro city from official borders, GeoNames and YASNO `addresses/v2` | one-off (network; caches under `.state/`) |
 | `tools/ha_www_push.sh` | pushes `config/www/` (the custom cards) to the box over SSH; follow with `ha_dashboard.py --card` to bump the resource version — **changes the house** | yes, deliberately |
 
 `ha_pull.sh` extracts to a temp dir and swaps, so a failed pull leaves the old

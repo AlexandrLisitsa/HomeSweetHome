@@ -209,6 +209,12 @@ const FIXTURES = {
         banner_title: "Шановні клієнти!", banner_scope: "city", banner_emergency: true,
         banner_text: "За рішенням Укренерго запроваджено екстрені відключення по місту Дніпро.",
         banner_checked_at: new Date(now).toISOString(), banner_error: null,
+        all_queues: {
+          "1.1": { t: "nnnnnnyyyyyyyyyyyyyyyyyy", m: null, y: null },
+          "3.1": { t: "yyyyyyyyyyyyysnnnyyyyyyy", m: null, y: null },
+          "8.1": { t: "yyyyyyyynnnnyyyyyyyyyyyy", m: null, y: null },
+          "14.1": { t: "yyyyyyyyyyyyyyyyynnnnyyy", m: null, y: "EmergencyShutdowns" },
+        },
       }),
       "binary_sensor.dtek_emergency_shutdowns": S("on", {}),
       "binary_sensor.grid_down": S("off", {}),
@@ -552,6 +558,36 @@ hoverSurvivesUpdate("powmr-inverter-console-card.js", cfgOf("powmr-inverter-cons
 hoverSurvivesUpdate("load-shedding-card.js", cfgOf("load-shedding-card.js"),
   FIXTURES["load-shedding-card.js"](), ".tile",
   { "sensor.jkbms_gateway_bms_state_of_charge": S("47") });
+
+// Verify interactive hex map + inspected queue mode tooltips on dtek-shutdowns-card.js.
+{
+  const L = loadCard("dtek-shutdowns-card.js");
+  const card = new L.Card();
+  card.setConfig({
+    blocks: ["hero", "timeline", "week"],
+    map_data: {
+      oblast: {
+        vb: [620, 400], border: [[10, 10], [600, 10], [600, 390]], raions: [], rivers: [],
+        cities: [{ name: "Дніпро", x: 310, y: 200, major: true }],
+        hexes: [
+          { id: "h0", pts: "10,0 20,5 20,15 10,20 0,15 0,5", cx: 10, cy: 10, p: "Кам'янське", d: "8.1", s: { "8.1": 80, "14.1": 20 }, n: 5 },
+          { id: "h1", pts: "40,0 50,5 50,15 40,20 30,15 30,5", cx: 40, cy: 10, p: "Дніпро", d: "14.1", s: { "14.1": 100 }, n: 4 },
+        ],
+      },
+      dnipro: { vb: [620, 400], rivers: [], labels: [], hexes: [] },
+    },
+  });
+  card.hass = mkHass(house(FIXTURES["dtek-shutdowns-card.js"]({})));
+  L.flushTimers();
+  const root = card.shadowRoot;
+  const pill8 = root.querySelector('.q-pill[data-val="8.1"]');
+  if (pill8) pill8.click();
+  inScope(root, "dtek-shutdowns-card.js").forEach((el) => {
+    checked++;
+    const p = tipProblems(tipOf(el));
+    if (p.length) fail("dtek-shutdowns-card.js#map-inspect", describe(el), p);
+  });
+}
 
 if (failures.length) {
   console.log("test_card_tooltips: " + failures.length + " problem(s) in " + checked + " checks");
