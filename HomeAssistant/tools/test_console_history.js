@@ -80,11 +80,14 @@ async function suite(file, spec) {
   const lastTwoDays = { [E]: Array.from({ length: 48 }, (_, i) => ({
     s: String(40 + (i % 5)), lu: (now - 2 * DAY + i * HOUR) / 1000 })) };
 
-  // 24 h: inside the raw horizon, raw history as before.
-  let { c, calls } = rig(Card, E, hourly, lastTwoDays);
-  let rec = await c._load(spec, "k24", now - DAY, now, 1500, 0);
-  eq(file + ": 24 h reads raw history", calls, ["history/history_during_period"]);
-  check(file + ": 24 h has points", rec.pts.length > 0);
+  // 6 h, 12 h, and 24 h: inside the raw horizon, raw history as before.
+  let c, calls, rec;
+  for (const [key, hrs] of [["k6", 6], ["k12", 12], ["k24", 24]]) {
+    ({ c, calls } = rig(Card, E, hourly, lastTwoDays));
+    rec = await c._load(spec, key, now - hrs * HOUR, now, 1500, 0);
+    eq(file + ": " + hrs + " h reads raw history", calls, ["history/history_during_period"]);
+    check(file + ": " + hrs + " h has points", rec.pts.length > 0);
+  }
 
   // 14 d: hourly statistics, spanning the whole window.
   ({ c, calls } = rig(Card, E, hourly, lastTwoDays));

@@ -91,7 +91,7 @@ import { cardTip } from "./card-tip.js?v=1.0.0";
 import { ramp, rampCss } from "./card-ramp.js?v=1.0.0";
 import { fxConfig, fxOn, fxSetup, FX_CSS } from "./card-fx.js?v=1.1.0";
 
-const VERSION = "1.8.4";
+const VERSION = "1.9.0";
 
 /*
  * The design's palette, literal. Names are what the design calls them: two
@@ -249,7 +249,8 @@ const SERIES = [
  */
 const RANGES = {
   "30m": { hours: 0.5, points: 900, label: "last 30 minutes" },
-  "1h": { hours: 1, points: 900, label: "last hour" },
+  "6h": { hours: 6, points: 1500, label: "last 6 hours" },
+  "12h": { hours: 12, points: 1500, label: "last 12 hours" },
   "24h": { hours: 24, points: 1500, label: "last 24 hours" },
   "7d": { hours: 168, points: 1500, label: "last 7 days" },
   "14d": { hours: 336, points: 1500, label: "last 14 days" },
@@ -774,7 +775,7 @@ ha-card {
 .hname .n { font-size: calc(23px * var(--s)); font-weight: 600; letter-spacing: -.01em; cursor: pointer; }
 .hname .n:hover { text-decoration: underline; text-underline-offset: 4px; }
 .hname .w { font-family: var(--mono); font-size: calc(12px * var(--s)); color: ${MUTED}; }
-.segs { display: flex; gap: 2px; border: 1px solid ${LINE2}; border-radius: 7px; padding: 3px; background: ${INNER}; }
+.segs { display: flex; flex-wrap: wrap; gap: 2px; border: 1px solid ${LINE2}; border-radius: 7px; padding: 3px; background: ${INNER}; }
 .seg { background: transparent; color: ${MUTED}; border: none; border-radius: 5px; padding: 6px 12px;
   font-family: var(--mono); font-size: calc(11px * var(--s)); cursor: pointer; transition: all .15s; }
 .seg:hover { color: ${TXT}; }
@@ -845,6 +846,7 @@ svg.ch { width: 100%; height: ${CH_H}px; display: block;
   .c-names { margin-left: 50px; }
   .yax { width: 44px; flex-basis: 44px; }
   .stats { gap: 24px; }
+  .seg { padding: 6px 10px; }
 }
 
 /*

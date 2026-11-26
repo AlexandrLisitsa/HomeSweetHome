@@ -788,6 +788,14 @@ async function inverterSuite() {
     check("other keys do nothing", ncalls() === n2 && r.c.dispatched.length === d2);
 
     // Range and tab.
+    eq("range buttons", r.el.ranges.querySelectorAll(".seg").map((b) => b.getAttribute("data-val")),
+      ["30m", "6h", "12h", "24h", "7d", "14d"]);
+    ["6h", "12h"].forEach((val) => {
+      fire(r.el.ranges.querySelector('[data-val="' + val + '"]'), "click");
+      eq("range click sets " + val, r.c._range, val);
+      eq("range pressed " + val, r.el.ranges.querySelectorAll(".seg").filter((b) => b.getAttribute("aria-pressed") === "true")
+        .map((b) => b.getAttribute("data-val")), [val]);
+    });
     const seg = r.el.ranges.querySelector('[data-val="24h"]');
     r.c._view = { start: 0, end: 1, follow: false };
     fire(seg, "click");
@@ -1264,7 +1272,9 @@ async function inverterSuite() {
     const c = new Card();
     c.setConfig({});
     eq("_presetFor 10 min", c._presetFor(10 * 60000), "30m");
-    eq("_presetFor 2 h", c._presetFor(2 * 3600000), "24h");
+    eq("_presetFor 2 h", c._presetFor(2 * 3600000), "6h");
+    eq("_presetFor 8 h", c._presetFor(8 * 3600000), "12h");
+    eq("_presetFor 18 h", c._presetFor(18 * 3600000), "24h");
     eq("_presetFor beyond the longest", c._presetFor(400 * 3600000), "14d");
     c._setView(Date.now() - 1000, Date.now());
     check("_setView widens to a minute", c._view.end - c._view.start >= 59999);
@@ -1744,8 +1754,19 @@ async function batterySuite() {
     eq("capacity meter opens SOC", r.c.dispatched.pop().detail.entityId, E.soc);
     fire(r.el.cvDelta, "click");
     eq("delta opens the delta sensor", r.c.dispatched.pop().detail.entityId, E.d);
+    eq("range buttons", r.el.ranges.querySelectorAll(".seg").map((b) => b.getAttribute("data-val")),
+      ["30m", "6h", "12h", "24h", "7d", "14d"]);
+    ["6h", "12h"].forEach((val) => {
+      fire(r.el.ranges.querySelector('[data-val="' + val + '"]'), "click");
+      eq("range " + val, r.c._range, val);
+    });
     fire(r.el.ranges.querySelector('[data-val="7d"]'), "click");
     eq("range", r.c._range, "7d");
+    eq("_presetFor 10 min", r.c._presetFor(10 * 60000), "30m");
+    eq("_presetFor 2 h", r.c._presetFor(2 * 3600000), "6h");
+    eq("_presetFor 8 h", r.c._presetFor(8 * 3600000), "12h");
+    eq("_presetFor 18 h", r.c._presetFor(18 * 3600000), "24h");
+    eq("_presetFor beyond the longest", r.c._presetFor(400 * 3600000), "14d");
     fire(r.el.tabs.querySelector('[data-val="delta"]'), "click");
     eq("tab", [r.c._sel, r.el.chName.textContent], ["delta", "Cell Delta"]);
 

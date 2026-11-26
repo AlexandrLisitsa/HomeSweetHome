@@ -79,7 +79,7 @@ import { cardTip } from "./card-tip.js?v=1.0.0";
 import { fxConfig, fxOn, fxSetup, FX_CSS } from "./card-fx.js?v=1.1.0";
 import { ramp, rampCss } from "./card-ramp.js?v=1.0.0";
 
-const VERSION = "2.14.4";
+const VERSION = "2.15.0";
 
 /*
  * Brand colours stay literal: they identify a leg of the diagram (amber =
@@ -385,7 +385,8 @@ const ENERGY = [
  */
 const RANGES = {
   "30m": { hours: 0.5, points: 900, label: "last 30 minutes" },
-  "1h": { hours: 1, points: 900, label: "last hour" },
+  "6h": { hours: 6, points: 1500, label: "last 6 hours" },
+  "12h": { hours: 12, points: 1500, label: "last 12 hours" },
   "24h": { hours: 24, points: 1500, label: "last 24 hours" },
   "7d": { hours: 168, points: 1500, label: "last 7 days" },
   "14d": { hours: 336, points: 1500, label: "last 14 days" },
@@ -568,7 +569,7 @@ ha-card {
   border: 1px solid #1C1E24; border-radius: 16px;
   background: linear-gradient(180deg, #0E1014 0%, #0A0B0E 100%); padding: 12px 14px; }
 .bar-l { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.segs { display: flex; gap: 2px; padding: 3px; border-radius: 11px; background: #0A0B0E; border: 1px solid #1C1E24; }
+.segs { display: flex; flex-wrap: wrap; gap: 2px; padding: 3px; border-radius: 11px; background: #0A0B0E; border: 1px solid #1C1E24; }
 .seg { padding: 7px 15px; border: none; border-radius: 9px; cursor: pointer; background: transparent;
   color: #6E737E; font-family: var(--mono); font-size: calc(12px * var(--s)); letter-spacing: .02em; transition: all .15s; }
 .seg:hover { color: #B9BEC7; }
@@ -825,6 +826,9 @@ svg.ch { width: 100%; height: ${CH_H}px; display: block; }
   .title { font-size: calc(24px * var(--s)); }
   .root { padding: 18px 14px 22px; }
   .panel { padding: 16px; }
+}
+@container pmcard (max-width: 640px) {
+  .seg { padding: 6px 10px; }
 }
 
 /*
