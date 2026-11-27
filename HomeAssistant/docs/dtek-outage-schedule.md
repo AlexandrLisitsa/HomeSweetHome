@@ -523,9 +523,21 @@ generated locally by `tools/build_dtek_map.py` (with resumable caches in
 `.state/dtek-map-cache/`) using 86 official hromadas, 7 raions, all 8 OSM administrative
 districts of Dnipro, GeoNames places, and YASNO `addresses/v2` samples clustered into
 clipped Voronoi microzones inside each Dnipro district. The hero card embeds a 3-column
-Cockpit selector (`Region` / `Dnipro` camera presets, cursor-centered wheel zoom with
-anti-scroll-jacking at `1×`, automatic/manual LOD across hromadas → districts →
+Cockpit selector (`Region` / `Dnipro` camera presets, cursor-centered wheel zoom that
+never scrolls the page while the pointer is over the map, automatic/manual LOD across hromadas → districts →
 microzones, `Queue` / `All live` color modes, clickable regions, and queue pills):
 clicking any region or queue switches the hero, clock, timeline comparison, and week
 schedule to that queue while hiding home-only inverter and meter readings until you
 return via `← My queue`.
+
+Hovering a region opens a 344px card with sampled house counts and shares, a status
+bar, the top five queues with their next switch, and sampled streets. Touch has no
+hover, so on a phone the first tap opens that card and a second tap on the same region
+inspects its queue; a tap on open map ground, outside the map, or a page scroll closes it.
+
+The chosen queue, camera, layer and color mode are kept in `localStorage`
+(`dtek-shutdowns-card:view:<entity>`), so they survive HA rebuilding the card when the
+companion app returns from the background or the dashboard reloads. The map is mounted
+separately from the rest of the hero: the once-a-minute redraw of the clock and tiles
+moves the existing map node back in place instead of rebuilding it, so an open hover
+card, the camera and a drag in progress are not interrupted.
